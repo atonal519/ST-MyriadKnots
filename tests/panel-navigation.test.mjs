@@ -6,22 +6,22 @@ import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { applyPluginEnabledImmediately } from '../src/settings.js';
 import { openHelpGuide } from '../src/ui/help-guide.js';
 import { publicErrorMessage } from '../src/public-error.js';
+import { createVectorIndex } from '../src/v3/vector-index.js';
 
-let createdNodes = 0;
 class Node {
   constructor(tag = 'div') {
-    createdNodes += 1;
     this.tag = tag; this.children = []; this.listeners = {}; this.hidden = false; this.scrollTop = 0; this.dataset = {}; this.className = ''; this.textContent = '';
-    this.attributes = {}; this.style = { setProperty() {} }; this.replaceCount = 0; this.nonEmptyReplaceCount = 0;
+    this.attributes = {}; this.style = { setProperty() {} };
     this.classList = { toggle: (name, enabled) => { this.dataset[`class_${name}`] = Boolean(enabled); } };
   }
   append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.replaceCount += 1; if (nodes.length) this.nonEmptyReplaceCount += 1; this.children = [...nodes]; }
-  addEventListener(name, handler) { (this.listeners[name] ??= []).push(handler); }
-  fire(name, event = {}) { let result; for (const handler of this.listeners[name] ?? []) result = handler(event); return result; }
+  replaceChildren(...nodes) { this.children = [...nodes]; }
+  addEventListener(name, handler) { this.listeners[name] = handler; }
+  fire(name, event = {}) { return this.listeners[name]?.(event); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
-  querySelector() { return null; }
-  focus() {}
+  querySelector(selector) { return flatten(this).find(node => selector.startsWith('#') ? node.id === selector.slice(1) : selector === 'summary' && node.tag === 'summary') ?? null; }
+  focus() { this.focused = true; }
+  scrollIntoView(options) { this.scrollOptions = options; }
 }
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 
@@ -51,6 +51,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     return { drawer: node, body: drawerBody, summary };
   };
   const diagnostics = { starts: 0, stops: 0, marks: 0, records: [{ page: 'settings', defaultPrevented: false }] };
+  const dialogAppearances = [];
   let rejectSaveSchedule = false;
   let tauriTavern = false;
   const saveScheduleError = new Error('private settings scheduler detail');
@@ -58,10 +59,17 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const modules = {
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
-    './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {} }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
+    './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {}, fontReady: Promise.resolve() }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
     './font-scale.js': { scaleCssFontSizes: css => css },
     './settings-drawer.js': { createSettingsDrawer: drawer, createSettingsDrawerState: () => ({ open(key) { drawerState.set(key, true); }, set(key, value) { drawerState.set(key, value); }, isOpen: (key, fallback) => drawerState.has(key) ? drawerState.get(key) : fallback }) },
-    './settings/api-settings.js': { createApiSettings: () => { apiSettingsMounts++; return { node: new Node(), dispose() { apiSettingsDisposals++; } }; } },
+    './settings/api-settings.js': { createApiSettings: ({ open, vectorOpen, onToggle, onVectorToggle }) => {
+      apiSettingsMounts++;
+      const api = drawer({ title: 'API 配置', id: 'qqj-settings-api', open, onToggle, level: 'sub' });
+      const vector = drawer({ title: '向量召回', id: 'qqj-settings-vector-api', open: vectorOpen, onToggle: onVectorToggle, level: 'sub' });
+      const apiDraft = new Node('input'); apiDraft.value = '未保存的 API 草稿';
+      api.body.append(apiDraft, vector.drawer);
+      return { node: api.drawer, apiDraft, dispose() { apiSettingsDisposals++; } };
+    } },
     './settings/prompts-settings.js': { createPromptsSettings: () => ({ node: new Node() }) },
     './settings/appearance-settings.js': { createAppearanceSettings: () => ({ node: new Node() }) },
     './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
@@ -74,20 +82,36 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const entry = new SourceTextModule(source, { context, identifier: new URL('../src/ui/panel.js', import.meta.url).href });
   await entry.link(specifier => new SyntheticModule(Object.keys(modules[specifier]), function initialize() { for (const [name, value] of Object.entries(modules[specifier])) this.setExport(name, value); }, { context, identifier: specifier }));
   await entry.evaluate();
-  const foundationState = {
-    status: 'ready', pluginEnabled: true, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', foundationStatus: 'ready',
+  let foundationState = {
+    status: 'uninitialized', pluginEnabled: true, chatId: null, narrativeGeneration: null, foundationStatus: 'uninitialized',
+    memorySnapshotStatus: 'unavailable', memorySyncStatus: 'idle',
     stableCount: 0, rememberedCount: 0, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null,
     headCheckpointId: null, activeRun: null, activeExtraction: null, activeCse: null, lastRun: null, lastError: null,
     lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, cseReady: false, csePendingCount: 0,
     cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [], rebuildStatus: 'caughtUp',
   };
-  const foundationRuntime = { getState: () => foundationState, refreshStatus: async () => foundationState, confirmLatest: async () => foundationState, copySafeDiagnostic: floorId => JSON.stringify({ floorId }), copyFullDiagnostic: floorId => JSON.stringify({ floorId }) };
-  let v3TimeStateReads = 0;
-  const actualFoundationView = createV3FoundationView({ runtime: foundationRuntime, timeRuntime: { getState() { v3TimeStateReads += 1; return { status: 'idle', active: false, canOrganize: true }; } }, documentRef });
+  const foundationListeners = new Set(); let foundationRefreshes = 0;
+  const foundationRuntime = { getState: () => foundationState, async refreshStatus() {
+    foundationRefreshes += 1;
+    foundationState = { ...foundationState, status: 'ready', chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', narrativeGeneration: 'panel-generation', foundationStatus: 'ready', memorySnapshotStatus: 'ready' };
+    for (const listener of foundationListeners) listener(foundationState);
+    return foundationState;
+  }, confirmLatest: async () => foundationState, subscribe(listener) { foundationListeners.add(listener); return () => foundationListeners.delete(listener); } };
+  const clipboardWrites = [];
+  let indexManifestReads = 0, indexShardReads = 0, identityReads = 0;
+  const vectorRuntime = createVectorIndex({ client: { async get(_collection, id) {
+      if (id === 'qqj-vector-index') { indexManifestReads += 1; throw Object.assign(new Error('not_found'), { status: 404 }); }
+      indexShardReads += 1; throw new Error('unexpected shard read');
+    } }, configProvider: () => ({ url: 'https://vector.invalid/v1', model: 'model', key: 'local-test-key', dimensions: null }),
+    identityProvider: () => { identityReads += 1; throw new Error('page check uses loaded target identity'); } });
+  let panel;
+  const actualFoundationView = createV3FoundationView({ runtime: foundationRuntime, vectorRuntime, documentRef,
+    onOpenVectorSettings: () => panel?.openVectorSettings?.(),
+    navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); } } } });
   let rejectFoundationActivation = false;
   const v3FoundationView = {
     setPage(value) { calls.push(['page', value]); actualFoundationView.setPage(value); },
-    mount(target) { calls.push(['mount', target]); actualFoundationView.mount(target); },
+    mount(target, options) { calls.push(['mount', target]); if (options?.page) calls.push(['mount-page', options.page]); actualFoundationView.mount(target, options); },
     activate() { return rejectFoundationActivation ? Promise.reject(new Error('management offline')) : actualFoundationView.activate(); },
     deactivate() { calls.push(['deactivate']); actualFoundationView.deactivate(); },
   };
@@ -106,69 +130,82 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     async activate() { calls.push(['storage-activate']); return { status: 'ready' }; },
     deactivate() { calls.push(['storage-deactivate']); },
   };
-  const values = { pluginEnabled: true, appearanceTheme: 'auto', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3, coreCacheEnabled: true };
+  const values = { pluginEnabled: true, appearanceTheme: 'auto', appearanceFontFamily: '测试字体', appearanceFontCssUrl: 'https://example.invalid/font.css', fabShow: true, autoHideEnabled: false, autoHideKeepAiCount: 3, coreCacheEnabled: true };
   const updates = [];
   const settings = { isEnabled: () => values.pluginEnabled !== false, get: () => values, update(value, options = {}) { Object.assign(values, value); updates.push(value); if (rejectSaveSchedule && options.observeSaveFailure) throw saveScheduleError; return value; } };
   let rejectPluginDisable = false;
   const pluginDisableError = new TypeError('private plugin start detail');
   const pluginFailures = [];
   let fabVisible = true, dialogActive = false, dialogCancels = 0, helpDialog = null, clipboardFail = false;
-  const clipboardWrites = [];
   let ledgerInjectionEnabled = false, timeChanges = 0, resolveTimeConfirm;
   const timeConfirms = [];
-  const timeListeners = new Set(), memoryListeners = new Set(); let timeReads = 0, timeStateReads = 0, timeOrganizes = 0;
+  const timeListeners = new Set(), memoryListeners = new Set(); let timeReads = 0, timeOrganizes = 0;
   let timeState = { status: 'idle', active: false, last: null, canOrganize: true, disabledReason: '' };
   const publishTime = () => { for (const listener of timeListeners) listener(timeState); };
-  const timeRuntime = { getState() { timeStateReads += 1; return timeState; }, async refreshStatus() { timeReads += 1; publishTime(); return timeState; }, async organize() { timeOrganizes += 1; publishTime(); return timeState; }, subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); } };
+  const timeRuntime = { getState: () => timeState, async refreshStatus() { timeReads += 1; publishTime(); return timeState; }, async organize() { timeOrganizes += 1; publishTime(); return timeState; }, subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); } };
   const memoryRuntime = { subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
   const autoHideApplies = [];
   let autoHideApplyStatus = null;
   let calendarChatId = foundationState.chatId, savedCalendar = null; const calendarChanges = [];
   const calendarContextProvider = () => ({ chatId: calendarChatId, calendar: savedCalendar });
-  const panel = entry.namespace.createPanel({ calendarContextProvider, onCalendarChange: async value => { calendarChanges.push(value); savedCalendar = value.calendar; }, settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, storageManagementView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onPluginEnabledChange: async value => { if (rejectPluginDisable && value === false) throw pluginDisableError; }, onPluginEnableFailure: (error, phase) => pluginFailures.push({ error, phase, settingsEnabled: settings.isEnabled() }), onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance() {}, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
+  panel = entry.namespace.createPanel({ calendarContextProvider, onCalendarChange: async value => { calendarChanges.push(value); savedCalendar = value.calendar; }, settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, storageManagementView, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onPluginEnabledChange: async value => { if (rejectPluginDisable && value === false) throw pluginDisableError; }, onPluginEnableFailure: (error, phase) => pluginFailures.push({ error, phase, settingsEnabled: settings.isEnabled() }), onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance(value) { dialogAppearances.push(value); }, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
+  await Promise.resolve();
+  assert.equal(dialogAppearances.at(-1)?.family, '测试字体', '独立编辑窗接收外观控制器解析出的字体');
+  assert.equal(dialogAppearances.at(-1)?.fontCssUrl, 'https://example.invalid/font.css');
   assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
   assert.deepEqual(JSON.parse(panel.getUiDiagnostic()).records, diagnostics.records);
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
-  body.scrollTop = 31; const firstMemoryRender = view.nonEmptyReplaceCount; eventTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(view.nonEmptyReplaceCount - firstMemoryRender, 1, '实际 createPanel 首次进入千结只构建一次');
-  assert.equal(body.scrollTop, 0); assert.deepEqual(calls.filter(([kind]) => kind === 'page').at(-1), ['page', 'memories']);
+  body.scrollTop = 31;
+  settingsTab.fire('click');
+  await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  const initialManagementMount = view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
+  const indexLink = flatten(initialManagementMount).find(node => node.className.includes('qqj-vector-index-link'));
+  assert.ok(indexLink); assert.equal(indexLink.hidden, false, '直接打开设置记忆管理后按当前manifest显示零索引文字链接');
+  assert.match(indexLink.textContent, /还没有向量索引/u);
+  assert.equal(flatten(view).some(node => node.className.includes('qqj-vector-index-hint')), false, '千结内容页不再显示独立索引提示');
+  assert.equal(foundationRefreshes, 1, '只有当前设置管理页读取一次当前状态');
+  assert.equal(indexManifestReads, 1); assert.equal(indexShardReads, 0); assert.equal(identityReads, 0);
+  const settingsPage = view.children[0];
+  const apiDraft = flatten(settingsPage).find(node => node.value === '未保存的 API 草稿');
+  const apiMountsBeforeNavigation = apiSettingsMounts, apiDisposalsBeforeNavigation = apiSettingsDisposals;
+  await indexLink.fire('click');
+  const generalDrawer = flatten(settingsPage).find(node => node.id === 'qqj-settings-group-general');
+  const apiDrawer = flatten(settingsPage).find(node => node.id === 'qqj-settings-api');
+  const vectorDrawer = flatten(settingsPage).find(node => node.id === 'qqj-settings-vector-api');
+  assert.equal(generalDrawer?.open, true); assert.equal(apiDrawer?.open, true); assert.equal(vectorDrawer?.open, true);
+  assert.equal(vectorDrawer?.scrollOptions?.block, 'center'); assert.equal(vectorDrawer?.children.find(node => node.tag === 'summary')?.focused, true);
+  assert.equal(flatten(settingsPage).find(node => node.value === '未保存的 API 草稿'), apiDraft, '导航不重绘设置或丢未保存API草稿');
+  assert.equal(apiSettingsMounts, apiMountsBeforeNavigation); assert.equal(apiSettingsDisposals, apiDisposalsBeforeNavigation);
+  assert.equal(indexManifestReads, 1); assert.equal(indexShardReads, 0); assert.equal(identityReads, 0, '纯导航不重新读取manifest或identity');
+  eventTab.fire('click');
+  await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(foundationRefreshes, 2, '随后打开千结页只读取当前状态');
+  assert.equal(indexManifestReads, 1, '零索引检查属于设置记忆管理入口');
+  assert.equal(flatten(view).some(node => node.className.includes('qqj-vector-index-hint')), false);
+  settingsTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  const indexDiagnosticMount = view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
+  const copyStatus = flatten(indexDiagnosticMount).find(node => node.textContent === '复制状态诊断');
+  assert.ok(copyStatus, '设置页保留记忆页状态诊断入口');
+  copyStatus.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  const copiedStatus = JSON.parse(clipboardWrites.at(-1));
+  assert.equal(copiedStatus.vector.indexCheckStatus, 'ready');
+  assert.equal(copiedStatus.vector.indexChunkCount, 0);
+  assert.equal(copiedStatus.vector.indexChatMatchesMemory, true);
+  assert.equal(JSON.stringify(copiedStatus).includes('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), false, '诊断说明是否匹配，不暴露聊天编号');
+  clipboardWrites.length = 0;
+  eventTab.fire('click'); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(indexManifestReads, 2, '重新打开记忆页只再读取一次manifest');
+  assert.equal(indexShardReads, 0); assert.equal(identityReads, 0);
+  body.scrollTop = 31; eventTab.fire('click');
+  assert.equal(body.scrollTop, 31, '同一记忆页重新激活时保留当前位置'); assert.deepEqual(calls.filter(([kind]) => kind === 'page').at(-1), ['page', 'memories']);
   body.scrollTop = 71; peopleTab.fire('click');
   assert.equal(body.scrollTop, 0); assert.deepEqual(calls.at(-1), ['page', 'people']);
-  let floorFindCalls = 0;
-  const floorRecords = Array.from({ length: 3901 }, (_, index) => ({ floorId: `floor-${index + 1}`, assistantSeq: index + 1, messageIndex: index * 2 + 2, status: 'ready' }));
-  foundationState.floors = new Proxy(floorRecords, { get(target, property, receiver) { if (property !== 'find') return Reflect.get(target, property, receiver); return (...args) => { floorFindCalls += 1; return Array.prototype.find.apply(target, args); }; } });
-  const settingsEntryStart = calls.length;
-  const settingsNodesBefore = createdNodes;
-  const timeStateReadsBefore = v3TimeStateReads;
-  body.scrollTop = 39; settingsTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
-  assert.ok(calls.some(([kind, value]) => kind === 'page' && value === 'management'));
-  const settingsViewCalls = calls.slice(settingsEntryStart).filter(([kind]) => kind === 'page' || kind === 'mount');
-  assert.deepEqual(settingsViewCalls.slice(0, 2).map(([kind, value]) => [kind, value === 'management' ? value : 'mount']), [['page', 'management'], ['mount', 'mount']], '完整面板入口必须先选择管理页，再首次挂载生产视图');
+  body.scrollTop = 39; settingsTab.fire('click');
+  assert.ok(calls.some(([kind, value]) => kind === 'mount-page' && value === 'management'), '设置页 mount 应使用 management 页选项');
+  assert.equal(calls.filter(([kind, value]) => kind === 'page' && value === 'management').length, 0, '设置页不应先构建摘要页再切换');
   assert.equal(view.children[0]?.className, 'settings-page', '设置页应真实占据面板内容容器');
-  const floorRows = flatten(view).filter(node => node.className === 'qqj-diagnostic-row');
-  assert.equal(floorRows.length, 0, '设置页默认折叠时不构建3901个诊断行');
-  const closedFloorButtons = flatten(view).filter(node => node.tag === 'button' && /复制(?:安全|完整)诊断/u.test(node.textContent)).length;
-  const closedCreatedNodes = createdNodes - settingsNodesBefore;
-  const timeStateReadsClosed = v3TimeStateReads - timeStateReadsBefore;
-  const diagnosticsDrawer = flatten(view).find(node => node.className === 'qqj-management-drawer' && flatten(node).some(child => child.textContent === '详细诊断'));
-  const floorDrawer = flatten(diagnosticsDrawer).find(node => node.className.includes('qqj-floor-diagnostics'));
-  floorDrawer.open = true; floorDrawer.fire('toggle');
-  assert.equal(flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row').length, 0, '子详情展开但外层仍闭合时仍不构建列表');
-  diagnosticsDrawer.open = true; diagnosticsDrawer.fire('toggle');
-  const openedDiagnosticStats = (() => {
-    const rows = flatten(floorDrawer).filter(node => node.className === 'qqj-diagnostic-row');
-    const buttons = rows.reduce((count, row) => count + flatten(row).filter(node => node.tag === 'button').length, 0);
-    return { rows: rows.length, buttons };
-  })();
-  assert.equal(openedDiagnosticStats.rows, 3901);
-  assert.equal(openedDiagnosticStats.buttons, 7802);
-  const openedCreatedNodes = createdNodes - settingsNodesBefore - closedCreatedNodes;
-  const timeStateReadsOpened = v3TimeStateReads - timeStateReadsBefore - timeStateReadsClosed;
-  console.log(JSON.stringify({ scenario: 'createPanel → 设置首开，生产 createPanel + createV3FoundationView，fake host DOM', floors: foundationState.floors.length, closedCreatedNodes, closedDiagnosticRows: floorRows.length, closedPerFloorCopyButtons: closedFloorButtons, closedTimeRuntimeGetStateCalls: timeStateReadsClosed, openedCreatedNodes, openedDiagnosticRows: openedDiagnosticStats.rows, openedPerFloorCopyButtons: openedDiagnosticStats.buttons, floorFindCalls, openedTimeRuntimeGetStateCalls: timeStateReadsOpened, callOrder: settingsViewCalls.slice(0, 2).map(([kind, value]) => [kind, value === 'management' ? value : 'mount']) }));
-  foundationState.floors = [];
-  actualFoundationView.render(foundationState);
   const masterInput = flatten(view).find(node => node.tag === 'input');
   assert.ok(masterInput, '设置首开应存在总开关输入');
   rejectPluginDisable = true; masterInput.checked = false;
@@ -221,7 +258,9 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(helpSections.length, 10); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
   assert.equal(helpSections.at(-1).children[0].textContent, '排障手册');
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /保留包裹符.*清洗包裹符.*人物状态重构/);
+  assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /近期事项.*关键词只概括事项类型与宽泛主题，推测状态另列/u);
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /千事.*涉及物品.*搜索/u);
+  assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /摘要每页最多50楼.*上一页.*下一页.*输入页码跳转.*搜索命中会定位到原摘要页/u);
   dialogActive = false;
   const copyExample = flatten(documentation).find(node => node.tag === 'button' && node.textContent === '复制接口示例');
   copyExample.fire('click'); await new Promise(resolve => setImmediate(resolve));
@@ -337,11 +376,10 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(body.scrollTop, 71, '回到千结时恢复千结滚动位置');
   qianshiTab.fire('click'); body.scrollTop = 57;
   assert.ok(calls.some(([kind]) => kind === 'qianshi-activate'), '千事必须挂载独立时间线视图');
-  const returningMemoryRender = view.nonEmptyReplaceCount; eventTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(view.nonEmptyReplaceCount - returningMemoryRender, 1, '实际 createPanel 从千事返回千结只构建一次');
+  eventTab.fire('click');
   assert.equal(body.scrollTop, 71, '从千事返回千结仍恢复千结滚动位置');
   profileTab.fire('click');
-  assert.equal(body.scrollTop, 31, '回到千人时恢复千人滚动位置');
+  assert.equal(body.scrollTop, 31, '回到千人时恢复进入设置前保存的滚动位置');
 
   themeButton.fire('click');
   assert.equal(updates.at(-1).appearanceTheme, 'day', '顶部主题按钮应按跟随酒馆、日间、夜间循环并即时保存');

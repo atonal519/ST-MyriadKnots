@@ -14,6 +14,7 @@ export const CSE_ISOLATION_CODES = Object.freeze([
   'V3_CSE_CATEGORY_PROTOCOL_MIXED',
   'V3_CSE_SUBJECT_UNBOUND',
   'V3_CSE_SUBJECT_DUPLICATE',
+  'V3_CSE_USER_HISTORY_CURRENT_CONFIRMATION_MISSING',
 ]);
 export const LATEST_CSE_CALIBRATION_VERSION = 1;
 export const isSupportedCseCalibrationVersion = value => Number.isSafeInteger(value)

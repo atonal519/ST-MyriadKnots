@@ -3,7 +3,7 @@ import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid, scanAssistantCandidates } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun, V3_INDEX_LAYOUT_FLOOR_ORDER } from './foundation-schema.js';
 import { validateQianshiDelta } from './qianshi-schema.js';
-import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION } from './extractor.js';
+import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION, QIANSHI_OUTPUT_CAPACITY_GUIDANCE } from './extractor.js';
 import { collectFloorMemoryEntityIds, collectStateDeltaEntityIds, memorySourceFloorIds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { createCseRuntime } from './cse-runtime.js';
@@ -14,15 +14,17 @@ import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAncho
 import { normalizeStoryClockReferenceTags, resolveStoryClock } from '../story-clock.js';
 import { parseJsonOutput } from '../compact-api-client.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
-import { buildEntityIdentityDirectory, entitiesThroughFloorIds, normalizeIdentityProjection, reuseIdentityProjection } from './entity-identity.js';
+import { buildEntityIdentityDirectory, entitiesThroughFloorIds, normalizeIdentityProjection, resolveIdentityEntityId, reuseIdentityProjection } from './entity-identity.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
+import { readLocationReference } from './location-reference.js';
 import { publicErrorMessage } from '../public-error.js';
 import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, normalizeQianshiEventLinks, pendingQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, publicQianshiSnapshot, qianshiDeletedEvents, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
 import { estimateRecallTokens } from './recall-selector.js';
 import { markPreparationFailure, preparationFailureDiagnostic, preparationStepFor, storedPreparationDiagnostic } from './preparation-diagnostic.js';
 import { floorProvenanceForReachable, migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
+import { mainlineTimeText } from './time-engine.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
@@ -36,7 +38,7 @@ const QIANSHI_REJUDGE_SYSTEM_PROMPT = `你是“千千结”的已存千事重�
 order 必须使用对象数组，例如 [{"before":"record-1","after":"event-1","certainty":"explicit"}]；引用只用本次 record-N/event-N 或明确指向单一旧事件的 candidate-N。certainty 只用 explicit（材料明示）或 strong（可靠时间锚支持）；先后未知、同日不明或不可比较时不输出。不生成因果等其他关系。
 人工修订是权威材料，保留人工保护；不得输出或创建人工覆盖标记。不要输出摘要、CSE、人物资料或非千事字段。`;
 // 历史补齐和已存重判都明确要求规范状态；共用编译器另行兼容模型的等价表达。
-const QIANSHI_STATUS_GUIDANCE = 'status 和 actionStatus 只能返回这些规范值：planned（计划/待办）、inProgress（进行中）、completed（已完成）、cancelled（已取消）、occurred（已发生的一次性事件）、unknown（未知）。千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部动作完成不必然结束事项，整线可以仍为进行中。人工修订过的状态是权威材料，不被旧状态覆盖。';
+const QIANSHI_STATUS_GUIDANCE = `status 和 actionStatus 只能返回这些规范值：planned（计划/待办）、inProgress（进行中）、completed（已完成）、cancelled（已取消）、occurred（已发生的一次性事件）、unknown（未知）。千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部动作完成不必然结束事项，整线可以仍为进行中。人工修订过的状态是权威材料，不被旧状态覆盖。${QIANSHI_OUTPUT_CAPACITY_GUIDANCE}`;
 const qianshiHistoryInputTokens = request => estimateRecallTokens(`${QIANSHI_HISTORY_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}${JSON.stringify(request)}`);
 const qianshiHistoryBudgetRequest = inputs => ({ task: 'extractQianshiHistoryV1',
   qianshiCandidates: inputs.map((_, index) => ({ key: `candidate-budget-${index + 1}`, candidateType: 'matter',
@@ -59,37 +61,126 @@ const qianshiText = (value, maximum) => String(value ?? '').normalize('NFKC').re
 const qianshiTextEventSignature = event => { const value = clone(event); delete value.important; return JSON.stringify(value); };
 const counts = memory => Object.fromEntries(['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals'].map(field => [field, memory?.[field]?.length ?? 0]));
 const effectiveSummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText;
-function previousFloorContext(source, floorIndex, memoryMap, entities = source.entities) {
-  for (let index = floorIndex - 1; index >= 0; index -= 1) {
-    const memory = memoryMap.get(source.floors[index].id);
-    if (memory?.recordStatus !== 'active') continue;
-    const lastTime = Array.isArray(memory.chronology) ? memory.chronology.at(-1)?.time : null;
-    const sourceText = typeof lastTime?.sourceText === 'string' ? lastTime.sourceText.trim() : '';
-    const normalized = typeof lastTime?.normalized === 'string' ? lastTime.normalized.trim() : '';
-    const summary = typeof effectiveSummary(memory) === 'string' ? effectiveSummary(memory).trim() : '';
-    const placeIds = new Set([
-      ...(memory.locations ?? []).map(item => item?.entityId),
-      ...(memory.spatialFacts?.positions ?? []).map(item => item?.placeEntityId),
-      ...(memory.spatialFacts?.containments ?? []).flatMap(item => [item?.placeEntityId, item?.parentEntityId]),
-    ].filter(Boolean));
-    const placeNames = [];
-    for (const location of memory.locations ?? []) {
-      if (!['present', 'entered', 'movedThrough'].includes(location?.change) || typeof location.name !== 'string') continue;
-      const name = location.name.trim();
-      if (name && !placeNames.includes(name)) placeNames.push(name.slice(0, 200));
-      if (placeNames.length >= 8) break;
-    }
-    for (const entity of entities ?? []) {
-      if (placeIds.has(entity?.id) && entity.entityType === 'place' && typeof entity.displayName === 'string') {
-        const name = entity.displayName.trim();
-        if (name && !placeNames.includes(name)) placeNames.push(name.slice(0, 200));
-      }
-      if (placeNames.length >= 8) break;
-    }
-    return Object.freeze({ time: sourceText || normalized || null, summaryTail: summary ? summary.slice(-300) : null,
-      ...(placeNames.length ? { placeNames: Object.freeze(placeNames.slice(0, 8)) } : {}) });
+function previousPlaceIdentityContext(source, beforeIndex, prefixFloorIds, memoryMap, entities, identityProjection) {
+  if (!prefixFloorIds.size) return Object.freeze({ placeNames: Object.freeze([]), placeBindings: Object.freeze([]), priorityPlaceEntityIds: Object.freeze([]), parentEntityIdsByPlaceId: new Map() });
+  let memory = null;
+  for (let index = beforeIndex - 1; index >= 0 && !memory; index -= 1) {
+    const candidate = memoryMap.get(source.floors[index].id);
+    if (candidate?.recordStatus === 'active') memory = candidate;
   }
-  return null;
+  if (!memory) return Object.freeze({ placeNames: Object.freeze([]), placeBindings: Object.freeze([]), priorityPlaceEntityIds: Object.freeze([]), parentEntityIdsByPlaceId: new Map() });
+
+  const prefixEntities = entitiesThroughFloorIds(entities, prefixFloorIds);
+  const activePlaceEntities = prefixEntities.filter(entity => entity?.entityType === 'place'
+    && (entity.recordStatus === undefined || entity.recordStatus === 'active')
+    && entity.status !== 'merged' && entity.status !== 'invalidated').map(entity => entity.id);
+  const visiblePlaceIds = new Set(activePlaceEntities);
+  const foundationRedirects = Object.fromEntries(prefixEntities.filter(entity => (entity?.recordStatus === undefined || entity.recordStatus === 'active')
+    && entity.status === 'merged' && typeof entity.mergedIntoEntityId === 'string').map(entity => [entity.id, entity.mergedIntoEntityId]));
+  const placeIdentityProjection = { ...identityProjection,
+    identityRedirectsByEntityId: { ...foundationRedirects, ...(identityProjection?.identityRedirectsByEntityId ?? {}) } };
+  const deletedIds = new Set(placeIdentityProjection.deletedEntityIds ?? []);
+  const canonicalPlaceId = value => {
+    if (typeof value !== 'string') return null;
+    const id = resolveIdentityEntityId(value, placeIdentityProjection);
+    return visiblePlaceIds.has(id) && !deletedIds.has(id) ? id : null;
+  };
+  const floorOrder = new Map([...prefixFloorIds].map((floorId, index) => [floorId, index]));
+  const parentSets = new Map();
+  for (const candidate of source.floorMemories ?? []) {
+    if (candidate?.recordStatus !== 'active') continue;
+    for (const edge of candidate.spatialFacts?.containments ?? []) {
+      const placeEntityId = canonicalPlaceId(edge.placeEntityId), parentEntityId = canonicalPlaceId(edge.parentEntityId);
+      if (!placeEntityId || !parentEntityId || placeEntityId === parentEntityId) continue;
+      for (const evidence of edge.evidenceRefs ?? []) {
+        const order = floorOrder.get(evidence.floorId);
+        if (order === undefined) continue;
+        const current = parentSets.get(placeEntityId);
+        if (!current || order > current.order) parentSets.set(placeEntityId, { order, parents: new Set([parentEntityId]) });
+        else if (order === current.order) current.parents.add(parentEntityId);
+      }
+    }
+  }
+  for (const [placeEntityId, latest] of parentSets) parentSets.set(placeEntityId, latest.parents);
+  const uniqueParent = entityId => {
+    const values = parentSets.get(entityId);
+    return values?.size === 1 ? values.values().next().value : null;
+  };
+  const entityById = new Map(prefixEntities.filter(entity => visiblePlaceIds.has(entity.id)).map(entity => [entity.id, entity]));
+  const rawBindings = new Map();
+  const addBinding = entityId => {
+    const canonicalId = canonicalPlaceId(entityId);
+    if (!canonicalId || !entityById.has(canonicalId)) return;
+    if (!rawBindings.has(canonicalId)) rawBindings.set(canonicalId, { placeEntityId: canonicalId });
+  };
+  for (const location of memory.locations ?? []) {
+    if (['present', 'entered', 'left', 'movedThrough'].includes(location?.change)) addBinding(location.entityId);
+  }
+  for (const position of memory.spatialFacts?.positions ?? []) {
+    if (['confirmed', 'lastSeen', 'leftUnknown'].includes(position?.status)) addBinding(position.placeEntityId);
+  }
+  const placeBindings = [...rawBindings.values()].slice(0, 8).map(binding => Object.freeze({
+    ...binding,
+    name: String(entityById.get(binding.placeEntityId)?.displayName ?? '').trim().slice(0, 200),
+  }));
+  const priorityPlaceEntityIds = [];
+  const addPriority = id => { if (id && !priorityPlaceEntityIds.includes(id) && priorityPlaceEntityIds.length < 40) priorityPlaceEntityIds.push(id); };
+  placeBindings.forEach(binding => addPriority(binding.placeEntityId));
+  for (const binding of placeBindings) {
+    const visited = new Set([binding.placeEntityId]);
+    let parentEntityId = uniqueParent(binding.placeEntityId);
+    while (parentEntityId && !visited.has(parentEntityId) && priorityPlaceEntityIds.length < 40) {
+      visited.add(parentEntityId); addPriority(parentEntityId); parentEntityId = uniqueParent(parentEntityId);
+    }
+  }
+
+  const placeIds = new Set([
+    ...(memory.locations ?? []).map(item => item?.entityId),
+    ...(memory.spatialFacts?.positions ?? []).map(item => item?.placeEntityId),
+    ...(memory.spatialFacts?.containments ?? []).flatMap(item => [item?.placeEntityId, item?.parentEntityId]),
+  ].map(canonicalPlaceId).filter(Boolean));
+  const placeNames = [];
+  for (const location of memory.locations ?? []) {
+    if (!['present', 'entered', 'movedThrough'].includes(location?.change) || typeof location.name !== 'string') continue;
+    const name = location.name.trim();
+    if (name && !placeNames.includes(name)) placeNames.push(name.slice(0, 200));
+    if (placeNames.length >= 8) break;
+  }
+  for (const entity of prefixEntities) {
+    if (placeIds.has(entity?.id) && entity.entityType === 'place' && typeof entity.displayName === 'string') {
+      const name = entity.displayName.trim();
+      if (name && !placeNames.includes(name)) placeNames.push(name.slice(0, 200));
+    }
+    if (placeNames.length >= 8) break;
+  }
+  return Object.freeze({ placeNames: Object.freeze(placeNames.slice(0, 8)), placeBindings: Object.freeze(placeBindings),
+    priorityPlaceEntityIds: Object.freeze(priorityPlaceEntityIds), parentEntityIdsByPlaceId: parentSets });
+}
+function previousFloorContext(source, floorIndex, memoryMap, placeIdentity = null, locationPrefixStartIndex = floorIndex) {
+  const timeProvenance = floorProvenanceForReachable(source);
+  const locationSourceFloor = source.floors[locationPrefixStartIndex - 1];
+  const locationMemory = locationSourceFloor ? memoryMap.get(locationSourceFloor.id) : null;
+  const locationSnapshot = locationMemory?.sourceFloorSnapshots?.find(value => value.floorId === locationSourceFloor?.id);
+  const locationReference = locationSnapshot ? locationSnapshot.locationReference : locationMemory?.sourceLocationReference;
+  let memory = null;
+  for (let index = floorIndex - 1; index >= 0; index -= 1) {
+    memory = memoryMap.get(source.floors[index].id);
+    if (memory?.recordStatus !== 'active') continue;
+    const edited = timeProvenance[source.floors[index].id]?.timeEdited === true;
+    const lastTime = edited && Array.isArray(memory.chronology) ? memory.chronology.at(-1)?.time : null;
+    const sourceText = edited ? String(lastTime?.sourceText ?? lastTime?.normalized ?? '').trim() : mainlineTimeText(memory);
+    const summary = typeof effectiveSummary(memory) === 'string' ? effectiveSummary(memory).trim() : '';
+    return Object.freeze({ time: sourceText || null, summaryTail: summary ? summary.slice(-300) : null,
+      ...(Array.isArray(locationReference) && locationReference.length ? { locationReference } : {}),
+      ...(placeIdentity?.placeNames?.length ? { placeNames: placeIdentity.placeNames } : {}),
+      ...(placeIdentity?.placeBindings?.length ? { placeBindings: placeIdentity.placeBindings } : {}),
+      ...(placeIdentity?.priorityPlaceEntityIds?.length ? { priorityPlaceEntityIds: placeIdentity.priorityPlaceEntityIds } : {}),
+      ...(placeIdentity?.parentEntityIdsByPlaceId?.size ? { parentEntityIdsByPlaceId: placeIdentity.parentEntityIdsByPlaceId } : {}) });
+  }
+  return placeIdentity?.placeBindings?.length || placeIdentity?.placeNames?.length
+    ? Object.freeze({ time: null, summaryTail: null, ...(Array.isArray(locationReference) && locationReference.length ? { locationReference } : {}), placeNames: placeIdentity.placeNames, placeBindings: placeIdentity.placeBindings,
+      priorityPlaceEntityIds: placeIdentity.priorityPlaceEntityIds, parentEntityIdsByPlaceId: placeIdentity.parentEntityIdsByPlaceId })
+    : null;
 }
 export function projectMemoryPersonEntities(entities = []) {
   return Object.freeze(entities
@@ -211,9 +302,9 @@ function clockEvidence(selected, referenceTags) {
     const clockValue = Object.freeze({ complete: false, namespace: clock.namespace, start: null, end: null, referenceText: clock.referenceText });
     return Object.freeze({ signature: resolved.signature, clock: clockValue, displayText: resolved.text });
   }
-  const compact = value => value ? Object.freeze({ raw: value.raw, date: value.date, weekday: value.weekday, time: value.time }) : null;
+  const compact = value => value ? Object.freeze({ raw: value.raw, date: value.date, weekday: value.weekday, time: value.time, complete: value.complete === true }) : null;
   const pairs = (clock.pairs ?? []).map(pair => Object.freeze({ start: compact(pair.startMeta), end: compact(pair.endMeta) }));
-  const clockValue = Object.freeze({ complete: clock.complete === true, namespace: clock.namespace, start: compact(clock.startMeta), end: compact(clock.endMeta), ...(pairs.length > 1 ? { pairs: Object.freeze(pairs) } : {}) });
+  const clockValue = Object.freeze({ complete: clock.complete === true, singleEnd: clock.singleEnd === true, namespace: clock.namespace, start: compact(clock.startMeta), end: compact(clock.endMeta), ...(pairs.length > 1 ? { pairs: Object.freeze(pairs) } : {}) });
   const part = value => [value?.date, value?.weekday, value?.time].filter(Boolean).join(' ');
   return Object.freeze({
     signature: resolved.signature,
@@ -284,7 +375,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let memorySyncError = null;
   let backgroundSync = null;
   let backgroundSyncKey = null;
-  let unsubscribeFoundation = null;
   let workRun = null;
   let autoScheduled = null;
   let autoEpoch = 0;
@@ -321,7 +411,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let qianshiHistoryRun = null;
   let qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, outcomes: [], message: '' });
   const qianshiSnapshotMemo = createQianshiSnapshotMemo();
-  const qianshiEventLookup = createQianshiEventLookup(source => qianshiSnapshotMemo(source, identityProjection, null, storyCalendarProvider()));
+  const qianshiEventLookup = createQianshiEventLookup(source => qianshiSnapshotMemo(source, identityProjection, null, storyCalendarProvider(source?.root?.chatId)));
   const qianshiCandidateIndex = qianshiCandidatePreparer === prepareQianshiCandidates ? qianshiCandidateIndexFactory() : null;
   const subscribers = new Set();
   const currentReferenceTags = () => normalizeStoryClockReferenceTags(typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags);
@@ -332,7 +422,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     commitTail = pending.catch(() => {});
     return pending;
   };
-  const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, commitGate, promptGuidance: csePromptGuidance, processingPrompt, filterWorldInfoSources, sanitizerOptions, storyClockSignatureForFloor: currentClockSignature,
+  const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, commitGate, promptGuidance: csePromptGuidance, processingPrompt, filterWorldInfoSources, sanitizerOptions,
     captureBusinessIdentity, storeForIdentity, identityProjectionProvider, onGraphCommitted: value => {
     reachable = value;
     foundationRuntime.adoptReachable?.(value);
@@ -666,7 +756,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     pendingResults.set(floorId, clone(value));
   };
 
-  function floorState(floor, memoryMap, provenance, floorById, inheritedSourcesByFloorId) {
+  function floorState(floor, memoryMap, provenance, floorById, inheritedSourcesByFloorId, partition) {
     const memory = memoryMap.get(floor.id) ?? null;
     const meta = provenance[floor.id] ?? null;
     const running = active?.floorId === floor.id && active.phase !== 'analyzingCse';
@@ -681,7 +771,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const failureError = transientFailure && transientFailure.phase !== 'retryableError' ? transientFailure.message : savedError ?? transientFailure?.message;
     const sourceFloorIds = memory ? memorySourceFloorIds(memory) : [floor.id];
     const sourceFloors = sourceFloorIds.map(id => floorById.get(id)).filter(Boolean);
-    const frozen = isFrozenFloor(floor.id), origin = frozen ? migrationPartition(reachable).originForFloor(floor.id) : null;
+    const frozen = partition.isFrozenFloor(floor.id), origin = frozen ? partition.originForFloor(floor.id) : null;
     const inheritedSource = inheritedSourcesByFloorId.get(floor.id);
     return Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator.messageIndex,
       ...(frozen ? { frozen: true, sourceOrigin: origin } : {}),
@@ -726,28 +816,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     completedFloorIds: plan.targets.slice(0, completedCount).map(target => target.floorId),
     status: completedCount >= plan.targets.length ? 'completed' : 'active',
   });
-  const projectActivityState = (foundation, cse, stableCount) => {
-    // Keep the auto batch lock visible while its child extraction or CSE phase drains.
-    const workPhase = workRun?.kind === 'auto' && !active
-      ? (cse.activeCse ? 'analyzingCse' : workRun.phase === 'extracting' ? 'syncing' : workRun.phase) : workRun?.phase;
-    return Object.freeze({
-      status: workRun || active || cse.activeCse ? 'running' : foundation.status,
-      chatId: foundation.chatId,
-      memorySnapshotStatus,
-      memorySyncStatus,
-      memorySyncError,
-      stableCount,
-      memoryWorkBusy: workRun !== null,
-      activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
-      activeExtraction: active ? Object.freeze({ floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase }) : null,
-      activeCse: cse.activeCse ?? null,
-      activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workPhase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
-      qianshiHistoryActive: qianshiHistoryRun !== null,
-    });
-  };
-  function getActivityState() {
-    return projectActivityState(foundationRuntime.getState(), cseRuntime.getActivityState(), migrationPartition(reachable).liveFloors.length);
-  }
   function getState(cseSnapshot = null) {
     const foundation = foundationRuntime.getState();
     const memoryMap = currentMemoryMap(reachable);
@@ -762,7 +830,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       : null;
     const floors = (reachable?.floors ?? [])
       .filter(floor => !coverageMap.has(floor.id) || coverageMap.get(floor.id)?.floorId === floor.id)
-      .map(floor => floorState(floor, memoryMap, provenance, floorById, inheritedSourcesByFloorId));
+      .map(floor => floorState(floor, memoryMap, provenance, floorById, inheritedSourcesByFloorId, partition));
     const stableCount = liveFloors.length;
     const rememberedCount = liveFloors.filter(floor => coverageMap.has(floor.id)).length;
     const rawCse = cseSnapshot ?? cseRuntime.getState();
@@ -813,7 +881,31 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const savedAutomation = failureScopeMatches(reachable?.root) ? failureScope.automationFailure : null;
     const lastAutomationError = savedAutomation ? Object.freeze({ code: savedAutomation.code, name: savedAutomation.name, message: savedFailureMessage(savedAutomation), phase: savedAutomation.phase, prepareStep: savedAutomation.prepareStep, detail: savedAutomation.detail, location: savedAutomation.location, count: savedAutomation.count, lastFailedAt: savedAutomation.lastFailedAt }) : null;
     const activity = projectActivityState(foundation, cse, stableCount);
-    return Object.freeze({ ...foundation, ...cse, ...activity, ...(migrationAliases ? { migrationAliases } : {}), rootRevision: reachable?.rootRevision ?? null, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryPlaceEntities, memoryGroupEntities, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    return Object.freeze({ ...foundation, ...cse, ...activity, ...(migrationAliases ? { migrationAliases } : {}), rootRevision: reachable?.rootRevision ?? null, narrativeGeneration: reachable?.root?.narrativeGeneration ?? null, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryPlaceEntities, memoryGroupEntities, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+  }
+
+  const projectActivityState = (foundation, cse, stableCount) => {
+    const workPhase = workRun?.kind === 'auto' && !active
+      ? (cse.activeCse ? 'analyzingCse' : workRun.phase === 'extracting' ? 'syncing' : workRun.phase) : workRun?.phase;
+    return Object.freeze({
+      status: workRun || active || cse.activeCse ? 'running' : foundation.status,
+      chatId: foundation.chatId,
+      memorySnapshotStatus,
+      memorySyncStatus,
+      memorySyncError,
+      stableCount,
+      memoryWorkBusy: workRun !== null,
+      activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
+      activeExtraction: active ? Object.freeze({ floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase }) : null,
+      activeCse: cse.activeCse ?? null,
+      activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workPhase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
+      qianshiHistoryActive: qianshiHistoryRun !== null,
+    });
+  };
+  function getActivityState() {
+    const foundation = foundationRuntime.getState();
+    const cse = cseRuntime.getActivityState();
+    return projectActivityState(foundation, cse, migrationPartition(reachable).liveFloors.length);
   }
 
   async function refreshCoverage(expectedEpoch = epoch) {
@@ -842,6 +934,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (['ready', 'needsReseal'].includes(result.status)) nextReachable = result;
     else if (result.status === 'uninitialized') {
       nextReachable = null;
+      if (lastFailure?.phase === 'load' && lastFailure.code === 'CHAT_SESSION_NOT_READY') lastFailure = null;
       const chatId = currentHostChatId();
       const foundation = foundationRuntime.getState();
       if (foundation?.status === 'uninitialized' && foundation.inspectedStableCount === 0 && chatId) {
@@ -878,12 +971,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (nextReachable && typeof hostAdapter?.snapshot === 'function') {
       const snapshot = hostAdapter.snapshot();
       observedHostChatLength = snapshot?.chat?.length ?? observedHostChatLength;
+      const timeProvenance = floorProvenanceForReachable(nextReachable);
       const frozenFloorIds = migrationPartition(nextReachable).frozenFloorIds;
+      const memoriesByFloor = new Map((nextReachable.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
       for (const floor of nextReachable.floors ?? []) {
         // Frozen floor locators belong to their source chat, not the current chat.
         const sameFloorClock = frozenFloorIds.has(floor.id) ? ''
           : clockEvidence(rawSelectionFromSnapshot(snapshot, floor), currentReferenceTags()).displayText;
-        timeFallbackByFloor.set(floor.id, sameFloorClock || inferCanonicalCurrentTime(floor.content?.canonicalContent)?.text || '');
+        const manual = timeProvenance[floor.id]?.timeEdited === true;
+        const fallback = manual ? '' : sameFloorClock || inferCanonicalCurrentTime(floor.content?.canonicalContent)?.text || mainlineTimeText(memoriesByFloor.get(floor.id));
+        timeFallbackByFloor.set(floor.id, fallback || '');
       }
     } else {
       try { observedHostChatLength = hostAdapter.snapshot()?.chat?.length ?? observedHostChatLength; } catch { /* keep prior observation */ }
@@ -1009,7 +1106,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       || Number(foundationReachable.rootRevision ?? 0) >= Number(reachable.rootRevision ?? 0)
       ? foundationReachable
       : null;
-    return load(expectedEpoch, reusable, { skipSavedAnchors: recoverTailDeletion && !retryRecoveredAnchors });
+    return load(expectedEpoch, foundation.status === 'uninitialized' ? { status: 'uninitialized' } : reusable,
+      { skipSavedAnchors: recoverTailDeletion && !retryRecoveredAnchors });
   }
   function refreshStatus(options = {}) {
     const preferCached = options.preferCached === true;
@@ -1132,12 +1230,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const frozenReferenceTags = normalizeStoryClockReferenceTags(referenceTags);
     const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
     if (targetIndex < 0 || !value?.root || !value?.checkpoint) return null;
+    const partition = migrationPartition(value);
     const prefix = value.floors.slice(0, targetIndex + 1);
     const floorDependencies = [];
-    // Reuse the frozen-source map only within this dependency snapshot.
     let frozenProvenance = null;
     for (const floor of prefix) {
-      const frozen = isFrozenFloor(floor.id, value);
+      const frozen = partition.isFrozenFloor(floor.id);
       if (frozen && !frozenProvenance) frozenProvenance = floorProvenance(value);
       const selected = frozen ? null : hostSnapshot ? rawSelectionFromSnapshot(hostSnapshot, floor) : currentRawSelection(hostAdapter, floor);
       if (!frozen && !selected) return null;
@@ -1184,7 +1282,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const prefixFloors = value.floors.slice(0, floorIndex);
     const prefixFloorIds = new Set(prefixFloors.map(item => item.id));
     const scopedEntities = entitiesThroughFloorIds(value.entities, new Set(value.floors.slice(0, floorIndex + 1).map(item => item.id)));
-    const candidateSource = { ...value, floors: prefixFloors,
+    const candidateSource = { ...value, calendar: storyCalendarProvider(value.root?.chatId), floors: prefixFloors,
       floorMemories: value.floorMemories.filter(memory => prefixFloorIds.has(memory.floorId)), entities: scopedEntities };
     const candidateOptions = {
       canonicalContent: sanitizeMemoryContent(selected.rawContent, sanitizerOptions()),
@@ -1232,7 +1330,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!plan || current.root.chatId !== plan.chatId || current.root.narrativeGeneration !== plan.narrativeGeneration
       || current.rootRevision !== plan.rootRevision || current.root.headCheckpointId !== plan.headCheckpointId
       || current.root.sourceSnapshotFingerprint !== plan.sourceSnapshotFingerprint) {
-      throw errorWith('QIANSHI_REJUDGE_PLAN_STALE', '原目标正文分支或存档版本已变化；本次重判尚未提交，旧记录保持不变。');
+      throw errorWith('QIANSHI_REJUDGE_PLAN_STALE', '原存档已变化；本次重判未提交，旧记录保持不变。');
     }
     const currentReferences = (await qianshiExternalReferences(plan.chatId, current)).map(item => [item.id, item.matterId, item.originEventId])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -1244,7 +1342,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const floor = floors.get(item.floorId), memory = memories.get(item.floorId);
       if (!floor || floor.narrativeGeneration !== plan.narrativeGeneration || floor.content.rawFingerprint !== item.rawFingerprint
         || floor.content.canonicalFingerprint !== item.canonicalFingerprint || !memory || memory.id !== item.memoryId
-        || !reuseVerifiedMemorySnapshot && JSON.stringify(memory) !== item.memorySignature || memorySourceFloorIds(memory).length !== 1) {
+        || !reuseVerifiedMemorySnapshot && JSON.stringify(memory) !== item.memorySignature
+        || memorySourceFloorIds(memory).length !== 1) {
         throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `${qianshiFloorLabel(item)}原文或千事档案已变化；整组未提交，旧记录保持不变。`);
       }
     }
@@ -1289,9 +1388,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const rowsByFloor = new Map(rows.map(memory => [memory.floorId, memory]));
     const finalMemories = current.floors.map(floor => rowsByFloor.get(floor.id) ?? oldMemories.get(floor.id)).filter(Boolean);
     const finalReachable = { ...current, floorMemories: finalMemories };
+    const calendar = operation.qianshiRejudge.calendar;
     const before = operation.qianshiProjectionSource === current && operation.qianshiProjectionSnapshot
-      ? operation.qianshiProjectionSnapshot : qianshiGraphProjector(current);
-    const after = qianshiGraphProjector(finalReachable);
+      ? operation.qianshiProjectionSnapshot : qianshiGraphProjector(current, { calendar });
+    const after = qianshiGraphProjector(finalReachable, { calendar });
     const candidateEvents = new Map(after.events.map(event => [event.id, event]));
     for (const binding of operation.qianshiRejudge.candidateSnapshots ?? []) {
       const stale = binding.events.some(expected => {
@@ -1356,8 +1456,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     delete operation.qianshiRejected;
     delete operation.qianshiRejectReason;
   for (let attempt = 0; attempt < MEMORY_REBASE_ATTEMPTS; attempt += 1) {
+    const qianshiCalendar = operation.qianshiRejudge ? operation.qianshiRejudge.calendar
+      : Object.hasOwn(operation, 'qianshiCalendar') ? operation.qianshiCalendar : storyCalendarProvider(current.root.chatId);
     let currentQianshiProjection = operation.qianshiProjectionSource === current ? operation.qianshiProjectionSnapshot ?? null : null;
-    const qianshiProjection = () => currentQianshiProjection ??= qianshiGraphProjector(current);
+    const qianshiProjection = () => currentQianshiProjection ??= qianshiGraphProjector(current, { calendar: qianshiCalendar });
     // Candidate IDs are scoped by head/generation/source; metadata-only root revisions must keep their immutable payload stable.
     const commitVersionKey = JSON.stringify([current.root.headCheckpointId,
       current.root.narrativeGeneration, current.root.sourceSnapshotFingerprint]);
@@ -1460,7 +1562,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const eventIndex = nextEvents.get(override.eventId);
           if (eventIndex === undefined) { preservationConflict = '这楼的人工事件修订无法按原事件 ID 对位'; break; }
           nextDelta.events[eventIndex] = { ...nextDelta.events[eventIndex], ...Object.fromEntries(
-            ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime'].filter(key => Object.hasOwn(override, key)).map(key => [key, override[key]])) };
+            ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime', 'scheduledTime', 'people'].filter(key => Object.hasOwn(override, key)).map(key => [key, override[key]])) };
         }
         for (const override of priorDelta.manualMatterStatusOverrides ?? []) {
           if (!nextDelta.events.some(event => event.matterId === override.matterId)) {
@@ -1530,7 +1632,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         try {
           const candidateMemories = new Map(memoryByFloor);
           candidateMemories.set(revisionReplacement.floorId, revisionReplacement);
-          const candidateProjection = qianshiGraphProjector({ ...current, floorMemories: current.floors.map(item => candidateMemories.get(item.id)).filter(Boolean) });
+          const candidateProjection = qianshiGraphProjector({ ...current, floorMemories: current.floors.map(item => candidateMemories.get(item.id)).filter(Boolean) },
+            { calendar: qianshiCalendar });
           const remainingRelationIds = new Set(candidateProjection.relations.map(relation => relation.id));
           invalidatedExternalProgress = [...externalValidProgressIds].some(id => !remainingRelationIds.has(id));
         } catch { invalidatedExternalProgress = true; }
@@ -1654,7 +1757,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       || committedReachable.root?.headCheckpointId !== checkpointId
       || committedReachable.root?.narrativeGeneration !== current.root.narrativeGeneration
       || committedReachable.root?.sourceSnapshotFingerprint !== current.root.sourceSnapshotFingerprint) {
-      throw errorWith('V3_MEMORY_COLD_READ_FAILED', '记忆已提交，但提交结果缺少一致的冷读取校验。');
+      throw errorWith('V3_MEMORY_COLD_READ_FAILED', '记忆已提交，但保存结果核对未通过。');
     }
     operation.committedReachable = committedReachable;
     const targetVisible = !operation.pinnedTarget || (operation.targetIdentity
@@ -1664,7 +1767,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       reachable = committedReachable;
       foundationRuntime.adoptReachable?.(committedReachable);
     }
-    // 标记已获冷读确认后立即撤在途旧召回；回调不参与落盘，也不改变删除事务结果。
+    // 已核对提交结果后立即撤在途旧召回；回调不参与落盘，也不改变删除事务结果。
     if (operation.qianshiTextEdit?.manualAction?.type === 'deleteEvent') {
       try { onQianshiEventDeleted(); } catch { /* 注入撤回不改变已提交事实。 */ }
     }
@@ -1762,13 +1865,22 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       prepareStep = 'timeSources';
       const referenceTagsSnapshot = currentReferenceTags();
       prepareStep = 'sourceSanitization';
+      const priorAggregateMemory = aggregateFloors.length > 1 ? memoryMap.get(floor.id) : null;
       const sourceFloors = selectedSources.map(({ floor: sourceFloor, selected: sourceSelected }) => {
         const canonicalContent = sanitizeMemoryContent(sourceSelected.rawContent, sanitizerOptions());
         const sourceUserInputSnapshot = capturePrecedingUserInputFromSnapshot(hostSnapshot, sourceFloor, sanitizerOptions());
         prepareStep = 'timeSources';
         const storyClockEvidence = clockEvidence(sourceSelected, referenceTagsSnapshot);
         prepareStep = 'sourceSanitization';
+        const priorMemory = memoryMap.get(sourceFloor.id);
+        const priorSnapshot = priorMemory?.sourceFloorSnapshots?.find(value => value.floorId === sourceFloor.id)
+          ?? priorAggregateMemory?.sourceFloorSnapshots?.find(value => value.floorId === sourceFloor.id);
+        const referenceCleared = priorSnapshot
+          ? Object.hasOwn(priorSnapshot, 'locationReference') && priorSnapshot.locationReference === null
+          : priorMemory?.floorId === sourceFloor.id && Object.hasOwn(priorMemory, 'sourceLocationReference') && priorMemory.sourceLocationReference === null;
+        const locationReference = referenceCleared ? null : readLocationReference(sourceSelected.rawContent);
         return { floor: { ...sourceFloor, content: { ...sourceFloor.content, canonicalContent } }, selected: sourceSelected, canonicalContent,
+          ...(referenceCleared ? { locationReference: null } : locationReference ? { locationReference } : {}),
           rawFingerprint: sourceFloor.content.rawFingerprint, sourceUserInputSnapshot, storyClockEvidence };
       });
       for (const entry of sourceFloors) entry.rawFingerprint = `sha256:${await sha256(entry.selected.rawContent)}`;
@@ -1796,11 +1908,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         previousStoryClock = clockEvidence(rawSelectionFromSnapshot(hostSnapshot, source.floors[index]), referenceTagsSnapshot).clock;
       }
       prepareStep = 'sourceSelection';
-      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, scopedEntities);
       const firstFloorIndex = source.floors.findIndex(item => item.id === aggregateFloors[0].id);
       const qianshiPrefixFloorIds = new Set(source.floors.slice(0, firstFloorIndex).map(item => item.id));
+      const previousPlaceIdentity = previousPlaceIdentityContext(source, firstFloorIndex, qianshiPrefixFloorIds, memoryMap, source.entities, identityProjectionSnapshot);
+      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, previousPlaceIdentity, firstFloorIndex);
       prepareStep = 'qianshiCandidates';
-      const candidateSource = { ...source, floors: source.floors.slice(0, firstFloorIndex),
+      const candidateSource = { ...source, calendar: storyCalendarProvider(source.root?.chatId), floors: source.floors.slice(0, firstFloorIndex),
         floorMemories: source.floorMemories.filter(memory => qianshiPrefixFloorIds.has(memory.floorId)), entities: scopedEntities };
       const candidateOptions = { canonicalContent, precedingUserInput: sourceUserInputSnapshot, identityProjection: identityProjectionSnapshot };
       const qianshiCandidates = !aggregate && qianshiCandidateIndex
@@ -1808,7 +1921,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         : qianshiCandidatePreparer(candidateSource, candidateOptions);
       prepareStep = 'extractorEnvelope';
       const envelope = await createExtractorEnvelope({ ...expectedScope, floor: liveFloor,
-        sourceFloors: aggregate ? sourceFloors.map(entry => ({ floor: { ...entry.floor, content: { ...entry.floor.content, rawFingerprint: entry.rawFingerprint } }, sourceUserInputSnapshot: entry.sourceUserInputSnapshot, storyClock: entry.storyClockEvidence.clock, storyClockSignature: entry.storyClockEvidence.signature })) : null,
+        ...(!aggregate && Object.hasOwn(sourceFloors[0], 'locationReference') ? { locationReference: sourceFloors[0].locationReference } : {}),
+        sourceFloors: aggregate ? sourceFloors.map(entry => ({ floor: { ...entry.floor, content: { ...entry.floor.content, rawFingerprint: entry.rawFingerprint } }, sourceUserInputSnapshot: entry.sourceUserInputSnapshot, storyClock: entry.storyClockEvidence.clock, storyClockSignature: entry.storyClockEvidence.signature,
+          ...(Object.hasOwn(entry, 'locationReference') ? { locationReference: entry.locationReference } : {}) })) : null,
         entities: scopedEntities, identityProjection: identityProjectionSnapshot, userIdentity, identityHints: [], storyClock: sourceClock.clock, previousStoryClock, previousFloorContext: previousMemoryContext, sourceUserInputSnapshot, sourceVariableReference, qianshiCandidates });
       const semanticInputFingerprint = await hash(envelope.request.payload);
       const promptGuidanceSnapshot = typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : extractorPromptGuidance;
@@ -1929,6 +2044,20 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   async function reviseInternal(floorId, action, { userText = null, revisionNote = null, metadata = null } = {}) {
     if (active) return getState();
+    if (action === 'edit' || action === 'editMetadata') {
+      const summaryInput = action === 'edit' ? userText : metadata?.summary;
+      if (summaryInput !== null && summaryInput !== undefined && String(summaryInput).trim().length > 4000) {
+        const error = errorWith('V3_MEMORY_SUMMARY_TOO_LONG', '摘要超过 4000 字，请缩短后保存。');
+        error.validationPath = 'summary.userText';
+        throw error;
+      }
+      const noteInput = revisionNote ?? metadata?.revisionNote;
+      if (noteInput !== null && noteInput !== undefined && String(noteInput).trim().length > 1000) {
+        const error = errorWith('V3_MEMORY_REVISION_NOTE_TOO_LONG', '修订说明超过 1000 字，请缩短后保存。');
+        error.validationPath = 'summary.revisionNote';
+        throw error;
+      }
+    }
     const targetIdentity = captureTargetIdentity();
     const targetStore = storeForTargetIdentity(targetIdentity);
     try {
@@ -1987,6 +2116,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           : { ...old.summary, revisionNote: requestedRevisionNote || '用户标记错误' };
     if ((action === 'edit' || summaryChanged) && !summary.userText) throw errorWith('V3_MEMORY_SUMMARY_EMPTY', '摘要不能为空。');
     let chronology = old.chronology, locations = old.locations, participants = old.participants, spatialFacts = old.spatialFacts, newEntities = [], effectiveTimeChanged = false;
+    let clearLocationReference = false;
     const effectiveSummaryChanged = String(summary.effectiveSource === 'user' ? summary.userText : summary.aiText).trim() !== String(effectiveSummary(old) ?? '').trim();
     if (action === 'editMetadata') {
       const priorTimeText = [...new Set(old.chronology.map(item => item.time?.sourceText || item.time?.normalized || item.description).map(value => String(value ?? '').trim()).filter(Boolean))].join('；');
@@ -2030,6 +2160,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
       const locationOrParticipantChanged = JSON.stringify(locations) !== JSON.stringify(old.locations)
         || JSON.stringify(participants) !== JSON.stringify(old.participants);
+      clearLocationReference = summaryChanged || JSON.stringify(locations) !== JSON.stringify(old.locations);
       if (summaryChanged || locationOrParticipantChanged) spatialFacts = undefined;
       const noteChanged = Boolean(requestedRevisionNote) && requestedRevisionNote !== String(old.summary.revisionNote ?? '').trim();
       const metadataChanged = summaryChanged || effectiveTimeChanged || newEntities.length > 0 || noteChanged || locationOrParticipantChanged;
@@ -2037,9 +2168,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (!summaryChanged) summary = { ...old.summary, revisionNote: requestedRevisionNote || old.summary.revisionNote || '用户修订时间、地点或人物' };
     }
     if (effectiveSummaryChanged) spatialFacts = undefined;
+    if (effectiveSummaryChanged) clearLocationReference = true;
     const id = await deterministicUuid(['v3-memory-revision', old.id, action, summary, chronology, locations, participants, spatialFacts ?? null, nowValue]);
     const replacementData = { ...old, id, summary, chronology, locations, participants, createdAt: nowValue, updatedAt: nowValue,
       recordStatus: ['markError', 'migrationRebuild'].includes(action) ? 'invalidated' : 'active', supersedes: old.id };
+    if (clearLocationReference) {
+      if (Array.isArray(old.sourceFloorSnapshots)) replacementData.sourceFloorSnapshots = old.sourceFloorSnapshots.map(snapshot => ({ ...snapshot, locationReference: null }));
+      else replacementData.sourceLocationReference = null;
+    }
     if (spatialFacts) replacementData.spatialFacts = spatialFacts; else delete replacementData.spatialFacts;
     const replacement = validateFloorMemory(replacementData, { expectedChatId: old.chatId });
     const operation = { floorId, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: revisionRawFingerprint, epoch,
@@ -2084,6 +2220,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const memoryCopy = memory ? clone(memory) : null;
     if (memoryCopy && !full) {
       delete memoryCopy.sourceCanonicalContent;
+      delete memoryCopy.sourceLocationReference;
       delete memoryCopy.sourceFloorSnapshots;
       if (memoryCopy.sourceUserInputSnapshot) memoryCopy.sourceUserInputSnapshot.messages = memoryCopy.sourceUserInputSnapshot.messages.map(message => ({ ...message, content: `[已隐藏用户原文 · ${message.content.length} 字]` }));
       delete memoryCopy.sourceVariableReference;
@@ -2758,7 +2895,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               notify();
               continue;
             }
-            await load(reloadEpoch, foundationStatus === 'uninitialized' ? null : foundationReachable, { readOnlyReview });
+            await load(reloadEpoch, foundationStatus === 'uninitialized' ? { status: 'uninitialized' } : foundationReachable, { readOnlyReview });
             const settlement = backgroundSync;
             if (settlement) await settlement;
             notifyConsecutiveAssistantBlock(foundationRuntime.getState());
@@ -2779,7 +2916,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }).finally(() => { foundationReload = null; });
       return foundationReload;
     };
-    if (typeof foundationRuntime.subscribe === 'function') unsubscribeFoundation = foundationRuntime.subscribe(state => {
+    if (typeof foundationRuntime.subscribe === 'function') foundationRuntime.subscribe(state => {
       if (!awaitingFoundation) return;
       if (['ready', 'uninitialized', 'needsReview'].includes(state?.status)) { void drainFoundationReload(); return; }
       if (!['running', 'idle'].includes(state?.status)) {
@@ -3040,8 +3177,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   async function setEnabled(value) {
     if (value !== true) { invalidate(); await foundationRuntime.setEnabled(value); return notify(); }
-    if (typeof foundationRuntime.inspect === 'function') await foundationRuntime.inspect('memoryEnabled');
-    else await foundationRuntime.setEnabled(value);
+    const foundation = typeof foundationRuntime.inspect === 'function'
+      ? await foundationRuntime.inspect('memoryEnabled')
+      : await foundationRuntime.setEnabled(value);
+    if (foundation?.status === 'uninitialized') return load(epoch, { status: 'uninitialized' });
     return load();
   }
   async function startHistoricalRebuild(options = {}) {
@@ -3274,17 +3413,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const correctSubjectState = (subjectEntityId, edits) => runManualWork('revisingCse', async operation => { operation.phase = 'revisingCse'; notify(); await cseRuntime.correctSubjectState({ subjectEntityId, ...edits }); return load(); });
 
   function qianshiSnapshot() {
-    if (!reachable?.root) return Object.freeze({ status: 'not-ready', message: '千事后端尚未准备好当前聊天。' });
+    if (!reachable?.root) return Object.freeze({ status: 'not-ready', message: '尚未开始记录，继续对话后可开始记录。' });
     return qianshiSnapshotMemo(reachable, identityProjection, qianshiHistoryState, storyCalendarProvider());
+  }
+  function qianshiSnapshotVersion() {
+    const value = qianshiSnapshot();
+    return Object.freeze({ status: value.status, projectionRevision: value.projectionRevision ?? null, history: value.history ?? null });
   }
   function qianshiStatus() {
     const value = qianshiSnapshot();
     return Object.freeze({ status: value.status, message: value.message ?? '', anchor: value.anchor ?? null,
       coverage: value.coverage ?? null, history: value.history ?? null });
-  }
-  function qianshiSnapshotVersion() {
-    const value = qianshiSnapshot();
-    return Object.freeze({ status: value.status, projectionRevision: value.projectionRevision ?? null, history: value.history ?? null });
   }
 
   function formalQianshiEvent(eventId, source = reachable) {
@@ -3300,7 +3439,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && reachable.floors.some(floor => floor.id === matched.event.sourceFloorId && floor.narrativeGeneration === reachable.root.narrativeGeneration));
   }
 
-  async function editQianshiEventText({ eventId, expected, title, description, object, status, actionStatus, storyTime, manualAction = null } = {}) {
+  function getQianshiEditPeople() {
+    if (!reachable?.root) return Object.freeze([]);
+    return Object.freeze(buildEntityIdentityDirectory({ entities: reachable.entities ?? [], identityProjection })
+      .filter(entry => entry.entityType === 'person')
+      .map(entry => Object.freeze({ entityId: entry.entityId, name: entry.displayName, aliases: entry.aliases })));
+  }
+
+  async function editQianshiEventText({ eventId, expected, title, description, object, status, actionStatus, storyTime, scheduledTime, people, manualAction = null } = {}) {
     if (workRun || active || qianshiHistoryRun) throw errorWith('QIANSHI_TEXT_EDIT_BUSY', '当前有其他记忆操作正在进行，请稍后再试。');
     if (typeof eventId !== 'string' || !eventId || !expected || typeof expected.memoryId !== 'string'
       || typeof expected.title !== 'string' || typeof expected.description !== 'string'
@@ -3315,6 +3461,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (normalizedTime?.length > 500) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '事件时间过长；原记录保持不变。');
     const normalizedObject = object === null ? null : qianshiText(object, 1001) || null;
     if (normalizedObject?.length > 1000) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '涉及物品最多 1000 个字符；原记录保持不变。');
+    const scheduledTimeProvided = scheduledTime !== undefined;
+    if (scheduledTimeProvided && (scheduledTime !== null && typeof scheduledTime !== 'string'
+      || !Object.hasOwn(expected, 'scheduledTime'))) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '约定时间编辑信息无效，请刷新后重试。');
+    const normalizedScheduledTime = scheduledTimeProvided && scheduledTime !== null ? qianshiText(scheduledTime, 501) || null : null;
+    if (normalizedScheduledTime?.length > 500) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '约定时间过长；原记录保持不变。');
+    const peopleProvided = people !== undefined;
+    if (peopleProvided && (!Array.isArray(people) || people.length > 40 || !Object.hasOwn(expected, 'people')))
+      throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '人物编辑信息无效，请刷新后重试。');
     const nextText = { title: qianshiText(title, 500), description: qianshiText(description, 4000), object: normalizedObject };
     if (!nextText.title || !nextText.description) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '标题和经过说明都不能为空。');
     return runManualWork('editingQianshiText', async manualOperation => {
@@ -3329,13 +3483,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const { memory: old, event } = matched;
       if (isFrozenFloor(event.sourceFloorId)) throw errorWith('V3_MIGRATION_FLOOR_READ_ONLY', '来源聊天的已迁移事项只读，不能编辑。');
       if (manualAction?.type === 'tracking') {
-        const matter = projectQianshiGraph(reachable).matters.find(item => item.matterId === manualAction.matterId);
+        const matter = qianshiGraphProjector(reachable, { calendar: storyCalendarProvider(reachable.root.chatId) }).matters.find(item => item.matterId === manualAction.matterId);
         if (!matter || matter.origin.eventId !== eventId || matter.following !== manualAction.expectedFollowing) {
           throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事项关注状态或所属楼已变化；请刷新千事页后重试。');
         }
       }
       if (manualAction?.type === 'matterStatus') {
-        const matter = projectQianshiGraph(reachable).matters.find(item => item.matterId === manualAction.matterId);
+        const matter = qianshiGraphProjector(reachable, { calendar: storyCalendarProvider(reachable.root.chatId) }).matters.find(item => item.matterId === manualAction.matterId);
         if (!matter || matter.origin.eventId !== eventId || matter.status !== manualAction.expectedStatus
           || matter.manualStatusOverride !== manualAction.expectedManualStatus) {
           throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '整线状态或所属楼已变化；请刷新千事页后重试。');
@@ -3344,6 +3498,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (old.id !== expected.memoryId) throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案已变化；请刷新千事页后再编辑。');
       if (event.title !== expected.title || event.description !== expected.description || event.object !== expected.object) {
         throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件文字已变化；当前记录保持不变，请刷新后重新编辑。');
+      }
+      if (scheduledTimeProvided && expected.scheduledTime !== event.scheduledTime
+        || peopleProvided && JSON.stringify(expected.people) !== JSON.stringify(event.people)) {
+        throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件人物或约定时间已变化；当前记录保持不变，请刷新后重新编辑。');
       }
       const nextStatus = status === undefined ? event.status : status;
       const nextActionStatus = actionStatus === undefined ? event.actionStatus ?? event.status : actionStatus;
@@ -3359,13 +3517,56 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if ((timeProvided || Object.hasOwn(expected, 'storyTime')) && expected.storyTime !== event.storyTime) throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件时间已变化，请刷新后重新编辑。');
       const timeUnchanged = nextStoryTime === event.storyTime && (!timeProvided
         || Object.hasOwn((old.qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) ?? {}, 'storyTime'));
+      const nextScheduledTime = scheduledTimeProvided ? normalizedScheduledTime : event.scheduledTime;
+      const scheduledTimeUnchanged = nextScheduledTime === event.scheduledTime && (!scheduledTimeProvided
+        || Object.hasOwn((old.qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) ?? {}, 'scheduledTime'));
+      let nextPeople = event.people;
+      let peopleUnchanged = true;
+      if (peopleProvided) {
+        const directory = buildEntityIdentityDirectory({ entities: reachable.entities ?? [], identityProjection });
+        const selectable = new Map(directory.filter(entry => entry.entityType === 'person').map(entry => [entry.entityId, entry]));
+        const oldIds = new Set(event.people.map(person => person.entityId).filter(Boolean));
+        const requestedIds = new Set();
+        const requestedNameOnly = [];
+        for (const person of people) {
+          if (!person || typeof person !== 'object' || Array.isArray(person)
+            || person.entityId !== null && typeof person.entityId !== 'string'
+            || typeof person.name !== 'string' || !qianshiText(person.name, 501) || qianshiText(person.name, 501).length > 500) {
+            throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '人物选择无效；原记录保持不变。');
+          }
+          if (person.entityId) requestedIds.add(person.entityId);
+          else requestedNameOnly.push(person.name);
+        }
+        const oldNameOnly = event.people.filter(person => !person.entityId).map(person => person.name);
+        const sameIds = oldIds.size === requestedIds.size && [...oldIds].every(id => requestedIds.has(id));
+        const sameNameOnly = JSON.stringify([...oldNameOnly].sort()) === JSON.stringify([...requestedNameOnly].sort());
+        peopleUnchanged = sameIds && sameNameOnly;
+        if (!peopleUnchanged) {
+          const retainedExistingIds = new Set();
+          const next = [];
+          for (const person of event.people) {
+            if (person.entityId && requestedIds.has(person.entityId) && !retainedExistingIds.has(person.entityId)) {
+              next.push(...event.people.filter(item => item.entityId === person.entityId));
+              retainedExistingIds.add(person.entityId);
+            } else if (!person.entityId && requestedNameOnly.includes(person.name) && !next.some(item => !item.entityId && item.name === person.name)) next.push(person);
+          }
+          for (const id of requestedIds) {
+            if (retainedExistingIds.has(id)) continue;
+            const candidate = selectable.get(id);
+            if (!candidate) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '所选人物已不在当前人物目录中；原记录保持不变。');
+            next.push({ entityId: id, name: candidate.displayName });
+          }
+          if (next.length > 40) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '人物最多选择 40 位；原记录保持不变。');
+          nextPeople = next;
+        }
+      }
       const textUnchanged = qianshiText(event.title, 500) === nextText.title && qianshiText(event.description, 4000) === nextText.description
         && event.object === nextText.object;
       const statusUnchanged = nextStatus === event.status && nextActionStatus === (event.actionStatus ?? event.status);
-      if (manualAction?.type === 'deleteEvent' && (!textUnchanged || !statusUnchanged || timeProvided)) {
+      if (manualAction?.type === 'deleteEvent' && (!textUnchanged || !statusUnchanged || timeProvided || scheduledTimeProvided || peopleProvided)) {
         throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '删除只移除这条事件，不能同时改写其内容。');
       }
-      if (textUnchanged && statusUnchanged && timeUnchanged && !manualAction) return { status: 'unchanged' };
+      if (textUnchanged && statusUnchanged && timeUnchanged && scheduledTimeUnchanged && peopleUnchanged && !manualAction) return { status: 'unchanged' };
       const sourceFloor = reachable.floors.find(item => item.id === event.sourceFloorId);
       const sourceSelection = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
       const liveSourceFingerprint = sourceSelection ? `sha256:${await sha256(sourceSelection.rawContent)}` : null;
@@ -3396,15 +3597,19 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         qianshiDelta.manualMatterStatusOverrides = (qianshiDelta.manualMatterStatusOverrides ?? []).filter(item => item.matterId !== manualAction.matterId);
         if (manualAction.status !== null) qianshiDelta.manualMatterStatusOverrides.push({ matterId: manualAction.matterId, status: manualAction.status });
       } else if (manualAction) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '千事人工操作无效。');
-      if (!textUnchanged || !statusUnchanged || !timeUnchanged) qianshiDelta.events[eventIndex] = { ...qianshiDelta.events[eventIndex], ...nextText,
+      if (!textUnchanged || !statusUnchanged || !timeUnchanged || !scheduledTimeUnchanged || !peopleUnchanged) qianshiDelta.events[eventIndex] = { ...qianshiDelta.events[eventIndex], ...nextText,
         ...(!statusUnchanged ? { status: nextStatus, actionStatus: nextActionStatus } : {}),
-        ...(timeProvided ? { storyTime: nextStoryTime } : {}) };
+        ...(timeProvided ? { storyTime: nextStoryTime } : {}),
+        ...(scheduledTimeProvided ? { scheduledTime: nextScheduledTime } : {}),
+        ...(peopleProvided && !peopleUnchanged ? { people: nextPeople } : {}) };
       const manualFields = { ...(qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) };
       delete manualFields.eventId;
       if (event.title !== nextText.title) manualFields.title = nextText.title;
       if (event.description !== nextText.description) manualFields.description = nextText.description;
       if (event.object !== nextText.object) manualFields.object = nextText.object;
       if (timeProvided) manualFields.storyTime = nextStoryTime;
+      if (scheduledTimeProvided) manualFields.scheduledTime = nextScheduledTime;
+      if (peopleProvided && !peopleUnchanged) manualFields.people = nextPeople;
       if (event.status !== nextStatus) manualFields.status = nextStatus;
       if ((event.actionStatus ?? event.status) !== nextActionStatus) manualFields.actionStatus = nextActionStatus;
       if (Object.keys(manualFields).length) qianshiDelta.manualEventOverrides = [...(qianshiDelta.manualEventOverrides ?? []).filter(item => item.eventId !== eventId),
@@ -3429,12 +3634,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }, action: 'qianshiTextEdit', validationErrors: [] });
       if (operation.qianshiRejected) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '千事关系校验未接受这次文字修改；原记录保持不变。');
       const saved = formalQianshiEvent(eventId);
-      const savedMatter = ['tracking', 'matterStatus'].includes(manualAction?.type) ? projectQianshiGraph(reachable).matters.find(item => item.matterId === manualAction.matterId) : null;
+      const savedMatter = ['tracking', 'matterStatus'].includes(manualAction?.type)
+        ? qianshiGraphProjector(reachable, { calendar: storyCalendarProvider(reachable.root.chatId) }).matters.find(item => item.matterId === manualAction.matterId) : null;
       if (manualAction?.type === 'deleteEvent' && saved || manualAction?.type === 'tracking' && savedMatter?.following !== manualAction.following
         || manualAction?.type === 'matterStatus' && savedMatter?.manualStatusOverride !== manualAction.status
         || !manualAction && (!saved || saved.event.title !== nextText.title || saved.event.description !== nextText.description || saved.event.object !== nextText.object
           || saved.event.status !== nextStatus || (saved.event.actionStatus ?? saved.event.status) !== nextActionStatus
-          || saved.event.storyTime !== nextStoryTime)) {
+          || saved.event.storyTime !== nextStoryTime
+          || scheduledTimeProvided && saved.event.scheduledTime !== nextScheduledTime
+          || peopleProvided && JSON.stringify(saved.event.people) !== JSON.stringify(nextPeople))) {
         throw errorWith('QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS', '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
       }
       return { status: 'saved' };
@@ -3474,7 +3682,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if ((reachable?.floorMemories ?? []).some(memory => memory.recordStatus === 'active' && memory.qianshiDelta?.deletedEventIds?.includes(eventId))) return { status: 'unchanged' };
       throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '这条事件已不在当前千事记录中；请刷新后重试。');
     }
-    // 删除保留原事实与人工字段，只在所属楼记稳定 ID；与编辑共用来源见证、CAS 和冷读。
+    // 删除保留原事实与人工字段，只在所属楼记稳定 ID；与编辑共用来源见证、CAS 和保存结果核对。
     return editQianshiEventText({ eventId, expected: expected ?? { memoryId: event.sourceFloorMemoryId,
       title: event.title, description: event.description, object: event.object }, title: event.title, description: event.description, object: event.object,
     manualAction: { type: 'deleteEvent' } });
@@ -3541,7 +3749,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       includeEmptyFloors === true, items.map(item => [item.floorId, item.memoryId, item.rawFingerprint, item.recheckEmpty]), safeInput, safeOutput]);
     releaseUnstartedQianshiPlans();
     qianshiRejudgePlan = null;
-    qianshiHistoryPlan = { planId, chatId: previewReachable.root.chatId, targetIdentity, store: targetStore, sourceReachable: previewReachable, narrativeGeneration: previewReachable.root.narrativeGeneration,
+    qianshiHistoryPlan = { planId, chatId: previewReachable.root.chatId, targetIdentity, store: targetStore, sourceReachable: previewReachable,
+      calendar: storyCalendarProvider(previewReachable.root.chatId), narrativeGeneration: previewReachable.root.narrativeGeneration,
       maxInputTokens: safeInput, maxOutputTokens: safeOutput, includeEmptyFloors: includeEmptyFloors === true,
       items, batches, unavailable, aggregateSkippedFloors, budgetSkippedFloors };
     keepTargetStore = true;
@@ -3567,13 +3776,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       qianshiHistoryState = Object.freeze(value); notify(); return true;
     };
     const outcomes = new Map(plan.items.map(item => [item.floorId, { floorId: item.floorId, assistantSeq: item.assistantSeq, messageIndex: item.displayMessageIndex,
-      status: item.budgetExceeded ? 'skipped' : 'skipped', reasonCode: item.budgetExceeded ? 'QIANSHI_HISTORY_INPUT_BUDGET' : null,
+      status: 'skipped', reasonCode: item.budgetExceeded ? 'QIANSHI_HISTORY_INPUT_BUDGET' : null,
       message: item.budgetExceeded ? '完整请求超过输入预算；未调用模型。' : '等待处理。' }]));
     const historyState = (status, message = '') => {
       const rows = [...outcomes.values()].sort((left, right) => left.assistantSeq - right.assistantSeq);
       return { status, jobId, processedFloors, totalFloors: plan.items.length, calls,
         attemptedFloors: rows.filter(row => row.attempted).length,
         savedCompleteFloors: rows.filter(row => row.status === 'saved-complete').length,
+        savedPartialFloors: rows.filter(row => row.status === 'saved-partial').length,
         skippedFloors: rows.filter(row => row.status === 'skipped').length,
         failedFloors: rows.filter(row => row.status === 'failed').length,
         outcomes: rows.map(row => ({ ...row })), message };
@@ -3610,12 +3820,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         publishHistory(historyState('running', `正在准备第 ${batchIndex}/${plan.batches.length} 批候选…`));
         const identitySnapshot = await readIdentityProjection(plan.targetIdentity);
         const prepared = [];
-        const preparedProjection = qianshiGraphProjector(targetReachable);
+        const preparedProjection = qianshiGraphProjector(targetReachable, { calendar: plan.calendar });
         const preparedEventMap = new Map(preparedProjection.events.map(event => [event.id, event]));
         let liveProjectionSource = targetReachable, liveProjection = preparedProjection;
         const currentProjection = () => {
           if (liveProjectionSource !== targetReachable) {
-            liveProjection = qianshiGraphProjector(targetReachable);
+            liveProjection = qianshiGraphProjector(targetReachable, { calendar: plan.calendar });
             liveProjectionSource = targetReachable;
           }
           return liveProjection;
@@ -3627,12 +3837,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           const floorIndex = targetReachable.floors.findIndex(value => value.id === floor.id), prefixFloors = targetReachable.floors.slice(0, floorIndex);
           const prefixIds = new Set(prefixFloors.map(value => value.id));
-          const prefix = { ...targetReachable, floors: prefixFloors,
+          const prefix = { ...targetReachable, calendar: plan.calendar, floors: prefixFloors,
             floorMemories: targetReachable.floorMemories.filter(value => prefixIds.has(value.floorId)) };
-          const projection = qianshiGraphProjector(prefix, { identityProjection: identitySnapshot });
+          const projection = qianshiGraphProjector(prefix, { calendar: plan.calendar, identityProjection: identitySnapshot });
           const candidates = prepareQianshiCandidates(prefix,
             { canonicalContent: item.input.sourceCanonicalContent, precedingUserInput: item.input.sourceUserInputSnapshot,
-              identityProjection: identitySnapshot, includeEventContextCandidates: true, projection });
+            identityProjection: identitySnapshot, includeEventContextCandidates: true, projection });
           prepared.push({ item, floor, memory, candidates });
         }
         if (!prepared.length) continue;
@@ -3709,7 +3919,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           responseCounts.set(key, (responseCounts.get(key) ?? 0) + 1);
         }
         const returnedByKey = new Map(packet.floors.map(value => [String(value?.floorKey ?? ''), value]));
-        const earlierBindings = [], changedMatterIds = new Set(), changedEventIds = new Set();
+        const earlierBindings = [];
         for (const value of prepared) {
           if (controller.signal.aborted) break;
           const returned = returnedByKey.get(value.item.input.floorKey);
@@ -3720,16 +3930,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               responseCount ? '批响应重复返回本楼，已保留原记录。' : '批响应漏回本楼，已保留原记录。', true);
             continue;
           }
-          const rawEvents = Array.isArray(returned?.qianshi?.events) ? returned.qianshi.events : Array.isArray(returned?.events) ? returned.events : [];
-          const usedCandidateKeys = new Set([...rawEvents.flatMap(event => [
-            ...(Array.isArray(event?.links) ? event.links.map(link => String(link?.candidateKey ?? link?.candidate ?? '')) : []),
-            ...(Array.isArray(event?.continues) ? event.continues.map(String) : []),
-            ...(Array.isArray(event?.continuesCandidates) ? event.continuesCandidates.map(String) : []),
-            ...(Array.isArray(event?.relatedCandidates) ? event.relatedCandidates.map(String) : []),
-          ]), ...(Array.isArray(returned?.qianshi?.order) ? returned.qianshi.order.flatMap(relation => typeof relation === 'string'
+          const hasNestedQianshi = returned && Object.hasOwn(returned, 'qianshi');
+          const qianshiPacket = hasNestedQianshi ? returned.qianshi : returned;
+          const rawEvents = Array.isArray(qianshiPacket?.events) ? qianshiPacket.events : [];
+          const usedCandidateKeys = new Set([...rawEvents.flatMap(event => normalizeQianshiEventLinks(event).map(link => link.candidateKey)),
+            ...(Array.isArray(qianshiPacket?.order) ? qianshiPacket.order.flatMap(relation => typeof relation === 'string'
             ? [relation] : [relation?.before, relation?.after]) : [])].filter(Boolean));
-          const liveEvents = usedCandidateKeys.size
-            ? new Map(currentProjection().events.map(event => [event.id, event])) : preparedEventMap;
+          const liveEvents = usedCandidateKeys.size ? new Map(currentProjection().events.map(event => [event.id, event])) : preparedEventMap;
           const frozenBindingsStale = (bindingsByFloor.get(value.item.floorId) ?? []).some(binding => usedCandidateKeys.has(binding.key)
             && Object.entries(binding.semanticSignatures ?? {}).some(([id, signature]) => {
               const event = liveEvents.get(id);
@@ -3752,7 +3959,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           let delta, compiledBindings = [];
           try {
-            delta = await compileQianshiDelta({ packet: returned ?? null, floor: value.floor,
+            delta = await compileQianshiDelta({ packet: hasNestedQianshi ? returned : { qianshi: qianshiPacket }, floor: value.floor,
               candidateBindings: [...(bindingsByFloor.get(value.item.floorId) ?? []), ...earlierBindings],
               candidateStats: { count: (bindingsByFloor.get(value.item.floorId) ?? []).length,
                 characters: sharedCandidates.filter(candidate => (candidateKeysByFloor.get(value.item.floorId) ?? []).includes(candidate.key))
@@ -3772,8 +3979,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           let replacementToCommit = replacement;
           const commitOperation = { floorId: value.floor.id, floorRawFingerprint: value.floor.content.rawFingerprint, epoch,
             store: plan.store, pinnedTarget: true,
-            controller, qianshiHistory: true, qianshiProjectionSource: targetReachable,
-            qianshiProjectionSnapshot: liveProjectionSource === targetReachable ? liveProjection : null,
+            controller, qianshiHistory: true, qianshiCalendar: plan.calendar,
+            qianshiProjectionSource: targetReachable, qianshiProjectionSnapshot: liveProjectionSource === targetReachable ? liveProjection : null,
             qianshiHistoryTargetMemoryId: value.memory.id, qianshiHistoryTargetMemorySignature: JSON.stringify(value.memory),
             qianshiCandidateSnapshot, runId: await deterministicUuid(['v3-qianshi-history-commit', jobId, value.floor.id]), startedAt: nowValue,
             commitTimestamp: null };
@@ -3798,10 +4005,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               const savedEvent = savedEventsById.get(candidateEvent.id);
               if (!savedEvent) return;
               const event = savedEvent;
-              if (event.matterId !== null && event.updatesMatter) {
-                changedEventIds.add(event.id);
-                changedMatterIds.add(event.matterId);
-              }
               earlierBindings.push({
               key: `${value.item.input.floorKey}:${localKey}`, kind: event.matterId !== null && event.updatesMatter ? 'matter' : 'event',
               matterId: event.matterId, latestEventIds: [event.id], stale: false,
@@ -3809,7 +4012,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               sourceFloorId: event.sourceFloorId, sourceAssistantSeq: value.floor.assistantSeq,
               latestStoryTime: event.storyTime, latestScheduledTime: event.scheduledTime });
             });
-            setOutcome(value.item.floorId, 'saved-complete', null, '千事结果已完整保存。', true);
+            setOutcome(value.item.floorId, delta.status === 'partial' ? 'saved-partial' : 'saved-complete',
+              delta.status === 'partial' ? 'QIANSHI_HISTORY_EVENT_PARTIAL' : null,
+              delta.status === 'partial' ? delta.reason || '本楼部分事件未能保存。' : '千事结果已完整保存。', true);
           } catch (error) {
             const commit = operation.commitOperation;
             if (commit?.rootCommitAttempted && !commit.rootCommitConflict) {
@@ -3817,7 +4022,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               const saved = targetReachable?.status === 'ready' ? currentMemoryMap(targetReachable).get(value.floor.id) : null;
               if (saved?.id === replacementToCommit.id && JSON.stringify(saved.qianshiDelta) === JSON.stringify(replacementToCommit.qianshiDelta)) {
                 processedFloors += 1;
-                setOutcome(value.floor.id, 'saved-complete', null, '千事结果已提交并经目标档案回读确认。', true);
+                setOutcome(value.floor.id, replacementToCommit.qianshiDelta.status === 'partial' ? 'saved-partial' : 'saved-complete',
+                  replacementToCommit.qianshiDelta.status === 'partial' ? 'QIANSHI_HISTORY_EVENT_PARTIAL' : null,
+                  replacementToCommit.qianshiDelta.status === 'partial' ? replacementToCommit.qianshiDelta.reason || '本楼部分事件已保存并经目标档案回读确认。'
+                    : '千事结果已提交并经目标档案回读确认。', true);
                 continue;
               }
               if (!commit.rootCommitConflict) {
@@ -3837,9 +4045,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const stopped = controller.signal.aborted, hasAggregateSkips = plan.aggregateSkippedFloors.length > 0 || plan.budgetSkippedFloors.length > 0;
       staleCandidateFloors = Math.max(staleCandidateFloors,
         [...outcomes.values()].filter(row => row.reasonCode === 'QIANSHI_HISTORY_CANDIDATE_STALE').length);
-      const finalStatus = stopped ? 'stopped' : failures || hasAggregateSkips ? 'partial' : 'completed';
+      const savedPartialFloors = [...outcomes.values()].filter(row => row.status === 'saved-partial').length;
+      const finalStatus = stopped ? 'stopped' : failures || hasAggregateSkips || savedPartialFloors ? 'partial' : 'completed';
       const finalMessage = stopped ? '已停止。'
-            : failures || hasAggregateSkips ? `${failures ? `${failures} 楼未补齐。` : ''}${staleCandidateFloors ? '前楼事项在本批处理中发生变化，受影响楼已跳过；请重新准备计划。' : ''}${plan.budgetSkippedFloors.length ? `${plan.budgetSkippedFloors.length} 楼超出完整输入预算，未调用模型。` : ''}${plan.aggregateSkippedFloors.length ? `${plan.aggregateSkippedFloors.length} 楼由多个正文楼聚合，模型补齐已跳过以保留成员来源。` : ''}`
+            : failures || hasAggregateSkips || savedPartialFloors ? `${failures ? `${failures} 楼未补齐。` : ''}${savedPartialFloors ? `${savedPartialFloors} 楼部分事件已保存。` : ''}${staleCandidateFloors ? '前楼事项在本批处理中发生变化，受影响楼已跳过；请重新准备计划。' : ''}${plan.budgetSkippedFloors.length ? `${plan.budgetSkippedFloors.length} 楼超出完整输入预算，未调用模型。` : ''}${plan.aggregateSkippedFloors.length ? `${plan.aggregateSkippedFloors.length} 楼由多个正文楼聚合，模型补齐已跳过以保留成员来源。` : ''}`
             : '历史千事补齐完成。';
       if (publishHistory(historyState(finalStatus, finalMessage))) qianshiHistoryPlan = null;
       return structuredClone(qianshiHistoryState);
@@ -3870,7 +4079,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     let keepTargetStore = false;
     try {
     const cached = reachable?.root && (!targetIdentity || reachable.root.chatId === targetIdentity.chatId) ? reachable : null;
-    const source = await latestReachableForCommit({ epoch, store: targetStore, pinnedTarget: Boolean(targetIdentity) }, cached);
+    const loadedSource = await latestReachableForCommit({ epoch, store: targetStore, pinnedTarget: Boolean(targetIdentity) }, cached);
+    const source = loadedSource?.root ? { ...loadedSource, calendar: storyCalendarProvider(loadedSource.root.chatId) } : loadedSource;
     if (!source?.root || source.status !== 'ready'
       || targetIdentity?.chatId && source.root.chatId !== targetIdentity.chatId) throw errorWith('QIANSHI_REJUDGE_UNAVAILABLE', '原目标没有可用的千事存档。');
     const memories = currentMemoryMap(source), unavailable = [], candidates = [];
@@ -3925,7 +4135,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
     releaseUnstartedQianshiPlans();
     qianshiHistoryPlan = null;
-    qianshiRejudgePlan = { planId, chatId: source.root.chatId, targetIdentity, store: targetStore, sourceReachable: source, narrativeGeneration: source.root.narrativeGeneration,
+    qianshiRejudgePlan = { planId, chatId: source.root.chatId, targetIdentity, store: targetStore, sourceReachable: source,
+      calendar: source.calendar, narrativeGeneration: source.root.narrativeGeneration,
       rootRevision: source.rootRevision, headCheckpointId: source.root.headCheckpointId,
       sourceSnapshotFingerprint: source.root.sourceSnapshotFingerprint, externalReferences, externalReferenceSignature, items };
     keepTargetStore = true;
@@ -3958,14 +4169,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       let currentItem = null, targetReachable = null;
       try {
         targetReachable = await latestReachableForCommit({ epoch: epochAtStart, controller, store: plan.store, pinnedTarget: true }, plan.sourceReachable);
+        targetReachable = { ...targetReachable, calendar: plan.calendar };
         await assertQianshiRejudgeSnapshot(targetReachable, rejudgeValidation);
         const original = targetReachable, identitySnapshot = await readIdentityProjection(plan.targetIdentity);
-        const originalProjection = qianshiGraphProjector(original, { identityProjection: identitySnapshot });
+        const originalProjection = qianshiGraphProjector(original, { calendar: plan.calendar, identityProjection: identitySnapshot });
         // 整组提交前原图不变；沿用已有的精确 root 版本核对，避免每个请求前后重读整份存档。
         const verifyCurrent = async () => {
           const loaded = await latestReachableForCommit({ epoch: epochAtStart, controller, store: plan.store, pinnedTarget: true }, original);
-          await assertQianshiRejudgeSnapshot(loaded, rejudgeValidation, { reuseVerifiedMemorySnapshot: loaded === original });
-          return loaded;
+          const current = loaded === original ? original : { ...loaded, calendar: plan.calendar };
+          await assertQianshiRejudgeSnapshot(current, rejudgeValidation, { reuseVerifiedMemorySnapshot: loaded === original });
+          return current;
         };
         for (let index = 0; index < plan.items.length; index += 1) {
           if (controller.signal.aborted) break;
@@ -3978,7 +4191,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const stagedByFloor = new Map(staged.map(value => [value.floorId, value]));
           const prefixMemories = targetReachable.floorMemories.filter(value => prefixIds.has(value.floorId)).map(value => stagedByFloor.get(value.floorId) ?? value);
           const prefix = { ...targetReachable, floors: prefixFloors, floorMemories: prefixMemories };
-          const prefixProjection = qianshiGraphProjector(prefix, { identityProjection: identitySnapshot });
+          const prefixProjection = qianshiGraphProjector(prefix, { calendar: plan.calendar, identityProjection: identitySnapshot });
+          const prefixEventMap = new Map(prefixProjection.events.map(event => [event.id, event]));
           const candidates = prepareQianshiCandidates(prefix, { canonicalContent: item.input.sourceCanonicalContent,
             precedingUserInput: item.input.sourceUserInputSnapshot, identityProjection: identitySnapshot,
             includeEventContextCandidates: true, projection: prefixProjection });
@@ -3986,12 +4200,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           for (const binding of candidateBindings) {
             const eventIds = [...new Set([binding.originEventId, ...(binding.latestEventIds ?? [])].filter(Boolean))];
             binding.semanticSignatures = Object.fromEntries(eventIds.map(id => [id,
-              prefixProjection.events.some(event => event.id === id)
-                ? qianshiEventSemanticSignature(prefixProjection.events.find(event => event.id === id)) : null]));
+              prefixEventMap.has(id) ? qianshiEventSemanticSignature(prefixEventMap.get(id)) : null]));
           }
           const storedEvents = oldMemory.qianshiDelta.events.filter(event => !(oldMemory.qianshiDelta.deletedEventIds ?? []).includes(event.id));
-          const currentGraph = targetReachable === original ? originalProjection : qianshiGraphProjector(targetReachable);
-          const originEventIds = new Set(currentGraph.matters.map(matter => matter.origin.eventId));
+          const originEventIds = new Set(originalProjection.matters.map(matter => matter.origin.eventId));
           const recordBindings = storedEvents.map((event, recordIndex) => ({ key: `record-${recordIndex + 1}`, event: clone(event),
             preserveMatterIdOnNewLine: Boolean(event.matterId && originEventIds.has(event.id)) }));
           const systemPrompt = `${QIANSHI_REJUDGE_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`;
@@ -4070,7 +4282,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
                 && (binding.event.id === relation.fromEventId || binding.event.id === relation.toEventId))));
           const combinedRelations = [...new Map([...delta.relations, ...retainedOldRelations].map(value => [value.id, value])).values()];
           const incompleteCount = incompleteRecordKeys.size;
-          const issues = [...(delta.reason ? [delta.reason] : []), ...(missingRecordKeys.length ? [`${missingRecordKeys.join('、')} 未通过有效重判，已按原值保留。`] : []),
+          const issues = [...(delta.reason ? [delta.reason] : []), ...(missingRecordKeys.length ? [`${missingRecordKeys.length} 条旧记录没有得到有效重判，已按原值保留。`] : []),
             ...(incompleteCount ? [`${incompleteCount} 条旧记录缺少完整状态或归线判断，缺失部分沿用原值。`] : [])];
           const nextDelta = validateQianshiDelta({ ...delta, status: missingRecordKeys.length || incompleteCount || delta.status === 'partial' ? 'partial' : delta.status,
             reason: issues.length ? issues.join('；').slice(0, 500) : null, events: factsPreserved, relations: combinedRelations }, { floorIds: [floor.id] });
@@ -4101,7 +4313,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         const commitOperation = { jobId, controller, epoch: epochAtStart, store: plan.store, pinnedTarget: true, floorIds: plan.items.map(item => item.floorId),
           qianshiRejudge: { ...plan, candidateSnapshots: usedCandidateSnapshots },
           qianshiRejudgeRawWitnesses: rejudgeValidation.qianshiRejudgeRawWitnesses,
-          qianshiProjectionSource: targetReachable, qianshiProjectionSnapshot: targetReachable === original ? originalProjection : null,
+          qianshiProjectionSource: targetReachable,
+          qianshiProjectionSnapshot: targetReachable === original ? originalProjection : null,
           runId: await deterministicUuid(['v3-qianshi-rejudge-commit', jobId]), startedAt: nowIso(now) };
         operation.commitOperation = commitOperation;
         const priorAudit = floorProvenance(targetReachable)[staged[0].floorId] ?? {};
@@ -4167,8 +4380,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
 
   return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
+    getCurrentSubjectStates: entityIds => cseRuntime.getCurrentSubjectStates(entityIds),
     getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), getQianshiStatus: qianshiStatus,
-    getQianshiSnapshotVersion: qianshiSnapshotVersion, canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
+    getQianshiSnapshotVersion: qianshiSnapshotVersion, getQianshiEditPeople, canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
     // 冻结召回只检查人工删除身份，不重选材；冷启动复用现有只读准备链。
     getQianshiDeletions: async () => {
       const prepared = await prepareCurrent();
@@ -4191,6 +4405,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return structuredClone({ ...recall, deletedEvents: qianshiDeletedEvents(reachable), candidates: prepared.candidates, candidateStats: prepared.stats,
         currentStoryTime: [storyDate, storyClock].filter(Boolean).join(' ') || null, anchor });
     },
-    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getActivityState, getState: () => getState(),
+    prepareQianshiHistory, startQianshiHistory, stopQianshiHistory, prepareQianshiRejudge, startQianshiRejudge, getState: () => getState(), getActivityState,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

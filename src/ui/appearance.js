@@ -8,16 +8,17 @@ function parseFontFamily(css) {
 }
 
 const PALETTES = Object.freeze({
-  day: Object.freeze({ paper: '#f7f8fa', panel: '#ffffff', ink: '#22282b', soft: '#637077', faint: '#929da2', line: '#dce2e5', thread: '#cbd4d8', crimson: '#b63745', knot: '#b63745', blue: '#4f8781', success: '#4b7d63' }),
-  night: Object.freeze({ paper: '#13181b', panel: '#1c2327', ink: '#e7ecee', soft: '#9db0b5', faint: '#6c7c81', line: '#2b363b', thread: '#33424a', crimson: '#d9707a', knot: '#d9707a', blue: '#77b0aa', success: '#77b193' }),
+  day: Object.freeze({ paper: '#f7f8fa', panel: '#ffffff', ink: '#22282b', soft: '#637077', faint: '#929da2', line: '#dce2e5', thread: '#cbd4d8', crimson: '#b63745', knot: '#b63745', onPrimary: '#fff', blue: '#4f8781', success: '#4b7d63' }),
+  night: Object.freeze({ paper: '#13181b', panel: '#1c2327', ink: '#e7ecee', soft: '#9db0b5', faint: '#6c7c81', line: '#2b363b', thread: '#33424a', crimson: '#d9707a', knot: '#d9707a', onPrimary: '#fff', blue: '#77b0aa', success: '#77b193' }),
 });
 const AUTO_FALLBACK_PALETTES = Object.freeze({
   day: Object.freeze({ paper: '#e8ecec', panel: '#f6f8f8', ink: '#22282b', soft: '#5c6a70', faint: '#93a1a5', line: '#d0d9db', thread: '#c1ccce', crimson: '#a8322f', knot: '#a8322f', blue: '#4f8781', success: '#4b7d63' }),
   night: PALETTES.night,
 });
-const opaqueRgb = values => {
+const alphaChannel = value => value === undefined ? 1 : Math.min(1, Math.max(0, Number.parseFloat(value) / (value.endsWith('%') ? 100 : 1)));
+const opaqueRgb = (values, alpha = 1) => {
   const channels = values.map(value => value.endsWith('%') ? Math.round(Math.min(100, Math.max(0, Number.parseFloat(value))) * 2.55) : Math.round(Math.min(255, Math.max(0, Number.parseFloat(value)))));
-  return { value: `rgb(${channels.join(', ')})`, rgb: channels };
+  return { value: `rgb(${channels.join(', ')})`, rgb: channels, alpha };
 };
 const cssColor = (documentRef, raw) => {
   const value = text(raw); if (!value) return null;
@@ -27,15 +28,15 @@ const cssColor = (documentRef, raw) => {
     const body = hex[1], expanded = body.length <= 4 ? [...body].map(ch => ch + ch).join('') : body;
     if (![6, 8].includes(expanded.length)) return null;
     const opaque = expanded.slice(0, 6), number = Number.parseInt(opaque, 16);
-    return { value: `#${opaque}`, rgb: [number >> 16, (number >> 8) & 255, number & 255] };
+    return { value: `#${opaque}`, rgb: [number >> 16, (number >> 8) & 255, number & 255], alpha: expanded.length === 8 ? Number.parseInt(expanded.slice(6), 16) / 255 : 1 };
   }
-  const rgb = /^rgba?\(\s*([\d.]+%?)\s*(?:,|\s)\s*([\d.]+%?)\s*(?:,|\s)\s*([\d.]+%?)(?:\s*(?:,|\/)\s*[\d.]+%?)?\s*\)$/iu.exec(value);
-  if (rgb) return opaqueRgb(rgb.slice(1, 4));
+  const rgb = /^rgba?\(\s*([-+]?(?:\d*\.)?\d+%?)\s*(?:,|\s)\s*([-+]?(?:\d*\.)?\d+%?)\s*(?:,|\s)\s*([-+]?(?:\d*\.)?\d+%?)(?:\s*(?:,|\/)\s*([-+]?(?:\d*\.)?\d+%?))?\s*\)$/iu.exec(value);
+  if (rgb) return opaqueRgb(rgb.slice(1, 4), alphaChannel(rgb[4]));
   try {
     const canvas = documentRef?.createElement?.('canvas'), context = canvas?.getContext?.('2d'); if (!context) return null;
     context.fillStyle = '#010203'; context.fillStyle = value; if (context.fillStyle === '#010203' && value.toLowerCase() !== '#010203') return null;
-    context.clearRect(0, 0, 1, 1); context.fillRect(0, 0, 1, 1); const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
-    return { value: `rgb(${r}, ${g}, ${b})`, rgb: [r, g, b] };
+    context.clearRect(0, 0, 1, 1); context.fillRect(0, 0, 1, 1); const [r, g, b, alpha] = context.getImageData(0, 0, 1, 1).data;
+    return { value: `rgb(${r}, ${g}, ${b})`, rgb: [r, g, b], alpha: alpha / 255 };
   } catch { return null; }
 };
 const hostSignals = ({ documentRef, windowRef }) => {
@@ -47,6 +48,24 @@ const hostSignals = ({ documentRef, windowRef }) => {
 };
 const channel = value => Math.min(255, Math.max(0, Number(value) || 0));
 const luminance = parsed => parsed?.rgb ? .2126 * channel(parsed.rgb[0]) + .7152 * channel(parsed.rgb[1]) + .0722 * channel(parsed.rgb[2]) : null;
+const relativeLuminance = rgb => rgb.reduce((sum, value, index) => {
+  const channelValue = channel(value) / 255;
+  const linear = channelValue <= .04045 ? channelValue / 12.92 : ((channelValue + .055) / 1.055) ** 2.4;
+  return sum + linear * [.2126, .7152, .0722][index];
+}, 0);
+const onPrimary = parsed => {
+  if (!parsed?.rgb) return '#fff';
+  const accent = relativeLuminance(parsed.rgb), dark = relativeLuminance([34, 40, 43]);
+  const darkContrast = (accent + .05) / (dark + .05), lightContrast = 1.05 / (accent + .05);
+  return darkContrast >= lightContrast ? '#22282b' : '#fff';
+};
+// Host chat, bot, and user tints overlay the existing opaque paper, panel, and thread bases.
+const backgroundColor = (documentRef, raw, fallback) => {
+  const foreground = cssColor(documentRef, raw), base = cssColor(documentRef, fallback);
+  if (!foreground || !base || foreground.alpha <= 0) return fallback;
+  if (foreground.alpha >= 1) return foreground.value;
+  return `rgb(${foreground.rgb.map((value, index) => Math.round(value * foreground.alpha + base.rgb[index] * (1 - foreground.alpha))).join(', ')})`;
+};
 
 export function resolveAppearance({ value = {}, documentRef = globalThis.document, windowRef = documentRef?.defaultView ?? globalThis } = {}) {
   const mode = ['auto', 'day', 'night'].includes(value.appearanceTheme) ? value.appearanceTheme : 'auto';
@@ -57,12 +76,14 @@ export function resolveAppearance({ value = {}, documentRef = globalThis.documen
   const palette = (mode === 'auto' ? AUTO_FALLBACK_PALETTES : PALETTES)[effectiveTheme];
   if (mode !== 'auto') return { mode, effectiveTheme, palette, hasHostSignal: Boolean(hostTheme) };
   const opaque = (raw, fallback) => cssColor(documentRef, raw)?.value ?? fallback;
+  const accent = cssColor(documentRef, signals.quote) ?? cssColor(documentRef, palette.crimson);
   return {
     mode, effectiveTheme, hasHostSignal: Boolean(hostTheme),
     palette: {
       ...palette,
       ink: opaque(signals.body, palette.ink), knot: opaque(signals.quote, palette.knot), crimson: opaque(signals.quote, palette.crimson), blue: opaque(signals.quote, palette.blue),
-      paper: opaque(signals.chat, palette.paper), panel: opaque(signals.bot, palette.panel), thread: opaque(signals.user, palette.thread),
+      paper: backgroundColor(documentRef, signals.chat, palette.paper), panel: backgroundColor(documentRef, signals.bot, palette.panel), thread: backgroundColor(documentRef, signals.user, palette.thread),
+      onPrimary: onPrimary(accent),
     },
   };
 }
@@ -72,7 +93,7 @@ export function applyAppearance({ host, root, settings, documentRef = globalThis
   const appearance = resolveAppearance({ value, documentRef, windowRef });
   host?.setAttribute?.('data-qqj-theme', appearance.effectiveTheme);
   host?.setAttribute?.('data-qqj-theme-mode', appearance.mode);
-  for (const [name, color] of Object.entries(appearance.palette)) host?.style?.setProperty?.(`--${name}`, color);
+  for (const [name, color] of Object.entries(appearance.palette)) host?.style?.setProperty?.(`--${name.replace(/[A-Z]/gu, letter => `-${letter.toLowerCase()}`)}`, color);
   const scale = normalizeFontScale(value.appearanceScale);
   host?.style?.setProperty?.('--qqj-ui-scale', String(scale));
   const fixedScale = fixedFontScale(scale);

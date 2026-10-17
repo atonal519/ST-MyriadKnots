@@ -65,6 +65,8 @@
 
 时间覆盖写入 `manualEventOverrides[{eventId,storyTime}]`，明确清空保存为 `null`。人工时间独立于来源楼时间：清空或仅填写时钟不会从楼层日期补全。图、页面日期分组、候选索引与召回共用此时间投影。刷新、重新提取及重判保留人工时间；约定时间 `scheduledTime`、楼层时间、摘要、CSE 和当前故事时钟不随此编辑改写。
 
+详情编辑的人物可从当前已识别人物目录多选，按稳定实体 ID 保存到 `manualEventOverrides[{eventId,people}]`；没有稳定身份的旧姓名项只保留原记录，不按同名猜配。约定／预计时间使用独立的五格编辑，写入 `manualEventOverrides[{eventId,scheduledTime}]`；明确清空写入 `null`，未修改时不写该字段，保留原相对时间全文。旧调用未提供 `people` 或 `scheduledTime` 时均保持原值。两项人工覆盖随事件在全图、增量候选、重新提取、重判和冷读中沿用。
+
 ## 公开桥
 
 现有 `globalThis.qqj_v3_public_bridge_v1` 保持原样。千事使用独立桥：
@@ -94,7 +96,8 @@ const bridge = globalThis.qqj_qianshi_backend_v1;
     partialFloors,
     pendingFloors,
     degradedFloors,
-    unavailableFloors
+    unavailableFloors,
+    processable: { eligibleFloors, readyFloors, emptyFloors, completeFloors, partialFloors, pendingFloors, degradedFloors, unavailableFloors, frozenFloors }
   },
   events: [],
   matters: [],
@@ -106,6 +109,10 @@ const bridge = globalThis.qqj_qianshi_backend_v1;
 ```
 
 `events` 字段为 `id`、`matterId`（独立日常事件为 `null`）、`updatesMatter`、`title`、`description`、`status`、`actionStatus`、`statusManuallyEdited`、`timeManuallyEdited`、`storyTime`、`scheduledTime`、`people[{entityId,name}]`、`object`、`sourceFloorId`、`sourceFloorMemoryId`、`sourceAssistantSeq`、`sourceMessageIndex`。`sourceMessageIndex` 沿用插件现有宿主楼号显示口径，`status` 表示这次进展后的整线状态，`actionStatus` 表示本条动作状态；人工覆盖标记只说明字段来源，旧调用方可忽略新增字段。
+
+`coverage` 顶层计数继续统计当前快照中的全部楼；`coverage.processable` 只统计当前聊天的非冻结楼覆盖。`frozenFloors` 单列导入的只读历史；实际是否进入补齐计划仍由楼层状态、来源和输入预算决定。冻结历史事件仍可查看和召回，但不会因缺少千事字段显示为当前可补齐楼。
+
+历史补齐逐楼结果以 `saved-complete`、`saved-partial` 区分完整与部分保存；部分保存保留编译器给出的中文原因，`savedPartialFloors` 计入最终部分完成状态。提交后回读确认沿用相同分类。
 
 `matters` 字段为 `matterId`、`title`、`description`、`status`、`object`、`people`、`storyTime`、`scheduledTime`、`following`、`trackingOverride`、`origin{eventId,title,description,storyTime,scheduledTime,sourceFloorId,sourceAssistantSeq}`、`latestEventIds`、`eventIds`、`sourceFloorId`、`sourceAssistantSeq`。`following` 是各入口共享的当前关注态；`trackingOverride` 为 `true`、`false` 或 `null`（沿事件状态默认计算）。`relations` 字段为 `id`、`type`（`progress` 或 `before`）、`fromEventId`、`toEventId`、`certainty`。调用方拿不到 Graphology 实例或内部可变对象。
 
@@ -129,7 +136,7 @@ await bridge.prepareHistory({
 });
 ```
 
-`maxInputTokens` 是可调批次容量，当前默认 70000；`maxOutputTokens` 当前默认 30000。结果包含可处理楼、因缺 FloorMemory 而不可处理楼、预计批次、预计 API 调用数和保守的输入 token 上界。规划时每批只预留一次共享候选池容量；执行时同一旧事项候选在批内去重，并用实际请求重新核对容量。完整楼正文不会仅为凑固定楼数而截断；若单楼正文自身已经超过容量，该楼仍作为一个完整批次处理。
+`maxInputTokens` 是可调批次容量，当前默认 70000；`maxOutputTokens` 当前默认 30000。结果包含可处理楼、因缺 FloorMemory 而不可处理楼、预计批次、预计 API 调用数和保守的输入 token 上界。规划时每楼按 24,000 字符的候选上界预留；执行时各楼共享候选池、去重候选，并用实际请求重新核对容量。完整楼正文不会仅为凑固定楼数而截断；若单楼完整请求超过输入预算，该楼完整跳过且不调用模型。
 
 默认只补未处理楼及现有的部分结果。只有用户在“补齐旧楼”中明确选择时，`includeEmptyFloors: true` 才会把真实 `qianshiDelta.status === 'empty'` 且无事件的单楼重新纳入计划；已存在事件、人工删除、审核候选、ready 结果及聚合来源仍跳过。重查仍经过原预览、预算、批次、来源校验与逐楼提交，只替换该楼的千事增量；取消不调用模型，模型再次返回空数组也只保存这次判定，不自动重试。
 
@@ -151,6 +158,8 @@ await bridge.prepareHistory({
 
 
 ### 已存千事重判的关联兼容
+
+单个 FloorMemory 最多保存 160 条事件、320 条不同有效关系；每条事件最多保存 40 位人物。超出事件或关系容量时，保留容量内的合法内容并标记部分整理；关系先解析有效端点并按关系 ID 去重，重复项不占容量。单条事件的人物超过 40 位时该事件不保存，其余合法事件继续编译；若没有可保存事件，结果保持待补状态并给出原因。
 
 重判保留原事件 ID 和事实文字，整组暂存后只提交一次；请求前后复用同版本存档并核对 root 与正文，不逐楼重读整档。
 所有千事编译入口共用关联归一化：`kind/type`、`candidateKey/candidate/targetKey/target/to` 转成标准字段后才校验。重判仅保留接续关联，背景关联不改变事件归线。未知关联类型不能默默当作接续，错误候选不能降级为新线。

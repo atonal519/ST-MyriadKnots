@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 import { createInlineRenderer, resolveInlineAnchor, resolveInlineMessageIndex } from '../src/ui/inline-renderer.js';
-import { RECALL_RECEIPT_KEY } from '../src/v3/recall-runtime.js';
+import { RECALL_RECEIPT_KEY, projectHistoricalRecallReceipt } from '../src/v3/recall-runtime.js';
+import { sha256 } from '../src/identity.js';
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
-import { selectRecall } from '../src/v3/recall-selector.js';
+import { CSE_RECALL_KNOWLEDGE_BOUNDARY, selectRecall } from '../src/v3/recall-selector.js';
 import { formatRecallInjection } from '../src/v3/recall-selector.js';
 import { compileCseResponse } from '../src/v3/cse-engine.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from '../src/v3/message-floor-anchor.js';
@@ -86,6 +87,194 @@ const recallInjection = (...bullets) => [
 ].join('\n');
 
 const descendantText = node => `${node?.textContent ?? ''}${(node?.children ?? []).map(descendantText).join('')}`;
+const legacyReceiptFingerprint = async receipt => {
+  const material = [receipt.schemaVersion, receipt.pluginVersion, receipt.chatId, receipt.narrativeGeneration,
+    receipt.headCheckpointId, receipt.rootRevision, receipt.userMessageIndex, receipt.userContentFingerprint,
+    receipt.queryFingerprint, receipt.generationType, receipt.selectedFloors, receipt.selectedStates, receipt.coverage,
+    receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
+    receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic,
+    receipt.timings, receipt.storylines, receipt.timeDependencies, ...(receipt.qianshiProgress ? [receipt.qianshiProgress] : [])];
+  if (receipt.schemaVersion >= 18) material.push(receipt.selectedLocationReferences, receipt.locationReferenceDependency);
+  if (receipt.qianshiDeletionWitness !== undefined) material.push(receipt.qianshiDeletionWitness);
+  return `sha256:${await sha256(JSON.stringify(material))}`;
+};
+
+test('当前CSE知情边界说明可投影普通与剧情线四楼历史并保留时间参考', () => {
+  const coverage = { memoryComplete: true, cseCurrent: true };
+  const storylines = [{ storylineId: 'recent', title: '近期剧情接续', basis: '已有来源' }];
+  const floors = [1, 2, 3, 4].map(assistantSeq => ({ floorId: `floor-${assistantSeq}`, assistantSeq, chronology: [], section: 'recent',
+    items: [{ category: 'objective', text: `已记录旧事${assistantSeq}`, ...(assistantSeq % 2 ? { storylineId: 'recent' } : {}) }] }));
+  const reminder = '甲 / 约定：期限尚未确认完成';
+  for (const layout of ['ordinary', 'storyline']) {
+    const selected = layout === 'storyline' ? floors.map(floor => ({ ...floor, items: floor.items.map(item => ({ ...item, storylineId: 'recent' })) })) : floors;
+    const injectionText = formatRecallInjection({ coverage, floors: selected, states: [], entityById: new Map(),
+      ...(layout === 'storyline' ? { storylines } : {}),
+      timeProjection: { currentTime: { raw: '20:00' }, corrections: {}, reminders: [{ itemId: 'deadline', text: reminder, distance: 0 }] },
+      timeReminders: [{ itemId: 'deadline', text: reminder, distance: 0 }],
+    });
+    const receipt = { schemaVersion: layout === 'storyline' ? 17 : 11, strategyVersion: layout === 'storyline' ? 'continuity-v17' : 'continuity-v11',
+      status: 'ready', injectionText, selectedFloors: selected.map(floor => ({ floorId: floor.floorId, assistantSeq: floor.assistantSeq, reasons: [] })),
+      selectedStates: [], selectedCseChanges: [], storylines: layout === 'storyline' ? storylines : [] };
+    const projection = projectInlineRecallReceipt(receipt);
+    assert.equal(projection.protocolRecognized, true, layout);
+    assert.equal(projection.historyGroups.length, 4, layout);
+    assert.deepEqual(projection.historyItems.map(item => item.text).sort(), ['已记录旧事1', '已记录旧事2', '已记录旧事3', '已记录旧事4']);
+    assert.deepEqual(projection.timeReferenceItems, [reminder], layout);
+    const legacyHeading = injectionText.replace(CSE_RECALL_KNOWLEDGE_BOUNDARY, '任何 private 内容仅属于标明的主体，不代表其他人物知情。');
+    const legacyProjection = projectInlineRecallReceipt({ ...receipt, injectionText: legacyHeading });
+    assert.equal(legacyProjection.protocolRecognized, true, `${layout} legacy heading`);
+    if (layout === 'storyline') assert.equal(legacyProjection.historyGroups.length, 4, '旧版剧情线头部仍投影四组');
+  }
+  const pureTime = formatRecallInjection({ coverage, floors: [], states: [], entityById: new Map(),
+    timeProjection: { corrections: {}, reminders: [{ itemId: 'deadline', text: reminder, distance: 0 }] }, timeReminders: [{ itemId: 'deadline', text: reminder, distance: 0 }] });
+  const timeProjection = projectInlineRecallReceipt({ schemaVersion: 17, strategyVersion: 'continuity-v17', status: 'ready', injectionText: pureTime, selectedFloors: [], selectedStates: [], storylines: [] });
+  assert.equal(timeProjection.protocolRecognized, true);
+  assert.deepEqual(timeProjection.timeReferenceItems, [reminder]);
+});
+
+test('原消息地点参照单独显示且与既有旧事和时间分区互不吞并', async () => {
+  const coverage = { memoryComplete: true, cseCurrent: true };
+  const locationReferences = [{ text: '东区公寓·卧室', sourceFloorId: null, assistantSeq: null,
+    hostLocator: { messageIndex: 3, swipeId: 1, selectedSwipeIndex: 1 } }];
+  const onlyText = formatRecallInjection({ coverage, floors: [], states: [], entityById: new Map(), locationReferences });
+  const only = projectInlineRecallReceipt({ schemaVersion: 18, strategyVersion: 'continuity-v18', status: 'ready',
+    injectionText: onlyText, selectedFloors: [], selectedStates: [], selectedCseChanges: [], selectedLocationReferences: locationReferences });
+  assert.equal(only.protocolRecognized, true, '纯地点参考仍是可识别的已注入内容');
+  assert.equal(only.rawReceiptAvailable, false, '纯地点协议不重复显示整段回执原文');
+  assert.equal(only.summary, '本轮已注入 1 条原消息地点参照。');
+  assert.deepEqual(only.locationReferenceItems, ['原消息第 4 楼：东区公寓·卧室']);
+  assert.deepEqual(only.historyItems, []);
+
+  const storyline = { storylineId: 'line-location', title: '钥匙旧事', basis: '此前相关记录' };
+  const floor = { floorId: HISTORY_FLOOR, assistantSeq: 7, chronology: [], section: 'recent',
+    items: [{ category: 'objective', text: '林岚把钥匙交给周宁', storylineId: storyline.storylineId }] };
+  const reminder = '林岚 / 约定：回访时间尚未到';
+  const timeProjection = { corrections: {}, reminders: [{ itemId: 'visit', text: reminder, distance: 0 }] };
+  const mixedText = formatRecallInjection({ coverage, floors: [floor], states: [], entityById: new Map(), locationReferences,
+    storylines: [storyline], timeProjection, timeReminders: timeProjection.reminders });
+  const mixed = projectInlineRecallReceipt({ schemaVersion: 18, strategyVersion: 'continuity-v18', status: 'ready',
+    injectionText: mixedText, selectedFloors: [{ floorId: floor.floorId, assistantSeq: floor.assistantSeq, reasons: [] }],
+    selectedStates: [], selectedCseChanges: [], storylines: [storyline], selectedLocationReferences: locationReferences });
+  assert.equal(mixed.protocolRecognized, true, mixedText);
+  assert.deepEqual(mixed.historyItems.map(value => value.text), ['林岚把钥匙交给周宁']);
+  assert.deepEqual(mixed.locationReferenceItems, ['原消息第 4 楼：东区公寓·卧室']);
+  assert.deepEqual(mixed.timeReferenceItems, [reminder]);
+
+  const manyFloors = Array.from({ length: 50 }, (_, index) => ({ floorId: `location-floor-${index + 1}`, assistantSeq: index + 1,
+    chronology: [], items: [{ category: 'objective', text: `此前记录${index + 1}`, storylineId: storyline.storylineId }] }));
+  const manyText = formatRecallInjection({ coverage, floors: manyFloors, states: [], entityById: new Map(), locationReferences,
+    storylines: [storyline] });
+  const many = projectInlineRecallReceipt({ schemaVersion: 18, strategyVersion: 'continuity-v18', status: 'ready', injectionText: manyText,
+    selectedFloors: manyFloors.map(floor => ({ floorId: floor.floorId, assistantSeq: floor.assistantSeq, reasons: [] })),
+    selectedStates: [], selectedCseChanges: [], storylines: [storyline], selectedLocationReferences: locationReferences });
+  assert.equal(many.protocolRecognized, true);
+  assert.equal(many.floorCount, 50, 'v18保留已经发布的扩展选择数量，不退回旧48楼上限');
+
+  const receipt = { schemaVersion: 18, strategyVersion: 'continuity-v18', status: 'ready', injectionText: onlyText,
+    selectedFloors: [], selectedStates: [], selectedCseChanges: [], selectedLocationReferences: locationReferences };
+  const h = createHarness({ chat: [{ is_user: true, is_system: false, mes: '继续', extra: { [RECALL_RECEIPT_KEY]: receipt } }],
+    memoryState: { floors: [], memoryEntities: [] }, projectReceipt: async () => receipt });
+  const message = messageElement(0, { user: true }); h.chatRoot.append(message); h.renderer.start(); await h.flushMicrotasks();
+  const view = resolveInlineAnchor(message).querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+  assert.ok(descendantText(view.recallUi.events).includes('本轮原消息地点参照（1条）'), '摘要卡沿既有详情样式展示回执中的地点参考');
+});
+
+test('CSE变化前后保留对象名，同文不同对象可区分且无对象侧不补名', async () => {
+  const sameText = '<b>仍保持同一约定</b>';
+  const receipt = { status: 'ready', selectedFloors: [], selectedStates: [], selectedCseChanges: [
+    { deltaId: 'delta-object', floorId: 'floor-object', assistantSeq: 1, subjectEntityId: 'person', subject: '林岚', layer: 'adaptive', action: 'update',
+      before: { text: sameText, visibility: 'shared', toward: '林岚 <script>alert(1)</script>' },
+      after: { text: sameText, visibility: 'shared', toward: '周宁' } },
+    { deltaId: 'delta-no-object', floorId: 'floor-object', assistantSeq: 1, subjectEntityId: 'person', subject: '林岚', layer: 'situational', action: 'add',
+      before: null, after: { text: '没有对象的状态', visibility: 'observable' } },
+  ] };
+  const chat = [{ is_user: true, mes: '继续', extra: { [RECALL_RECEIPT_KEY]: { schemaVersion: 11 } } }];
+  const h = createHarness({ chat, memoryState: { floors: [{ floorId: 'floor-object', assistantSeq: 1, messageIndex: 0 }], memoryEntities: [] }, projectReceipt: async () => receipt });
+  h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+  const ui = view.recallUi; ui.peopleTab.click(); ui.picker.children[0].click();
+  const copies = ui.timelines.children[0].querySelectorAll('.change-copy').map(node => node.textContent);
+  assert.deepEqual(copies, [
+    '→ 林岚 <script>alert(1)</script>：<b>仍保持同一约定</b>',
+    '→ 周宁：<b>仍保持同一约定</b>',
+    '没有对象的状态',
+  ]);
+  assert.equal(ui.history.querySelectorAll('script').length, 0, '对象名与正文都作为纯文本显示');
+  assert.equal(ui.history.querySelectorAll('b').length, 0, '变化正文不会解析为HTML');
+});
+
+test('未知旧协议回执经真实历史reader折叠显示，展开后惰性构建纯文本并保留展开态', async () => {
+  const rawText = '<script>alert(1)</script>\n未知旧格式正文 & 原样保留';
+  const chat = [{ is_user: true, is_system: false, mes: '旧楼正文', extra: { [RECALL_RECEIPT_KEY]: {
+    schemaVersion: 4, chatId: MARKER_CHAT, userMessageIndex: 0, injectionText: rawText, selectedFloors: [], selectedStates: [],
+  } } }];
+  const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { floors: [], memoryEntities: [] } });
+  h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+  let drawer = view.recallUi.events.querySelector('.legacy-receipt');
+  assert.ok(drawer, 'schema4回执由默认的真实历史reader读取后应可查看原文');
+  assert.equal(drawer.open, false);
+  assert.equal(drawer.children.length, 1, '折叠时不构建长正文节点');
+  assert.equal(drawer.children[0].textContent, '查看回执原文');
+  drawer.open = true; drawer.emit('toggle');
+  let body = drawer.querySelector('.time-reference-copy');
+  assert.ok(body); assert.equal(body.textContent, rawText);
+  assert.equal(body.querySelector('script'), null, '旧回执原文作为纯文本，不解析HTML');
+  h.emit('MESSAGE_UPDATED', 0); await h.flushMicrotasks();
+  drawer = view.recallUi.events.querySelector('.legacy-receipt');
+  assert.equal(drawer.querySelector('.legacy-receipt-copy'), body, '无变化通知复用已展开的原文节点');
+  view.recallUi.peopleTab.click();
+  chat[0].extra[RECALL_RECEIPT_KEY].selectedStates = [{ subject: '甲', layer: 'core', text: '新增的旧状态字段' }];
+  h.emit('MESSAGE_UPDATED', 0); await h.flushMicrotasks();
+  drawer = view.recallUi.events.querySelector('.legacy-receipt');
+  body = drawer.querySelector('.time-reference-copy');
+  assert.equal(drawer.open, true, '历史投影更新后仍保留用户展开状态');
+  assert.equal(body.textContent, rawText);
+  assert.equal(view.recallUi.people.hidden, false, '投影更新后仍保留人物页签选择');
+
+  const signed = await actualCseReceipt();
+  const oldSigned = structuredClone(signed.receipt);
+  oldSigned.schemaVersion = 17; oldSigned.strategyVersion = 'continuity-v17'; oldSigned.injectionText = rawText;
+  delete oldSigned.selectedLocationReferences; delete oldSigned.locationReferenceDependency;
+  for (const change of oldSigned.selectedCseChanges) for (const side of [change.before, change.after]) if (side) delete side.toward;
+  oldSigned.receiptFingerprint = await legacyReceiptFingerprint(oldSigned);
+  signed.userMessage.extra[RECALL_RECEIPT_KEY] = oldSigned;
+  const signedHistorical = await projectHistoricalRecallReceipt(signed.userMessage, { chatId: MARKER_CHAT, userMessageIndex: 1 });
+  assert.ok(signedHistorical, '旧schema17签名材料仍由默认历史reader读取');
+  assert.equal(projectInlineRecallReceipt(signedHistorical).rawReceiptAvailable, true, '旧协议应产生原文入口投影');
+  assert.equal(projectInlineRecallReceipt({ ...signedHistorical, restoredReceipt: false, reusedReceipt: true }).rawReceiptAvailable, true,
+    '已复用的旧签名回执也保留原文入口');
+  const oldSigned18 = structuredClone(signed.receipt);
+  oldSigned18.injectionText = rawText;
+  for (const change of oldSigned18.selectedCseChanges) for (const side of [change.before, change.after]) if (side) delete side.toward;
+  oldSigned18.receiptFingerprint = await legacyReceiptFingerprint(oldSigned18);
+  const old18Historical = await projectHistoricalRecallReceipt({ ...signed.userMessage, extra: { [RECALL_RECEIPT_KEY]: oldSigned18 } }, { chatId: MARKER_CHAT, userMessageIndex: 1 });
+  assert.ok(old18Historical, '旧schema18缺对象字段的签名回执继续可读');
+  assert.equal(projectInlineRecallReceipt({ ...old18Historical, restoredReceipt: false, reusedReceipt: true }).rawReceiptAvailable, true,
+    '同用户复用的旧schema18回执仍显示原文入口');
+  const signedHarness = createHarness({ chat: signed.chat, chatId: MARKER_CHAT, memoryState: { floors: [], memoryEntities: [] } });
+  signedHarness.chatRoot.append(messageElement(1, { user: true })); signedHarness.renderer.start(); await signedHarness.flushMicrotasks();
+  const signedView = signedHarness.chatRoot.querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+  let signedDrawer = signedView.recallUi.events.querySelector('.legacy-receipt');
+  for (let attempt = 0; attempt < 8 && !signedDrawer; attempt += 1) {
+    await signedHarness.flushMicrotasks();
+    signedDrawer = signedView.recallUi.events.querySelector('.legacy-receipt');
+  }
+  assert.ok(signedDrawer, '可读取的旧schema17签名回执也显示原文入口');
+  assert.equal(signedDrawer.children.length, 1, '旧签名折叠时也不构建正文节点');
+
+  const recognized = projectInlineRecallReceipt({ schemaVersion: 4, status: 'ready', injectionText: recallInjection('AI #1：一条可识别旧事'),
+    legacyReadOnly: true, selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1 }], selectedStates: [] });
+  assert.equal(recognized.protocolRecognized, true);
+  assert.equal(recognized.rawReceiptAvailable, false, '已有可识别协议不重复提供原文折叠区');
+  const failed = projectInlineRecallReceipt({ schemaVersion: 4, status: 'error', legacyReadOnly: true, injectionText: rawText,
+    selectedFloors: [], selectedStates: [] });
+  assert.equal(failed.rawReceiptAvailable, false, '错误回执不伪装成已注入原文');
+  for (const status of ['running', 'stale']) {
+    assert.equal(projectInlineRecallReceipt({ schemaVersion: 4, status, legacyReadOnly: true, injectionText: rawText,
+      selectedFloors: [], selectedStates: [] }).rawReceiptAvailable, false, `${status}回执不伪装成已注入原文`);
+  }
+});
 
 test('独立时间签名文本兼容纯时间及覆盖说明后的两种历史，旧楼展示原文与预算结果', async () => {
   const reminder = '甲 / 擦伤：原观察（5月9日）：手腕擦伤；已过2天（第3天）；当前推测（5月11日）：可能减轻 <script>示例</script>';
@@ -94,6 +283,7 @@ test('独立时间签名文本兼容纯时间及覆盖说明后的两种历史�
   const onlyText = formatRecallInjection({ coverage, floors: [], states: [], entityById: new Map(), timeProjection, timeReminders: timeProjection.reminders });
   const only = { schemaVersion: 13, status: 'ready', selectedFloors: [], selectedStates: [], selectedCseChanges: [], stateProgressions: [], storylines: [], injectionText: onlyText };
   assert.equal(projectInlineRecallReceipt(only).protocolRecognized, true);
+  assert.equal(projectInlineRecallReceipt(only).rawReceiptAvailable, false, '纯时间协议不重复显示整段回执原文');
   assert.deepEqual(projectInlineRecallReceipt(only).timeReferenceItems, [reminder]);
   for (const storylines of [undefined, [{ storylineId: 'recent', title: '近期剧情接续', basis: '真实旧事' }]]) {
     const floor = { floorId: HISTORY_FLOOR, assistantSeq: 1, chronology: [], items: [{ category: 'objective', text: '黄昏抵达钟楼', ...(storylines ? { storylineId: 'recent' } : {}) }], section: 'recent' };
@@ -509,7 +699,7 @@ test('真实当前回执分为事与人，完整保留私密变化并按楼层�
   const h = createHarness({ chat, memoryState, projectReceipt: async () => receipt });
   const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
   const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
-  assert.equal(receipt.schemaVersion, 17);
+  assert.equal(receipt.schemaVersion, 18);
   assert.equal(receipt.selectedCseChanges.find(value => value.action === 'remove' && value.before?.text === '仍在钟楼等候')?.before.text, '仍在钟楼等候');
   const projection = projectInlineRecallReceipt(receipt);
   assert.equal(projection.protocolRecognized, true);
@@ -636,6 +826,58 @@ test('桌面扁平页签合并同楼剧情线但不丢不同正文或人物变�
   assert.deepEqual(ui.timelines.children[0].querySelectorAll('.change-copy').map(node => node.textContent), ['甲线人物变化', '乙线人物变化']);
 });
 
+test('当前状态按已知人物与目标身份去重，同名目标和同名主体不互相吞并', async t => {
+  const targetedStates = [
+    { subjectEntityId: 'person-1', subject: '林岚', layer: 'situational', text: '仍保持同一约定', toward: '周宁', towardEntityId: 'target-1' },
+    { subjectEntityId: 'person-1', subject: '林岚', layer: 'situational', text: '仍保持同一约定', toward: '周宁', towardEntityId: 'target-1' },
+    { subjectEntityId: 'person-1', subject: '林岚', layer: 'situational', text: '仍保持同一约定', toward: '周宁', towardEntityId: 'target-2' },
+    { subjectEntityId: 'person-2', subject: '林岚', layer: 'situational', text: '仍保持同一约定', toward: '周宁', towardEntityId: 'target-1' },
+  ];
+  const legacyStates = [
+    { subjectEntityId: 'person-3', subject: '季明', layer: 'situational', text: '仍保留旧约' },
+    { subjectEntityId: 'person-3', subject: '季明', layer: 'situational', text: '仍保留旧约' },
+  ];
+  const storyline = { storylineId: 'line-current', title: '人物关系', basis: '本楼已保存状态' };
+  const currentStates = targetedStates.filter((value, index) => index !== 1).map((value, index) => ({
+    ...value, stateId: `state-${index + 1}`, sourceFloorId: 'floor-current', sourceDeltaId: `delta-${index + 1}`,
+    sourceAssistantSeq: 1, visibility: 'authorial', reason: '已保存状态', storylineId: storyline.storylineId,
+  }));
+  const variants = [
+    { name: '旧schema11缺目标ID仍按旧显示字段去重', schemaVersion: 11, strategyVersion: 'continuity-v11',
+      selectedStates: [...targetedStates, ...legacyStates], storylines: [], expectedCopies: 4,
+      expectedNames: ['林岚', '林岚', '季明'] },
+    { name: '当前schema18剧情线保留同名目标身份', schemaVersion: 18, strategyVersion: 'continuity-v18',
+      selectedStates: currentStates, storylines: [storyline], expectedCopies: 3,
+      expectedNames: ['林岚', '林岚'] },
+  ];
+  for (const variant of variants) await t.test(variant.name, async () => {
+    const injectionText = variant.schemaVersion === 18 ? formatRecallInjection({
+      coverage: { memoryComplete: true, cseCurrent: true }, floors: [], states: variant.selectedStates,
+      cseChanges: [], entityById: new Map(), storylines: variant.storylines,
+    }) : '';
+    const receipt = { schemaVersion: variant.schemaVersion, strategyVersion: variant.strategyVersion, status: 'ready', injectionText,
+      selectedFloors: [], selectedStates: variant.selectedStates, selectedCseChanges: [], storylines: variant.storylines };
+    const original = structuredClone(receipt);
+    const projection = projectInlineRecallReceipt(receipt);
+    if (variant.schemaVersion === 18) assert.equal(projection.protocolRecognized, true, '当前回执使用有效剧情线正文');
+    const chat = [{ is_user: true, is_system: false, mes: '继续', extra: { [RECALL_RECEIPT_KEY]: receipt } }];
+    const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] },
+      projectReceipt: async message => message.extra[RECALL_RECEIPT_KEY] });
+    const userElement = messageElement(0, { user: true }); h.chatRoot.append(userElement); h.renderer.start(); await h.flushMicrotasks();
+    const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+    view.recallUi.peopleTab.click();
+    const rendered = descendantText(view.recallUi.current);
+    assert.equal(view.recallUi.current.querySelectorAll('.current-copy').length, variant.expectedCopies,
+      '不同目标与不同主体保留，完全相同身份重复合并；缺目标ID的旧条目保持既有去重');
+    assert.deepEqual(projection.stateItems.map(value => value.towardEntityId), variant.selectedStates.map(value => value.towardEntityId),
+      '只读投影保留存在的目标身份供展示去重使用');
+    assert.deepEqual(view.recallUi.current.querySelectorAll('.current-person').map(person => person.querySelector('.current-name').textContent), variant.expectedNames);
+    assert.doesNotMatch(rendered, /person-1|person-2|person-3|target-1|target-2/, '内部身份只参与去重，不进入可见文案');
+    assert.deepEqual(receipt, original, '只读展示不修改封签输入');
+    h.renderer.destroy();
+  });
+});
+
 test('v15/v16 楼内投影接受第五条剧情线，旧 v14 仍保持四线历史边界', () => {
   const storylines = Array.from({ length:5 }, (_, index) => ({ storylineId:`line-${index + 1}`, title:`剧情线 ${index + 1}`, basis:`独立依据 ${index + 1}` }));
   const states = storylines.map((line, index) => ({
@@ -742,6 +984,7 @@ test('楼内事页原样展示本轮已签千事，支持仅千事、即时复�
     injectionText:block(text), qianshiProgress:progress(text), storylines:[], selectedFloors:[], selectedStates:[], selectedCseChanges:[] });
   const onlyProjection = projectInlineRecallReceipt(only(liveText));
   assert.equal(onlyProjection.protocolRecognized, true, '只有千事时也应识别为合法回执');
+  assert.equal(onlyProjection.rawReceiptAvailable, false, '纯千事协议不重复显示整段回执原文');
   assert.equal(onlyProjection.qianshiProgressText, liveText);
   assert.equal(onlyProjection.historyItems.length, 0);
   assert.equal(onlyProjection.summary, '本轮已注入千事进度。');
@@ -897,6 +1140,47 @@ test('召回来源同时区分同号冻结旧楼与B新楼，点击仍按各自f
   assert.match(descendantText(view.recallUi.display), /第 570 个结/u);
   assert.match(descendantText(view.recallUi.display), /B新楼材料/u);
   assert.deepEqual(view.recallUi.history.querySelectorAll('.change-floor').map(item => item.children[0].textContent), ['第 570 个结', '旧第 570 个结']);
+});
+
+test('旧 schema10 人物变化经默认历史reader保留同名目标的不同身份，不把两条变化折叠', async () => {
+  const signed = await actualCseReceipt();
+  const legacyReceipt = structuredClone(signed.receipt);
+  legacyReceipt.schemaVersion = 10;
+  legacyReceipt.strategyVersion = 'continuity-v5';
+  delete legacyReceipt.qianshiDeletionWitness;
+  for (const floor of legacyReceipt.selectedFloors ?? []) delete floor.summaryWitnesses;
+  delete legacyReceipt.selectedLocationReferences;
+  delete legacyReceipt.locationReferenceDependency;
+  delete legacyReceipt.qianshiProgress;
+  const side = towardEntityId => ({ text: '仍维持同一约定', visibility: 'private', reason: '持续的互动状态', origin: 'floor', toward: '周宁', towardEntityId, sourceAssistantSeq: null });
+  legacyReceipt.selectedStates = [];
+  legacyReceipt.selectedCseChanges = [
+    { deltaId: 'legacy-delta-a', floorId: CHANGE_FLOOR, assistantSeq: 2, subjectEntityId: 'person-owner', subject: '林岚', layer: 'situational', action: 'add', before: null, after: side('person-zhou-a') },
+    { deltaId: 'legacy-delta-b', floorId: CHANGE_FLOOR, assistantSeq: 2, subjectEntityId: 'person-owner', subject: '林岚', layer: 'situational', action: 'add', before: null, after: side('person-zhou-b') },
+  ];
+  legacyReceipt.receiptFingerprint = `sha256:${await sha256(JSON.stringify([
+    legacyReceipt.schemaVersion, legacyReceipt.pluginVersion, legacyReceipt.chatId, legacyReceipt.narrativeGeneration,
+    legacyReceipt.headCheckpointId, legacyReceipt.rootRevision, legacyReceipt.userMessageIndex, legacyReceipt.userContentFingerprint,
+    legacyReceipt.queryFingerprint, legacyReceipt.generationType, legacyReceipt.selectedFloors, legacyReceipt.selectedStates,
+    legacyReceipt.coverage, legacyReceipt.injectionText, legacyReceipt.stages, legacyReceipt.skipReasons,
+    legacyReceipt.completionStatus, legacyReceipt.createdAt, legacyReceipt.bodyMatchFingerprint, legacyReceipt.strategyVersion,
+    legacyReceipt.selectedCseChanges, legacyReceipt.selectorDiagnostic, legacyReceipt.timings,
+  ]))}`;
+  signed.userMessage.extra[RECALL_RECEIPT_KEY] = legacyReceipt;
+  const readBack = await projectHistoricalRecallReceipt(signed.userMessage, { chatId: MARKER_CHAT, userMessageIndex: 1 });
+  assert.ok(readBack, '旧schema10签名票据应由默认历史reader读取');
+  const projected = projectInlineRecallReceipt(readBack);
+  const h = createHarness({ chat: signed.chat, chatId: MARKER_CHAT, memoryState: { floors: [], memoryEntities: [] }, projectReceipt: async () => readBack });
+  const userElement = messageElement(1, { user: true }); h.chatRoot.append(userElement); h.renderer.start();
+  for (let attempt = 0; attempt < 8; attempt += 1) await h.flushMicrotasks();
+  const view = resolveInlineAnchor(userElement).querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+  const rows = view.recallUi.history.querySelectorAll('.change-entry');
+  assert.equal(rows.length, 2);
+  assert.deepEqual(projected.cseChangeItems.map(item => item.after.towardEntityId), ['person-zhou-a', 'person-zhou-b']);
+  assert.deepEqual(rows.map(row => descendantText(row)), [
+    '+→ 周宁：仍维持同一约定仅本人知晓', '+→ 周宁：仍维持同一约定仅本人知晓',
+  ]);
+  assert.doesNotMatch(descendantText(view.recallUi.history), /person-zhou-/u, '内部实体 ID 不应展示给用户');
 });
 
 test('AI楼投影跳过同号冻结前缀，携带楼只显示归档说明且不可重新提取', async () => {

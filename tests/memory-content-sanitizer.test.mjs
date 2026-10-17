@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeMemoryTagList, readMemoryTagBlocks, sanitizeMemoryContent, stripMemoryTagBlocks } from '../src/memory-content-sanitizer.js';
-import { findEarliestCanonicalDivergence, scanAssistantCandidates, sanitizerFingerprint } from '../src/v3/foundation-domain.js';
+import { scanAssistantCandidates, sanitizerFingerprint } from '../src/v3/foundation-domain.js';
 
 test('默认 content 去标签保留正文，并二次删除内部嵌套噪声', () => {
   const source = '<content class="story">开场<think>秘密<status>更深噪声</status></think>\n正文<reasoning>推理</reasoning></content>';
@@ -65,7 +65,7 @@ test('extraTags 字面规则改变 sanitizer 指纹并使旧楼识别为 canonic
   const next = await scanAssistantCandidates(chat, { sanitizerOptions: nextOptions });
   assert.equal(previous[0].canonicalContent, '[[思考]]正文');
   assert.equal(next[0].canonicalContent, '正文');
-  assert.equal(findEarliestCanonicalDivergence(previous.map(item => ({ content: { canonicalFingerprint: item.canonicalFingerprint } })), next), 1);
+  assert.notEqual(previous[0].canonicalFingerprint, next[0].canonicalFingerprint);
 });
 
 test('保留标签占位符不会与正文中的 KEEP 字样碰撞', () => {

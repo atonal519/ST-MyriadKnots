@@ -1,5 +1,5 @@
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, timeDistance, timeHours, validTimeProjection, timeBodyReads, timeItemFailures } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -190,7 +190,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
   return prepared;
 }
 
-export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), storyCalendarProvider = () => null, sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
+export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), storyCalendarProvider = () => null, sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, getMemoryActivityState = getMemoryState, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
   let epoch = 0, active = null, last = null, pendingDeletionCount = 0, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, qianshiReferences = null, itemsKey = null, coverage = null, clockContentChanged = false, historyAuthorization = null, automatic = null, startingController = null;
   const subscribers = new Set();
   const enabled = () => isEnabled() === true;
@@ -208,7 +208,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   const manualBlock = (ignoreActive = false, memory = null, source = null, snapshotProvided = false) => {
     if (!enabled()) return '时间推演已关闭。';
     if (active && !ignoreActive) return active.phase === 'saving' ? '正在保存时间事项。' : '正在整理时间事项。';
-    if (!snapshotProvided) { memory = getMemoryState(); source = getReachable(); }
+    if (!snapshotProvided) { memory = getMemoryActivityState(); source = getReachable(); }
     if (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status)) return '请先同步当前聊天记忆，再整理时间事项。';
     if (!source?.root || !['ready', 'needsReseal'].includes(source.status ?? 'ready') || source.root.chatId !== identity().chatId) return '请等待当前聊天记忆读取就绪。';
     return '';
@@ -253,8 +253,10 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     return { ready: true, removed, sources, pending: changed.length - sources.length, shouldRequest: sources.length > 0,
       request: { task: 'annual-settings', sources: sources.map(({ id, subjectName, field, content }) => ({ sourceId: id, person: subjectName, field, content })) } };
   }
-  const memoryNeedsSync = memory => ['syncing', 'needsReview', 'error'].includes(memory?.memorySyncStatus)
-    || ['needsReview', 'error'].includes(memory?.status);
+  const memoryNeedsSync = (memory = getMemoryActivityState()) => {
+    return ['syncing', 'needsReview', 'error'].includes(memory?.memorySyncStatus)
+      || ['needsReview', 'error'].includes(memory?.status);
+  };
   const clearAutomaticFailure = () => {
     if (!last?.automaticFailure) return;
     if (last.reason === 'automatic') { last = null; return; }
@@ -299,32 +301,37 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     // Keep only the narrow association anchors needed to prevent Qianshi rejudge from orphaning reminders.
     qianshiReferences = replayedItems.filter(item => item.qianshiRef?.matterId && item.qianshiRef?.originEventId)
       .map(item => ({ id: item.id, qianshiRef: { ...item.qianshiRef } }));
-    const items = replayedItems.map(item => ({
-      id: item.id, mergedInto: item.mergedInto ?? null, mergeDescription: item.mergeDescription ?? null, retirementReason: item.retirementReason ?? null, observationKey: item.observationKey, status: item.status, person: names.get(item.subjectEntityId) ?? item.subjectName ?? '人物未提供', label: item.label, type: item.type,
-      observation: item.observation, observationTime: effectiveTime(item.observationTime), occurrenceTime: effectiveTime(item.occurrenceTime),
-      dueTime: effectiveTime(item.dueTime), periodDays: item.periodDays,
-      elapsedDays: timeDistance(item.occurrenceTime, currentTime), elapsedHours: timeHours(item.occurrenceTime, currentTime),
-      observationElapsedDays: timeDistance(item.observationTime, currentTime), observationElapsedHours: timeHours(item.observationTime, currentTime),
-      projection: validTimeProjection(item, currentTime) ? item.projection.text : null,
-      oldProjection: item.projection?.observationKey === item.observationKey && !validTimeProjection(item, currentTime) ? { text: item.projection.text, applicableTime: item.projection.applicableTime } : null,
-      assessmentReason: item.reviewAssessment?.observationKey === item.observationKey && JSON.stringify(item.reviewAssessment.applicableTime) === JSON.stringify(currentTime) ? item.reviewAssessment.reason : null,
-      failureReason: item.status !== 'cancelled' ? failures.get(item.id) ?? null : null,
-      reviewStatus: reviewCurrent && item.status === 'active' ? !selectedIds.has(item.id) ? 'omitted' : !answeredIds.has(item.id) ? 'unanswered' : null : null,
-    }));
+    const items = replayedItems.map(item => {
+      const projectionIsCurrent = validTimeProjection(item, currentTime);
+      const keywords = normalizeTimeKeywords(item.keywords) ?? normalizeTimeKeywords(item.tags);
+      return {
+        id: item.id, subjectEntityId: item.subjectEntityId, mergedInto: item.mergedInto ?? null, hasMergedMembers: Boolean(item.mergedItemIds?.length), mergeDescription: item.mergeDescription ?? null, retirementReason: item.retirementReason ?? null, observationKey: item.observationKey, status: item.status, person: names.get(item.subjectEntityId) ?? item.subjectName ?? '人物未提供', label: item.label, type: item.type,
+        observation: item.observation, observationTime: effectiveTime(item.observationTime), occurrenceTime: effectiveTime(item.occurrenceTime),
+        dueTime: effectiveTime(item.dueTime), periodDays: item.periodDays,
+        ...(keywords ? { keywords } : {}),
+        projection: projectionIsCurrent ? item.projection.text : null,
+        projectionTime: projectionIsCurrent ? effectiveTime(item.projection.applicableTime) : null,
+        assessmentReason: item.reviewAssessment?.observationKey === item.observationKey && JSON.stringify(item.reviewAssessment.applicableTime) === JSON.stringify(currentTime) ? item.reviewAssessment.reason : null,
+        failureReason: item.status !== 'cancelled' ? failures.get(item.id) ?? null : null,
+        reviewStatus: reviewCurrent && item.status === 'active' ? !selectedIds.has(item.id) ? 'omitted' : !answeredIds.has(item.id) ? 'unanswered' : null : null,
+      };
+    });
     trackedItems = items.filter(item => item.status === 'active'); stoppedItems = items.filter(item => item.status !== 'active');
     annualItems = projectAnnualSettings(annualRecords, currentTime).items;
     itemsKey = sourceKey(source);
     statusKey = sourceKey(getReachable()) === itemsKey ? itemsKey : null;
     return trackedItems.length;
   }
-  const getActivityState = (memory = getMemoryState(), source = getReachable()) => {
-    const disabledReason = manualBlock(false, memory, source, true);
-    return Object.freeze({ status: active ? 'running' : enabled() ? memoryNeedsSync(memory) ? 'waiting' : last?.status ?? 'idle' : 'disabled', phase: active?.phase ?? null, active: Boolean(active), last, coverage, clockContentChanged: enabled() && clockContentChanged, progress: active?.progress ?? null, canOrganize: !disabledReason, disabledReason, pendingDeletionCount });
-  };
   const getState = () => {
-    const memory = getMemoryState(), source = getReachable(), activity = getActivityState(memory, source);
+    const memory = getMemoryActivityState(), source = getReachable(), activity = getActivityState(memory, source);
     const canDisplay = enabled() && !memoryNeedsSync(memory) && itemsKey !== null && itemsKey === sourceKey(source);
     return { ...activity, trackedItems: canDisplay ? structuredClone(trackedItems) : null, stoppedItems: canDisplay ? structuredClone(stoppedItems) : null, annualItems: canDisplay ? structuredClone(annualItems) : null };
+  };
+  const getActivityState = (memory = getMemoryActivityState(), source = getReachable()) => {
+    const disabledReason = manualBlock(false, memory, source, true);
+    return Object.freeze({ status: active ? 'running' : enabled() ? memoryNeedsSync(memory) ? 'waiting' : last?.status ?? 'idle' : 'disabled',
+      phase: active?.phase ?? null, active: Boolean(active), last, coverage, clockContentChanged: enabled() && clockContentChanged,
+      progress: active?.progress ?? null, canOrganize: !disabledReason, disabledReason, pendingDeletionCount });
   };
   const notify = () => { const state = getState(); for (const listener of subscribers) try { listener(state); } catch { /* UI isolation */ } return state; };
   function invalidate() {
@@ -348,9 +355,8 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '等待当前聊天记忆读取。' }; return notify();
     }
     const bodyKey = sourceKey(source);
-    const memory = getMemoryState();
-    if (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
-    if (memory?.memorySyncStatus === 'syncing') {
+    if (['needsReview', 'error'].includes(getMemoryState()?.memorySyncStatus) || ['needsReview', 'error'].includes(getMemoryState()?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
+    if (getMemoryState()?.memorySyncStatus === 'syncing') {
       if (itemsKey !== bodyKey) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; }
       return notify();
     }
@@ -363,7 +369,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     read.promise = (async () => {
       try {
         const stored = await store.read(chatId);
-        if (token !== epoch || !enabled() || active || identity().chatId !== chatId || sourceKey(getReachable()) !== bodyKey || memoryNeedsSync(getMemoryState())) return getState();
+        if (token !== epoch || !enabled() || active || identity().chatId !== chatId || sourceKey(getReachable()) !== bodyKey || memoryNeedsSync()) return getState();
         pendingDeletionCount = stored.head?.pendingDeletionRecords?.length ?? 0;
         const projected = await bodySource(source), freshAnnual = await annualSnapshot();
         if (token !== epoch || sourceKey(getReachable()) !== bodyKey || freshAnnual.ready !== annual.ready || freshAnnual.fingerprint !== annual.fingerprint) return getState();
@@ -915,6 +921,6 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       .map(item => ({ id: item.id, qianshiRef: { ...item.qianshiRef } }));
   }
   return Object.freeze({ runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, deleteItems, refreshStatus, recallProjection, currentStoryContext,
-    getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getQianshiReferencesForChat, getActivityState, getState, invalidate, stop, bind,
+    getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getQianshiReferencesForChat, getState, getActivityState, invalidate, stop, bind,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

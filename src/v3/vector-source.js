@@ -27,10 +27,14 @@ export async function projectVectorSources(memories, floors, { includeSummaries 
         : null);
       if (!floor || typeof canonicalContent !== 'string' || !canonicalContent.trim()
         || typeof floor.content?.canonicalContent === 'string' && canonicalContent !== floor.content.canonicalContent) continue;
+      // Store-validated floor fingerprints may be reused only for the exact canonical text; legacy inputs still hash normally.
+      const knownFingerprint = floor.content?.canonicalContent === canonicalContent
+        && /^sha256:[a-f0-9]{64}$/u.test(floor.content?.canonicalFingerprint ?? '')
+        ? floor.content.canonicalFingerprint : null;
       sources.push(Object.freeze({
         floorId, assistantSeq: floor.assistantSeq, floorMemoryId: memory.id,
         memoryFloorId: anchor.id, memoryAssistantSeq: anchor.assistantSeq, canonicalContent,
-        fingerprint: `sha256:${await sha256(canonicalContent)}`,
+        fingerprint: knownFingerprint ?? `sha256:${await sha256(canonicalContent)}`,
       }));
     }
   }

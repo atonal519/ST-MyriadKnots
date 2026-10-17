@@ -16,6 +16,7 @@ import { createTaskRouter } from '../src/api-routing.js';
 import { createPrivateRecallDiagnostics, projectPrivateRecallDiagnostic } from '../src/private-recall-diagnostics.js';
 import { createVectorIndex } from '../src/v3/vector-index.js';
 import { summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
+import { readLocationReference } from '../src/v3/location-reference.js';
 import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -43,6 +44,7 @@ const receiptFingerprint = async receipt => fingerprintText(JSON.stringify([
   ...(receipt.schemaVersion >= 13 && receipt.schemaVersion <= 14 ? [receipt.stateProgressions] : []),
   ...(receipt.schemaVersion >= 14 ? [receipt.timeDependencies] : []),
   ...(receipt.schemaVersion >= 15 && receipt.qianshiProgress ? [receipt.qianshiProgress] : []),
+  ...(receipt.schemaVersion >= 18 ? [receipt.selectedLocationReferences, receipt.locationReferenceDependency] : []),
 ]));
 const stripSummaryWitnessesForLegacyReceipt = receipt => {
   for (const floor of receipt.selectedFloors ?? []) delete floor.summaryWitnesses;
@@ -994,6 +996,58 @@ test('anti-omniscience 分桶且声明非指令；coverage 不完整时仅保留
   assert.doesNotMatch(partial.injectionText, /对林岚保持戒备|暗自恐惧/);
   assert.match(partial.injectionText, /覆盖说明.*当前没有可用的人物状态/);
   assert.ok(partial.stages.dropVisibility >= 2);
+});
+
+test('两种召回布局共享五类知情边界且保留来源主体与明确接收者', () => {
+  const userId = '88888888-7777-4777-8777-777777777777';
+  const otherId = '99999999-7777-4777-8777-777777777777';
+  const source = selectorSource();
+  const entityById = new Map(source.entities.map(value => [value.entityId, value]));
+  const boundary = '以下都是作者侧资料，不等于人物共享记忆：private 只属于标明主体；authorial 仅作作者塑造参考。observable、expressed、shared 不证明所有人物知情，分别以正文证实的实际观察、接收和共同知情范围为限。需要区分表达者、接收者或共同知情范围时，只保留有依据的归属；不得补出无依据受众，不确定时不扩大范围。toward 只标态度对象，不标信息接收者或知情者。';
+  const makeState = (stateId, subjectEntityId, subject, visibility, text, sourceAssistantSeq, storylineId) => ({
+    stateId, subjectEntityId, subject, layer: 'situational', visibility, text, reason: '正文原句', toward: visibility === 'private' ? '乙' : null,
+    towardEntityId: visibility === 'private' ? otherId : null, sourceAssistantSeq, sourceFloorId: `floor-${sourceAssistantSeq}`,
+    sourceDeltaId: `delta-${sourceAssistantSeq}`, ...(storylineId ? { storylineId } : {}),
+  });
+  const build = withStoryline => {
+    const storylineId = withStoryline ? 'line-knowledge' : null;
+    const storyField = storylineId ? { storylineId } : {};
+    const stateVisibilities = ['private', 'expressed', 'observable', 'shared', 'authorial'];
+    const states = [PERSON, userId].flatMap((subjectEntityId, personIndex) => {
+      const subject = entityById.get(subjectEntityId).displayName;
+      return stateVisibilities.map((visibility, index) => makeState(`current-${personIndex}-${index}`, subjectEntityId, subject,
+        visibility, `${subject}-${visibility}-current`, 9, storylineId));
+    });
+    const before = makeState('history-private', PERSON, '裴晚生', 'private', '此前私下不信任乙', 7, storylineId);
+    const after = { ...makeState('history-expressed', PERSON, '裴晚生', 'expressed', '后来当面表达不信任乙', 8, storylineId), toward: '乙', towardEntityId: otherId };
+    return formatRecallInjection({
+      coverage: source.coverage,
+      floors: [{ floorId: FLOOR1, assistantSeq: 8, chronology: [], items: [
+        { category: 'private', ownerEntityId: PERSON, text: '裴晚生未公开的判断', ...storyField },
+        { category: 'transfer', fromEntityId: PERSON, toEntityIds: [userId], kind: 'told', text: '钟楼钥匙在西侧抽屉', ...storyField },
+      ] }],
+      states,
+      cseChanges: [{ deltaId: 'delta-change', assistantSeq: 8, subjectEntityId: PERSON, subject: '裴晚生', layer: 'adaptive', action: 'refine', before, after, ...storyField }],
+      entityById,
+      storylines: storylineId ? [{ storylineId, title: '旧事与人物状态', basis: '来源材料' }] : [],
+    });
+  };
+  const layouts = [build(false), build(true)];
+  for (const injection of layouts) {
+    assert.equal(injection.split(boundary).length - 1, 1, '全局边界在每个布局中只出现一次');
+    for (const subjectId of [PERSON, userId]) {
+      const subjectName = entityById.get(subjectId).displayName;
+      for (const visibility of ['private', 'expressed', 'observable', 'shared', 'authorial']) {
+        assert.match(injection, new RegExp(`${subjectName} / situational(?:，对 乙)? / ${visibility}[^\\n]*${subjectName}-${visibility}-current`));
+      }
+    }
+    assert.match(injection, /private，仅可用于该人物，对 乙：此前私下不信任乙/);
+    assert.match(injection, /expressed，对 乙：后来当面表达不信任乙/);
+    assert.match(injection, /裴晚生 → 林岚（仅列明接收者知情，渠道：told）：钟楼钥匙在西侧抽屉/);
+    assert.doesNotMatch(injection, /裴晚生 → 乙|乙（仅列明接收者知情/);
+    assert.match(injection, /裴晚生未公开的判断/);
+  }
+  assert.equal(layouts[0].split('\n').find(line => line === boundary), layouts[1].split('\n').find(line => line === boundary));
 });
 
 function wideCandidateSource({ direct = 0, summary = 0, long = false } = {}) {
@@ -2477,6 +2531,178 @@ async function runtimeSourceWithBodyRef(text = '街上已经安静。', locator 
   return source;
 }
 
+test('实际召回把最新已选swipe的地点标注作为有来源的补充参照注入并签入回执', async () => {
+  const source = runtimeFixture();
+  let selectorInput = null;
+  const harness = createRuntimeHarness({ sourceReader: async () => structuredClone(source),
+    reachableReader: async () => rawReachableFromSource(source),
+    selector: input => { selectorInput = input; return selectRecall(input); } });
+  const selected = '林岚仍住在卧室。<location>东区公寓·卧室</location><think><location>不应进入参考的住处</location></think>';
+  harness.chat.splice(0, harness.chat.length,
+    { is_user: true, is_system: false, mes: '之前继续' },
+    { is_user: false, is_system: false, mes: '林岚仍住在卧室。', swipes: ['林岚仍住在卧室。<location>落选住所</location>', selected], swipe_id: 1 },
+    harness.userMessage);
+  harness.userMessage.mes = '接着说下去';
+  const core = structuredClone(harness.chat);
+  core[1].mes = '林岚仍住在卧室。';
+  const result = await harness.runtime.intercept(core, 12000, null, 'normal');
+  const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.equal(result.lastRecall.status, 'ready');
+  assert.ok(selectorInput, '真实runtime应把候选交给正式selector');
+  assert.ok(receipt.selectedLocationReferences?.length, '回执应记录被选中的来源地点参考');
+  assert.match(result.lastRecall.injectionText, /东区公寓·卧室/u);
+  assert.doesNotMatch(result.lastRecall.injectionText, /落选住所|不应进入参考的住处/u);
+  assert.equal(receipt.selectedLocationReferences[0].hostLocator.messageIndex, 1);
+  assert.equal(receipt.selectedLocationReferences[0].hostLocator.swipeId, 1);
+  assert.equal(Object.hasOwn(receipt.selectedLocationReferences[0], 'floorId'), false,
+    '未归档的当前楼使用真实宿主定位，不伪造floorId');
+  assert.equal(receipt.injectionText, latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT));
+  harness.runtime.invalidate('simulateReload');
+  const restored = await harness.runtime.restorePersistedReceipt();
+  assert.equal(restored.lastRecall?.restoredReceipt, true, 'schema18 新字段必须参与封签并可恢复');
+  assert.deepEqual(restored.lastRecall.selectedLocationReferences, receipt.selectedLocationReferences);
+});
+
+test('地点参考变化触发同用户重选，无关显示元数据变化仍复用原回执', async () => {
+  let selectorCalls = 0;
+  const source = runtimeFixture();
+  const harness = createRuntimeHarness({ sourceReader: async () => structuredClone(source),
+    selector: input => { selectorCalls += 1; return selectRecall(input); } });
+  const firstText = '林岚仍住在卧室。<location>东区公寓·卧室</location>';
+  harness.chat.splice(0, harness.chat.length,
+    { is_user: true, is_system: false, mes: '之前继续' },
+    { is_user: false, is_system: false, mes: '林岚仍住在卧室。', swipes: [firstText], swipe_id: 0 },
+    harness.userMessage);
+  harness.userMessage.mes = '接着说下去';
+  const cleanCore = () => {
+    const value = structuredClone(harness.chat);
+    value[1].mes = '林岚仍住在卧室。';
+    return value;
+  };
+  await harness.runtime.intercept(cleanCore(), 12000, null, 'normal');
+  assert.equal(selectorCalls, 1);
+  assert.match(harness.userMessage.extra[RECALL_RECEIPT_KEY].injectionText, /东区公寓·卧室/u);
+
+  harness.chat[1].extra = { display: { color: 'teal' } };
+  const metadataOnly = await harness.runtime.intercept(cleanCore(), 12000, null, 'regenerate');
+  assert.equal(metadataOnly.lastRecall.reusedReceipt, true, '无关显示元数据不改变地点参考依赖');
+  assert.equal(selectorCalls, 1);
+
+  harness.chat[1].swipes[0] = '林岚仍住在卧室。<location>西区公寓·卧室</location>';
+  const changed = await harness.runtime.intercept(cleanCore(), 12000, null, 'regenerate');
+  assert.equal(changed.lastRecall.reusedReceipt, false, '地点标签变化进入同一回执依赖并重选');
+  assert.equal(selectorCalls, 2);
+  assert.match(changed.lastRecall.injectionText, /西区公寓·卧室/u);
+  assert.doesNotMatch(changed.lastRecall.injectionText, /东区公寓·卧室/u);
+});
+
+test('已保存地点参考与同一来源的当前原消息标签只计一次', () => {
+  const source = runtimeFixture();
+  const locator = { messageIndex: 1, swipeId: 1, selectedSwipeIndex: 1 };
+  const first = source.floorMemories.find(value => value.floorId === 'floor-2');
+  first.locationReferences = [
+    { text: '东区公寓·卧室', sourceFloorId: 'floor-2', assistantSeq: 2, hostLocator: locator },
+  ];
+  const second = source.floorMemories.find(value => value.floorId === 'floor-3');
+  second.summary = '林岚在钟楼留下另一条约定。';
+  second.participants = [{ entityId: PERSON, presence: 'present' }];
+  second.locationReferences = [{ text: '东区公寓·卧室', sourceFloorId: 'floor-3', assistantSeq: 3, hostLocator: locator }];
+  source.bodyMatch = { locationReferences: [{ text: '东区公寓·卧室', sourceFloorId: 'floor-2', assistantSeq: 2, hostLocator: locator }] };
+  let sourceReferenceReads = 0;
+  for (const memory of source.floorMemories) {
+    const locationReferences = memory.locationReferences;
+    Object.defineProperty(memory, 'locationReferences', { configurable: true, get() { sourceReferenceReads += 1; return locationReferences; } });
+  }
+  const queryContext = { text: '钟楼约定 林岚', latestUserText: '钟楼约定 林岚', messageCount: 1 };
+  const pool = buildRecallHistoryCandidatePool({ source, queryContext });
+  const candidates = pool.candidates.filter(value => ['floor-2', 'floor-3'].includes(value.value.floorId));
+  const result = selectRecall({ source, queryContext, selectedHistoryCandidates: candidates, selectedCseCandidates: [] });
+  assert.ok(result.floors.some(value => value.floorId === 'floor-2') && result.floors.some(value => value.floorId === 'floor-3'), '两条已选旧楼均提供地点参考');
+  assert.ok(result.locationReferences.some(value => value.sourceFloorId === 'floor-2')
+    && result.locationReferences.some(value => value.sourceFloorId === 'floor-3'), '同一host locator上的不同存档来源不得合并');
+  assert.equal(result.locationReferences.filter(value => value.sourceFloorId === 'floor-2').length, 1,
+    '当前原消息与同一已保存来源重复时只保留一份');
+  assert.equal(sourceReferenceReads, source.floorMemories.length, '来源地点只在单次selector准备中投影一次，不随预算重渲染反复扫全档');
+});
+
+test('地点参考与时间提醒共用 maxItems，纯参考和混合时间均不越过紧预算', () => {
+  const queryContext = { text: '卧室 明天 归还钥匙', latestUserText: '卧室 明天 归还钥匙', messageCount: 1 };
+  const source = selectorSource({ memories: [] });
+  source.currentState = [];
+  source.coverage = { ...source.coverage, stableAiFloors: 0, stableThroughAssistantSeq: 0, rememberedAiFloors: 0,
+    missingAssistantSeq: [], cseThroughAssistantSeq: 0, memoryComplete: true, cseCurrent: true };
+  source.bodyMatch = { locationReferences: [
+    { text: '东区公寓·卧室', sourceFloorId: null, hostLocator: { messageIndex: 2 } },
+    { text: '西区公寓·卧室', sourceFloorId: null, hostLocator: { messageIndex: 4 } },
+  ] };
+  const pure = selectRecall({ source, queryContext, maxItems: 1 });
+  assert.equal(pure.locationReferences.length, 1);
+  assert.equal(pure.stages.finalInjectionItemCount, 1);
+  assert.ok(pure.limits.estimatedTokenCount <= pure.limits.estimatedTokenBudget);
+
+  source.timeProjection = { fingerprint: 'tight-location-time', corrections: {}, reminders: [
+    { itemId: 'return-key', type: 'deadline', text: '明天归还钥匙', rankText: '明天归还钥匙', sourceSignature: 'return-key' },
+  ] };
+  const mixed = selectRecall({ source, queryContext, maxItems: 1 });
+  assert.equal(mixed.stages.finalInjectionItemCount, mixed.locationReferences.length + mixed.timeDependencies.reminders.length);
+  assert.ok(mixed.stages.finalInjectionItemCount <= 1, '地点和时间参考共享同一 maxItems，不因新增来源越预算');
+  assert.equal(mixed.timeDependencies.reminders.length, 1, '可命中的时间候选仍按既有选择优先进入本轮');
+  assert.equal(mixed.locationReferences.length, 0, '时间占满紧预算时，不额外塞入地点参考');
+  assert.ok(mixed.limits.estimatedTokenCount <= mixed.limits.estimatedTokenBudget);
+
+  const largeRaw = Array.from({ length: 4 }, (_, index) => `<location>${String.fromCharCode(65 + index)}区公寓·${'卧室'.repeat(220)}${index}</location>`).join('\n');
+  const parsed = readLocationReference(largeRaw);
+  assert.equal(parsed.length, 4);
+  assert.ok(parsed.every(value => value.length <= 500));
+  assert.ok(parsed.reduce((sum, value) => sum + value.length, 0) <= 2000);
+  source.bodyMatch = { locationReferences: parsed.map((text, index) => ({ text, sourceFloorId: null, hostLocator: { messageIndex: index } })) };
+  source.timeProjection = null;
+  const clipped = selectRecall({ source, queryContext, contextSize: 1200, maxItems: 8 });
+  assert.ok(clipped.locationReferences.length < parsed.length, '有效的长地点标签确实触发字符/token预算裁剪');
+  assert.ok(clipped.limits.actualCharacters <= clipped.limits.maxCharacters);
+  assert.ok(clipped.limits.estimatedTokenCount <= clipped.limits.estimatedTokenBudget);
+});
+
+test('无地点参照的纯时间提示保持既有边界与短格式', () => {
+  const reminder = { itemId: 'time-only', text: 'AI #3 之后的期限：下周交付' };
+  const timeText = formatRecallInjection({ coverage: selectorSource().coverage, floors: [], states: [], cseChanges: [],
+    entityById: new Map(), timeReminders: [reminder], timeDependencies: { corrections: [], reminders: [] } });
+  assert.match(timeText, /^<qqj_recalled_context>\n\[时间参考/u);
+  assert.doesNotMatch(timeText, /以下都是作者侧资料|此前剧情档案与人物状态/u);
+  const locationText = formatRecallInjection({ coverage: selectorSource().coverage, floors: [], states: [], cseChanges: [],
+    entityById: new Map(), locationReferences: [{ text: '东区公寓·卧室', sourceFloorId: null, hostLocator: { messageIndex: 2 } }] });
+  assert.match(locationText, /此前剧情档案与人物状态的只读参考/u);
+});
+
+test('recall source把已保存地点参考绑定到原Floor host locator', async () => {
+  const reachable = await singleFloorReachable({ text: '林岚停在卧室。' });
+  reachable.floorMemories[0].sourceLocationReference = ['东区公寓·卧室'];
+  const source = await projectRecallSource(reachable, () => new Date(NOW));
+  assert.deepEqual(source.floorMemories[0].locationReferences, [{ text: '东区公寓·卧室', sourceFloorId: 'floor-one', assistantSeq: 1,
+    hostLocator: { messageIndex: 0, swipeId: null, selectedSwipeIndex: null } }]);
+});
+
+test('已保存楼的人工地点清除优先于当前原消息标签回退', async () => {
+  const raw = '林岚仍住在卧室。<location>原人工清除的东区公寓·卧室</location>';
+  const source = await runtimeSourceWithBodyRef(raw);
+  const memory = source.floorMemories.find(item => item.floorId === 'floor-2');
+  memory.locationReferenceSources = [{ sourceFloorId: 'floor-2', cleared: true }];
+  source.bodyMatchRefs = [{ floorId: 'floor-2', floorMemoryId: memory.floorMemoryId, assistantSeq: 2,
+    hostLocator: { messageIndex: 1, swipeId: null, selectedSwipeIndex: null }, rawFingerprint: await fingerprintText(raw), canonicalFingerprint: await fingerprintText('林岚仍住在卧室。') }];
+  const harness = createRuntimeHarness({ sourceReader: async () => structuredClone(source),
+    reachableReader: async () => rawReachableFromSource(source) });
+  harness.chat.splice(0, harness.chat.length, { is_user: true, is_system: false, mes: '开始' },
+    { is_user: false, is_system: false, mes: raw }, harness.userMessage);
+  harness.userMessage.mes = '继续';
+  const core = structuredClone(harness.chat);
+  core[1].mes = '林岚仍住在卧室。';
+  const result = await harness.runtime.intercept(core, 12000, null, 'normal');
+  assert.equal(result.lastRecall.status, 'ready');
+  assert.doesNotMatch(result.lastRecall.injectionText, /原人工清除的东区公寓/u);
+  assert.deepEqual(harness.userMessage.extra[RECALL_RECEIPT_KEY].selectedLocationReferences, [],
+    '对同一已归档来源明确清除后，当前raw不能复活该参考');
+});
+
 test('搬家 recall 正文去重只认唯一且内容匹配的 alias，不把A楼号误配到B同号正文', async () => {
   const oldText = 'A聊天第1楼的已记内容。', aliasId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
   const raw = await singleFloorReachable({ text: oldText });
@@ -2561,7 +2787,7 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
     summary: { effectiveSource: 'ai', aiText: `钟楼赴约进展 ${floor.assistantSeq}` }, ...emptyMemory,
   }));
   const longReason = '当时的私密证据'.repeat(180);
-  const privateState = { id: 'cse-state-private', text: '仍在钟楼等待赴约', visibility: 'private', reason: longReason, origin: 'floor', towardEntityId: null, sourceFloorId: floors[0].id, sourceDeltaId: 'delta-add' };
+  const privateState = { id: 'cse-state-private', text: '仍在钟楼等待赴约', visibility: 'private', reason: longReason, origin: 'floor', towardEntityId: 'cse-target-person', sourceFloorId: floors[0].id, sourceDeltaId: 'delta-add' };
   const stateDeltas = [
     { id: 'delta-add', floorId: floors[0].id, floorMemoryId: floorMemories[0].id, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [privateState] }], fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'add', before: null, after: privateState }] }] },
     { id: removeDeltaId, floorId: floors[1].id, floorMemoryId: floorMemories[1].id, recordStatus: 'active', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [] }], fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'remove', before: privateState, after: null }] }] },
@@ -2570,7 +2796,10 @@ function cseLaggingReachable(removeDeltaId = 'delta-remove') {
     status: 'ready', rootRevision: 7,
     root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'cse-head' }, checkpoint: { id: 'cse-head' }, baseline: null,
     floors, floorMemories, stateDeltas, currentStates: [],
-    entities: [{ id: PERSON, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char', recordStatus: 'active', status: 'established' }],
+    entities: [
+      { id: PERSON, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char', recordStatus: 'active', status: 'established' },
+      { id: 'cse-target-person', entityType: 'person', displayName: '林岚', aliases: [], specialRole: 'none', recordStatus: 'active', status: 'established' },
+    ],
   };
 }
 
@@ -3489,7 +3718,7 @@ test('runtime normal 先完成一次 prompt commit，再后台保存一次 schem
   assert.match(injection[1], /<qqj_recalled_context>/);
   assert.equal(harness.saves, 1, '正常路径只在 prompt commit 后保存一次完成态回执');
   const receipt = harness.userMessage.extra?.[RECALL_RECEIPT_KEY];
-  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 17);
+  assert.equal(RECALL_RECEIPT_SCHEMA_VERSION, 18);
   assert.equal(receipt.schemaVersion, RECALL_RECEIPT_SCHEMA_VERSION);
   assert.equal(receipt.strategyVersion, RECALL_STRATEGY_VERSION);
   assert.equal(receipt.chatId, CHAT);
@@ -3729,6 +3958,33 @@ test('提交前关联刻度失效恢复千事当前提醒，千事失效则只�
   }
 });
 
+test('提交前真实时间重格式化保留已选地点参考并继续遵守最终预算', async () => {
+  let reads = 0;
+  const reminder = { itemId: 'return-key', type: 'deadline', text: '明天归还钥匙', rankText: '明天归还钥匙', sourceSignature: 'return-key' };
+  const harness = createRuntimeHarness({ timeProjectionProvider: async () => {
+    reads += 1;
+    return reads === 1 ? { fingerprint: 'time-before', corrections: {}, reminders: [structuredClone(reminder)] }
+      : { fingerprint: 'time-after', corrections: {}, reminders: [] };
+  } });
+  harness.chat.splice(0, harness.chat.length,
+    { is_user: true, is_system: false, mes: '之前继续' },
+    { is_user: false, is_system: false, mes: '林岚仍住在卧室。<location>东区公寓·卧室</location>' },
+    harness.userMessage);
+  harness.userMessage.mes = '明天归还钥匙';
+  const core = structuredClone(harness.chat);
+  core[1].mes = '林岚仍住在卧室。';
+  const result = await harness.runtime.intercept(core, 12000, null, 'normal');
+  const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.ok(reads >= 2, '实际提交校验发现时间投影变化并重格式化');
+  assert.equal(receipt.timeDependencies.reminders.length, 0);
+  assert.ok(receipt.selectedLocationReferences.some(value => value.text === '东区公寓·卧室'));
+  assert.match(result.lastRecall.injectionText, /东区公寓·卧室/u);
+  assert.doesNotMatch(result.lastRecall.injectionText, /明天归还钥匙/u);
+  assert.equal(receipt.stages.locationReferenceCount, receipt.selectedLocationReferences.length);
+  assert.ok(receipt.stages.finalInjectionItemCount >= receipt.selectedLocationReferences.length);
+  assert.ok(receipt.stages.estimatedTokenCount <= receipt.stages.estimatedTokenBudget);
+});
+
 test('千事总预算兼容新旧回执且不重复加，刷新只投影正确口径不改历史签名', async () => {
   const prequel = '钟楼旧约。'.repeat(400);
   const harness = createRuntimeHarness({ prequel, qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' },
@@ -3834,6 +4090,7 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   assert.ok(removed);
   assert.equal(removed.deltaId, 'delta-remove');
   assert.equal(removed.before.text, '仍在钟楼等待赴约');
+  assert.equal(removed.before.toward, '林岚', '真实 runtime 保存所选变化侧的对象显示名');
   assert.equal(removed.before.visibility, 'private');
   assert.deepEqual({ stateId: removed.before.stateId, sourceFloorId: removed.before.sourceFloorId, sourceDeltaId: removed.before.sourceDeltaId }, {
     stateId: 'cse-state-private', sourceFloorId: 'cse-floor-1', sourceDeltaId: 'delta-add',
@@ -3847,6 +4104,7 @@ test('摘要已齐但CSE欠尾时真实delta的私密移除跨 source/selector/s
   assert.equal(inline.protocolRecognized, true);
   assert.ok(inline.historyItems.length > 0, '含CSE变化的剧情线协议仍须保留历史材料投影');
   assert.equal(inline.cseChangeItems.find(value => value.action === 'remove')?.before?.text, '仍在钟楼等待赴约');
+  assert.equal(inline.cseChangeItems.find(value => value.action === 'remove')?.before?.toward, '林岚', '历史 reader 与楼内投影保留对象名');
 
   harness.runtime.invalidate('simulateReload');
   const restored = await harness.runtime.restorePersistedReceipt();
@@ -4333,7 +4591,7 @@ test('首次准备超时或失败会 fresh 重试后成功，未初始化新聊�
   let abortCalls = 0;
   const result = await freshChat.runtime.intercept(freshChat.chat, 12000, value => { if (value === true) abortCalls += 1; }, 'normal');
   assert.equal(abortCalls, 0);
-  assert.deepEqual(result.lastRecall.skipReasons, ['sourceUnavailable']);
+  assert.deepEqual(result.lastRecall.skipReasons, ['uninitialized']);
 });
 
 async function retrySelectorReachable() {
@@ -4457,7 +4715,7 @@ test('准备挂起后取消或切聊天，迟到失败均不得启动召回降�
 test('root 正常推进会 fresh 重投影并复核同一 actual core，不重跑 selector；新增摘要不使正文证明失效', async () => {
   const initial = await singleFloorReachable({ withMemory: false, revision: 1, head: 'head-before' });
   const current = await singleFloorReachable({ withMemory: true, revision: 2, head: 'head-after' });
-  let prepareCalls = 0, selectorCalls = 0;
+  let prepareCalls = 0, selectorCalls = 0, identityCalls = 0;
   const harness = createRuntimeHarness({
     prepareMemory: async ({ preferCached }) => {
       prepareCalls += 1;
@@ -4465,11 +4723,13 @@ test('root 正常推进会 fresh 重投影并复核同一 actual core，不重�
       return { status: 'ready', reachable: structuredClone(prepareCalls === 1 ? initial : current) };
     },
     rootReader: async () => ({ status: 'ready', revision: 2, data: structuredClone(current.root) }),
+    identityProjectionProvider: async () => { identityCalls += 1; return { identityRedirectsByEntityId: {}, deletedEntityIds: [] }; },
     selector: input => { selectorCalls += 1; return selectRecall(input); },
   });
   const result = await harness.runtime.intercept(structuredClone(harness.chat), 12000, null, 'normal');
   assert.equal(selectorCalls, 1);
   assert.equal(prepareCalls, 2, 'root 变化后必须 fresh 准备一次');
+  assert.equal(identityCalls, prepareCalls, '有可投影记忆时，身份映射仍在每次准备后读取');
   assert.equal(result.lastRecall.status, 'empty');
 });
 
@@ -5043,6 +5303,10 @@ test('已发布 schema17 人工摘要见证回执保留真实结构并可只读�
   const harness = createRuntimeHarness();
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   const receipt = structuredClone(harness.userMessage.extra[RECALL_RECEIPT_KEY]);
+  receipt.schemaVersion = 17;
+  receipt.strategyVersion = 'continuity-v17';
+  delete receipt.selectedLocationReferences;
+  delete receipt.locationReferenceDependency;
   assert.ok(receipt.selectedFloors.length);
   const floor = receipt.selectedFloors[0];
   floor.summaryWitnesses = [{ sourceKind: 'userSummary', floorId: floor.floorId, assistantSeq: floor.assistantSeq,
@@ -5895,6 +6159,104 @@ test('宿主保存同样返回 undefined 时，只有聊天副本实际包含回
   assert.equal(persistedReload.prompts.length, 0);
 });
 
+test('runtime 当前态回执保留合法原因长度，恢复后同用户重生成可复用', async () => {
+  for (const reasonLength of [1000, 1001, 4000]) {
+    const raw = reachable();
+    const state = raw.stateDeltas[0].subjectSnapshots[0].situational[0];
+    state.text = '仍记得钟楼赴约';
+    state.reason = '证'.repeat(reasonLength);
+    let selections = 0;
+    const sourceReader = ({ now }) => readRecallSource({ store: { readReachable: async () => structuredClone(raw) }, now });
+    const harness = createRuntimeHarness({
+      sourceReader,
+      reachableReader: async () => structuredClone(raw),
+      queryBuilder: () => ({ text: '钟楼赴约', latestUserText: '钟楼赴约', latestUserCoreIndex: 1, messageCount: 1, assistantTurns: 0 }),
+      selector: input => { selections += 1; return selectRecall(input); },
+    });
+
+    const first = await harness.runtime.intercept(harness.chat, 20000, null, 'normal');
+    assert.equal(first.lastRecall.status, 'ready', `${reasonLength}字首轮应正常完成`);
+    const receipt = harness.userMessage.extra[RECALL_RECEIPT_KEY];
+    const selectedState = receipt.selectedStates.find(value => value.text === state.text);
+    assert.equal(selectedState?.reason.length, reasonLength, `${reasonLength}字依据应完整进入已签回执`);
+    const historical = await projectHistoricalRecallReceipt(harness.userMessage, { chatId: CHAT, userMessageIndex: 1 });
+    assert.equal(historical?.selectedStates.find(value => value.text === state.text)?.reason.length, reasonLength,
+      `${reasonLength}字依据应通过正式历史展示读取`);
+
+    const reloaded = createRuntimeHarness({
+      sourceReader,
+      reachableReader: async () => structuredClone(raw),
+      queryBuilder: () => ({ text: '钟楼赴约', latestUserText: '钟楼赴约', latestUserCoreIndex: 1, messageCount: 1, assistantTurns: 0 }),
+      selector: input => { selections += 1; return selectRecall(input); },
+    });
+    reloaded.chat.splice(0, reloaded.chat.length, ...structuredClone(harness.chat));
+    const restored = await reloaded.runtime.restorePersistedReceipt();
+    assert.equal(restored.lastRecall?.restoredReceipt, true, `${reasonLength}字合法依据回执应能恢复`);
+    assert.equal(restored.lastRecall.selectedStates.find(value => value.text === state.text)?.reason.length, reasonLength);
+
+    const regenerated = await reloaded.runtime.intercept(reloaded.chat, 20000, null, 'regenerate');
+    assert.equal(regenerated.lastRecall.reusedReceipt, true, `${reasonLength}字合法依据应能供同用户重生成复用`);
+    assert.equal(selections, 1, `${reasonLength}字复用不应重新选材`);
+    if (reasonLength === 4000) {
+      const invalid = structuredClone(receipt);
+      invalid.selectedStates.find(value => value.text === state.text).reason += '证';
+      // 合成的超限字段夹具保留有效封签，只用于核验结构上限仍拒绝 4001 字。
+      invalid.receiptFingerprint = await receiptFingerprint(invalid);
+      const invalidReload = createRuntimeHarness({ sourceReader, reachableReader: async () => structuredClone(raw) });
+      invalidReload.chat.splice(0, invalidReload.chat.length, ...structuredClone(reloaded.chat));
+      const invalidUser = invalidReload.chat.find(message => message.is_user);
+      invalidUser.extra[RECALL_RECEIPT_KEY] = invalid;
+      assert.equal((await invalidReload.runtime.restorePersistedReceipt()).lastRecall, null, '超过既有4000字字段合同的回执仍须拒绝');
+    }
+  }
+});
+
+test('runtime 正文去重只为核心见证和最近可见楼核指纹，旧摘要保持可选', async () => {
+  for (const floorCount of [8, 16]) for (const hideOldFloors of [false, true]) {
+    const messageTexts = Array.from({ length: floorCount }, (_, index) => `The blue lighthouse key was recorded at floor ${index + 1}.`);
+    const memories = messageTexts.map((_, index) => recallMemory(index + 1, { summary: `The blue lighthouse key appears in historical material ${index + 1}.` }));
+    const source = selectorSource({ memories });
+    source.readiness = { status: 'caughtUp', hostConfirmed: true, visibleSummaryFloorIds: memories.map(value => value.floorId) };
+    source.bodyMatchRefs = [];
+    for (let index = 0; index < floorCount; index += 1) {
+      const text = messageTexts[index];
+      source.bodyMatchRefs.push({
+        floorId: `floor-${index + 1}`, floorMemoryId: `memory-${index + 1}`, assistantSeq: index + 1,
+        hostLocator: { messageIndex: index, swipeId: null, selectedSwipeIndex: null },
+        rawFingerprint: await fingerprintText(text), canonicalFingerprint: await fingerprintText(text),
+      });
+    }
+
+    const measuredAttachHashes = [];
+    let bodyMatch = null, selectorCalls = 0;
+    const fingerprint = async value => {
+      const text = String(value ?? '');
+      if (messageTexts.includes(text) && (new Error().stack ?? '').includes('attachCoreBodyMatch')) measuredAttachHashes.push(text);
+      return `sha256:${await sha256(text)}`;
+    };
+    const harness = createRuntimeHarness({
+      sourceReader: async () => structuredClone(source),
+      rootReader: async () => ({ status: 'ready', revision: source.rootRevision,
+        data: { chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, headCheckpointId: source.headCheckpointId } }),
+      queryBuilder: () => ({ text: 'blue lighthouse key', latestUserText: 'blue lighthouse key', latestUserCoreIndex: 3, messageCount: 1, assistantTurns: 0 }),
+      fingerprint,
+      selector: input => { selectorCalls += 1; bodyMatch = structuredClone(input.source.bodyMatch); return selectRecall(input); },
+    });
+    const messages = messageTexts.map((mes, index) => ({ is_user: false, is_system: hideOldFloors && index < floorCount - 3, mes, swipe_id: null }));
+    harness.chat.splice(0, harness.chat.length, ...messages, harness.userMessage);
+    harness.userMessage.mes = 'Tell me about the blue lighthouse key.';
+
+    const result = await harness.runtime.intercept(harness.chat.slice(-4), 20000, null, 'normal');
+    assert.equal(result.lastRecall.status, 'ready', `${floorCount} 楼, hidden=${hideOldFloors}`);
+    assert.equal(selectorCalls, 1);
+    assert.deepEqual(bodyMatch.coveredFloorIds, [`floor-${floorCount - 2}`, `floor-${floorCount - 1}`, `floor-${floorCount}`]);
+    assert.deepEqual(bodyMatch.recentBodyFloorIds, [`floor-${floorCount - 2}`, `floor-${floorCount - 1}`, `floor-${floorCount}`]);
+    assert.deepEqual(result.lastRecall.selectedFloors.map(value => value.assistantSeq), Array.from({ length: floorCount - 3 }, (_, index) => index + 1),
+      '未覆盖的旧摘要在楼层可见或普通隐藏时仍可按原顺序选入');
+    assert.equal(measuredAttachHashes.length, 6, '正文核验只对最近三条可见楼各计算raw与canonical指纹');
+  }
+});
+
 test('runtime generation end 只清 prompt 并保留展示；parent user 编辑与切聊天才清历史结果', async () => {
   const harness = createRuntimeHarness();
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
@@ -6429,7 +6791,7 @@ test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且
     const frozen = JSON.stringify(attempts), beforeReads = reads;
     for (const release of releases) release(kind === 'read' ? runtimeFixture() : null);
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(prepares, kind === 'commitRoot' ? 1 : 0); assert.equal(reads, beforeReads); assert.equal(JSON.stringify(result.lastRecall.attemptDiagnostics), frozen);
+    assert.equal(prepares, kind === 'commitRoot' ? 1 : kind === 'identity' ? 2 : 0); assert.equal(reads, beforeReads); assert.equal(JSON.stringify(result.lastRecall.attemptDiagnostics), frozen);
     assert.equal(harness.prompts.some(call => call[1]?.includes('<qqj_recalled_context>')), false);
   });
 });
@@ -6489,7 +6851,7 @@ test('默认准备期限超时仍只进行两次来源尝试，迟到结果不�
   assert.ok(harness.prompts.every(call => call[1] === ''));
 });
 
-test('准备取消立即结束且迟到identity不得启动缓存或来源读取', async () => {
+test('准备取消立即结束且迟到identity不得启动来源读取', async () => {
   let releaseIdentity, enteredIdentity; const entered = new Promise(resolve => { enteredIdentity = resolve; });
   let prepares = 0, reads = 0;
   const harness = createRuntimeHarness({ preparationTimeoutMs: 1000,
@@ -6500,7 +6862,7 @@ test('准备取消立即结束且迟到identity不得启动缓存或来源读取
   harness.handlers.get('generation-stopped')(); const result = await pending;
   assert.equal(result.lastRecall.status, 'stale'); assert.deepEqual(result.lastRecall.skipReasons, ['stopped']);
   releaseIdentity(null); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(prepares, 0); assert.equal(reads, 0); assert.equal(harness.saves, 0);
+  assert.equal(prepares, 1); assert.equal(reads, 0); assert.equal(harness.saves, 0);
   assert.equal(harness.prompts.some(call => call[1]?.includes('<qqj_recalled_context>')), false);
 });
 

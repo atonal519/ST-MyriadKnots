@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoHideKeepAiCount: 3,
   storageAutoCleanupEnabled: false,
   storageAutoCleanupProgress: {},
+  storageTrashGcLastCompletedAt: '',
   apiMode: 'auto',
   selectedSevenDaysPresetId: '',
   summaryPresetId: '',
@@ -192,6 +193,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(settings.autoHideKeepAiCount);
     settings.storageAutoCleanupEnabled = settings.storageAutoCleanupEnabled === true;
     settings.storageAutoCleanupProgress = normalizeStorageCleanupProgress(settings.storageAutoCleanupProgress);
+    settings.storageTrashGcLastCompletedAt = Number.isFinite(Date.parse(settings.storageTrashGcLastCompletedAt))
+      ? new Date(settings.storageTrashGcLastCompletedAt).toISOString() : '';
     settings.storyClockReferenceTags = normalizeStoryClockReferenceTags(settings.storyClockReferenceTags).join(',');
     return settings;
   };
@@ -214,6 +217,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'autoHideKeepAiCount')) settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(patch.autoHideKeepAiCount);
     if (own(patch, 'storageAutoCleanupEnabled')) settings.storageAutoCleanupEnabled = patch.storageAutoCleanupEnabled === true;
     if (own(patch, 'storageAutoCleanupProgress')) settings.storageAutoCleanupProgress = normalizeStorageCleanupProgress(patch.storageAutoCleanupProgress);
+    if (own(patch, 'storageTrashGcLastCompletedAt')) settings.storageTrashGcLastCompletedAt = Number.isFinite(Date.parse(patch.storageTrashGcLastCompletedAt))
+      ? new Date(patch.storageTrashGcLastCompletedAt).toISOString() : '';
     if (own(patch, 'apiMode')) settings.apiMode = API_MODES.has(patch.apiMode) ? patch.apiMode : 'auto';
     if (own(patch, 'selectedSevenDaysPresetId')) settings.selectedSevenDaysPresetId = text(patch.selectedSevenDaysPresetId).trim();
     if (own(patch, 'summaryPresetId')) settings.summaryPresetId = text(patch.summaryPresetId).trim();

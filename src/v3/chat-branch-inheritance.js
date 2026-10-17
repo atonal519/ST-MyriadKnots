@@ -43,7 +43,7 @@ const identity = (host, chatId) => Object.freeze({
 });
 const rehome = (record, chatId, narrativeGeneration) => record ? { ...structuredClone(record), chatId, narrativeGeneration } : null;
 
-function normalizeBranchCandidates(candidates, sourceChatId, targetChatId) {
+function normalizeBranchCandidates(candidates, targetChatId) {
   return candidates.map(candidate => {
     const anchor = candidate.messageAnchor;
     if (anchor?.status !== 'foreign' || anchor.anchor?.chatId !== targetChatId) return candidate;
@@ -250,7 +250,7 @@ export function createChatBranchInitializer({
     if (['ready', 'needsReseal'].includes(target.status)) {
       const scanned = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: snapshot.sanitizerOptions, chatId: sourceChatId });
       const partitioned = partitionScannedCandidates(target, snapshot.chat, sourceChatId, scanned);
-      const candidates = normalizeBranchCandidates(partitioned.all, sourceChatId, targetChatId);
+      const candidates = normalizeBranchCandidates(partitioned.all, targetChatId);
       const prefix = inheritedPrefix(target, candidates);
       if (prefix.count !== target.floors.length) throw fail('V3_BRANCH_TARGET_MISMATCH', '已准备的分支记忆与当前消息不一致。');
       bindings = prefix.floors.flatMap((floor, index) => prefix.candidates[index]?.archiveCandidate
@@ -272,7 +272,7 @@ export function createChatBranchInitializer({
       if (['ready', 'needsReseal'].includes(source.status)) {
         const scanned = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: snapshot.sanitizerOptions, chatId: sourceChatId });
         const partitioned = partitionScannedCandidates(source, snapshot.chat, sourceChatId, scanned);
-        const candidates = normalizeBranchCandidates(partitioned.all, sourceChatId, targetChatId);
+        const candidates = normalizeBranchCandidates(partitioned.all, targetChatId);
         const prefix = inheritedPrefix(source, candidates);
         if (prefix.count > 0) {
           const branchBindings = prefix.floors.flatMap((floor, index) => prefix.candidates[index]?.archiveCandidate

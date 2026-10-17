@@ -163,14 +163,6 @@ export async function scanAssistantCandidates(chat, {
   return Object.freeze(candidates);
 }
 
-export function findEarliestCanonicalDivergence(activeFloors, candidates, compareCount = Math.min(activeFloors.length, candidates.length)) {
-  for (let index = 0; index < compareCount; index += 1) {
-    if (activeFloors[index]?.content?.canonicalFingerprint !== candidates[index]?.canonicalFingerprint) return index + 1;
-  }
-  if (activeFloors.length !== candidates.length) return compareCount + 1;
-  return null;
-}
-
 export function createFloorRecord({
   id,
   chatId,

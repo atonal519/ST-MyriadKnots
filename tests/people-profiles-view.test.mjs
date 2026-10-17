@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChatSession } from '../src/chat-session.js';
-import { createPeopleProfilesView } from '../src/ui/people-profiles-view.js';
+import { createPeopleProfilesView as createPeopleProfilesViewImpl } from '../src/ui/people-profiles-view.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, PEOPLE_WORKSPACE_RECORD_ID } from '../src/v3/people-workspace.js';
 
 const A = '11111111-1111-4111-8111-111111111111';
@@ -32,13 +32,18 @@ function dialogHarness() {
   return {
     dialog: {
       async confirm(options) { confirms.push(options); return true; },
-      custom(options) { return new Promise(resolve => { active = { ...options, resolve }; }); },
+      custom(options) { return new Promise(resolve => { active = { ...options, resolve, error: null }; }); },
       cancelTop() { if (!active) return false; const current = active; active = null; current.onClose?.(); current.resolve(null); return true; },
     },
     get active() { return active; },
     confirms,
-    async submit() { const current = active; const value = await current.submit(); active = null; current.onClose?.(); current.resolve(value); return value; },
+    async submit() { const current = active; try { const value = await current.submit(); active = null; current.onClose?.(); current.resolve(value); return value; } catch (error) { current.error = error; return false; } },
   };
+}
+function createPeopleProfilesView(options = {}) {
+  const dialogs = options.dialog ? null : dialogHarness();
+  const view = createPeopleProfilesViewImpl({ ...options, dialog: options.dialog ?? dialogs.dialog });
+  return { ...view, testDialogs: dialogs };
 }
 const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
 function eventDocument() {
@@ -54,6 +59,10 @@ function eventDocument() {
 }
 const flatten = node => [node, ...node.children.flatMap(flatten)];
 const visible = node => flatten(node).map(item => item.textContent).filter(Boolean).join('|');
+const editorContent = view => view.testDialogs?.active?.content ?? null;
+const editorField = (view, label) => fieldControl(editorContent(view), label);
+const saveEditor = view => view.testDialogs.submit();
+const cancelEditor = view => view.testDialogs.dialog.cancelTop();
 function person(entityId, name, selected, profile = null, appearanceCount = 1) {
   return { entityId, displayName: profile?.name || name, entityDisplayName: name, aliases: [`${name}别名`], selected, profiled: Boolean(profile), profile, appearanceCount };
 }
@@ -112,7 +121,7 @@ async function waitFor(predicate, message = '等待条件超时') {
 test('千人首次打开等待既有身份认领，成功后清除读取中且不重复认领', async () => {
   let release, claims = 0, refreshes = 0;
   const gate = new Promise(resolve => { release = resolve; });
-  const context = { characterId: 0, chatId: '新聊天', characters: [{ avatar: 'char.png' }], userAvatar: 'me.png', chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT } }, async saveMetadata() {} };
+  const context = { characterId: 0, chatId: '新聊天', characters: [{ name: '角色', avatar: 'char.png' }], userAvatar: 'me.png', chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT } }, async saveMetadata() {} };
   const session = createChatSession({ contextProvider: () => context, identityCoordinator: { async prepare() { claims += 1; await gate; return CHAT; } } });
   const pending = session.prepare();
   const h = runtimeHarness();
@@ -139,9 +148,33 @@ test('千人身份准备失败保留真实错误，已有错误不自动重试',
     const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, sessionStateProvider: () => ({ status, error }), prepareSession: async () => { prepares += 1; throw error; } });
     view.mount(container); assert.equal((await view.activate()).status, 'error');
     assert.equal(refreshes, 0); assert.equal(prepares, status === 'preparing' ? 1 : 0);
-    assert.match(visible(container), /读取失败：后端身份绑定写入失败/);
+    assert.match(visible(container), /聊天身份准备失败：后端身份绑定写入失败/);
     assert.doesNotMatch(visible(container), /人物资料读取完成/);
   }
+});
+
+test('千人首次打开时idle只显示待记录，不读取未建立身份的工作区', async () => {
+  const h = runtimeHarness(); let refreshes = 0, prepares = 0;
+  h.runtime.refresh = async () => { refreshes += 1; return h.state; };
+  const container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, sessionStateProvider: () => ({ status: 'idle' }),
+    prepareSession: async () => { prepares += 1; return { status: 'idle' }; } });
+  view.mount(container);
+  assert.deepEqual(await view.activate(), { status: 'uninitialized' });
+  assert.equal(prepares, 1);
+  assert.equal(refreshes, 0);
+  assert.match(visible(container), /尚未开始记录，继续对话后可开始记录/u);
+  assert.doesNotMatch(visible(container), /读取失败/u);
+});
+
+test('千人身份准备错误缺少具体说明时指向状态诊断', async () => {
+  const h = runtimeHarness();
+  const container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, sessionStateProvider: () => ({ status: 'idle' }),
+    prepareSession: async () => { throw new Error(''); } });
+  view.mount(container);
+  assert.equal((await view.activate()).status, 'error');
+  assert.match(visible(container), /聊天身份准备失败：请到“记忆管理”页点击“复制状态诊断”反馈/u);
 });
 
 test('千人等待身份时离开页面或身份已过期，不迟到读取人物', async () => {
@@ -167,27 +200,6 @@ test('千人复用后台读取时不提前报成功，完成或失败后更新�
     assert.match(visible(container), failed ? /读取失败：后端读取失败/ : /人物资料读取完成/);
     assert.doesNotMatch(visible(container), /正在读取当前聊天/);
   }
-});
-
-test('千人纯进度通知保留人物页节点并原位更新状态与生成按钮', () => {
-  const h = runtimeHarness();
-  const container = new Node('main');
-  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef });
-  view.mount(container);
-  const page = container.children[0];
-  const menuToggle = flatten(page).find(node => node.className === 'qqj-profile-menu-toggle');
-  const generate = flatten(page).find(node => node.textContent === '整理当前资料');
-  assert.ok(menuToggle);
-  assert.ok(generate);
-  menuToggle.focus();
-
-  h.emitState({ ...h.state, active: { kind: 'generating', batchIndex: 1, batchTotal: 2 } });
-
-  assert.strictEqual(container.children[0], page, '纯进度通知不替换人物页');
-  assert.strictEqual(documentRef.activeElement, menuToggle, '原位更新保留当前焦点');
-  assert.match(visible(page), /正在整理人物资料 · 第 1\/2 批/);
-  assert.equal(generate.disabled, true);
-  assert.equal(generate.textContent, '正在整理…');
 });
 
 const fieldControl = (container, label) => flatten(container).find(node => node.className === 'qqj-profile-field' && node.children[0]?.textContent === label)?.children.at(-1);
@@ -242,7 +254,7 @@ test('真实 activate 完成后不回画旧 loading，更多人物选择仍可�
   assert.equal(flatten(container).find(node => node.textContent === '设为重要')?.disabled, false, '再次绘制更多人物仍保持可选择');
 });
 
-test('千人页横向切换只显示一份常显资料，草稿跨人物保留且移出当前后选择邻位', async () => {
+test('千人页横向切换只显示一份常显资料，资料编辑使用独立弹窗且取消丢弃草稿', async () => {
   const menuDocument = eventDocument();
   const h = runtimeHarness({ selected: [A, B] }), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef: menuDocument }); view.mount(container);
   assert.equal(flatten(container).filter(node => node.className === 'qqj-profile-card').length, 1);
@@ -259,14 +271,16 @@ test('千人页横向切换只显示一份常显资料，草稿跨人物保留�
   profileMenu.open = true; menuDocument.click({ target: profileMenu.children[0], composedPath: () => [profileMenu.children[0], profileMenu] }); assert.equal(profileMenu.open, true, '千人菜单内部点击不提前关闭');
   menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(profileMenu.open, false, '千人菜单点击外部后关闭');
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  assert.deepEqual(flatten(container).find(node => node.className.includes('qqj-profile-save-row')).children.map(node => node.textContent), ['保存资料', '取消']);
-  assert.equal(fieldControl(container, '姓名').value, '甲');
-  const notes = fieldControl(container, '补充资料'); notes.value = '甲的未保存草稿'; notes.fire('input');
-  tabs[1].click(); assert.match(visible(container), /乙.*别名 · 乙别名/); assert.equal(flatten(container).some(node => node.className === 'settings-input'), false);
-  flatten(container).find(node => node.textContent === '编辑资料').click(); const bNotes = fieldControl(container, '补充资料'); bNotes.value = '取消的草稿'; bNotes.fire('input');
-  flatten(container).find(node => node.textContent === '取消').click(); assert.doesNotMatch(visible(container), /取消的草稿/); assert.match(visible(container), /编辑资料/);
-  flatten(container).find(node => node.textContent === '甲').click(); assert.equal(fieldControl(container, '补充资料').value, '甲的未保存草稿');
-  flatten(container).find(node => node.textContent === '取消').click();
+  const editor = editorContent(view);
+  assert.ok(editor); assert.equal(flatten(container).some(node => node.className.includes('qqj-profile-form')), false, '阅读页不包含编辑表单');
+  assert.equal(editor.className, 'qqj-editor-dialog qqj-profile-form');
+  assert.equal(editorField(view, '姓名').value, '甲');
+  const notes = editorField(view, '补充资料'); notes.value = '甲的未保存草稿'; notes.fire('input');
+  cancelEditor(view); assert.doesNotMatch(visible(container), /甲的未保存草稿/); assert.match(visible(container), /编辑资料/);
+  tabs[1].click(); assert.match(visible(container), /乙.*别名 · 乙别名/);
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  assert.equal(editorField(view, '补充资料').value, '', '另一人物打开自己的已保存资料'); cancelEditor(view);
+  flatten(container).find(node => node.textContent === '甲').click();
   flatten(flatten(container).find(node => node.className === 'qqj-profile-menu-pop')).find(node => node.textContent === '移出关注').click(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(h.calls.select.at(-1), [B]); assert.match(visible(container), /乙.*别名 · 乙别名/);
   view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
@@ -296,6 +310,57 @@ test('千人人名横条同聊天同成员重绘与排序保留位置，切聊�
   switcher.scrollLeft = 49;
   h.emitState({ ...h.state, chatId: CHAT_B });
   assert.equal(flatten(container).find(node => node.className === 'qqj-profile-switcher').scrollLeft, 0, '切聊天必须重置横向位置');
+});
+
+test('相同人物展示状态通知复用页面和编辑输入节点', () => {
+  const h = runtimeHarness({ selected: [A] }), container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  const input = editorField(view, '补充资料');
+  input.value = '尚未保存的草稿'; input.fire('input'); input.focus();
+  const page = container.children[0];
+  h.emitState({ ...h.state });
+  assert.equal(container.children[0], page, '无展示差异的通知不替换整页');
+  assert.equal(editorField(view, '补充资料'), input, '编辑中的输入节点保持原样');
+  assert.equal(documentRef.activeElement, input, '焦点留在原输入框');
+  assert.equal(input.value, '尚未保存的草稿');
+});
+
+test('无变化通知保留已注册菜单，同状态重新挂载恢复页面并重建菜单注册', async () => {
+  const menuDocument = eventDocument(), h = runtimeHarness({ selected: [A] }), container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef: menuDocument }); view.mount(container);
+  const menu = flatten(container).find(node => node.className === 'qqj-profile-menu'); menu.open = true;
+  h.emitState({ ...h.state });
+  menuDocument.click({ target: container, composedPath: () => [container] });
+  assert.equal(menu.open, false, '无变化通知不清理原菜单的外部点击注册');
+  container.replaceChildren(); view.mount(container);
+  assert.ok(container.children.length, '宿主清空后同容器重新挂载会补回页面');
+  const nextContainer = new Node('main'); view.mount(nextContainer);
+  assert.ok(nextContainer.children.length, '同状态挂载到新容器也会绘制页面');
+  view.deactivate();
+  assert.equal(menuDocument.clickListenerCount(), 0, '停用会释放菜单点击监听');
+  await view.activate();
+  const reopenedMenu = flatten(nextContainer).find(node => node.className === 'qqj-profile-menu');
+  assert.ok(reopenedMenu, '重新打开会按当前状态重建菜单');
+  reopenedMenu.open = true;
+  menuDocument.click({ target: nextContainer, composedPath: () => [nextContainer] });
+  assert.equal(reopenedMenu.open, false, '停用后重新打开仍注册菜单外点关闭');
+});
+
+test('人物资料未变化时状态进度只更新状态区和按钮，不替换编辑输入', () => {
+  const h = runtimeHarness({ selected: [A] }), container = new Node('main');
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  const input = editorField(view, '补充资料'); input.focus();
+  const page = container.children[0];
+  h.emitState({ ...h.state, status: 'savingProfile', active: { kind: 'savingProfile' } });
+  assert.equal(container.children[0], page, '处理状态更新不重建人物编辑页');
+  assert.equal(editorField(view, '补充资料'), input, '输入控件保持同一节点');
+  assert.equal(input.disabled, false, '状态通知不禁用独立编辑窗中的草稿输入');
+  assert.match(visible(container), /正在保存人物资料/);
+  h.emitState({ ...h.state, status: 'ready', active: null });
+  assert.equal(editorField(view, '补充资料'), input);
+  assert.equal(input.disabled, false);
 });
 
 test('更多人物入口固定在顶部并切换为独立选择视图，零选择仍可进入', async () => {
@@ -356,10 +421,10 @@ test('投影姓名别名只填表单不算建档，首次保存与主动清空�
   const h = runtimeHarness(), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   assert.equal(h.state.profilesByEntityId[A], undefined);
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  const controls = flatten(container).filter(node => node.className === 'settings-input');
-  assert.equal(fieldControl(container, '姓名').value, '甲'); assert.equal(fieldControl(container, '别名').value, '甲别名');
+  const controls = flatten(editorContent(view)).filter(node => node.className === 'settings-input');
+  assert.equal(editorField(view, '姓名').value, '甲'); assert.equal(editorField(view, '别名').value, '甲别名');
   controls.forEach(control => { control.value = ''; control.fire('input'); });
-  flatten(container).find(node => node.textContent === '保存资料').click(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  await saveEditor(view);
   assert.equal(h.calls.save.length, 1); assert.equal(Object.values(h.calls.save[0][1]).every(value => value === ''), true); assert.deepEqual(h.calls.save[0][2].manualFields.sort(), ['aliases', 'name']);
   assert.match(visible(container), /已建档/);
 });
@@ -368,46 +433,100 @@ test('已有资料无改动在 view 层零保存，失败则保留用户草稿�
   const profile = { entityId: A, name: '人工甲', aliases: '', background: '', appearance: '', personality: '', notes: '已有说明', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const h = runtimeHarness({ profile }), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  flatten(container).find(node => node.textContent === '保存资料').click(); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.calls.save.length, 0); assert.match(visible(container), /未修改内容/); assert.match(visible(container), /编辑资料/); assert.equal(flatten(container).some(node => node.tag === 'textarea'), false);
-  const failing = runtimeHarness({ profile, failSave: true }), failedContainer = new Node('main'); createPeopleProfilesView({ runtime: failing.runtime, documentRef }).mount(failedContainer);
+  await saveEditor(view);
+  assert.equal(h.calls.save.length, 0); assert.match(visible(container), /人物资料已保存。|资料状态已显示/u); assert.match(visible(container), /编辑资料/); assert.equal(editorContent(view), null);
+  const failing = runtimeHarness({ profile, failSave: true }), failedContainer = new Node('main'); const failedView = createPeopleProfilesView({ runtime: failing.runtime, documentRef }); failedView.mount(failedContainer);
   flatten(failedContainer).find(node => node.textContent === '编辑资料').click();
-  const notes = fieldControl(failedContainer, '补充资料'); notes.value = '失败也要保留'; notes.fire('input');
-  flatten(failedContainer).find(node => node.textContent === '保存资料').click(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(fieldControl(failedContainer, '补充资料').value, '失败也要保留'); assert.match(visible(failedContainer), /保存失败：CAS失败/);
+  const notes = editorField(failedView, '补充资料'); notes.value = '失败也要保留'; notes.fire('input');
+  await saveEditor(failedView);
+  assert.equal(editorField(failedView, '补充资料').value, '失败也要保留'); assert.match(failedView.testDialogs.active.error?.message ?? '', /保存失败：CAS失败/u);
+});
+
+test('已保存的干净草稿采用最新档案，未保存和保存中输入保持原样', async () => {
+  const profile = { entityId: A, name: '旧姓名', occupation: '旧职业', aliases: '', background: '', appearance: '', personality: '', notes: '保留的人工资料', nsfw: '', manualFields: [], source: 'manual' };
+  const updateProfile = (h, changes) => {
+    const updated = { ...h.state.profilesByEntityId[A], ...changes };
+    h.emitState({ ...h.state, revision: h.state.revision + 1,
+      profilesByEntityId: { ...h.state.profilesByEntityId, [A]: updated },
+      people: h.state.people.map(person => person.entityId === A
+        ? { ...person, displayName: updated.name, profile: updated, profiled: true }
+        : person) });
+  };
+
+  const clean = runtimeHarness({ profile }), cleanContainer = new Node('main');
+  const cleanView = createPeopleProfilesView({ runtime: clean.runtime, documentRef }); cleanView.mount(cleanContainer);
+  flatten(cleanContainer).find(node => node.textContent === '编辑资料').click();
+  const notes = editorField(cleanView, '补充资料'); notes.value = '用户补充的人工资料'; notes.fire('input');
+  await saveEditor(cleanView);
+  await waitFor(() => clean.calls.save.length === 1 && visible(cleanContainer).includes('已保存'));
+  updateProfile(clean, { name: '新姓名', occupation: '新职业' });
+  assert.match(visible(cleanContainer), /新姓名/); assert.match(visible(cleanContainer), /新职业/);
+  flatten(cleanContainer).find(node => node.textContent === '编辑资料').click();
+  assert.equal(editorField(cleanView, '姓名').value, '新姓名');
+  assert.equal(editorField(cleanView, '职业').value, '新职业');
+  assert.equal(editorField(cleanView, '补充资料').value, '用户补充的人工资料'); cancelEditor(cleanView);
+
+  const dirty = runtimeHarness({ profile }), dirtyContainer = new Node('main');
+  const dirtyView = createPeopleProfilesView({ runtime: dirty.runtime, documentRef }); dirtyView.mount(dirtyContainer);
+  flatten(dirtyContainer).find(node => node.textContent === '编辑资料').click();
+  const dirtyNotes = editorField(dirtyView, '补充资料'); dirtyNotes.value = '尚未保存的输入'; dirtyNotes.fire('input');
+  updateProfile(dirty, { name: '更新后的姓名', occupation: '更新后的职业' });
+  assert.equal(editorField(dirtyView, '姓名').value, '旧姓名');
+  assert.equal(editorField(dirtyView, '职业').value, '旧职业');
+  assert.equal(editorField(dirtyView, '补充资料').value, '尚未保存的输入'); cancelEditor(dirtyView);
+
+  let releaseSave;
+  const saveGate = new Promise(resolve => { releaseSave = resolve; });
+  const saving = runtimeHarness({ profile, failSave: true }), savingContainer = new Node('main');
+  let markSaveStarted; const saveStarted = new Promise(resolve => { markSaveStarted = resolve; });
+  const saveImmediately = saving.runtime.saveProfile.bind(saving.runtime);
+  saving.runtime.saveProfile = async (...args) => { markSaveStarted(); await saveGate; return saveImmediately(...args); };
+  const savingView = createPeopleProfilesView({ runtime: saving.runtime, documentRef }); savingView.mount(savingContainer);
+  flatten(savingContainer).find(node => node.textContent === '编辑资料').click();
+  const savingNotes = editorField(savingView, '补充资料'); savingNotes.value = '保存中的输入'; savingNotes.fire('input');
+  const savingOperation = saveEditor(savingView); await saveStarted;
+  updateProfile(saving, { name: '保存期间更新姓名', occupation: '保存期间更新职业' });
+  assert.equal(editorField(savingView, '姓名').value, '旧姓名');
+  assert.equal(editorField(savingView, '职业').value, '旧职业');
+  assert.equal(editorField(savingView, '补充资料').value, '保存中的输入');
+  releaseSave();
+  await savingOperation;
+  assert.equal(editorField(savingView, '补充资料').value, '保存中的输入');
+  assert.match(savingView.testDialogs.active.error?.message ?? '', /保存失败：CAS失败/u);
 });
 
 test('长人物资料只在阅读视图按句分行，编辑与保存仍保留原文', async () => {
   const rawNotes = '候选甲；候选乙;候选丙。丁”接续\n已有换行，网址 https://example.test/a.b、小数 1.25 不拆、顿号不拆；他说“可以。”下一句；他说“可以。”';
   const profile = { entityId: A, name: '甲', aliases: '', gender: '女性；无需换行', age: '30', birthday: '', species: '', notes: rawNotes, source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
-  const h = runtimeHarness({ profile }), container = new Node('main'); createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
+  const h = runtimeHarness({ profile }), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   const readRow = field => flatten(container).find(node => node.className === `qqj-profile-read-row qqj-profile-read-${field}`);
   assert.equal(readRow('notes').children[1].textContent, '候选甲；\n候选乙;\n候选丙。\n丁”接续\n已有换行，网址 https://example.test/a.b、小数 1.25 不拆、顿号不拆；\n他说“可以。”\n下一句；\n他说“可以。”');
   assert.equal(readRow('gender').children[1].textContent, '女性；无需换行', '短 input 字段保持原样');
 
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  assert.equal(fieldControl(container, '补充资料').value, rawNotes, 'textarea 编辑值仍为原始资料');
-  const age = fieldControl(container, '年龄'); age.value = '31'; age.fire('input');
-  flatten(container).find(node => node.textContent === '保存资料').click();
+  assert.equal(editorField(view, '补充资料').value, rawNotes, 'textarea 编辑值仍为原始资料');
+  const age = editorField(view, '年龄'); age.value = '31'; age.fire('input');
+  await saveEditor(view);
   await waitFor(() => h.calls.save.length === 1 && visible(container).includes('已保存'));
   assert.equal(h.calls.save[0][1].notes, rawNotes, '保存 payload 不包含展示用换行');
   assert.equal(readRow('notes').children[1].textContent, '候选甲；\n候选乙;\n候选丙。\n丁”接续\n已有换行，网址 https://example.test/a.b、小数 1.25 不拆、顿号不拆；\n他说“可以。”\n下一句；\n他说“可以。”');
 });
 
-test('人物资料保存栏属于完整编辑器，成功回到当前人物卡而失败保持位置', async () => {
+test('人物资料弹窗保存失败保留内容，成功后回到当前人物卡且不滚动阅读页', async () => {
   const profile = { entityId: A, name: '甲', aliases: '', gender: '', age: '', birthday: '', species: '', notes: '', appearance: '', background: '', personality: '', nsfw: '', manualFields: [], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const runCase = async failSave => {
     const h = runtimeHarness({ profile, failSave }), scroller = new Node('div'), container = new Node('main'); scroller.className = 'body'; scroller.scrollTop = 40; scroller.rect = { top: 10, bottom: 410, height: 400 }; scroller.append(container);
-    createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
+    const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
     flatten(container).find(node => node.textContent === '编辑资料').click();
-    assert.ok(flatten(container).find(node => node.className.includes('qqj-profile-form') && node.className.includes('qqj-manual-editor')));
-    assert.ok(flatten(container).find(node => node.className.includes('qqj-profile-save-row') && node.className.includes('qqj-manual-save-bar')));
-    const name = fieldControl(container, '姓名'); name.value = '新甲'; name.fire('input'); flatten(container).find(node => node.textContent === '保存资料').click();
-    await waitFor(() => failSave ? visible(container).includes('保存失败') : h.calls.save.length === 1 && !flatten(container).some(node => node.textContent === '保存中…'));
-    return { scroller, container };
+    assert.ok(editorContent(view)?.className.includes('qqj-profile-form'));
+    assert.equal(flatten(container).some(node => node.className.includes('qqj-profile-form')), false, '表单不嵌入阅读页');
+    const name = editorField(view, '姓名'); name.value = '新甲'; name.fire('input'); await saveEditor(view);
+    if (failSave) assert.match(view.testDialogs.active.error?.message ?? '', /保存失败/u);
+    else await waitFor(() => h.calls.save.length === 1);
+    return { scroller, container, view };
   };
-  const success = await runCase(false); assert.equal(success.scroller.scrollTop, 150);
-  const failure = await runCase(true); assert.equal(failure.scroller.scrollTop, 40); assert.match(visible(failure.container), /保存失败/);
+  const success = await runCase(false); assert.equal(success.scroller.scrollTop, 40);
+  const failure = await runCase(true); assert.equal(failure.scroller.scrollTop, 40); assert.equal(editorField(failure.view, '姓名').value, '新甲');
 });
 
 test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁剪独立保存并保留文字草稿', async () => {
@@ -431,13 +550,13 @@ test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁�
   const basic = flatten(container).find(node => node.className.includes('qqj-profile-section-basic'));
   assert.deepEqual(basic.children.slice(1).map(node => node.className), ['qqj-profile-read-row qqj-profile-read-gender', 'qqj-profile-read-row qqj-profile-read-age', 'qqj-profile-read-row qqj-profile-read-birthday', 'qqj-profile-read-row qqj-profile-read-species', 'qqj-profile-read-row qqj-profile-read-notes']);
   assert.doesNotMatch(visible(container), /NSFW/);
-  flatten(container).find(node => node.textContent === '编辑资料').click(); const notes = fieldControl(container, '补充资料'); notes.value = '尚未保存的文字'; notes.fire('input');
+  flatten(container).find(node => node.textContent === '编辑资料').click(); const notes = fieldControl(dialogs.active.content, '补充资料'); notes.value = '尚未保存的文字'; notes.fire('input'); dialogs.dialog.cancelTop();
   let file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change', { target: { files: [{ type: 'image/png', size: 1024 }], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(dialogs.active.title, '裁剪头像'); assert.ok(flatten(dialogs.active.content).find(node => node.className === 'qqj-avatar-crop-frame')); assert.equal(fieldControl(container, '补充资料').value, '尚未保存的文字');
+  assert.equal(dialogs.active.title, '裁剪头像'); assert.ok(flatten(dialogs.active.content).find(node => node.className === 'qqj-avatar-crop-frame')); assert.equal(flatten(container).some(node => node.className.includes('qqj-profile-form')), false, '头像裁剪不嵌套在资料编辑窗中');
   dialogs.dialog.cancelTop(); assert.equal(revoked, 1); assert.equal(h.calls.avatar.length, 0);
   file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change', { target: { files: [{ type: 'image/webp', size: 2048 }], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
   await dialogs.submit(); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(h.calls.avatar[0], [A, 'data:image/webp;base64,AAAA']); assert.equal(canvasDraws.length, 1); assert.equal(fieldControl(container, '补充资料').value, '尚未保存的文字'); assert.equal(revoked, 2);
+  assert.deepEqual(h.calls.avatar[0], [A, 'data:image/webp;base64,AAAA']); assert.equal(canvasDraws.length, 1); assert.equal(revoked, 2);
   view.deactivate();
 });
 
@@ -459,11 +578,13 @@ test('人物整理沿用 runtime 总批次进度并随批次推进更新', () =>
   assert.doesNotMatch(visible(container), /第 3\/11 批/);
 });
 
-test('人物整理报告准确显示实际送入世界书条目数，包括零条', async () => {
-  const h = runtimeHarness({ profile: { name: '旧档' }, generationReport: { saved: 1, requested: 1, worldInfoMatched: 2 } }), container = new Node('main');
+test('人物整理报告准确显示未更新数量与实际送入世界书条目数，包括零条', async () => {
+  const h = runtimeHarness({ profile: { name: '旧档' }, generationReport: { saved: 1, requested: 1, skipped: 1, worldInfoMatched: 2 } }), container = new Node('main');
   createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
   flatten(container).find(node => node.textContent === '重新整理资料').click();
   await waitFor(() => visible(container).includes('送入世界书 2 项'));
+  assert.match(visible(container), /未更新 1 位/u);
+  assert.doesNotMatch(visible(container), /并发跳过/u);
   assert.doesNotMatch(visible(container), /命中世界书|未命中相关世界书/u);
 
   const empty = runtimeHarness({ profile: { name: '旧档' }, generationReport: { saved: 1, requested: 1, worldInfoMatched: 0 } }), other = new Node('main');
@@ -476,49 +597,35 @@ test('真实 runtime 与 view 完成修改保存、新建档、no-op 与失败�
   const h = trueRuntimeHarness(); await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([A, B]);
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  let notes = fieldControl(container, '补充资料'); notes.value = '人工说明'; notes.fire('input');
-  flatten(container).find(node => node.textContent === '保存资料').click();
-  assert.match(visible(container), /保存中…/);
+  let notes = editorField(view, '补充资料'); notes.value = '人工说明'; notes.fire('input');
+  await saveEditor(view);
   await waitFor(() => visible(container).includes('已保存'), '真实修改保存未完成');
-  assert.equal(flatten(container).some(node => node.tag === 'textarea'), false, '保存成功回到阅读状态');
+  assert.equal(editorContent(view), null, '保存成功关闭弹窗并回到阅读状态');
   let stored = h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`); assert.equal(stored.data.profilesByEntityId[A].notes, '人工说明'); assert.equal(stored.data.profilesByEntityId[A].source, 'manual');
   const puts = h.calls.filter(call => call[0] === 'put').length;
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  flatten(container).find(node => node.textContent === '保存资料').click(); assert.match(visible(container), /未修改内容/);
-  assert.equal(flatten(container).some(node => node.tag === 'textarea'), false, 'no-op 回到阅读状态');
+  await saveEditor(view); assert.equal(editorContent(view), null, 'no-op 关闭弹窗');
   assert.equal(h.calls.filter(call => call[0] === 'put').length, puts, '已有资料 no-op 不写存储');
 
   flatten(container).find(node => node.textContent === '乙').click();
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  flatten(container).find(node => node.textContent === '保存资料').click(); await waitFor(() => visible(container).includes('已保存'), '投影资料首次保存未建档');
+  await saveEditor(view); await waitFor(() => h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`)?.data.profilesByEntityId[B], '投影资料首次保存未建档');
   stored = h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`); assert.equal(stored.data.profilesByEntityId[B].name, '乙'); assert.equal(stored.data.profilesByEntityId[B].source, 'manual');
-  h.failNextPut(); flatten(container).find(node => node.textContent === '编辑资料').click(); notes = fieldControl(container, '补充资料'); notes.value = '失败草稿'; notes.fire('input');
-  flatten(container).find(node => node.textContent === '保存资料').click(); await waitFor(() => visible(container).includes('保存失败：模拟保存失败'));
-  assert.equal(fieldControl(container, '补充资料').value, '失败草稿'); assert.ok(flatten(container).find(node => node.textContent === '保存资料'));
+  h.failNextPut(); flatten(container).find(node => node.textContent === '编辑资料').click(); notes = editorField(view, '补充资料'); notes.value = '失败草稿'; notes.fire('input');
+  await saveEditor(view);
+  assert.equal(editorField(view, '补充资料').value, '失败草稿'); assert.match(view.testDialogs.active.error?.message ?? '', /保存失败：模拟保存失败/u);
 });
 
-test('真实保存跨人物及停用重开保持归属，切聊天后的迟到结果不清新草稿', async () => {
+test('真实人物资料保存后停用重开仍保持归属，取消不写另一人物草稿', async () => {
   const h = trueRuntimeHarness(); await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([A, B]);
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   flatten(container).find(node => node.textContent === '编辑资料').click();
-  let release = h.blockNextPut(), notes = fieldControl(container, '补充资料'); notes.value = '甲等待保存'; notes.fire('input');
-  flatten(container).find(node => node.textContent === '保存资料').click(); flatten(container).find(node => node.textContent === '乙').click();
-  assert.equal(flatten(container).find(node => node.textContent === '编辑资料').disabled, true, '另一人物在真实保存未完成时显示忙状态'); view.deactivate(); release();
-  await waitFor(() => h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`)?.data.profilesByEntityId[A]?.notes === '甲等待保存');
-  view.mount(container); await view.activate(); flatten(container).find(node => node.textContent === '编辑资料').click();
-  notes = fieldControl(container, '补充资料'); notes.value = '乙未保存'; notes.fire('input');
-  flatten(container).find(node => node.textContent === '甲').click(); assert.match(visible(container), /已保存/);
-  flatten(container).find(node => node.textContent === '乙').click(); assert.equal(fieldControl(container, '补充资料').value, '乙未保存');
-  flatten(container).find(node => node.textContent === '甲').click();
-
-  release = h.blockNextPut(); flatten(container).find(node => node.textContent === '编辑资料').click(); notes = fieldControl(container, '补充资料'); notes.value = '旧聊天迟到'; notes.fire('input');
-  const oldPutCount = h.calls.filter(call => call[0] === 'put').length; flatten(container).find(node => node.textContent === '保存资料').click();
-  await waitFor(() => h.calls.filter(call => call[0] === 'put').length > oldPutCount, '旧聊天保存未进入受控 PUT');
-  h.switchChat(CHAT_B); await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([A]); view.render(h.runtime.getState()); flatten(container).find(node => node.textContent === '编辑资料').click();
-  notes = fieldControl(container, '补充资料'); notes.value = '新聊天草稿'; notes.fire('input'); release();
-  await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(fieldControl(container, '补充资料').value, '新聊天草稿');
-  assert.equal(h.records.get(`chat-${CHAT_B}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId[A], undefined, '迟到旧保存不得写新聊天');
+  const notes = editorField(view, '补充资料'); notes.value = '甲的人工说明'; notes.fire('input'); await saveEditor(view);
+  assert.equal(h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId[A].notes, '甲的人工说明');
+  view.deactivate(); view.mount(container); await view.activate();
+  flatten(container).find(node => node.textContent === '乙').click(); flatten(container).find(node => node.textContent === '编辑资料').click();
+  const secondNotes = editorField(view, '补充资料'); secondNotes.value = '乙未保存'; secondNotes.fire('input'); cancelEditor(view);
+  assert.equal(h.records.get(`chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId[B], undefined, '取消不写入另一人物资料');
 });
 
 test('搬家后人物详情按需只读显示冻结旧资料，不提供编辑入口', async () => {

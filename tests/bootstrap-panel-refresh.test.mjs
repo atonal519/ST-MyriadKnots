@@ -69,7 +69,8 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const dialogHost = { id: 'dialog-host' };
   const bootstrap = await loadBootstrap({ './ui/fab.js': { createFab: options => { fabOptions = options; return { host: fabHost, setBusy() {}, setAppearance(value) { fabAppearances.push(value); } }; } } });
   const dayAppearance = { mode: 'auto', effectiveTheme: 'day', palette: { knot: '#b63745', line: '#dce2e5' } };
-  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, refresh: async () => ({ status: 'ready' }), getUiDiagnostic: () => '{"schemaVersion":1}', syncAppearance: () => dayAppearance };
+  let vectorSettingsOpened = 0;
+  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, openVectorSettings() { vectorSettingsOpened += 1; }, refresh: async () => ({ status: 'ready' }), getUiDiagnostic: () => '{"schemaVersion":1}', syncAppearance: () => dayAppearance };
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
   const current = { fabShow: true };
   let sessionReads = 0; const sessionStateProvider = () => { sessionReads += 1; return { status: 'preparing' }; };
@@ -102,6 +103,8 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   assert.equal(storageOptions.manager.getState instanceof Function, true);
   assert.equal(panelOptions.timeRuntime, undefined); assert.equal(panelOptions.memoryRuntime, undefined);
   assert.equal(foundationOptions.timeRuntime, timeRuntime); assert.equal(foundationOptions.runtime, memoryRuntime);
+  assert.equal(typeof foundationOptions.onOpenVectorSettings, 'function'); foundationOptions.onOpenVectorSettings(); assert.equal(vectorSettingsOpened, 1, 'bootstrap 将记忆管理链接接到现有向量设置导航');
+  assert.equal(foundationOptions.prepareSession, prepareSession, 'foundation/管理入口应使用生产身份准备函数');
   assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function'); assert.equal(await foundationOptions.chooseImpl({}), 'chosen');
   assert.equal(foundationOptions.sessionStateProvider, sessionStateProvider); assert.deepEqual(foundationOptions.sessionStateProvider(), { status: 'preparing' }); assert.equal(sessionReads, 1);
   assert.equal(foundationOptions.backendDiagnosticProvider, backendDiagnosticProvider); assert.equal(backendReads, 0); assert.deepEqual(foundationOptions.backendDiagnosticProvider(), { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 } }); assert.equal(backendReads, 1);

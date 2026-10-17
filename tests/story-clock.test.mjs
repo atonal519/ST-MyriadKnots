@@ -110,6 +110,22 @@ test('同一前缀按标签顺序逐段配对，保留完整区间且不猜悬�
   assert.equal(parseSharedStoryClock('<!-- SDC-end | date=10月30日 | weekday=周五 | time=10:20 --><!-- SDC-start | date=10月30日 | weekday=周五 | time=10:30 -->').pairs.length, 0);
 });
 
+test('唯一合法 end 可作为时间点，start-only、无效或冲突 end 不提升为精确时刻', () => {
+  const end = '<!-- QQJ-end | date=2026年5月10日 | weekday=周日 | time=18:20 -->';
+  const resolved = resolveStoryClock(end);
+  assert.equal(resolved.status, 'available');
+  assert.equal(resolved.text, '2026年5月10日 18:20');
+  assert.equal(resolved.evidence.complete, false, '单端仍不是完整时间范围');
+  assert.equal(resolved.evidence.singleEnd, true);
+  assert.equal(resolveStoryClock(`${end}<Ti>另一个较弱参考</Ti>`, 'Ti').text, '2026年5月10日 18:20', '唯一合法标准 end 优先于参考标签');
+  assert.equal(resolveStoryClock('<!-- QQJ-start | date=2026年5月10日 | weekday=周日 | time=18:00 -->').status, 'incomplete');
+  assert.equal(resolveStoryClock('<!-- QQJ-end | date=2026-02-30 | weekday=周一 | time=18:20 -->').status, 'incomplete');
+  const conflict = resolveStoryClock(`${end}<!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=19:20 -->`);
+  assert.equal(conflict.status, 'ambiguous');
+  const pairConflict = resolveStoryClock(`${pair('QQJ', '2026年5月10日 | weekday=周日 | time=18:00', '2026年5月10日 | weekday=周日 | time=18:20')}<!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=19:20 -->`);
+  assert.equal(pairConflict.status, 'ambiguous');
+});
+
 test('完整戳并存时保留共同字段，残缺高优先戳回退真实 BBS 标签', () => {
   const conflict = parseSharedStoryClock(`${pair('SDC', '2026年5月10日 | weekday=周日 | time=09:00', '2026年5月10日 | weekday=周日 | time=10:00')}\n${pair('QQJ', '2026年5月10日 | weekday=周日 | time=09:00', '2026年5月11日 | weekday=周一 | time=11:00')}`);
   assert.equal(conflict.ambiguous, true);

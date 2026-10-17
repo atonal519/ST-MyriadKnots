@@ -90,10 +90,6 @@ export function createHostAdapter({ globalRef = globalThis, mutationMetadataCapa
   return Object.freeze({ getContext, getUserIdentity, getWorldInfoBindings, snapshot, mutationMetadata });
 }
 
-export function getPreferredHostContext(globalRef = globalThis) {
-  return createHostAdapter({ globalRef }).getContext();
-}
-
 export function captureTargetChatCoordinates(snapshot, identity) {
   const context = snapshot?.context;
   if (!context || !identity?.hostChatId) throw new TypeError('V3 target chat identity 无效');

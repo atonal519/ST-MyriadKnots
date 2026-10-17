@@ -177,10 +177,14 @@ test('ready 后record getItem超时会关闭本页缓存IO，后续大批读写�
   await cache.publish(scope, witness, [{ recordId: id, envelope: floorEnvelope() }], { floor: [id] });
   const manifest = await cache.readManifest(scope, witness);
   const normalGet = instance.getItem;
-  instance.getItem = async key => key.startsWith('r:') ? new Promise(() => {}) : normalGet(key);
+  instance.getItem = async key => {
+    getCalls += 1;
+    return key.startsWith('r:') ? new Promise(() => {}) : normalGet(key);
+  };
   const started = Date.now();
   assert.equal(await cache.readRecord(scope, witness, 'floor', id, manifest), null);
   const afterTimeoutCalls = getCalls;
+  assert.ok(afterTimeoutCalls > 0, '故障前应实际发送过缓存记录读取');
   const misses = await Promise.all(Array.from({ length: 271 }, (_, index) => cache.readRecord(scope, witness, 'floor', `v3-floor-${index}`, manifest)));
   assert.ok(misses.every(value => value === null));
   assert.equal(getCalls, afterTimeoutCalls, '首个core I/O故障后不再对后续楼发送IDB请求');

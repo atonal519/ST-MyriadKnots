@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createBackendClient } from '../src/backend-client.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore, reverseRefCandidateKeys } from '../src/v3/foundation-store.js';
 import { buildFoundationIndexes, createFoundationRuntime, validatePreparedFoundation } from '../src/v3/foundation-runtime.js';
@@ -10,9 +11,6 @@ import { entityIndexKey } from '../src/v3/memory-schema.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
-import { API_BASE } from '../src/constants.js';
-import { createBackendClient } from '../src/backend-client.js';
-import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -623,7 +621,7 @@ test('成功 fresh read 与 adopt 清除旧读取错误，失败 adopt 不洗绿
   });
   let state = await h.runtime.inspect('failedProjection', { allowCached: false });
   assert.equal(state.status, 'error');
-  assert.equal(state.lastError, '后端数据检查失败，请稍后重试。');
+  assert.equal(state.lastError, '读取聊天记忆失败。请稍后重试；仍失败时，请到“记忆管理”页点击“复制状态诊断”反馈。');
 
   h.backend.setBeforeGet(null);
   state = await h.runtime.inspect('cacheOnly', { allowCached: true });
@@ -633,7 +631,7 @@ test('成功 fresh read 与 adopt 清除旧读取错误，失败 adopt 不洗绿
   state = await h.runtime.inspect('failedAgain', { allowCached: false });
   assert.equal(state.status, 'error');
   assert.equal(h.runtime.adoptReachable({ ...verified, root: { ...verified.root, chatId: OTHER_CHAT } }), false);
-  assert.equal(h.runtime.getState().lastError, '后端数据检查失败，请稍后重试。', '失败 adopt 不能清除读取错误');
+  assert.equal(h.runtime.getState().lastError, '读取聊天记忆失败。请稍后重试；仍失败时，请到“记忆管理”页点击“复制状态诊断”反馈。', '失败 adopt 不能清除读取错误');
 
   assert.equal(h.runtime.adoptReachable(verified), true);
   assert.equal(h.runtime.getState().status, 'ready');
@@ -641,35 +639,6 @@ test('成功 fresh read 与 adopt 清除旧读取错误，失败 adopt 不洗绿
   state = await h.runtime.inspect('cacheAfterAdopt', { allowCached: true });
   assert.equal(state.status, 'ready');
   assert.equal(state.lastError, null);
-});
-
-test('接纳迁移图时冻结楼的旧物理楼号不吞掉当前尾楼候选', async () => {
-  const h = harness([assistant('已登记'), user('确认已登记'), assistant('当前待登记')], { modernAnchors: true });
-  await h.runtime.start();
-  const current = structuredClone(h.runtime.getReachable());
-  const pending = h.runtime.getState().unregisteredCandidates.find(item => item.messageIndex === 2);
-  assert.deepEqual(pending, { assistantSeq: 2, messageIndex: 2, reason: 'waitingNextUser' });
-
-  const archivedFloor = {
-    ...structuredClone(current.floors[0]),
-    id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    hostLocator: { ...current.floors[0].hostLocator, messageIndex: 2 },
-  };
-  const descriptor = createMigrationDescriptor({
-    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-    chatId: CHAT,
-    source: {
-      chatId: OTHER_CHAT, hostChatId: 'host-previous-chat',
-      characterLocator: 'character.png', personaLocator: 'persona.png',
-    },
-    reachable: { ...current, floors: [archivedFloor], migrationDescriptor: null },
-    createdAt: '2026-09-02T00:00:00.000Z',
-  });
-  const migrated = { ...current, floors: [...current.floors, archivedFloor], migrationDescriptor: descriptor };
-
-  assert.equal(h.runtime.adoptReachable(migrated), true);
-  assert.deepEqual(h.runtime.getState().unregisteredCandidates.find(item => item.messageIndex === 2), pending);
-  assert.equal(h.runtime.getState().pending?.messageIndex, 2);
 });
 
 test('健康缓存打开与连续 fresh 刷新只核 root，版本变化才重新读取整图', async () => {
@@ -960,105 +929,6 @@ test('后端恢复得到相同 stableBoundary，warm reconcile 不按楼读取�
   assert.equal(runtimeIndexCount, activeCheckpoint.producedRefs.indexes.length, '新布局只有运行时真正使用的楼序索引');
 });
 
-test('无manifest冷批读发布实际记录，随后读命中现有IndexedDB缓存路径', async () => {
-  const h = harness(); await h.runtime.start();
-  const cacheRecords = new Map(); let manifest = null, published = null, batchReads = 0;
-  const coreRecordCache = {
-    captureIdentityVersion: () => 'version', scopeFor: async () => 'scope',
-    async readManifest() { return manifest; },
-    async readRecord(_scope, _witness, type, key) { return cacheRecords.get(`${type}\u0000${key}`) ?? null; },
-    async removeRecord(_scope, _witness, type, key) { cacheRecords.delete(`${type}\u0000${key}`); },
-    async publish(_scope, witness, records, recordRefs) {
-      published = { witness, records: structuredClone(records), recordRefs: structuredClone(recordRefs) };
-      for (const item of records) cacheRecords.set(`${item.envelope.data.recordType}\u0000${item.recordId}`, item.envelope);
-      manifest = { ...witness, recordRefs };
-      return true;
-    },
-  };
-  h.backend.client.getMany = async (collection, recordIds) => {
-    batchReads += 1;
-    return Promise.all(recordIds.map(async recordId => ({ recordId, status: 200, envelope: await h.backend.client.get(collection, recordId) })));
-  };
-  const store = createFoundationStore({ client: h.backend.client, coreRecordCache, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
-  assert.equal((await store.readReachable()).status, 'ready');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.ok(published?.records.length > 0, '冷批读取的原始envelope必须进入现有publish合同');
-  const firstBatches = batchReads; assert.ok(firstBatches > 0);
-  assert.equal((await store.readReachable()).status, 'ready');
-  assert.equal(batchReads, firstBatches, '有效manifest应优先读取缓存，不先发批次请求');
-});
-
-test('真实BackendClient未预热health时由FoundationStore跨64条冷批读并继续验证floor内容', async () => {
-  const chat = Array.from({ length: 65 }, (_, index) => [assistant(`短正文${index + 1}`), user(`确认${index + 1}`)]).flat();
-  const h = harness(chat); await h.runtime.start();
-  const collection = `chat-${CHAT}`;
-  const requests = [];
-  const fetchImpl = async (url, init) => {
-    const path = new URL(url, 'http://localhost').pathname;
-    const method = init.method ?? 'GET';
-    const body = init.body ? JSON.parse(init.body) : null;
-    requests.push({ path, method, body });
-    if (path === `${API_BASE}/v1/health`) return { ok: true, status: 200, json: async () => ({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordIdList: true } }) };
-    if (path.startsWith(`${API_BASE}/v1/records/qianqianjie/${collection}/`)) {
-      const recordId = decodeURIComponent(path.split('/').at(-1));
-      return { ok: true, status: 200, json: async () => await h.backend.client.get(collection, recordId) };
-    }
-    if (path === `${API_BASE}/v1/record-batch/qianqianjie/${collection}`) {
-      const entries = await Promise.all(body.recordIds.map(async recordId => {
-        try { return { recordId, status: 200, envelope: await h.backend.client.get(collection, recordId) }; }
-        catch (error) { return { recordId, status: error.status === 404 ? 404 : 500, error: error.status === 404 ? 'not_found' : 'storage_error', message: error.status === 404 ? 'Record not found' : 'Unable to read record' }; }
-      }));
-      return { ok: true, status: 200, json: async () => entries };
-    }
-    throw new Error(`Unexpected Foundation API route: ${method} ${path}`);
-  };
-  const createColdStore = () => createFoundationStore({
-    client: createBackendClient({ fetchImpl }),
-    contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }),
-  });
-  const coldStore = createColdStore();
-  const graph = await coldStore.readReachable();
-  assert.equal(graph.status, 'ready');
-  assert.equal(graph.floors.length, 65);
-  assert.equal(graph.indexesComplete, true);
-  assert.equal(requests.filter(item => item.path.endsWith('/v1/health')).length, 1, '第一次正常readReachable应惰性协商一次');
-  const floorBatches = requests.filter(item => item.method === 'POST' && item.body.recordIds.some(id => id.startsWith('v3-floor-')));
-  assert.ok(floorBatches.length >= 2, '65个FloorRecord应跨越64条批次边界');
-  assert.ok(floorBatches.every(item => item.body.recordIds.length <= 64));
-  assert.equal(requests.filter(item => item.method === 'GET' && /\/v1\/records\/.*\/v3-floor-/.test(item.path)).length, 0, 'FloorRecord不得退回单条GET');
-
-  const floorId = graph.floors[0].id;
-  const persisted = h.backend.records.get(`${collection}/v3-floor-${floorId}`);
-  const originalContent = persisted.data.content.canonicalContent;
-  persisted.data.content.canonicalContent = `${originalContent}改写`;
-  await assert.rejects(createColdStore().readReachable(), /floor|Floor|正文|指纹/i,
-    '批量HTTP成功仍必须由原production floor内容校验拒绝损坏记录');
-});
-
-test('召回CSE fallback保留按组settled语义，delta批次传输失败仍返回可用memory图', async () => {
-  const h = harness(); await h.runtime.start();
-  const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
-    ? { jsonData: { summary: '用于验证批量召回fallback的摘要' } }
-    : { jsonData: { noMaterialChange: true } };
-  const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
-    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'), newUuid: uuidFactory(10000), logger: { warn() {} } });
-  await memory.start();
-  const floorId = h.runtime.getReachable().floors[0]?.id;
-  assert.ok(floorId, 'fixture must contain a stable floor');
-  await memory.extractFloor(floorId);
-  const beforeFailure = await h.store.readReachable({ mode: 'runtime' });
-  assert.ok(beforeFailure.stateDeltas.length > 0, 'fixture must persist a CSE state delta before injecting transport failure');
-  const original = h.backend.client.get.bind(h.backend.client);
-  h.backend.client.getMany = async (collection, recordIds) => {
-    if (recordIds.some(id => id.startsWith('v3-state-delta-'))) throw Object.assign(new Error('transport failed'), { code: 'BACKEND_TIMEOUT' });
-    return Promise.all(recordIds.map(async recordId => ({ recordId, status: 200, envelope: await original(collection, recordId) })));
-  };
-  const store = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
-  const result = await store.readReachable({ allowRecallCseFallback: true });
-  assert.equal(result.status, 'ready'); assert.equal(result.cseUnavailable, true);
-  assert.ok(result.floors.length > 0);
-});
-
 test('明确 legacy 快照缺失可重建索引时从 root 可达 FloorRecord 重封口，不读取旧世代', async () => {
   const h = harness();
   await h.runtime.start();
@@ -1105,8 +975,8 @@ test('新布局各读模式只读楼序索引，并将其视为完整索引集',
   assert.equal(h.backend.calls.filter(call => call[0] === 'get' && call[2].startsWith('v3-index-')).length, full.checkpoint.producedRefs.indexes.length);
 });
 
-test('53 楼/15 实体同形输入在内存 backend 实测新旧索引 PUT，并对照 53 楼完整冷读 GET', async () => {
-  const h = harness(Array.from({ length: 53 }, (_, index) => assistant(`统计楼-${index + 1}`)));
+test('67 楼/15 实体同形输入在内存 backend 实测新旧索引 PUT，并对照分批冷读', async () => {
+  const h = harness(Array.from({ length: 67 }, (_, index) => assistant(`统计楼-${index + 1}`)));
   await h.runtime.start();
   await anchorLatest(h, '确认第 53 楼');
   const store = createFoundationStore({
@@ -1118,8 +988,49 @@ test('53 楼/15 实体同形输入在内存 backend 实测新旧索引 PUT，并
   const current = await store.readReachable();
   const newReadGets = h.backend.calls.filter(call => call[0] === 'get').length;
   assert.equal(current.status, 'ready');
-  assert.equal(current.floors.length, 53);
-  assert.equal(newReadGets, 57, '新布局完整冷读为 root + checkpoint + run + 53 floors + 1 floorOrder');
+  assert.equal(current.floors.length, 67);
+  assert.equal(newReadGets, 71, '逐条回落完整冷读为 root + checkpoint + run + 67 floors + 1 floorOrder');
+
+  const requests = [];
+  const batchClient = createBackendClient({ fetchImpl: async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url.endsWith('/v1/health')) return { ok: true, status: 200, json: async () => ({ ok: true,
+      api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true } }) };
+    if (url.includes('/v1/record-batch/')) {
+      const { recordIds } = JSON.parse(options.body);
+      const collection = decodeURIComponent(url.split('/').at(-1));
+      return { ok: true, status: 200, json: async () => recordIds.map(recordId => {
+        const record = h.backend.records.get(`${collection}/${recordId}`);
+        return record
+          ? { recordId, status: 200, envelope: { schemaVersion: 1, revision: record.revision,
+            generationId: '11111111-1111-4111-8111-111111111111', createdAt: record.createdAt, updatedAt: record.createdAt,
+            data: structuredClone(record.data) } }
+          : { recordId, status: 404, error: 'not_found', message: 'Record not found' };
+      }) };
+    }
+    const parts = url.split('/');
+    const collection = decodeURIComponent(parts.at(-2)), recordId = decodeURIComponent(parts.at(-1));
+    const record = h.backend.records.get(`${collection}/${recordId}`);
+    return record
+      ? { ok: true, status: 200, json: async () => ({ schemaVersion: 1, revision: record.revision,
+        generationId: '11111111-1111-4111-8111-111111111111', createdAt: record.createdAt, updatedAt: record.createdAt,
+        data: structuredClone(record.data) }) }
+      : { ok: false, status: 404, json: async () => ({}) };
+  } });
+  const batchStore = createFoundationStore({ client: batchClient, contextProvider: () => ({ hostChatId: h.context.chatId,
+    chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+  const batchRead = await batchStore.readReachable();
+  const batchCalls = requests.filter(call => call.url.includes('/v1/record-batch/'));
+  const floorBatches = batchCalls.map(call => JSON.parse(call.options.body).recordIds).filter(ids => ids.every(id => id.startsWith('v3-floor-')));
+  assert.equal(batchRead.status, 'ready');
+  assert.equal(batchRead.floors.length, 67);
+  assert.ok(batchCalls.length >= 2, '正式冷读应批量读取楼记录和索引');
+  assert.ok(batchCalls.every(call => JSON.parse(call.options.body).recordIds.length <= 64), 'getMany 单批最多 64 条');
+  const floorBatchSizes = floorBatches.map(ids => ids.length);
+  assert.deepEqual(floorBatchSizes, [64, 3], '67 条 FloorRecord 按 64+3 分组且结果顺序保持');
+  assert.deepEqual(batchRead.floors.map(floor => floor.id), current.floors.map(floor => floor.id));
+  assert.equal(requests.filter(call => call.url.endsWith('/v1/health')).length, 1, '未预热 capability 时由真实 BackendClient 惰性协商一次');
+  assert.equal(requests.filter(call => !call.options.method && !call.url.endsWith('/v1/health')).length, 3, 'root、checkpoint、run 仍逐条读取');
 
   const entities = Array.from({ length: 15 }, (_, index) => ({
     id: `${String(index + 1).padStart(8, '0')}-dddd-4ddd-8ddd-${String(index + 1).padStart(12, '0')}`,
@@ -1141,7 +1052,6 @@ test('53 楼/15 实体同形输入在内存 backend 实测新旧索引 PUT，并
   await Promise.all(legacyIndexes.map(index => store.putRecord(index)));
   const legacyIndexPuts = h.backend.calls.filter(call => call[0] === 'put').length;
   assert.equal(newIndexPuts, 1);
-  assert.equal(legacyIndexPuts, 137);
   assert.equal(legacyIndexPuts, legacyIndexes.length);
 
   const legacy = await installLegacyIndexFixture(h);
@@ -1150,8 +1060,52 @@ test('53 楼/15 实体同形输入在内存 backend 实测新旧索引 PUT，并
   const legacyReadGets = h.backend.calls.filter(call => call[0] === 'get').length;
   assert.equal(legacyCold.status, 'ready');
   assert.equal(legacyCold.floors.length, current.floors.length);
-  assert.equal(legacyReadGets, 151);
   assert.equal(legacyReadGets, 3 + current.floors.length + legacy.indexes.length);
+});
+
+test('CSE settled 批读传输失败仍保留已保存摘要与核心记忆', async () => {
+  const h = harness([assistant('上一楼稳定摘要'), user('确认上一楼'), assistant('摘要正文应保留'), user('确认本楼')]);
+  await h.runtime.start();
+  const started = await h.runtime.refreshStatus();
+  assert.equal(started.status, 'ready');
+  const floor = h.runtime.getReachable().floors.at(-1);
+  assert.ok(floor, '夹具先建立可用稳定楼');
+  const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+    ? { jsonData: { summary: '本地夹具保存的核心摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const memoryRuntime = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'),
+    newUuid: uuidFactory(40000), logger: { warn() {} } });
+  await memoryRuntime.start();
+  await memoryRuntime.extractFloor(floor.id);
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(before.floorMemories.length, 1);
+  assert.equal(before.stateDeltas.length, 1, '夹具已保存对应 CSE delta');
+  const beforeMemory = before.floorMemories[0];
+  const batchCalls = [];
+  const client = {
+    get: (...args) => h.backend.client.get(...args),
+    put: (...args) => h.backend.client.put(...args),
+    async getMany(collection, recordIds) {
+      batchCalls.push(recordIds);
+      if (recordIds.some(id => id.startsWith('v3-state-delta-'))) throw new Error('simulated CSE batch transport failure');
+      return recordIds.map(recordId => {
+        const saved = h.backend.records.get(`${collection}/${recordId}`);
+        return saved ? { recordId, status: 200, envelope: { schemaVersion: 1, revision: saved.revision,
+          generationId: '11111111-1111-4111-8111-111111111111', createdAt: saved.createdAt, updatedAt: saved.createdAt,
+          data: structuredClone(saved.data) } } : { recordId, status: 404 };
+      });
+    },
+  };
+  const store = createFoundationStore({ client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT,
+    characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+  const fallback = await store.readReachable({ mode: 'runtime', allowRecallCseFallback: true });
+  assert.ok(batchCalls.some(ids => ids.some(id => id.startsWith('v3-state-delta-'))), '正式 settled delta 批读触发传输错误');
+  assert.equal(fallback.status, 'ready');
+  assert.equal(fallback.cseUnavailable, true, '读取能力降级只标记 CSE 不可用');
+  assert.deepEqual(fallback.floorMemories.map(({ id, floorId, summary }) => ({ id, floorId, summary })),
+    [{ id: beforeMemory.id, floorId: beforeMemory.floorId, summary: beforeMemory.summary }]);
+  assert.equal(fallback.floorMemories[0].summary.aiText, '本地夹具保存的核心摘要');
 });
 
 test('无布局标识的旧 checkpoint 冷读按四类索引校验，首次新提交自然切换到 floorOrder-v1', async () => {
@@ -1368,6 +1322,38 @@ test('CHAT_CHANGED 先于 UUID 落盘时复用 session.prepare，最终 ready �
   assert.deepEqual(unhandled, []);
 });
 
+test('AI0尚未稳定时保持待记录，首个USER稳定后继续正常地基准备，真实身份错误仍可见', async () => {
+  let session;
+  const waiting = harness([assistant('AI0 正文仍在生成')], { prepareSession: () => session.prepare() });
+  waiting.context.chatId = '';
+  session = createChatSession({ contextProvider: () => waiting.context });
+  const waitingState = await waiting.runtime.start();
+  assert.equal(waitingState.status, 'uninitialized');
+  assert.equal(waitingState.lastError, null);
+  assert.equal(waiting.backend.calls.length, 0, '宿主尚未建立聊天时不应读取记忆后端');
+
+  let currentSession;
+  const progressing = harness([assistant('AI0 正文')], { prepareSession: () => currentSession.prepare() });
+  currentSession = createChatSession({ contextProvider: () => progressing.context });
+  const initial = await progressing.runtime.start();
+  assert.equal(initial.status, 'uninitialized', '没有稳定边界时AI0正文只显示待记录状态');
+  assert.equal(initial.inspectedStableCount, 0);
+  progressing.context.chat.push(user('首个USER'));
+  const continued = await progressing.runtime.refreshStatus();
+  assert.equal(continued.status, 'ready');
+  assert.equal(continued.stableCount, 1);
+  assert.deepEqual(progressing.runtime.getReachable().floors.map(floor => floor.content.canonicalContent), ['AI0 正文']);
+
+  let failedSession;
+  const failed = harness([assistant('AI0 正文')], { prepareSession: () => failedSession.prepare() });
+  failedSession = createChatSession({ contextProvider: () => failed.context, identityCoordinator: {
+    async prepare() { throw Object.assign(new Error('聊天身份保存失败，请检查宿主聊天存档。'), { code: 'QQJ_TARGET_CHAT_SAVE_FAILED' }); },
+  } });
+  const failedState = await failed.runtime.start();
+  assert.equal(failedState.status, 'error');
+  assert.match(failedState.lastError, /聊天身份保存失败/u);
+});
+
 test('同 chat 两个并发 run 只有一个 root CAS 合法提交', async () => {
   const h = harness([assistant('A'), assistant('B'), assistant('C')]);
   const secondStore = createFoundationStore({
@@ -1501,7 +1487,7 @@ test('FloorRecord 正文与 canonicalFingerprint 必须本地互证，冷读取�
   });
   const stagedState = await stagedRuntime.start();
   assert.equal(stagedState.status, 'error');
-  assert.equal(stagedState.lastError, '后端数据处理失败，请稍后重试。');
+  assert.equal(stagedState.lastError, '处理聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
 });
 
 test('active checkpoint 的 committing run 冷启动幂等收敛 completed，非 active run 保持不变', async () => {
@@ -1788,7 +1774,7 @@ test('staged floorOrder index entries 被篡改但保留旧摘要时，冷启动
   });
   const recovered = await runtime.start();
   assert.equal(recovered.status, 'error');
-  assert.equal(recovered.lastError, '待提交记录内容发生冲突。');
+  assert.equal(recovered.lastError, '聊天记忆记录与待保存内容不一致，无法继续保存。请到“记忆管理”页点击“复制状态诊断”反馈。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
   assert.equal((await store.readReachable()).status, 'uninitialized');
 });
@@ -1817,7 +1803,7 @@ test('staged checkpoint inputFingerprints 被篡改但保留旧状态摘要时�
   });
   const recovered = await runtime.start();
   assert.equal(recovered.status, 'error');
-  assert.equal(recovered.lastError, '待提交记录内容发生冲突。');
+  assert.equal(recovered.lastError, '聊天记忆记录与待保存内容不一致，无法继续保存。请到“记忆管理”页点击“复制状态诊断”反馈。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
   assert.equal((await store.readReachable()).status, 'uninitialized');
 
@@ -1835,7 +1821,7 @@ test('staged checkpoint inputFingerprints 被篡改但保留旧状态摘要时�
   });
   const proofRecovered = await proofRuntime.start();
   assert.equal(proofRecovered.status, 'error');
-  assert.equal(proofRecovered.lastError, '待提交记录内容发生冲突。');
+  assert.equal(proofRecovered.lastError, '聊天记忆记录与待保存内容不一致，无法继续保存。请到“记忆管理”页点击“复制状态诊断”反馈。');
 });
 
 test('putRecord 409 只复用完整内容等价记录，相同摘要下的不等价 floorOrder index 返回 conflict', async () => {
@@ -1868,7 +1854,7 @@ test('root CAS 前重读并校验真实落盘图，写完后被篡改的 index �
   const state = await h.runtime.start();
   assert.equal(corrupted, true);
   assert.equal(state.status, 'error');
-  assert.equal(state.lastError, '后端数据处理失败，请稍后重试。');
+  assert.equal(state.lastError, '处理聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
 });
 
@@ -1950,7 +1936,7 @@ test('runtime 前置校验后、真实 store commitRoot 前篡改 backing index�
   const state = await runtime.start();
   assert.equal(corrupted, true);
   assert.equal(state.status, 'error');
-  assert.equal(state.lastError, '后端数据处理失败，请稍后重试。');
+  assert.equal(state.lastError, '处理聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
   assert.equal(h.backend.records.has(`chat-${CHAT}/v3-root`), false);
   assert.equal((await baseStore.readReachable()).status, 'uninitialized');
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { projectTime, projectTimeSource, effectiveTime, timeDistance, timeHours, shiftTime, bodyProjectionDue, validTimeProjection, prepareTimeBatch, compileTimeResponse, timeFingerprint, timeBodyReads, timeRecallProjection } from '../src/v3/time-engine.js';
+import { projectTime, projectTimeSource, effectiveTime, timeDistance, timeHours, shiftTime, validTimeProjection, prepareTimeBatch, compileTimeResponse, timeFingerprint, timeBodyReads, timeRecallProjection } from '../src/v3/time-engine.js';
 import { readTimeBody, planTimeBody } from '../src/v3/time-body.js';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 
@@ -57,7 +57,7 @@ test('旧date:null在计算/有效推测/模型DTO/编译/召回获得统一视�
   const reachable={root:{chatId:'chat'},floors:[{id:'floor',assistantSeq:1,canonicalFingerprint:'body'}],floorMemories:[],entities:[],bodyTimes:new Map([['floor',current]])};
   const batches=[{cutoffFloorId:'floor',cutoffAssistantSeq:1,dependencies:[],changes:[primary,member,cycle],sourceKeys:[]}];
   const before=structuredClone(batches);
-  assert.equal(timeHours(observed,current),58); assert.equal(bodyProjectionDue(observed,current),true);
+  assert.equal(timeHours(observed,current),58);
   assert.equal(effectiveTime(observed).date,'7月17日（年份未明）');
   const structured=projectTime('2026-07-17'); assert.equal(effectiveTime(structured),structured);
   assert.equal(validTimeProjection({...primary,projection:{observationKey:'old-key',applicableTime:oldTime('7月19日20:30'),text:'仍可能不适'}},current),true);

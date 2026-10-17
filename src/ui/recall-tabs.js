@@ -13,7 +13,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   const signature = JSON.stringify([projection, [...sources]]);
   if (card.recallSignature === signature) return;
   card.recallSignature = signature;
-  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map(), qianshiOpen:false, currentOpen:false, historyOpen:false };
+  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map(), qianshiOpen:false, legacyReceiptOpen:false, currentOpen:false, historyOpen:false };
   uiStates.set(card.stateKey, state);
   const node = (tag, className, text) => {
     const value = doc.createElement(tag);
@@ -170,6 +170,31 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     }
     reference.append(list); events.append(reference);
   }
+  if (projection.locationReferenceItems?.length) {
+    const reference = node('details', 'time-reference');
+    reference.append(node('summary', '', `本轮原消息地点参照（${projection.locationReferenceItems.length}条）`));
+    const list = node('div', 'time-reference-list');
+    for (const text of projection.locationReferenceItems) list.append(node('article', 'time-reference-item', text));
+    reference.append(list); events.append(reference);
+  }
+  if (projection.rawReceiptAvailable) {
+    const reference = node('details', 'time-reference legacy-receipt');
+    reference.open = state.legacyReceiptOpen === true;
+    const summary = node('summary', '', '查看回执原文');
+    reference.append(summary);
+    const appendBody = () => {
+      if (reference.querySelector('.legacy-receipt-copy')) return;
+      const list = node('div', 'time-reference-list');
+      list.append(node('p', 'time-reference-copy legacy-receipt-copy', projection.injectionText));
+      reference.append(list);
+    };
+    if (reference.open) appendBody();
+    reference.addEventListener('toggle', () => {
+      state.legacyReceiptOpen = reference.open === true;
+      if (reference.open) appendBody();
+    });
+    events.append(reference);
+  }
 
   const identity = value => value.subjectEntityId || `name:${value.subject}`;
   const statesByPerson = new Map();
@@ -177,7 +202,8 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     const id = identity(state);
     if (!statesByPerson.has(id)) statesByPerson.set(id, { name:state.subject, items:[] });
     const items = statesByPerson.get(id).items;
-    if (!items.some(item => item.text === state.text && item.toward === state.toward && item.layer === state.layer)) items.push(state);
+    if (!items.some(item => item.text === state.text && item.toward === state.toward
+      && item.towardEntityId === state.towardEntityId && item.layer === state.layer)) items.push(state);
   }
   const current = node('details', 'people-current');
   current.open = state.currentOpen === true;
@@ -226,7 +252,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
           if (!value?.text) return;
           const row = node('div', `change-row ${removed ? 'change-removed' : 'change-added'}`);
           const sign = node('span', 'change-sign', removed ? '−' : '+'); sign.setAttribute('role', 'img'); sign.setAttribute('aria-label', removed ? '删除' : '新增');
-          const copy = node(removed ? 'del' : 'span', 'change-copy', value.text);
+          const copy = node(removed ? 'del' : 'span', 'change-copy', `${value.toward ? `→ ${value.toward}：` : ''}${value.text}`);
           const content = node('div'); content.append(copy);
           if (visibilityLabels[value.visibility]) content.append(node('span', 'change-visibility', visibilityLabels[value.visibility]));
           row.append(sign, content); entry.append(row);

@@ -1,6 +1,6 @@
 import { createChatIdentityCoordinator } from '../chat-identity.js';
 import { createChatSession } from '../chat-session.js';
-import { readTargetChat } from './message-floor-anchor.js';
+import { MESSAGE_FLOOR_ANCHOR_KEY, readTargetChat, sameChatCoreAndQqjDataSnapshot, sameMessageCoreAndQqjData, sameQqjChatMetadata, snapshotChatCoreAndQqjData } from './message-floor-anchor.js';
 import { createHostAdapter } from './host-adapter.js';
 import { createFoundationStore } from './foundation-store.js';
 import { createFoundationRuntime } from './foundation-runtime.js';
@@ -8,11 +8,36 @@ import { createV3MemoryRuntime } from './memory-runtime.js';
 import { createTimeRuntime, createTimeStore } from './time-runtime.js';
 
 const clone = value => structuredClone(value);
-const withoutIntegrity = header => {
-  const value = clone(header);
-  if (value?.chat_metadata) delete value.chat_metadata.integrity;
-  return value;
-};
+const sameChatBusiness = (left, right) => Array.isArray(left) && Array.isArray(right) && left.length === right.length
+  && left.every((message, index) => sameMessageCoreAndQqjData(message, right[index]));
+function withTaskAnchors(latest, taskMessage) {
+  const message = clone(latest);
+  const applyAnchor = (targetExtra, sourceExtra) => {
+    const anchor = sourceExtra?.[MESSAGE_FLOOR_ANCHOR_KEY];
+    if (anchor === undefined) delete targetExtra?.[MESSAGE_FLOOR_ANCHOR_KEY];
+    else targetExtra[MESSAGE_FLOOR_ANCHOR_KEY] = clone(anchor);
+  };
+  if (taskMessage?.extra && typeof taskMessage.extra === 'object') {
+    const anchor = taskMessage.extra[MESSAGE_FLOOR_ANCHOR_KEY];
+    if (anchor !== undefined || (message.extra && typeof message.extra === 'object')) {
+      if (!message.extra || typeof message.extra !== 'object') message.extra = {};
+      applyAnchor(message.extra, taskMessage.extra);
+    }
+  }
+  if (Array.isArray(message.swipe_info) && Array.isArray(taskMessage?.swipe_info)) {
+    message.swipe_info = message.swipe_info.map((swipe, index) => {
+      const source = taskMessage.swipe_info[index];
+      if (!swipe || typeof swipe !== 'object' || !source || typeof source !== 'object') return swipe;
+      const sourceAnchor = source.extra?.[MESSAGE_FLOOR_ANCHOR_KEY];
+      const targetExtra = swipe.extra && typeof swipe.extra === 'object' ? { ...swipe.extra } : null;
+      if (sourceAnchor === undefined && !targetExtra) return swipe;
+      const next = { ...swipe, ...(targetExtra ? { extra: targetExtra } : { extra: {} }) };
+      applyAnchor(next.extra, source.extra);
+      return next;
+    });
+  }
+  return message;
+}
 
 function captureAuthorContext(source, target, chat) {
   const value = {};
@@ -114,31 +139,39 @@ export async function runHistoricalRebuildTask({
   const hostGlobal = { SillyTavern: { getContext: () => targetContext } };
   const hostAdapter = createHostAdapter({ globalRef: hostGlobal, worldInfoBindings: fixedWorldInfoBindings, personaIdentifierProvider: () => sourceUserIdentity?.personaIdentifier ?? identity.personaLocator });
   let expectedHeader = clone(cleanedChat.header);
-  let expectedMessages = JSON.stringify(chat);
+  let expectedChatSource = null;
+  let expectedChatSnapshot = snapshotChatCoreAndQqjData(chat);
+  const sameExpectedChat = latestChat => expectedChatSource
+    ? sameChatBusiness(expectedChatSource, latestChat)
+    : sameChatCoreAndQqjDataSnapshot(expectedChatSnapshot, latestChat);
 
   async function saveTargetFile(nextMessages = chat) {
     const latest = await readTargetChat(taskTarget, { fetchImpl, allowMissingIdentity: true });
-    if (JSON.stringify(latest.header) !== JSON.stringify(expectedHeader) || JSON.stringify(latest.chat) !== expectedMessages) {
+    if (!sameQqjChatMetadata(expectedHeader.chat_metadata ?? {}, latest.header.chat_metadata ?? {})
+      || !sameExpectedChat(latest.chat)) {
       throw Object.assign(new Error('原目标聊天在重构期间被修改。'), { code: 'QQJ_REBUILD_TARGET_CONFLICT' });
     }
     const header = clone(latest.header);
-    header.chat_metadata = clone(targetContext.chatMetadata);
-    const desired = [header, ...nextMessages];
+    if (targetContext.chatMetadata.qianqianjie === undefined) delete header.chat_metadata.qianqianjie;
+    else header.chat_metadata.qianqianjie = clone(targetContext.chatMetadata.qianqianjie);
+    const mergedMessages = latest.chat.map((message, index) => withTaskAnchors(message, nextMessages[index]));
+    const desired = [header, ...mergedMessages];
     const response = await fetchImpl('/api/chats/save', {
       method: 'POST', cache: 'no-cache', headers: taskTarget.requestHeaders ?? {},
       body: JSON.stringify({ ch_name: taskTarget.characterName, file_name: taskTarget.hostChatId, avatar_url: taskTarget.avatarUrl, chat: desired, force: false }),
     });
     if (!response?.ok) throw Object.assign(new Error('原目标聊天没有确认保存。'), { code: [400, 409].includes(response?.status) ? 'QQJ_REBUILD_TARGET_CONFLICT' : 'QQJ_REBUILD_TARGET_SAVE_FAILED' });
     const persisted = await readTargetChat(taskTarget, { fetchImpl, allowMissingIdentity: true });
-    if (JSON.stringify(persisted.chat) !== JSON.stringify(nextMessages)
+    if (!sameChatBusiness(mergedMessages, persisted.chat)
       || persisted.header.chat_metadata?.qianqianjie?.chatId !== taskTarget.chatId
-      || JSON.stringify(withoutIntegrity(persisted.header)) !== JSON.stringify(withoutIntegrity(header))) {
+      || !sameQqjChatMetadata(header.chat_metadata ?? {}, persisted.header.chat_metadata ?? {})) {
       throw Object.assign(new Error('原目标聊天保存后读回不一致。'), { code: 'QQJ_REBUILD_TARGET_VERIFY_FAILED' });
     }
     expectedHeader = clone(persisted.header);
-    expectedMessages = JSON.stringify(persisted.chat);
-    for (const key of Object.keys(targetContext.chatMetadata)) delete targetContext.chatMetadata[key];
-    Object.assign(targetContext.chatMetadata, clone(persisted.header.chat_metadata ?? {}));
+    expectedChatSource = persisted.chat;
+    expectedChatSnapshot = null;
+    if (persisted.header.chat_metadata?.qianqianjie === undefined) delete targetContext.chatMetadata.qianqianjie;
+    else targetContext.chatMetadata.qianqianjie = clone(persisted.header.chat_metadata.qianqianjie);
     return persisted;
   }
   targetContext.saveChat = async () => (await saveTargetFile(chat), true);
@@ -170,7 +203,7 @@ export async function runHistoricalRebuildTask({
     store: createTimeStore({ client }), foundationStore: store, hostAdapter, session: targetSession,
     generateTimeTask, storyCalendarProvider: () => storyCalendar, sanitizerOptions,
     storyClockReferenceTags, newUuid, getReachable: () => foundationRuntime.getReachable(),
-    getMemoryState: () => memoryRuntime?.getActivityState?.(), isEnabled: isTimeEvolutionEnabled,
+    getMemoryState: () => memoryRuntime?.getActivityState?.() ?? memoryRuntime?.getState?.(), isEnabled: isTimeEvolutionEnabled,
   });
   const memoryRuntime = createV3MemoryRuntime({
     storyCalendarProvider: () => storyCalendar, foundationRuntime, store, hostAdapter, generateAnalysisTask, generateUtilityTask,

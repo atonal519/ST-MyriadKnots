@@ -10,7 +10,7 @@ const bridge = globalThis.qqj_v3_public_bridge_v1;
 
 界面中的调用说明和复制示例位于“设置 → 教程与配置文件 → API 接口”。
 
-## 四个方法
+## 七个方法
 
 ### `getStatus()`
 
@@ -72,6 +72,48 @@ if (snapshot.status === 'ready') {
 ```
 
 每次返回的都是独立深复制。调用方修改其中的数组、人物档案或 CSE 条目，不会修改千千结内部状态。
+
+### `getPeopleSnapshot()`
+
+同步读取当前已经加载的人物工作区投影，不读取完整记忆图，也不触发摘要或人物分析。
+
+```js
+const result = bridge.getPeopleSnapshot();
+if (result.status === 'ready' && result.people.status === 'ready') {
+  const people = result.people.items;
+}
+```
+
+顶层返回 `status`、`identity` 和 `people`。`people` 沿用 `getSnapshot().people` 的结构和人物合并结果。人物工作区尚未加载时，其分区为 `not-ready`；读取失败时顶层为 `error`。
+
+### `readWorldInfo()`
+
+按需读取当前宿主已关联、且没有被千千结整本排除的世界书条目。此方法只用于用户显式发起的角色识别，不应放进每轮对话读取。
+
+```js
+const result = await bridge.readWorldInfo();
+if (result.status === 'ready') {
+  const entries = result.worldbook;
+}
+```
+
+条目保留原文，并包含稳定的 `uid`、`comment`、`keys`、`content`、`constant` 和 `position` 字段。千千结关闭、身份尚未准备、暂不支持、没有条目和读取失败会分别返回状态；调用方不应把 `empty` 当作读取错误。
+
+### `readContext({ query, entityIds, maxCharacters })`
+
+为指定人物按当前话题挑选已加载的档案、CSE 和有效 FloorMemory。它只读取当前已加载且通过完整性校验的正式快照，不调用模型、不读取整段酒馆聊天、不准备摘要或向量索引。
+
+```js
+const result = await bridge.readContext({
+  query: '钟楼、旧地图和守门约定',
+  entityIds: ['稳定人物标识'],
+  maxCharacters: 12000,
+});
+```
+
+结果包含 `identity`、`anchor`、`routerText`、`actors` 和 `coverage`。`routerText` 是明确标注的作者侧背景，供调度参考，不表示房间人物都已知；每个 actor 的 `profileText`、`stateText` 和 `memoryText` 只包含该人物可归属的资料。私密认知只给本人，信息转移只给明确接收者；承诺和计划保留未履行状态。人物身份沿用现有合并与删除映射，不按显示名猜测。
+
+本方法使用千千结已有的轻量 BM25 纯排序挑选本地候选，属于按题筛选，不是完整语义或向量召回。`coverage.partial` 标记输出预算是否省略资料，`coverage.cseStatus` 单独报告人物状态资料是否已就绪；未准备好时返回 `not-ready`，当前没有有效资料时可以返回空文本，不表示调用失败。
 
 ## `getSnapshot()` 顶层结构
 

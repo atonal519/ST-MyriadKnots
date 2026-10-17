@@ -19,11 +19,17 @@ const searchText = event => text([event.title, event.description, event.object, 
 function coverageProjection(snapshot) {
   if (snapshot?.status !== 'ready') return { kind: 'unavailable', label: '当前不可用', copy: snapshot?.message || '当前聊天还没有可用的千事快照。' };
   const coverage = snapshot.coverage ?? {}, events = snapshot.events ?? [];
-  const complete = Number(coverage.completeFloors) || 0, eligible = Number(coverage.eligibleFloors) || 0;
-  const pending = Number(coverage.pendingFloors) || 0, partial = Number(coverage.partialFloors) || 0;
-  const degraded = Number(coverage.degradedFloors) || 0, unavailable = Number(coverage.unavailableFloors) || 0;
+  const processable = coverage.processable ?? coverage;
+  const complete = Number(processable.completeFloors) || 0, eligible = Number(processable.eligibleFloors) || 0;
+  const pending = Number(processable.pendingFloors) || 0, partial = Number(processable.partialFloors) || 0;
+  const actionEligible = eligible;
+  const frozenFloors = Number(processable.frozenFloors) || 0;
+  const degraded = Number(processable.degradedFloors) || 0, unavailable = Number(processable.unavailableFloors) || 0;
   const suffix = unavailable ? `无唯一有效摘要 ${unavailable} 楼` : '';
-  const breakdown = `已完成 ${complete} 楼；待补 ${pending} 楼；部分整理 ${partial} 楼；断链 ${degraded} 楼${suffix ? `；${suffix}` : ''}。分母是 ${eligible} 个有唯一有效摘要的楼。`;
+  const processNote = frozenFloors ? `导入历史 ${frozenFloors} 楼只读，仍可查看和召回。` : '';
+  const denominator = frozenFloors ? `分母是当前聊天 ${eligible} 个有唯一有效摘要的楼。` : `分母是 ${eligible} 个有唯一有效摘要的楼。`;
+  const breakdown = `已完成 ${complete} 楼；待补 ${pending} 楼；部分整理 ${partial} 楼；断链 ${degraded} 楼${suffix ? `；${suffix}` : ''}。${denominator}${processNote ? ` ${processNote}` : ''}`;
+  if (frozenFloors && actionEligible === 0) return { kind: 'partial', label: '当前没有可处理楼', copy: breakdown };
   if (degraded) return { kind: 'degraded', label: '部分关系失效', copy: breakdown };
   if (partial) return { kind: 'partial', label: '尚有其他楼未完成', copy: `${breakdown}已有事件的楼按已存档计入完成；尚有其他楼待补。` };
   if (pending) return { kind: complete ? 'partial' : 'pending', label: complete ? '尚有其他楼未完成' : '等待补齐',
@@ -39,7 +45,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   if (!documentRef?.createElement) throw new TypeError('千事时间线 documentRef 无效');
   let container = null, active = false, unsubscribe = null, epoch = 0;
   let snapshot = runtime.getQianshiSnapshot(), runtimeState = runtime.getState(), chatId = snapshot?.identity?.qqjChatId ?? null;
-  let query = '', reverse = true, feedback = '';
+  let query = '', feedback = '';
   let runtimeRenderKey = null;
   // 只比较界面消费的投影、任务与忙态；无关通知不重建整页，权限缓存随投影变化失效。
   const renderKey = (nextSnapshot, nextState) => Number.isSafeInteger(nextSnapshot?.projectionRevision)
@@ -50,9 +56,14 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   const statusSaves = new Map();
   const editableEvents = new Map();
   const operationMenus = createOperationMenuController(documentRef);
+  const unregisterMenusWithin = node => {
+    if (String(node?.className ?? '').split(/\s+/u).includes('qqj-qianshi-event-menu')) operationMenus.unregister(node);
+    for (const child of node?.children ?? []) unregisterMenusWithin(child);
+  };
   const openIds = new Set(), nestedOpenIds = new Set(), matterOpenIds = new Set();
   const openDayStates = new Map();
   let anomalyContent = null;
+  let pageNode = null, coverageBoxNode = null, feedbackNode = null;
   const anomalyOpenFloorIds = new Set();
   let undatedOpenState = false;
   const element = (tag, className = '', copy = '') => {
@@ -72,7 +83,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   };
   const resetForChat = nextChatId => {
     if (chatId === nextChatId) return;
-    epoch += 1; chatId = nextChatId; query = ''; reverse = true; feedback = ''; textEditors.clear(); statusSaves.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear(); undatedOpenState = false; anomalyOpenFloorIds.clear();
+    epoch += 1; chatId = nextChatId; query = ''; feedback = ''; textEditors.clear(); statusSaves.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear(); undatedOpenState = false; anomalyOpenFloorIds.clear();
     if (anomalyContent) dialog?.cancelTop?.();
   };
   const canEditEvent = eventId => {
@@ -84,6 +95,33 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     return (snapshot?.events ?? []).filter(event => !needle || searchText(event).includes(needle));
   };
   const dayStateId = (segment, group) => JSON.stringify([segment.id, group.key ?? [group.period ?? '', group.day ?? '']]);
+  function timelineDisplayProjection(visibleIds) {
+    const compareSourceRank = (left, right) => left[0] - right[0] || left[1] - right[1];
+    const sourceRank = new Map((snapshot.events ?? []).map((event, index) => [event.id, [
+      Number.isSafeInteger(event.sourceAssistantSeq) ? event.sourceAssistantSeq
+        : Number.isSafeInteger(event.assistantSeq) ? event.assistantSeq : index, index,
+    ]]));
+    const segments = (snapshot.timeline?.segments ?? []).map(segment => {
+      const rankedGroups = (segment.groups ?? []).filter(group => group.eventIds.some(id => visibleIds.has(id))).map(group => ({
+        group, latestSource: group.eventIds.reduce((latest, id) => {
+          const rank = sourceRank.get(id);
+          return visibleIds.has(id) && rank && compareSourceRank(rank, latest) > 0 ? rank : latest;
+        }, [-1, -1]),
+      }));
+      if (segment.preserveSourceOrder) rankedGroups.sort((left, right) => compareSourceRank(right.latestSource, left.latestSource));
+      else rankedGroups.reverse();
+      const latestSource = rankedGroups.reduce((latest, entry) => compareSourceRank(entry.latestSource, latest) > 0 ? entry.latestSource : latest, [-1, -1]);
+      return { ...segment, groups: rankedGroups.map(entry => entry.group), latestSource };
+    }).filter(segment => segment.groups.length).sort((left, right) => compareSourceRank(right.latestSource, left.latestSource));
+    const eventIds = [];
+    for (const segment of segments) for (const group of segment.groups) {
+      for (const id of [...group.eventIds].reverse()) if (visibleIds.has(id)) eventIds.push(id);
+    }
+    const undated = (snapshot.timeline?.undatedEventIds ?? []).filter(id => visibleIds.has(id))
+      .sort((left, right) => compareSourceRank(sourceRank.get(right) ?? [-1, -1], sourceRank.get(left) ?? [-1, -1]));
+    eventIds.push(...undated);
+    return { segments, sourceRank, eventIds };
+  }
   const historyBusy = () => snapshot?.history?.status === 'running' || runtimeState?.qianshiHistoryActive === true;
   const otherWorkBusy = () => runtimeState?.memoryWorkBusy === true || Boolean(runtimeState?.activeExtraction || runtimeState?.activeCse)
     || [...statusSaves.values()].some(value => value.pending);
@@ -128,7 +166,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         head.append(element('span', '', `${item.storyTime || '时间未明'} · ${item.title}${item.updatesMatter === false ? '（背景 / 补充）' : ''}`), statusBadge(item));
         row.append(head);
         let rowBuilt = false;
-        const ensureRow = () => { if (!rowBuilt) { row.append(eventDetails(item, 'qqj-qianshi-day-event-detail', false)); rowBuilt = true; } };
+        const ensureRow = () => { if (!rowBuilt) { row.append(eventDetails(item, 'qqj-qianshi-day-event-detail')); rowBuilt = true; } };
         if (row.open) ensureRow();
         row.addEventListener('toggle', () => { if (row.open) { nestedOpenIds.add(rowKey); ensureRow(); } else nestedOpenIds.delete(rowKey); });
         list.append(row);
@@ -142,13 +180,9 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     return section;
   }
 
-  function eventDetails(event, className = 'qqj-qianshi-expanded', allowEdit = true) {
+  function eventDetails(event, className = 'qqj-qianshi-expanded') {
     const body = element('div', className);
     if (event.frozen === true) body.append(element('p', 'qqj-qianshi-readonly-note', '来源于搬家前存档，只读'));
-    // 与千结行内编辑一致：编辑表单替代阅读正文，避免原文、元信息与表单同时堆成长框。
-    if (allowEdit && canEditEvent(event.id) && textEditors.get(event.id)?.editing) {
-      body.append(eventTextEditor(event)); return body;
-    }
     body.append(element('p', 'qqj-qianshi-description', event.description));
     const meta = element('dl', 'qqj-qianshi-meta');
     const row = (label, value, valueClass = '') => {
@@ -167,93 +201,92 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
 
   function eventTextEditor(event) {
     const state = textEditors.get(event.id);
-    const section = element('section', 'qqj-qianshi-text-editor');
-    const form = element('form', 'qqj-qianshi-text-form');
-    const titleLabel = element('label', 'qqj-qianshi-text-label', '标题');
-    const title = element('input', 'settings-input qqj-qianshi-title-input'); title.value = state.title; title.maxLength = 500; title.disabled = state.pending;
-    titleLabel.append(title);
-    const descriptionLabel = element('label', 'qqj-qianshi-text-label', '经过说明');
-    const description = element('textarea', 'settings-input qqj-qianshi-description-input'); description.value = state.description; description.maxLength = 4000; description.rows = 3; description.disabled = state.pending;
-    descriptionLabel.append(description);
-    const objectLabel = element('label', 'qqj-qianshi-text-label', '涉及物品');
-    const object = element('input', 'settings-input qqj-qianshi-object-input'); object.value = state.object; object.maxLength = 1000; object.disabled = state.pending;
-    objectLabel.append(object, element('small', 'qqj-qianshi-object-hint', '只填对后续有用的具体物品；多个用顿号分隔；没有可留空。'));
-    const statusSelect = (labelText, key) => {
-      const label = element('div', 'qqj-qianshi-text-label');
-      label.append(element('span', '', labelText), statusPicker(state[key], labelText, state.pending, value => { state[key] = value; }));
-      return label;
-    };
-    title.addEventListener('input', event => { state.title = event.target.value; });
-    description.addEventListener('input', event => { state.description = event.target.value; });
-    object.addEventListener('input', event => { state.object = event.target.value; });
-    form.append(titleLabel, descriptionLabel, objectLabel);
-    const timeGroup = element('fieldset', 'qqj-qianshi-time-editor');
-    const timeTitle = element('legend', '', '发生时间');
-    const clearTime = element('button', 'qqj-qianshi-time-clear', '清空'); clearTime.type = 'button'; clearTime.disabled = state.pending;
-    clearTime.addEventListener('click', () => { for (const key of Object.keys(state.timeDraft)) state.timeDraft[key] = '';
-      state.clearTime = true; render(); });
-    timeTitle.append(clearTime); timeGroup.append(timeTitle);
-    const timeFields = element('div', 'qqj-qianshi-time-fields');
-    const timeHint = element('p', 'qqj-qianshi-time-preview');
-    const timeDirty = () => state.clearTime || Object.keys(state.timeDraft).some(key => state.timeDraft[key] !== state.initialTimeDraft[key]);
-    const updateTimePreview = () => {
-      if (timeDirty()) {
-        try { timeHint.textContent = `保存后：${formatStoryTimeFields(state.timeDraft) || '时间未知'}`; }
-        catch (error) { timeHint.textContent = error.message; }
-      } else timeHint.textContent = `原时间：${event.storyTime || '时间未知'}`;
-      save.disabled = state.pending;
-    };
-    for (const [key, labelText, placeholder] of [['prefix', '前缀', '可留空'], ['year', '年', '2027'],
-      ['month', '月', '3 / 夏月'], ['day', '日', '5'], ['clock', '时间', '07:45']]) {
-      const label = element('label', `qqj-qianshi-text-label qqj-qianshi-time-${key}`);
-      const input = element('input', 'settings-input qqj-qianshi-time-input'); input.type = 'text';
-      input.value = state.timeDraft[key]; input.placeholder = placeholder; input.disabled = state.pending;
-      input.setAttribute('aria-label', `发生时间${labelText}`);
-      input.addEventListener('input', () => { state.timeDraft[key] = input.value; updateTimePreview(); });
-      label.append(element('span', '', labelText), input); timeFields.append(label);
-    }
-    timeGroup.append(timeFields, timeHint); form.append(timeGroup);
-    const states = element('div', 'qqj-qianshi-edit-states');
-    states.append(statusSelect('本条动作状态', 'actionStatus'));
-    if (event.matterId && event.updatesMatter) states.append(statusSelect('这次进展后的整线状态', 'status'));
-    form.append(states);
-    if (state.error) form.append(element('p', 'qqj-qianshi-edit-error', state.error));
-    const actions = element('div', 'qqj-qianshi-edit-actions');
-    const save = element('button', 'primary-action', state.pending ? '正在保存…' : '保存'); save.type = 'submit'; save.disabled = state.pending;
-    const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = state.pending;
-    cancel.addEventListener('click', () => { textEditors.delete(event.id); render(); });
-    actions.append(save, cancel); form.append(actions); updateTimePreview();
-    form.addEventListener('submit', async submission => {
-      submission.preventDefault?.();
-      // 未动时间时逐字保留原值；五格清空是明确人工未知，不能再由来源楼时间补回。
-      let storyTime;
-      if (timeDirty()) {
-        try { storyTime = formatStoryTimeFields(state.timeDraft); }
-        catch (error) { state.error = error.message; render(); return; }
+    const section = element('form', 'qqj-editor-dialog qqj-qianshi-text-editor qqj-qianshi-text-form');
+    const label = (copy, control) => { const row = element('label', 'qqj-qianshi-text-label'); row.append(element('span', '', copy), control); return row; };
+    const textGroup = element('details', 'qqj-editor-group'); textGroup.open = true; textGroup.append(element('summary', 'qqj-editor-group-summary', '事件内容'));
+    const title = element('input', 'settings-input qqj-qianshi-title-input'); title.value = state.title; title.maxLength = 500;
+    const description = element('textarea', 'settings-input qqj-qianshi-description-input'); description.value = state.description; description.maxLength = 4000; description.rows = 5;
+    const object = element('input', 'settings-input qqj-qianshi-object-input'); object.value = state.object; object.maxLength = 1000;
+    title.addEventListener('input', () => { state.title = title.value; }); description.addEventListener('input', () => { state.description = description.value; }); object.addEventListener('input', () => { state.object = object.value; });
+    textGroup.append(label('标题', title), label('经过说明', description), label('涉及物品', object), element('small', 'qqj-qianshi-object-hint', '只填对后续有用的具体物品；多个用顿号分隔；没有可留空。')); section.append(textGroup);
+    const timeGroup = element('details', 'qqj-editor-group'); timeGroup.append(element('summary', 'qqj-editor-group-summary', '时间'));
+    const timeFields = (field, initial, raw, titleText) => {
+      const group = element('fieldset', 'qqj-qianshi-time-editor'); group.append(element('legend', '', titleText));
+      const fields = element('div', 'qqj-qianshi-time-fields'), preview = element('p', 'qqj-qianshi-time-preview'), controls = [];
+      const clearFlag = field === 'timeDraft' ? 'clearTime' : 'clearScheduledTime';
+      const dirty = () => state[clearFlag] === true || Object.keys(state[initial]).some(key => state[field][key] !== state[initial][key]);
+      const valueKey = field === 'timeDraft' ? 'storyTime' : 'scheduledTime';
+      const update = () => { try { preview.textContent = dirty() ? `保存后：${formatStoryTimeFields(state[field]) || '时间未知'}` : `${titleText}：${raw || '时间未知'}`; } catch (error) { preview.textContent = error.message; } };
+      for (const [key, labelText, placeholder] of [['prefix', '前缀', '可留空'], ['year', '年', '2027'], ['month', '月', '3 / 夏月'], ['day', '日', '5'], ['clock', '时间', '07:45']]) {
+        const input = element('input', 'settings-input qqj-qianshi-time-input'); input.value = state[field][key]; input.placeholder = placeholder; input.setAttribute('aria-label', `${titleText}${labelText}`);
+        input.addEventListener('input', () => { state[field][key] = input.value; update(); }); fields.append(label(labelText, input)); controls.push(input);
       }
+      const clear = element('button', 'secondary-action qqj-qianshi-time-clear', '清空'); clear.type = 'button';
+      clear.addEventListener('click', () => { for (const key of Object.keys(state[field])) state[field][key] = ''; state[valueKey === 'storyTime' ? 'clearTime' : 'clearScheduledTime'] = true; for (const input of controls) input.value = ''; update(); });
+      group.children[0].append(clear); group.append(fields, preview); update(); return { node: group, dirty };
+    };
+    const storyTimeEditor = timeFields('timeDraft', 'initialTimeDraft', event.storyTime, '发生时间'); timeGroup.append(storyTimeEditor.node);
+    let scheduled = null;
+    if (event.scheduledTime) { scheduled = timeFields('scheduledTimeDraft', 'initialScheduledTimeDraft', event.scheduledTime, '约定 / 预计时间'); timeGroup.append(scheduled.node); }
+    else {
+      const addTime = element('button', 'secondary-action', '添加约定时间'); addTime.type = 'button';
+      addTime.addEventListener('click', () => { if (scheduled) return; scheduled = timeFields('scheduledTimeDraft', 'initialScheduledTimeDraft', event.scheduledTime, '约定 / 预计时间'); timeGroup.append(scheduled.node); addTime.hidden = true; });
+      timeGroup.append(addTime);
+    }
+    section.append(timeGroup);
+    const peopleGroup = element('details', 'qqj-editor-group'); peopleGroup.append(element('summary', 'qqj-editor-group-summary', '人物（可多选）'));
+    const peopleSearch = element('input', 'settings-input qqj-qianshi-people-search');
+    peopleSearch.type = 'search'; peopleSearch.setAttribute('aria-label', '搜索姓名或别名'); peopleSearch.placeholder = '搜索姓名或别名';
+    peopleSearch.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault(); event.stopPropagation();
+    });
+    const peopleChoices = element('div', 'qqj-qianshi-people-choices');
+    const peopleRows = [];
+    for (const person of state.peopleCandidates) {
+      const row = element('label', 'qqj-qianshi-person-choice'), input = element('input'); input.type = 'checkbox'; input.checked = state.selectedPersonIds.has(person.entityId);
+      input.addEventListener('change', event => { if (event.target.checked) state.selectedPersonIds.add(person.entityId); else state.selectedPersonIds.delete(person.entityId); });
+      row.append(input, element('span', '', person.name)); if (person.aliases?.length) row.append(element('small', '', person.aliases.join('、'))); peopleChoices.append(row);
+      peopleRows.push({ row, searchable: text([person.name, ...(person.aliases ?? [])].join(' ')) });
+    }
+    const noPeopleMatch = element('p', 'qqj-qianshi-people-empty', '没有匹配的人物。'); noPeopleMatch.hidden = true;
+    peopleSearch.addEventListener('input', () => {
+      const needle = text(peopleSearch.value).trim(); let matches = 0;
+      for (const { row, searchable } of peopleRows) {
+        row.hidden = Boolean(needle) && !searchable.includes(needle);
+        if (!row.hidden) matches += 1;
+      }
+      noPeopleMatch.hidden = matches > 0;
+    });
+    noPeopleMatch.textContent = peopleRows.length ? '没有匹配的人物。' : '暂无可选人物。';
+    noPeopleMatch.hidden = peopleRows.length > 0;
+    peopleChoices.append(noPeopleMatch);
+    peopleGroup.append(peopleSearch, peopleChoices);
+    const retained = element('div', 'qqj-qianshi-retained-people');
+    const drawRetained = () => { retained.replaceChildren(); state.retainedPeople.forEach((person, index) => { const row = element('div', 'qqj-qianshi-retained-person'); row.append(element('span', '', `${person.name}（原记录）`)); const remove = element('button', 'secondary-action', '移除'); remove.type = 'button'; remove.addEventListener('click', () => { state.retainedPeople.splice(index, 1); drawRetained(); }); row.append(remove); retained.append(row); }); };
+    drawRetained(); peopleGroup.append(retained); section.append(peopleGroup);
+    const statusGroup = element('details', 'qqj-editor-group'); statusGroup.append(element('summary', 'qqj-editor-group-summary', '状态'));
+    const statusPickerRow = (labelText, key) => { const row = element('label', 'qqj-qianshi-text-label'); row.append(element('span', '', labelText), statusPicker(state[key], labelText, false, value => { state[key] = value; })); return row; };
+    statusGroup.append(statusPickerRow('本条动作状态', 'actionStatus')); if (event.matterId && event.updatesMatter) statusGroup.append(statusPickerRow('这次进展后的整线状态', 'status')); section.append(statusGroup);
+    const peopleDirty = () => state.selectedPersonIds.size !== state.initialPersonIds.size || [...state.initialPersonIds].some(id => !state.selectedPersonIds.has(id)) || JSON.stringify(state.retainedPeople) !== JSON.stringify(state.initialRetainedPeople);
+    section.submit = async () => {
+      let storyTimeValue, scheduledTimeValue;
+      if (storyTimeEditor.dirty()) storyTimeValue = formatStoryTimeFields(state.timeDraft);
+      if (scheduled?.dirty()) scheduledTimeValue = formatStoryTimeFields(state.scheduledTimeDraft);
       const clean = value => String(value ?? '').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
       const next = { title: clean(state.title).slice(0, 500), description: clean(state.description).slice(0, 4000), object: clean(state.object).slice(0, 1000) || null,
-        status: state.status, actionStatus: state.actionStatus, ...(timeDirty() ? { storyTime } : {}) };
-      state.title = next.title; state.description = next.description; state.object = next.object ?? '';
-      if (!next.title || !next.description) { state.error = '标题和经过说明都不能为空。'; render(); return; }
-      if (next.title === clean(state.baseline.title).slice(0, 500) && next.description === clean(state.baseline.description).slice(0, 4000)
-        && next.object === (clean(state.baseline.object).slice(0, 1000) || null) && next.status === state.baseline.status
-        && next.actionStatus === state.baseline.actionStatus && !timeDirty()) { textEditors.delete(event.id); feedback = '内容没有变化，没有写入新版本。'; render(); return; }
-      state.pending = true; state.error = ''; render();
-      const saveEpoch = epoch, saveChatId = chatId;
+        status: state.status, actionStatus: state.actionStatus, ...(storyTimeValue !== undefined ? { storyTime: storyTimeValue } : {}), ...(scheduledTimeValue !== undefined ? { scheduledTime: scheduledTimeValue } : {}),
+        ...(peopleDirty() ? { people: [...state.retainedPeople.map(person => ({ ...person })), ...state.peopleCandidates.filter(person => state.selectedPersonIds.has(person.entityId)).map(person => ({ entityId: person.entityId, name: person.name }))] } : {}) };
+      if (!next.title || !next.description) throw new Error('标题和经过说明都不能为空。');
+      if (next.title === clean(state.baseline.title).slice(0, 500) && next.description === clean(state.baseline.description).slice(0, 4000) && next.object === (clean(state.baseline.object).slice(0, 1000) || null) && next.status === state.baseline.status && next.actionStatus === state.baseline.actionStatus && !storyTimeEditor.dirty() && !(scheduled?.dirty()) && !peopleDirty()) {
+        textEditors.delete(event.id); feedback = '内容没有变化，没有写入新版本。'; render(); return true;
+      }
+      state.pending = true; state.error = '';
       try {
         const result = await runtime.editQianshiEventText({ eventId: event.id, expected: state.baseline, ...next });
-        if (epoch !== saveEpoch || chatId !== saveChatId) return;
-        textEditors.delete(event.id);
-        feedback = result?.status === 'unchanged' ? '内容没有变化，没有写入新版本。' : '事件修改已保存。';
-      } catch (error) {
-        if (epoch !== saveEpoch || chatId !== saveChatId) return;
-        state.pending = false;
-        state.error = publicErrorMessage(error?.message, { fallback: '保存失败，请检查当前记录后重试。' });
-      }
-      render();
-    });
-    section.append(form);
+        textEditors.delete(event.id); feedback = result?.status === 'unchanged' ? '内容没有变化，没有写入新版本。' : '事件修改已保存。'; render(); return true;
+      } catch (error) { state.pending = false; state.error = publicErrorMessage(error?.message, { fallback: '保存失败，请检查当前记录后重试。' }); throw new Error(state.error); }
+    };
     return section;
   }
 
@@ -363,18 +396,29 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     toggle.setAttribute?.('aria-label', `${event.title}操作`); toggle.setAttribute?.('title', `${event.title}操作`);
     const menuBody = element('div', 'qqj-profile-menu-pop');
     const matter = event.matterId ? snapshot?.matters?.find(item => item.matterId === event.matterId) : null;
-    const edit = element('button', 'qqj-profile-menu-action', '编辑详情'); edit.type = 'button';
+    const edit = element('button', 'qqj-profile-menu-action', '编辑详情'); edit.type = 'button'; edit.disabled = typeof dialog?.custom !== 'function';
     edit.addEventListener('click', () => {
       menu.open = false;
       if ((snapshot?.timeline?.undatedEventIds ?? []).includes(event.id)) undatedOpenState = true;
-      openIds.add(cardId);
-      if (nestedRowKey) nestedOpenIds.add(nestedRowKey);
       const timeDraft = storyTimeFields(event.storyTime);
-      textEditors.set(event.id, { editing: true, title: event.title, description: event.description, timeDraft, initialTimeDraft: { ...timeDraft },
+      const scheduledTimeDraft = storyTimeFields(event.scheduledTime);
+      // 目录包含当前已识别的全部人物；无法归入目录的旧参与者只按原记录保留，不按姓名猜身份。
+      const peopleCandidates = typeof runtime.getQianshiEditPeople === 'function' ? runtime.getQianshiEditPeople() : [];
+      const candidateIds = new Set(peopleCandidates.map(person => person.entityId));
+      const selectedPersonIds = new Set((event.people ?? []).map(person => person.entityId).filter(id => candidateIds.has(id)));
+      const retainedPeople = (event.people ?? []).filter(person => !person.entityId || !candidateIds.has(person.entityId)).map(person => ({ entityId: person.entityId ?? null, name: person.name }));
+      const draft = { editing: true, title: event.title, description: event.description, timeDraft, initialTimeDraft: { ...timeDraft },
+        scheduledTimeDraft, initialScheduledTimeDraft: { ...scheduledTimeDraft }, selectedPersonIds, initialPersonIds: new Set(selectedPersonIds),
+        retainedPeople, initialRetainedPeople: structuredClone(retainedPeople), peopleCandidates,
         object: event.object ?? '', status: event.status, actionStatus: event.actionStatus ?? event.status,
         baseline: { memoryId: event.sourceFloorMemoryId, title: event.title, description: event.description, object: event.object ?? null,
-          status: event.status, actionStatus: event.actionStatus ?? event.status, storyTime: event.storyTime }, error: '', pending: false });
-      render();
+          status: event.status, actionStatus: event.actionStatus ?? event.status, storyTime: event.storyTime,
+          scheduledTime: event.scheduledTime, people: structuredClone(event.people ?? []) }, error: '', pending: false };
+      textEditors.set(event.id, draft);
+      const content = eventTextEditor(event);
+      const reopenAnomalies = Boolean(anomalyContent?.contains?.(menu));
+      void Promise.resolve(dialog.custom({ title: `编辑千事 · ${event.title}`, content, confirmText: '保存', cancelText: '取消', submit: () => content.submit(), onClose: () => { if (textEditors.get(event.id) === draft) { textEditors.delete(event.id); render(); } } }))
+        .then(() => { if (reopenAnomalies && active) void openAnomalies(); });
     });
     // 删除只接正式事件的原人工事务，确认取消不写档；旧审核只读沿用编辑权限。
     const remove = element('button', 'qqj-profile-menu-action danger', '删除'); remove.type = 'button';
@@ -387,6 +431,12 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const updateStatusAvailability = () => {
       change.disabled = otherWorkBusy() || historyBusy() || typeof dialog?.custom !== 'function'
         || Boolean(statusMatter() && typeof runtime.setQianshiMatterStatus !== 'function');
+    };
+    menu.refreshQianshiAvailability = () => {
+      const busy = otherWorkBusy() || historyBusy();
+      remove.disabled = busy || typeof dialog?.confirm !== 'function' || typeof runtime.deleteQianshiEvent !== 'function';
+      remove.title = busy ? '后台记忆任务进行中，请结束后再删除。' : '';
+      updateStatusAvailability();
     };
     updateStatusAvailability();
     menu.addEventListener('toggle', updateStatusAvailability);
@@ -431,27 +481,20 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   function timelineContent(events) {
     const eventById = new Map((snapshot.events ?? []).map(event => [event.id, event]));
     const matterEvents = new Map();
-    for (const event of snapshot.events ?? []) if (event.matterId) {
-      const values = matterEvents.get(event.matterId);
-      if (values) values.push(event); else matterEvents.set(event.matterId, [event]);
+    for (const matter of snapshot.matters ?? []) {
+      const records = (matter.recordIds ?? matter.eventIds ?? []).map(id => eventById.get(id)).filter(Boolean).reverse();
+      matterEvents.set(matter.matterId, records);
     }
     const visibleIds = new Set(events.map(event => event.id)), timeline = snapshot.timeline ?? { segments: [], undatedEventIds: [] };
+    const display = timelineDisplayProjection(visibleIds);
     const wrapper = element('div', 'qqj-qianshi-timeline');
     let displayedEventCount = 0;
-    const orderedVisibleGroups = (timeline.segments ?? []).flatMap(segment => {
-      let groups = (segment.groups ?? []).filter(group => group.eventIds.some(id => visibleIds.has(id)));
-      const ambiguous = segment.id === 'month-day' && groups.some(group => group.period === '1月') && groups.some(group => group.period === '12月');
-      if (reverse && !ambiguous) groups = groups.reverse();
-      return groups;
-    });
+    const visibleSegments = display.segments;
+    const orderedVisibleGroups = visibleSegments.flatMap(segment => segment.groups);
     const defaultGroupId = timeline.hasGlobalLatest && orderedVisibleGroups.some(group => group.id === timeline.globalLatestGroupId)
       ? timeline.globalLatestGroupId : orderedVisibleGroups[0]?.id;
-    for (const [segmentIndex, segment] of (timeline.segments ?? []).entries()) {
-      let groups = (segment.groups ?? []).map(group => ({ ...group, eventIds: [...group.eventIds] })).filter(group => group.eventIds.some(id => visibleIds.has(id)));
-      if (!groups.length) continue;
-      const yearBoundaryAmbiguous = segment.id === 'month-day'
-        && groups.some(group => group.period === '1月') && groups.some(group => group.period === '12月');
-      if (reverse && !yearBoundaryAmbiguous) groups = groups.reverse();
+    for (const [segmentIndex, segment] of visibleSegments.entries()) {
+      const { groups } = segment;
       const block = element('section', 'qqj-qianshi-segment');
       if ((timeline.segments ?? []).length > 1) block.append(element('p', 'qqj-qianshi-segment-label', `${segment.label || (segmentIndex ? '另一组时间' : '时间')} · 不依据其他组推断先后`));
       for (const [groupIndex, group] of groups.entries()) {
@@ -475,8 +518,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         const updateDayLabel = () => {
           summary?.setAttribute('aria-label', `${group.full || `${group.period ?? ''}${group.day ?? ''}`}，${visibleEventCount} 件，${disclosure.open ? '收起' : '展开'}`);
         };
-        let dayEvents = group.eventIds.filter(id => visibleIds.has(id)).map(id => eventById.get(id)).filter(Boolean);
-        if (reverse) dayEvents = dayEvents.reverse();
+        const dayEvents = group.eventIds.filter(id => visibleIds.has(id)).map(id => eventById.get(id)).filter(Boolean).reverse();
         if (dayOpen && dayEvents.length > 1) day.className += ' qqj-qianshi-day-has-card-axis';
         const lastEvent = [...group.eventIds].reverse().map(id => eventById.get(id)).find(event => event && visibleIds.has(event.id));
         const preview = element('button', 'qqj-qianshi-day-preview'); preview.type = 'button'; preview.hidden = dayOpen;
@@ -505,6 +547,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         const clearDayCards = () => {
           if (!dayCardsBuilt) return;
           if (eventList.contains?.(documentRef.activeElement)) summary.focus?.({ preventScroll: true });
+          unregisterMenusWithin(eventList);
           eventList.replaceChildren();
           dayCardsBuilt = false;
         };
@@ -523,16 +566,32 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       }
       wrapper.append(block);
     }
-    const undated = (timeline.undatedEventIds ?? []).filter(id => visibleIds.has(id)).map(id => eventById.get(id)).filter(Boolean);
+    const undatedIds = new Set(timeline.undatedEventIds ?? []);
+    const undated = display.eventIds.filter(id => undatedIds.has(id)).map(id => eventById.get(id)).filter(Boolean);
     if (undated.length) {
       const details = element('details', 'qqj-qianshi-undated'); details.open = Boolean(query.trim()) || undatedOpenState;
       const summary = element('summary', '', `无法确定单一发生时间 · ${undated.length} 件`), list = element('div', 'qqj-qianshi-undated-list');
+      let cardsBuilt = false;
       summary.addEventListener('click', event => {
         if (event.isTrusted === true && !query.trim()) undatedOpenState = !details.open;
       });
-      for (const event of undated) list.append(eventNode(event, matterEvents));
+      const buildCards = () => {
+        if (cardsBuilt) return;
+        for (const event of undated) list.append(eventNode(event, matterEvents));
+        cardsBuilt = true;
+      };
+      const clearCards = () => {
+        if (!cardsBuilt) return;
+        if (list.contains?.(documentRef.activeElement)) summary.focus?.({ preventScroll: true });
+        unregisterMenusWithin(list);
+        list.replaceChildren(); cardsBuilt = false;
+      };
+      if (details.open) buildCards();
+      details.addEventListener('toggle', () => {
+        if (details.open) buildCards(); else clearCards();
+      });
       displayedEventCount += undated.length;
-      details.append(summary, element('p', 'qqj-qianshi-undated-hint', '缺少可靠日期、属于相对时间或时间范围的事项，不参与精确排序；此处保留原顺序与原文时间。'), list); wrapper.append(details);
+      details.append(summary, element('p', 'qqj-qianshi-undated-hint', '这里没有可确定的日期，按来源从近到远列出；相对时间和时间范围保留原文。'), list); wrapper.append(details);
     }
     if (!wrapper.children?.length) wrapper.append(element('div', 'qqj-qianshi-empty', query ? '没有找到对应事件。' : '当前没有可显示的千事记录。'));
     return { node: wrapper, visibleEventCount: displayedEventCount };
@@ -543,15 +602,15 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const operationEpoch = ++epoch, targetIdentity = runtime.captureBusinessIdentity?.() ?? null;
     feedback = '正在准备补齐计划…'; render();
     try {
-      const coverage = snapshot?.coverage ?? {};
-      const hasUnprocessed = (Number(coverage.pendingFloors) || 0) + (Number(coverage.partialFloors) || 0) > 0;
-      const hasEmpty = (Number(coverage.emptyFloors) || 0) > 0;
+      const coverage = snapshot?.coverage ?? {}, processable = coverage.processable ?? coverage;
+      const hasUnprocessed = (Number(processable.pendingFloors) || 0) + (Number(processable.partialFloors) || 0) > 0;
+      const hasEmpty = (Number(processable.emptyFloors) || 0) > 0;
       let includeEmptyFloors = false;
       if (hasUnprocessed && hasEmpty && typeof dialog?.choose === 'function') {
-        const unprocessedCount = (Number(coverage.pendingFloors) || 0) + (Number(coverage.partialFloors) || 0);
+        const unprocessedCount = (Number(processable.pendingFloors) || 0) + (Number(processable.partialFloors) || 0);
         // 混合范围默认只处理未完成楼，重查已判空楼由用户主动选择。
         const choice = await dialog.choose({ title: '选择补齐范围',
-          body: `当前有 ${unprocessedCount} 楼未完成，另有 ${Number(coverage.emptyFloors) || 0} 楼已判定为空。`,
+          body: `当前有 ${unprocessedCount} 楼未完成，另有 ${Number(processable.emptyFloors) || 0} 楼已判定为空。`,
           note: '可仅补未处理楼，或把无事件楼加入计划；后者可能增加模型调用，最终次数以预览为准。',
           choices: [
             { value: 'cancel', label: '取消' },
@@ -640,11 +699,12 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (!anomalyContent) return;
     const scrollTop = anomalyContent.scrollTop;
     const floors = snapshot?.diagnostics?.anomalyFloors ?? [], eventById = new Map((snapshot?.events ?? []).map(event => [event.id, event]));
+    const eventOrder = new Map(timelineDisplayProjection(new Set(eventById.keys())).eventIds.map((id, index) => [id, index]));
     const intro = element('p', 'qqj-qianshi-anomaly-intro', floors.length
       ? `${floors.length} 个异常楼。事件仍已收录，只是部分关联失效；编辑、删除和状态修改沿用千事原入口。文字编辑不修复关联，需要时可关闭后用“整理”重判对应楼。`
       : '当前没有异常楼。');
     const list = element('div', 'qqj-qianshi-anomaly-list');
-    for (const floor of floors) {
+    for (const floor of [...floors].sort((left, right) => (right.assistantSeq ?? -1) - (left.assistantSeq ?? -1))) {
       const section = element('details', 'qqj-qianshi-anomaly-floor'); section.dataset.floorId = floor.floorId;
       section.open = anomalyOpenFloorIds.has(floor.floorId);
       const summary = element('summary', '', validMessageIndex(floor.messageIndex) ? `第 ${floor.messageIndex} 楼` : `AI 记录 ${floor.assistantSeq ?? '未明'}`);
@@ -652,9 +712,9 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       let built = false;
       const build = () => {
         if (built) return;
-        for (const id of floor.eventIds) {
+        for (const id of [...floor.eventIds].sort((left, right) => (eventOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (eventOrder.get(right) ?? Number.MAX_SAFE_INTEGER))) {
           const event = eventById.get(id);
-          if (event) section.append(eventNode(event, new Map(), { cardId: `anomaly:${id}` }));
+          if (event) section.append(eventNode(event, new Map()));
         }
         if (!floor.eventIds.length) section.append(element('p', '', '关联端点已不在当前有效千事中；可用“整理”重新核对这一楼。'));
         built = true;
@@ -676,6 +736,99 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       onClose: () => { if (anomalyContent === content) anomalyContent = null; } });
   }
 
+  function renderCoverageBox() {
+    const coverage = coverageProjection(snapshot), coverageBox = element('section', `qqj-qianshi-coverage ${coverage.kind}`);
+    const coverageText = element('div'); coverageText.append(element('strong', '', coverage.label), element('p', '', coverage.copy));
+    const history = snapshot?.history ?? {}, historyRunning = historyBusy();
+    const coverageCounts = snapshot?.coverage ?? {}, processableCounts = coverageCounts.processable ?? coverageCounts;
+    const hasHistoryToComplete = snapshot?.status === 'ready'
+      && ((Number(processableCounts.pendingFloors) || 0) + (Number(processableCounts.partialFloors) || 0) > 0
+        || (Number(processableCounts.emptyFloors) || 0) > 0);
+    const coverageActions = element('div', 'qqj-qianshi-coverage-actions');
+    coverageBox.append(coverageText);
+    if (historyRunning || hasHistoryToComplete) {
+      const historyAction = element('button', 'secondary-action', historyRunning ? history.committing ? '提交中…' : '停止' : '补齐旧楼'); historyAction.type = 'button';
+      historyAction.dataset.focusKey = 'qianshi-history-action';
+      historyAction.disabled = historyRunning ? Boolean(history.committing) : otherWorkBusy();
+      historyAction.addEventListener('click', () => { void (historyRunning ? stopHistory() : prepareHistory()); });
+      coverageActions.append(historyAction);
+    }
+    if (!historyRunning && snapshot?.events?.length && typeof runtime.prepareQianshiRejudge === 'function') {
+      const rejudge = element('button', 'secondary-action', '整理'); rejudge.type = 'button'; rejudge.dataset.focusKey = 'qianshi-rejudge-action';
+      rejudge.disabled = otherWorkBusy(); rejudge.addEventListener('click', () => { void prepareRejudge(); }); coverageActions.append(rejudge);
+    }
+    if (snapshot?.diagnostics?.anomalyFloors?.length) {
+      const anomalies = element('button', 'secondary-action', '处理异常'); anomalies.type = 'button'; anomalies.dataset.focusKey = 'qianshi-anomalies-action';
+      anomalies.disabled = typeof dialog?.custom !== 'function'; anomalies.addEventListener('click', () => { void openAnomalies(); });
+      coverageActions.append(anomalies);
+    }
+    if (coverageActions.children.length) coverageBox.append(coverageActions);
+    if (history.status && history.status !== 'idle') {
+      const outcomes = history.outcomes ?? [];
+      const isRejudge = history.mode === 'rejudge';
+      const statusCopy = isRejudge ? REJUDGE_STATUS_COPY : HISTORY_STATUS_COPY;
+      const progress = history.status === 'running'
+        ? `${history.committing ? '整组正在提交' : `${isRejudge ? '已暂存' : '已处理'} ${history.processedFloors ?? 0}/${history.totalFloors ?? 0} 楼`}${history.committing ? '；此阶段不能取消' : `；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼 · 模型任务 ${history.calls ?? 0} 次`}${history.message ? ` · ${history.message}` : ''}`
+        : `${history.message || statusCopy[history.status] || '历史补齐状态待核对。'}${isRejudge
+          ? history.commitStatus === 'saved' ? ` 已确认保存 ${history.savedFloors ?? 0}/${history.totalFloors ?? 0} 楼（完整 ${history.savedCompleteFloors ?? 0}、部分 ${history.savedPartialFloors ?? 0}）。`
+            : history.commitStatus === 'unknown' ? ` 已暂存 ${history.processedFloors ?? 0} 楼；提交状态待核对。`
+              : ` 已暂存 ${history.processedFloors ?? 0} 楼；整组未提交。`
+          : history.attemptedFloors !== undefined ? ` 已处理 ${history.processedFloors} 楼；保存完整 ${history.savedCompleteFloors ?? 0} 楼、部分 ${history.savedPartialFloors ?? 0} 楼；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼。` : ''}`;
+      coverageBox.append(element('p', 'qqj-qianshi-history-status', progress));
+      const results = element('div', 'qqj-qianshi-history-results');
+      results.setAttribute('role', 'region'); results.setAttribute('aria-label', '历史补齐逐楼结果'); results.setAttribute('tabindex', '0');
+      for (const outcome of outcomes.filter(item => item.status !== 'saved-complete' && (item.reasonCode || item.message))) {
+        const reason = String(outcome.message ?? '').trim() || HISTORY_OUTCOME_COPY[outcome.status] || '本楼暂未完成，原记录已保留。';
+        const floorLabel = validMessageIndex(outcome.messageIndex) ? `第 ${outcome.messageIndex} 楼`
+          : Number.isSafeInteger(outcome.assistantSeq) ? `AI 记录 ${outcome.assistantSeq}` : '目标楼';
+        results.append(element('p', 'qqj-qianshi-history-status', `${floorLabel}：${reason}`));
+      }
+      if (results.children.length) coverageBox.append(results);
+    }
+    return coverageBox;
+  }
+
+  function updateProgressView() {
+    if (!pageNode || !coverageBoxNode || !container) { render(); return; }
+    const previousResults = container.querySelector?.('.qqj-qianshi-history-results');
+    const resultsScrollTop = previousResults?.scrollTop ?? 0;
+    const resultsHadFocus = previousResults && (previousResults === documentRef.activeElement
+      || previousResults.contains?.(documentRef.activeElement));
+    const focusKey = coverageBoxNode.contains?.(documentRef.activeElement) ? documentRef.activeElement?.dataset?.focusKey : null;
+    const nextCoverage = renderCoverageBox();
+    coverageBoxNode.className = nextCoverage.className;
+    coverageBoxNode.replaceChildren(...nextCoverage.children);
+    const nextResults = container.querySelector?.('.qqj-qianshi-history-results');
+    if (nextResults) {
+      nextResults.scrollTop = resultsScrollTop;
+      if (resultsHadFocus) nextResults.focus();
+    }
+    if (focusKey) {
+      const stack = [...(coverageBoxNode.children ?? [])];
+      while (stack.length) {
+        const node = stack.pop();
+        if (node.dataset?.focusKey === focusKey) { node.focus?.({ preventScroll: true }); break; }
+        stack.push(...(node.children ?? []));
+      }
+    }
+    if (feedbackNode && feedback) feedbackNode.textContent = feedback;
+    else if (feedbackNode && !feedback) { feedbackNode.remove?.(); feedbackNode = null; }
+    else if (!feedbackNode && feedback) {
+      feedbackNode = element('p', 'qqj-qianshi-feedback', feedback); feedbackNode.setAttribute('role', 'status');
+      const search = pageNode.querySelector?.('.qqj-history-search');
+      if (search?.after) search.after(feedbackNode); else pageNode.append(feedbackNode);
+    }
+    const refreshMenus = root => {
+      const stack = root ? [root] : [];
+      while (stack.length) {
+        const node = stack.pop(); node.refreshQianshiAvailability?.();
+        stack.push(...(node.children ?? []));
+      }
+    };
+    refreshMenus(container);
+    refreshMenus(anomalyContent);
+  }
+
   function render() {
     if (!container) return;
     const currentChatId = snapshot?.identity?.qqjChatId ?? null;
@@ -693,55 +846,8 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const focusedDayStateId = documentRef.activeElement?.className === 'qqj-qianshi-day-summary' ? documentRef.activeElement.dataset?.dayStateId : null;
     resetForChat(currentChatId);
     operationMenus.reset();
-    const page = element('section', 'qqj-qianshi-page');
-    const coverage = coverageProjection(snapshot), coverageBox = element('section', `qqj-qianshi-coverage ${coverage.kind}`);
-    const coverageText = element('div'); coverageText.append(element('strong', '', coverage.label), element('p', '', coverage.copy));
-    const history = snapshot?.history ?? {}, historyRunning = historyBusy();
-    const coverageCounts = snapshot?.coverage ?? {};
-    const hasHistoryToComplete = snapshot?.status === 'ready'
-      && ((Number(coverageCounts.pendingFloors) || 0) + (Number(coverageCounts.partialFloors) || 0) > 0
-        || (Number(coverageCounts.emptyFloors) || 0) > 0);
-    const coverageActions = element('div', 'qqj-qianshi-coverage-actions');
-    coverageBox.append(coverageText);
-    if (historyRunning || hasHistoryToComplete) {
-      const historyAction = element('button', 'secondary-action', historyRunning ? history.committing ? '提交中…' : '停止' : '补齐旧楼'); historyAction.type = 'button';
-      historyAction.disabled = historyRunning ? Boolean(history.committing) : otherWorkBusy();
-      historyAction.addEventListener('click', () => { void (historyRunning ? stopHistory() : prepareHistory()); });
-      coverageActions.append(historyAction);
-    }
-    if (!historyRunning && snapshot?.events?.length && typeof runtime.prepareQianshiRejudge === 'function') {
-      const rejudge = element('button', 'secondary-action', '整理'); rejudge.type = 'button';
-      rejudge.disabled = otherWorkBusy(); rejudge.addEventListener('click', () => { void prepareRejudge(); }); coverageActions.append(rejudge);
-    }
-    if (snapshot?.diagnostics?.anomalyFloors?.length) {
-      const anomalies = element('button', 'secondary-action', '处理异常'); anomalies.type = 'button';
-      anomalies.disabled = typeof dialog?.custom !== 'function'; anomalies.addEventListener('click', () => { void openAnomalies(); });
-      coverageActions.append(anomalies);
-    }
-    if (coverageActions.children.length) coverageBox.append(coverageActions);
-    if (history.status && history.status !== 'idle') {
-      const outcomes = history.outcomes ?? [];
-      const isRejudge = history.mode === 'rejudge';
-      const statusCopy = isRejudge ? REJUDGE_STATUS_COPY : HISTORY_STATUS_COPY;
-      const progress = history.status === 'running'
-        ? `${history.committing ? '整组正在提交' : `${isRejudge ? '已暂存' : '已处理'} ${history.processedFloors ?? 0}/${history.totalFloors ?? 0} 楼`}${history.committing ? '；此阶段不能取消' : `；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼 · 模型任务 ${history.calls ?? 0} 次`}${history.message ? ` · ${history.message}` : ''}`
-        : `${history.message || statusCopy[history.status] || '历史补齐状态待核对。'}${isRejudge
-          ? history.commitStatus === 'saved' ? ` 已确认保存 ${history.savedFloors ?? 0}/${history.totalFloors ?? 0} 楼（完整 ${history.savedCompleteFloors ?? 0}、部分 ${history.savedPartialFloors ?? 0}）。`
-            : history.commitStatus === 'unknown' ? ` 已暂存 ${history.processedFloors ?? 0} 楼；提交状态待核对。`
-              : ` 已暂存 ${history.processedFloors ?? 0} 楼；整组未提交。`
-          : history.attemptedFloors !== undefined ? ` 已处理 ${history.processedFloors} 楼；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼。` : ''}`;
-      coverageBox.append(element('p', 'qqj-qianshi-history-status', progress));
-      const results = element('div', 'qqj-qianshi-history-results');
-      results.setAttribute('role', 'region'); results.setAttribute('aria-label', '历史补齐逐楼结果'); results.setAttribute('tabindex', '0');
-      for (const outcome of outcomes.filter(item => item.status !== 'saved-complete' && (item.reasonCode || item.message))) {
-        const reason = String(outcome.message ?? '').trim() || HISTORY_OUTCOME_COPY[outcome.status] || '本楼暂未完成，原记录已保留。';
-        const floorLabel = validMessageIndex(outcome.messageIndex) ? `第 ${outcome.messageIndex} 楼`
-          : Number.isSafeInteger(outcome.assistantSeq) ? `AI 记录 ${outcome.assistantSeq}` : '目标楼';
-        const floorCopy = `${floorLabel}：${reason}`;
-        results.append(element('p', 'qqj-qianshi-history-status', floorCopy));
-      }
-      if (results.children.length) coverageBox.append(results);
-    }
+    const page = element('section', 'qqj-qianshi-page'); pageNode = page;
+    const coverageBox = renderCoverageBox(); coverageBoxNode = coverageBox;
     page.append(coverageBox);
     const search = element('div', 'qqj-history-search');
     const input = element('input', 'settings-input qqj-history-search-input'); input.type = 'search'; input.value = query; input.placeholder = '搜索事件、说明、人物、涉及物品或时间'; input.setAttribute('aria-label', input.placeholder);
@@ -752,14 +858,13 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const clear = element('button', 'secondary-action qqj-history-search-clear', '清除'); clear.type = 'button'; clear.hidden = !query;
     clear.addEventListener('click', () => { query = ''; render(); container.querySelector?.('.qqj-history-search-input')?.focus?.(); });
     search.append(input, clear); page.append(search);
-    if (feedback) { const note = element('p', 'qqj-qianshi-feedback', feedback); note.setAttribute('role', 'status'); page.append(note); }
+    feedbackNode = null;
+    if (feedback) { feedbackNode = element('p', 'qqj-qianshi-feedback', feedback); feedbackNode.setAttribute('role', 'status'); page.append(feedbackNode); }
     if (snapshot?.status === 'ready') {
       const visible = visibleEvents(), renderedTimeline = timelineContent(visible);
       const toolbar = element('div', 'qqj-qianshi-toolbar');
       toolbar.append(element('span', '', query ? `匹配 ${visible.length} 件事件 · 显示 ${renderedTimeline.visibleEventCount} 条` : '沿着时间，回看故事'));
-      const tools = element('div');
-      const order = element('button', '', reverse ? '由晚到早' : '由早到晚'); order.type = 'button'; order.dataset.focusKey = 'timeline-order'; order.addEventListener('click', () => { reverse = !reverse; render(); });
-      tools.append(order); toolbar.append(tools); page.append(toolbar, renderedTimeline.node);
+      page.append(toolbar, renderedTimeline.node);
     }
     container.replaceChildren(page);
     if (focusedControlKey) {
@@ -793,7 +898,10 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       const header = typeof runtime.getQianshiSnapshotVersion === 'function' ? runtime.getQianshiSnapshotVersion() : null;
       const headerKey = header ? renderKey(header, next) : null;
       const unchanged = headerKey !== null && headerKey === runtimeRenderKey;
-      const nextSnapshot = unchanged ? snapshot : runtime.getQianshiSnapshot();
+      const sameContentProjection = Number.isSafeInteger(header?.projectionRevision)
+        && header.projectionRevision === snapshot?.projectionRevision && header.status === snapshot?.status;
+      const progressOnly = !unchanged && sameContentProjection;
+      const nextSnapshot = unchanged ? snapshot : progressOnly ? { ...snapshot, history: header.history ?? null } : runtime.getQianshiSnapshot();
       const nextKey = unchanged ? headerKey : renderKey(nextSnapshot, next);
       const previousFeedback = feedback;
       if (header?.projectionRevision === undefined || header.projectionRevision !== snapshot?.projectionRevision) editableEvents.clear();
@@ -803,7 +911,9 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       if (history?.status && history.status !== 'idle'
         && (feedback === REJUDGE_START_PENDING_FEEDBACK && history.mode === 'rejudge'
           || feedback === HISTORY_START_PENDING_FEEDBACK && history.mode !== 'rejudge')) feedback = '';
-      if (active && (!unchanged || feedback !== previousFeedback)) render();
+      if (active && progressOnly) updateProgressView();
+      else if (active && !unchanged) render();
+      else if (active && feedback !== previousFeedback) updateProgressView();
     });
   }
   function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); container = target; active = true; snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); operationMenus.activate(); subscribe(); return target; }
@@ -812,6 +922,6 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (active) return { status: snapshot?.status ?? 'unavailable' };
     active = true; operationMenus.activate(); snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' };
   }
-  function deactivate() { active = false; epoch += 1; if (anomalyContent) dialog?.cancelTop?.(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; }
+  function deactivate() { active = false; epoch += 1; if (anomalyContent) dialog?.cancelTop?.(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; pageNode = null; coverageBoxNode = null; feedbackNode = null; }
   return Object.freeze({ mount, activate, deactivate, render });
 }

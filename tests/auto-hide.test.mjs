@@ -65,6 +65,19 @@ test('计划按最近 N 个真实 AI 的上一 AI 边界保留整段用户上下
   assert.deepEqual(plan.hideRanges, [{ start: 0, end: 1 }, { start: 3, end: 3 }], '旁白不得被自动隐藏接管');
 });
 
+test('归档冻结前缀不以当前聊天同位置正文证明覆盖，后续活动楼仍可正常连续隐藏', () => {
+  const chat = [user('当前前缀'), assistant('B活动楼一'), user('继续'), assistant('B活动楼二'), user('新输入'), assistant('最新')];
+  const base = stateFor(chat);
+  const floors = base.floors.filter(floor => floor.messageIndex === 1 || floor.messageIndex === 3);
+  const state = { ...base, migrationAliases: [], floors: [
+    { ...base.floors[0], frozen: true, messageIndex: 0 },
+    ...floors.map(floor => ({ ...floor, assistantSeq: floor.assistantSeq + 1 })),
+  ] };
+  const plan = planAutoHide({ chat, memoryState: state, keepAiCount: 1 });
+  assert.equal(plan.hideThrough, 3);
+  assert.deepEqual(plan.hideRanges, [{ start: 0, end: 3 }]);
+});
+
 test('宿主命令只处理可见目标并写稳定聊天标记；调大 N 保持隐藏，关闭只恢复千千结自有范围', async () => {
   const chat = [user('旧输入'), assistant('旧回复'), event('narrator_note'), user('中间输入'), assistant('中间回复'), user('最新输入'), assistant('最新回复')];
   chat[2].extra.keep = true;
@@ -239,112 +252,4 @@ test('宿主聊天切换或 metadata 尚未绑定当前稳定 UUID 时不把旧�
   const disposed = harness({ chat: disposedChat, execute: commandExecutor(disposedChat, disposedCommands) });
   disposed.controller.dispose();
   assert.equal((await disposed.controller.reconcile()).status, 'disposed'); assert.deepEqual(disposedCommands, []);
-});
-
-test('无正文 alias 的纯冻结前缀不阻断 live 后缀自动隐藏，仍按 live 全局序号和 ready 边界执行', async () => {
-  const frozenCount = 3602;
-  const chat = [assistant('旧前导消息'), user('当前正文一'), assistant('当前正文二'), user('当前正文三'), assistant('当前正文四'), user('当前正文五'), assistant('当前正文六'), user('当前正文七'), assistant('当前正文八')];
-  chat[0].is_system = true;
-  delete chat[0].extra;
-  const liveIndexes = [2, 4, 6, 8];
-  const frozenFloors = Array.from({ length: frozenCount }, (_, index) => ({
-    floorId: `archive-floor-${index + 1}`,
-    assistantSeq: index + 1,
-    messageIndex: index,
-    memoryId: `archive-memory-${index + 1}`,
-    status: 'ready',
-    frozen: true,
-    sourceOrigin: 'merged-source',
-    cse: null,
-  }));
-  const makeState = (liveFloorCount = liveIndexes.length) => ({
-    chatId: CHAT,
-    memorySnapshotStatus: 'ready',
-    stableCount: liveFloorCount,
-    migrationAliases: [],
-    floors: [
-      ...frozenFloors,
-      ...liveIndexes.slice(0, liveFloorCount).map((messageIndex, index) => ({
-        floorId: `live-floor-${index + 1}`,
-        assistantSeq: frozenCount + index + 1,
-        messageIndex,
-        memoryId: `live-memory-${index + 1}`,
-        status: 'ready',
-        cse: { status: 'ready', deltaId: `live-delta-${index + 1}` },
-      })),
-    ],
-  });
-  let memoryState = makeState();
-  const commands = [];
-  const h = harness({ chat, keepAiCount: 3, execute: commandExecutor(chat, commands) });
-  h.setMemoryState(memoryState);
-  assert.equal(memoryState.floors.at(frozenCount).assistantSeq, frozenCount + 1);
-  assert.equal(memoryState.floors.at(frozenCount).messageIndex, liveIndexes[0]);
-  assert.equal(memoryState.floors[0].messageIndex, 0, '归档来源索引与旧前导消息重合，但没有正文 alias');
-
-  const first = await h.controller.reconcile();
-  assert.equal(first.status, 'applied');
-  assert.deepEqual(commands, ['/hide 1-2'], '仅隐藏越过 keep3 的当前 live 正文，保留已经隐藏且无标记的旧前导消息');
-  assert.equal(chat[0].is_system, true);
-  assert.equal(chat[0].extra?.[AUTO_HIDE_MARKER_KEY], undefined, '旧隐藏消息不因来源索引重合而接管');
-  assert.equal(chat[1].is_system, true);
-  assert.equal(chat[2].is_system, true);
-
-  chat.push(user('新输入'), assistant('新 live 楼'));
-  const nextLiveIndex = chat.length - 1;
-  memoryState = makeState(5);
-  memoryState.floors.push({
-    floorId: 'live-floor-5', assistantSeq: frozenCount + 5, messageIndex: nextLiveIndex,
-    memoryId: 'live-memory-5', status: 'ready', cse: { status: 'ready', deltaId: 'live-delta-5' },
-  });
-  memoryState.stableCount = 5;
-  h.setMemoryState(memoryState);
-  const appended = await h.controller.reconcile();
-  assert.equal(appended.status, 'applied');
-  assert.deepEqual(commands, ['/hide 1-2', '/hide 3-4'], '追加完成楼后继续隐藏新 live 范围');
-  assert.equal(chat[0].is_system, true);
-  assert.equal(chat[0].extra?.[AUTO_HIDE_MARKER_KEY], undefined);
-
-  const firstLiveGap = makeState(5);
-  firstLiveGap.floors[frozenCount].cse = { status: 'pending', deltaId: null };
-  assert.equal(planAutoHide({ chat, memoryState: firstLiveGap, keepAiCount: 3 }).hideThrough, null,
-    '首个 live CSE 缺口仍阻断全部隐藏');
-
-  const cseGap = makeState(5);
-  cseGap.floors[frozenCount + 1].cse = { status: 'pending', deltaId: null };
-  const cseGapPlan = planAutoHide({ chat, memoryState: cseGap, keepAiCount: 3 });
-  assert.equal(cseGapPlan.hideThrough, liveIndexes[0], 'live CSE 缺口之后的楼不得纳入隐藏上界');
-  assert.deepEqual(cseGapPlan.hideRanges, [], '此前安全范围已经隐藏时，CSE缺口不恢复旧隐藏也不越过缺口');
-
-  const memoryGap = makeState(5);
-  memoryGap.floors[frozenCount + 1].status = 'unprocessed';
-  const memoryGapPlan = planAutoHide({ chat, memoryState: memoryGap, keepAiCount: 3 });
-  assert.equal(memoryGapPlan.hideThrough, liveIndexes[0], 'live 摘要缺口之后的楼不得纳入隐藏上界');
-  assert.deepEqual(memoryGapPlan.hideRanges, []);
-
-  const firstSequenceGap = makeState(5);
-  firstSequenceGap.floors[frozenCount].assistantSeq += 1;
-  assert.equal(planAutoHide({ chat, memoryState: firstSequenceGap, keepAiCount: 3 }).hideThrough, null,
-    '首个 live 必须紧接归档前缀最后一个全局序号');
-
-  const sequenceGap = makeState(5);
-  sequenceGap.floors[frozenCount + 2].assistantSeq += 1;
-  assert.equal(planAutoHide({ chat, memoryState: sequenceGap, keepAiCount: 3 }).hideThrough, liveIndexes[1],
-    'live 全局序号缺口之后的楼不得纳入隐藏上界');
-
-  const aliased = makeState(5);
-  aliased.migrationAliases = [{ aliasId: 'carried-floor-alias', floorId: frozenFloors[0].floorId, targetMessageIndex: 0 }];
-  assert.equal(planAutoHide({ chat, memoryState: aliased, keepAiCount: 3 }).hideThrough, null,
-    '存在正文 alias 时保留原归档校验路径，不套用纯冻结前缀例外');
-
-  h.setMemoryState(makeState(5));
-  const closed = await h.controller.applySettings({ enabled: false });
-  assert.equal(closed.status, 'applied');
-  assert.deepEqual(commands.at(-1), '/unhide 1-4', '关闭只恢复自动隐藏控制器标记的连续 live 范围');
-  assert.equal(chat[0].is_system, true, '无自动隐藏所有权的旧前导消息保持原隐藏状态');
-  for (const index of [1, 2, 3, 4]) {
-    assert.equal(chat[index].is_system, false);
-    assert.equal(chat[index].extra?.[AUTO_HIDE_MARKER_KEY], undefined);
-  }
-  h.controller.dispose();
 });

@@ -2,7 +2,7 @@ import { sha256 } from '../identity.js';
 import { rawWitnessShape, rawWitnessValid, summaryWitnessShape, summaryWitnessValid } from './vector-source.js';
 import { sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { projectRecallSource, readRecallSource } from './recall-source.js';
-import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens } from './recall-selector.js';
+import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens, recallBudget } from './recall-selector.js';
 import { selectRecallWithLlm } from './recall-llm-selector.js';
 import { selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
@@ -12,13 +12,14 @@ import { publicErrorMessage } from '../public-error.js';
 import { normalizeAutoHideKeepAiCount } from '../settings.js';
 import { createRecallRequestDiagnostic } from './recall-request-diagnostic.js';
 import { MIGRATION_ALIAS_KEY, migrationPartition } from './migration-prefix.js';
+import { readLocationReference } from './location-reference.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
-export const RECALL_RECEIPT_SCHEMA_VERSION = 17;
-export const RECALL_STRATEGY_VERSION = 'continuity-v17';
+export const RECALL_RECEIPT_SCHEMA_VERSION = 18;
+export const RECALL_STRATEGY_VERSION = 'continuity-v18';
 const RECALL_PROMPT_DEPTH = 2;
-const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
+const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAX_STOPPED_GENERATION_CHAINS = 16;
@@ -60,6 +61,21 @@ function latestUser(snapshot) {
 }
 
 const liveRecallFrameKey = snapshot => JSON.stringify(buildRecallQueryFrame({ coreChat: snapshot?.chat, assistantTurns: 1 }).messages.map(message => [message.role, message.text]));
+function captureLatestLocationReference(snapshot, sanitizerOptions, maximumFloors) {
+  const chat = Array.isArray(snapshot?.chat) ? snapshot.chat : [];
+  let visible = 0;
+  for (let index = chat.length - 1; index >= 0 && visible < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
+    const message = chat[index];
+    if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true) continue;
+    const selected = selectAssistantMessage(message);
+    if (!selected?.rawContent?.trim() || !sanitizeMemoryContent(selected.rawContent, sanitizerOptions)) continue;
+    visible += 1;
+    const values = readLocationReference(selected.rawContent) ?? [];
+    return Object.freeze({ values, hostLocator: Object.freeze({ messageIndex: index,
+      swipeId: selected.swipeId ?? null, selectedSwipeIndex: selected.selectedSwipeIndex ?? null }) });
+  }
+  return null;
+}
 
 async function sourceRefsValid(receipt, source, onInvalid = () => {}, selectedFloorsForValidation = null) {
   // 失败回调只附带首个可定位引用，不参与下面的布尔判定或读取链。
@@ -155,7 +171,7 @@ function selectedSourceFloorIds({ selectedFloors = [], selectedStates = [], sele
   return floorIds;
 }
 
-async function captureSelectedSourceGuards(receipt, source, snapshot, sanitizerOptions, fingerprint) {
+async function captureSelectedSourceGuards(receipt, source, snapshot) {
   if (source?.readiness?.hostConfirmed !== true) return Object.freeze([]);
   const expectedFloorIds = selectedSourceFloorIds(receipt, source);
   if (!expectedFloorIds.size) return Object.freeze([]);
@@ -234,7 +250,7 @@ const legacyReceiptMaterial = receipt => [
   receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint, receipt.generationType,
   receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages, receipt.skipReasons, receipt.completionStatus, receipt.createdAt,
 ];
-const baseReceiptMaterial = receipt => receipt.schemaVersion >= 15 && receipt.qianshiProgress
+const legacyBaseReceiptMaterial = receipt => receipt.schemaVersion >= 15 && receipt.qianshiProgress
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.timeDependencies, receipt.qianshiProgress]
   : receipt.schemaVersion >= 15
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings, receipt.storylines, receipt.timeDependencies]
@@ -248,6 +264,9 @@ const baseReceiptMaterial = receipt => receipt.schemaVersion >= 15 && receipt.qi
   ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion, receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings]
   : receipt.schemaVersion >= 9 ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint, receipt.strategyVersion]
   : receipt.schemaVersion >= 8 ? [...legacyReceiptMaterial(receipt), receipt.bodyMatchFingerprint] : legacyReceiptMaterial(receipt);
+const baseReceiptMaterial = receipt => receipt.schemaVersion >= 18
+  ? [...legacyBaseReceiptMaterial(receipt), receipt.selectedLocationReferences, receipt.locationReferenceDependency]
+  : legacyBaseReceiptMaterial(receipt);
 // 删除见证是可选的签名扩展，旧回执维持原签名；只记录选中事项的删除指纹，不复制全档删除清单。
 const receiptMaterial = receipt => receipt.qianshiDeletionWitness === undefined ? baseReceiptMaterial(receipt)
   : [...baseReceiptMaterial(receipt), receipt.qianshiDeletionWitness];
@@ -262,6 +281,7 @@ async function qianshiDeletionWitness(receipt, deletedEvents, fingerprint) {
 
 const boundedString = (value, maximum, { empty = false } = {}) => typeof value === 'string' && value.length <= maximum && (empty || value.length > 0);
 const optionalBoundedString = (value, maximum) => value === null || boundedString(value, maximum);
+const optionalSwipeId = value => value === null || nonNegativeInteger(value) || boundedString(value, 500, { empty: true });
 const nonNegativeInteger = value => Number.isSafeInteger(value) && value >= 0;
 const optionalPositiveInteger = value => value === null || (Number.isSafeInteger(value) && value > 0);
 const finiteDuration = value => Number.isFinite(value) && value >= 0;
@@ -339,6 +359,7 @@ function withoutStaleTime(receipt, source, projection) {
   const corrections = Object.fromEntries(saved.corrections.filter(item => same(item, projection?.corrections?.[item.key])).map(item => [item.key, item]));
   const reminders = saved.reminders.filter(item => (projection?.reminders ?? []).some(live => same(item, live)));
   const floors = clone(saved.renderPlan.floors), states = clone(receipt.selectedStates), changes = clone(receipt.selectedCseChanges);
+  const locationReferences = clone(receipt.selectedLocationReferences ?? []);
   const limits = saved.renderPlan.limits;
   const entityById = new Map((source.entities ?? []).map(entity => [entity.entityId, entity]));
   let text, ordinaryText, dependencies, storylines;
@@ -346,7 +367,7 @@ function withoutStaleTime(receipt, source, projection) {
     const active = new Set([...floors.flatMap(floor => floor.items), ...states, ...changes].map(value => value.storylineId));
     storylines = receipt.storylines.filter(line => active.has(line.storylineId));
     dependencies = { mode: 'selected', corrections: [], reminders: [] };
-    ordinaryText = formatRecallInjection({ coverage: receipt.coverage, floors, states, cseChanges: changes, storylines, entityById,
+    ordinaryText = formatRecallInjection({ coverage: receipt.coverage, floors, states, cseChanges: changes, storylines, locationReferences, entityById,
       timeProjection: { corrections }, timeReminders: reminders, timeDependencies: dependencies });
     text = appendQianshiProgress(ordinaryText, receipt.qianshiProgress, dependencies);
   };
@@ -358,6 +379,7 @@ function withoutStaleTime(receipt, source, projection) {
     else if (floors.length) { const floor = floors.at(-1); trimmedHistoryFloors.add(floor.floorId); floor.items.pop(); if (!floor.items.length) floors.pop(); }
     else if (changes.length) changes.pop();
     else if (states.length) states.pop();
+    else if (locationReferences.length) locationReferences.pop();
     else break;
     budgetDropped += 1;
     render();
@@ -373,12 +395,13 @@ function withoutStaleTime(receipt, source, projection) {
     linkedHistoryItemCount: history.filter(item => item.recallSection !== 'recent' && ['source', 'topic'].includes(item.relationEvidence)).length,
     linkedCseChangeCount: changes.filter(item => item.relationEvidence === 'source').length, stateCount: states.length, currentStateCount: states.length, cseChangeCount: changes.length,
     storylineCount: storylines.length, timeReminderCount: dependencies.reminders.length, timeCorrectionCount: dependencies.corrections.length,
-    finalInjectionItemCount: history.length + states.length + changes.length + dependencies.reminders.length,
+    locationReferenceCount: locationReferences.length,
+    finalInjectionItemCount: history.length + states.length + changes.length + locationReferences.length + dependencies.reminders.length,
     estimatedTokenCount: estimateRecallTokens(text), optionalTimeDropped: (receipt.stages.optionalTimeDropped ?? 0) + saved.corrections.length + saved.reminders.length - dependencies.corrections.length - dependencies.reminders.length,
     recentSummaryDroppedByBudget: (receipt.stages.recentSummaryDroppedByBudget ?? 0) + recentDropped,
     distantHistoryDroppedByBudget: (receipt.stages.distantHistoryDroppedByBudget ?? 0) + distantDropped,
     budgetDroppedCount: (receipt.stages.budgetDroppedCount ?? 0) + budgetDropped } : null;
-  return { ...receipt, selectedFloors: floors.map(receiptFloorRef), selectedStates: states,
+  return { ...receipt, selectedFloors: floors.map(receiptFloorRef), selectedStates: states, selectedLocationReferences: locationReferences,
     selectedCseChanges: changes, storylines, timeDependencies: dependencies, injectionText: text, completionStatus: text ? 'ready' : 'empty', stages,
     selectorDiagnostic: receipt.selectorDiagnostic ? { ...receipt.selectorDiagnostic, historyRetainedCount: history.length, stateRetainedCount: states.length + changes.length } : null,
     skipReasons: [...new Set([...receipt.skipReasons, 'optionalTimeChanged'])] };
@@ -470,11 +493,12 @@ const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => va
   && (value.stateId === undefined || optionalBoundedString(value.stateId, 500))
   && (value.sourceFloorId === undefined || optionalBoundedString(value.sourceFloorId, 500))
   && (value.sourceDeltaId === undefined || optionalBoundedString(value.sourceDeltaId, 500))
+  && (value.toward === undefined || optionalBoundedString(value.toward, 500))
   && boundedString(value.text, 4000) && ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility)
   && boundedString(value.reason, 4000, { empty: true }) && ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin)
   && optionalBoundedString(value.towardEntityId, 500) && optionalPositiveInteger(value.sourceAssistantSeq));
 function receiptShapeValid(receipt, { historical = false } = {}) {
-  const expandedSelection = [RECALL_STRATEGY_VERSION, 'continuity-v16', 'continuity-v15'].includes(receipt?.strategyVersion);
+  const expandedSelection = [RECALL_STRATEGY_VERSION, 'continuity-v17', 'continuity-v16', 'continuity-v15'].includes(receipt?.strategyVersion);
   const receiptFloorLimit = expandedSelection ? MAX_RECEIPT_FLOORS : LEGACY_MAX_RECEIPT_FLOORS;
   const receiptStateLimit = expandedSelection ? MAX_RECEIPT_STATES : LEGACY_MAX_RECEIPT_STATES;
   const receiptChangeLimit = expandedSelection ? MAX_RECEIPT_CSE_CHANGES : LEGACY_MAX_RECEIPT_CSE_CHANGES;
@@ -501,9 +525,10 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !nonNegativeInteger(receipt.userMessageIndex)
     || !boundedString(receipt.userContentFingerprint, 200)
     || !boundedString(receipt.queryFingerprint, 200)
+    || (receipt.schemaVersion >= 18 && !boundedString(receipt.locationReferenceDependency, 4000, { empty: true }))
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > receiptFloorLimit
@@ -513,6 +538,13 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || !boundedString(receipt.receiptFingerprint, 200)
     || !boundedString(receipt.createdAt, 100) || !Number.isFinite(Date.parse(receipt.createdAt))
     || (receipt.completionStatus === 'ready') !== Boolean(receipt.injectionText)) return false;
+  if (receipt.schemaVersion >= 18 && (!Array.isArray(receipt.selectedLocationReferences) || receipt.selectedLocationReferences.length > 8
+    || !receipt.selectedLocationReferences.every(value => value && typeof value === 'object' && !Array.isArray(value)
+      && boundedString(value.text, 500)
+      && (value.sourceFloorId === null || boundedString(value.sourceFloorId, 500))
+      && (value.assistantSeq === null || optionalPositiveInteger(value.assistantSeq))
+      && (value.hostLocator === null || value.hostLocator && Number.isSafeInteger(value.hostLocator.messageIndex) && value.hostLocator.messageIndex >= 0
+        && optionalSwipeId(value.hostLocator.swipeId) && (value.hostLocator.selectedSwipeIndex === null || nonNegativeInteger(value.hostLocator.selectedSwipeIndex)))))) return false;
   if (receipt.schemaVersion >= 15 && receipt.qianshiProgress !== undefined && receipt.qianshiProgress !== null) {
     const value = receipt.qianshiProgress;
     if (!value || typeof value !== 'object' || Array.isArray(value) || !boundedString(value.fingerprint, 200)
@@ -539,7 +571,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
     && ['core', 'adaptive', 'situational'].includes(value.layer)
     && optionalBoundedString(value.towardEntityId, 500) && optionalBoundedString(value.toward, 500)
-    && boundedString(value.text, 4000) && boundedString(value.reason, 1000, { empty: true })
+    && boundedString(value.text, 4000) && boundedString(value.reason, 4000, { empty: true })
     && ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility)
     && optionalPositiveInteger(value.sourceAssistantSeq))) return false;
   if (receipt.schemaVersion >= 10) {
@@ -638,7 +670,7 @@ async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFi
   try {
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot, { historical: true })
-      || ![6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
+      || ![6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, RECALL_RECEIPT_SCHEMA_VERSION].includes(snapshot.schemaVersion)
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -658,6 +690,7 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     generationType,
     coverage: receipt.coverage,
     selectedFloors: Object.freeze(clone(receipt.selectedFloors ?? [])),
+    selectedLocationReferences: Object.freeze(clone(receipt.selectedLocationReferences ?? [])),
     selectedStates: Object.freeze(clone(receipt.selectedStates ?? [])),
     selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? [])),
     qianshiProgress: receipt.qianshiProgress ? Object.freeze(clone(receipt.qianshiProgress)) : null,
@@ -716,7 +749,7 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     || typeof fingerprint !== 'function') return null;
   const receipt = message.extra?.[RECALL_RECEIPT_KEY];
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
-  if ([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+  if ([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
     const snapshot = await historicalSignedReceiptValid(receipt, {
       chatId: chatId.trim(),
       userIndex: userMessageIndex,
@@ -749,31 +782,11 @@ export async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerp
   return Object.freeze(selected.reverse());
 }
 
-async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, fingerprint, maximumFloors = 3) {
+async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, fingerprint, maximumFloors = 3, capturedLocationReference = null) {
   // Recent-body overlap is trusted only when message position, selected swipe, and raw/canonical fingerprints agree.
   const visibleFloorIds = [...new Set(source.readiness?.visibleSummaryFloorIds ?? [])].sort();
-  const partition = migrationPartition(source);
-  const aliasByFloor = new Map((partition.descriptor?.carriedAliases ?? []).map(alias => [alias.floorId, alias]));
-  const aliasCounts = new Map(), aliasIndexes = new Map();
-  if (aliasByFloor.size) for (const [index, message] of (snapshot?.chat ?? []).entries()) {
-    const aliasId = message?.extra?.[MIGRATION_ALIAS_KEY];
-    if (aliasId) { aliasCounts.set(aliasId, (aliasCounts.get(aliasId) ?? 0) + 1); aliasIndexes.set(aliasId, index); }
-  }
-  const verified = [];
-  for (const ref of source.bodyMatchRefs ?? []) {
-    const alias = ref.frozen ? aliasByFloor.get(ref.floorId) : null;
-    const liveIndex = alias ? aliasIndexes.get(alias.aliasId) : ref.hostLocator?.messageIndex;
-    const liveMessage = snapshot?.chat?.[liveIndex];
-    if (ref.frozen && (!alias || liveMessage?.extra?.[MIGRATION_ALIAS_KEY] !== alias.aliasId || aliasCounts.get(alias.aliasId) !== 1)) continue;
-    const selected = selectAssistantMessage(liveMessage);
-    if (!selected || !alias && (selected.swipeId !== ref.hostLocator.swipeId || selected.selectedSwipeIndex !== ref.hostLocator.selectedSwipeIndex)) continue;
-    const canonical = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
-    const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonical)]);
-    if (rawFingerprint !== ref.rawFingerprint || canonicalFingerprint !== ref.canonicalFingerprint) continue;
-    verified.push({ ...ref, liveMessage, liveIndex, aliasId: alias?.aliasId ?? null,
-      rawContent: selected.rawContent, canonicalContent: canonical, key: `${rawFingerprint}|${canonicalFingerprint}` });
-  }
   const recentVisibleMessageIndexes = new Set();
+  let latestVisibleMessage = null;
   let recentVisibleCount = 0;
   for (let index = (snapshot?.chat?.length ?? 0) - 1; index >= 0 && recentVisibleCount < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
     const message = snapshot.chat[index];
@@ -781,14 +794,97 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
     const selected = selectAssistantMessage(message);
     if (!selected?.rawContent?.trim() || !sanitizeMemoryContent(selected.rawContent, sanitizerOptions)) continue;
     recentVisibleMessageIndexes.add(index);
+    latestVisibleMessage ??= { index, message, selected };
     recentVisibleCount += 1;
   }
+  const partition = migrationPartition(source);
+  const aliasByFloor = new Map((partition.descriptor?.carriedAliases ?? []).map(alias => [alias.floorId, alias]));
+  const aliasCounts = new Map(), aliasIndexes = new Map();
+  if (aliasByFloor.size) for (const [index, message] of (snapshot?.chat ?? []).entries()) {
+    const aliasId = message?.extra?.[MIGRATION_ALIAS_KEY];
+    if (aliasId) { aliasCounts.set(aliasId, (aliasCounts.get(aliasId) ?? 0) + 1); aliasIndexes.set(aliasId, index); }
+  }
+  const eligibleRefs = [];
+  for (const ref of source.bodyMatchRefs ?? []) {
+    const alias = ref.frozen ? aliasByFloor.get(ref.floorId) : null;
+    const liveIndex = alias ? aliasIndexes.get(alias.aliasId) : ref.hostLocator?.messageIndex;
+    const liveMessage = snapshot?.chat?.[liveIndex];
+    if (ref.frozen && (!alias || liveMessage?.extra?.[MIGRATION_ALIAS_KEY] !== alias.aliasId || aliasCounts.get(alias.aliasId) !== 1)) continue;
+    const selected = selectAssistantMessage(liveMessage);
+    if (!selected || !alias && (selected.swipeId !== ref.hostLocator.swipeId || selected.selectedSwipeIndex !== ref.hostLocator.selectedSwipeIndex)) continue;
+    eligibleRefs.push({ ref, alias, liveIndex, liveMessage, selected });
+  }
+  const witnessCounts = new Map();
+  for (const item of witness) {
+    const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
+    witnessCounts.set(key, (witnessCounts.get(key) ?? 0) + 1);
+  }
+  const witnessRawContents = new Set(witness.filter(item => witnessCounts.get(`${item.rawFingerprint}|${item.canonicalFingerprint}`) === 1)
+    .map(item => item.rawContent));
+  const cloneSearchNeeded = witnessRawContents.size > 0 && eligibleRefs.some(({ liveMessage, selected }) => !witness.some(item => item.message === liveMessage && item.rawContent === selected.rawContent)
+    && witnessRawContents.has(selected.rawContent));
+  const liveCandidates = [];
+  const liveCandidateByIndex = new Map();
+  if (cloneSearchNeeded) for (let liveIndex = 0; liveIndex < (snapshot?.chat?.length ?? 0); liveIndex += 1) {
+    const liveMessage = snapshot.chat[liveIndex];
+    if (!liveMessage || liveMessage.is_system === true || liveMessage.is_hidden === true || liveMessage.hidden === true) continue;
+    const selected = selectAssistantMessage(liveMessage);
+    if (!selected?.rawContent?.trim() || !witnessRawContents.has(selected.rawContent)) continue;
+    const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
+    if (!canonicalContent) continue;
+    const candidate = { liveIndex, liveMessage, rawContent: selected.rawContent, canonicalContent };
+    liveCandidates.push(candidate);
+    liveCandidateByIndex.set(liveIndex, candidate);
+  }
+  const cloneLiveByWitness = new Map(), cloneLiveIndexes = new Set();
+  for (const item of witness) {
+    const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
+    if (witnessCounts.get(key) !== 1) continue;
+    const matches = liveCandidates.filter(candidate => candidate.rawContent === item.rawContent && candidate.canonicalContent === item.canonicalContent);
+    if (matches.length === 1) {
+      cloneLiveByWitness.set(item, matches[0]);
+      cloneLiveIndexes.add(matches[0].liveIndex);
+    }
+  }
+  const verified = [];
+  const fingerprintsByRawContent = new Map();
+  for (const { ref, alias, liveIndex, liveMessage, selected } of eligibleRefs) {
+    const identityWitness = witness.some(item => item.message === liveMessage && item.rawContent === selected.rawContent);
+    if (!recentVisibleMessageIndexes.has(liveIndex) && !identityWitness && !cloneLiveIndexes.has(liveIndex)) continue;
+    const canonical = liveCandidateByIndex.get(liveIndex)?.canonicalContent
+      ?? sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
+    if (!canonical) continue;
+    let hashes = fingerprintsByRawContent.get(selected.rawContent);
+    if (!hashes) {
+      hashes = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonical)]);
+      fingerprintsByRawContent.set(selected.rawContent, hashes);
+    }
+    const [rawFingerprint, canonicalFingerprint] = hashes;
+    if (rawFingerprint !== ref.rawFingerprint || canonicalFingerprint !== ref.canonicalFingerprint) continue;
+    verified.push({ ...ref, liveMessage, liveIndex, aliasId: alias?.aliasId ?? null,
+      rawContent: selected.rawContent, canonicalContent: canonical, key: `${rawFingerprint}|${canonicalFingerprint}` });
+  }
   const recentVisibleFloorIds = [...new Set(verified.filter(ref => recentVisibleMessageIndexes.has(ref.liveIndex)).map(ref => ref.floorId))].sort();
+  let locationReferences = [];
+  if (latestVisibleMessage && capturedLocationReference?.hostLocator?.messageIndex === latestVisibleMessage.index) {
+    const sourceMatches = verified.filter(ref => ref.liveIndex === latestVisibleMessage.index
+      && ref.liveMessage === latestVisibleMessage.message && ref.rawContent === latestVisibleMessage.selected.rawContent);
+    const sourceRef = sourceMatches.length === 1 ? sourceMatches[0] : null;
+    const sourceMemory = sourceRef ? (source.floorMemories ?? []).find(memory => memory.floorMemoryId === sourceRef.floorMemoryId) : null;
+    const frozenReference = sourceMemory?.locationReferenceSources?.find(value => value.sourceFloorId === sourceRef.floorId);
+    // An explicit manual clear on this exact source takes precedence over its raw tag.
+    const manuallyCleared = frozenReference?.cleared === true;
+    if (!sourceRef || !manuallyCleared) {
+      locationReferences = capturedLocationReference.values.map(text => Object.freeze({ text, sourceFloorId: sourceRef?.floorId ?? null, assistantSeq: sourceRef?.assistantSeq ?? null,
+        hostLocator: capturedLocationReference.hostLocator }));
+    }
+  }
   const materialFor = (covered, recentBodyFloorIds) => ({
     version: 3,
     covered: covered.map(item => [item.floorId, item.floorMemoryId, item.assistantSeq, item.rawFingerprint, item.canonicalFingerprint, item.liveIndex]),
     visibleFloorIds,
     recentBodyFloorIds,
+      locationReferences: Object.freeze(locationReferences),
   });
   const resultFor = async covered => {
     const recentBodyFloorIds = Object.freeze([...new Set([...covered.map(item => item.floorId), ...recentVisibleFloorIds])].sort());
@@ -801,32 +897,15 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
       assistantSeq: item.assistantSeq, liveIndex: item.liveIndex, aliasId: item.aliasId ?? null }))),
     visibleFloorIds: Object.freeze(visibleFloorIds),
     recentBodyFloorIds,
+    locationReferences: Object.freeze(locationReferences),
   });
   };
   if (!verified.length || !witness.length) return resultFor([]);
-  const liveCandidates = [];
-  for (let liveIndex = 0; liveIndex < (snapshot?.chat?.length ?? 0); liveIndex += 1) {
-    const liveMessage = snapshot.chat[liveIndex];
-    if (!liveMessage || liveMessage.is_system === true || liveMessage.is_hidden === true || liveMessage.hidden === true) continue;
-    const selected = selectAssistantMessage(liveMessage);
-    if (!selected?.rawContent?.trim()) continue;
-    const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
-    if (!canonicalContent) continue;
-    liveCandidates.push({ liveIndex, liveMessage, rawContent: selected.rawContent, canonicalContent });
-  }
-  const witnessCounts = new Map();
-  for (const item of witness) {
-    const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
-    witnessCounts.set(key, (witnessCounts.get(key) ?? 0) + 1);
-  }
   const tentative = [];
   for (const item of witness) {
     const key = `${item.rawFingerprint}|${item.canonicalFingerprint}`;
     const identity = verified.find(ref => ref.liveMessage === item.message && ref.key === key);
-    const liveMatches = witnessCounts.get(key) === 1
-      ? liveCandidates.filter(candidate => candidate.rawContent === item.rawContent && candidate.canonicalContent === item.canonicalContent)
-      : [];
-    const cloneLive = liveMatches.length === 1 ? liveMatches[0] : null;
+    const cloneLive = cloneLiveByWitness.get(item) ?? null;
     const match = identity ?? (cloneLive ? verified.find(ref => ref.liveIndex === cloneLive.liveIndex && ref.key === key) : null);
     if (match) tentative.push({ coreIndex: item.coreIndex, match, identity: Boolean(identity) });
 
@@ -987,11 +1066,15 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         updateSourceVerification({ sourceStatus: sourceToVerify.status, rootVerified: true, step: 'root' });
         return sourceToVerify;
       }
-      const identityProjection = typeof identityProjectionProvider === 'function' ? await step('identity', () => identityProjectionProvider()) : null;
       let result, prepared;
       if (typeof prepareMemory === 'function') {
         // fresh 校验不启动后台维护；可借同目标的已在途准备，否则独立核验已完成 checkpoint。
         prepared = await step('prepare', () => prepareMemory({ preferCached: !fresh, rootResult: latestRoot, allowRefresh: !fresh, reuseInFlight: fresh && !sourceToVerify }));
+        // 已确认尚未建立记忆时，没有可投影的记录；不再触发依赖身份的存储读取。
+        if (prepared?.status === 'uninitialized') return prepared;
+      }
+      const identityProjection = typeof identityProjectionProvider === 'function' ? await step('identity', () => identityProjectionProvider()) : null;
+      if (prepared) {
         if (prepared?.status === 'ready' && prepared.reachable?.root) {
           result = await step('projection', () => projectRecallSource(prepared.reachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin(), identityProjection?.data ?? identityProjection));
         } else if (['disabled', 'stale'].includes(prepared?.status)) return prepared;
@@ -1033,7 +1116,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       closed = true;
       timing.totalMs = Date.now() - started;
       if (sourceToVerify) updateSourceVerification({ sourceStatus: result?.status ?? 'unavailable', rootVerified: result?.rootVerified === false ? false : sourceVerification.rootVerified });
-      timing.status = result?.rootVerified === false ? 'stale' : ['ready', 'timeout', 'stale', 'disabled'].includes(result?.status) ? result.status : 'unavailable';
+      timing.status = result?.rootVerified === false ? 'stale' : ['ready', 'uninitialized', 'timeout', 'stale', 'disabled'].includes(result?.status) ? result.status : 'unavailable';
       if (operation?.timings) (operation.timings.preparationAttempts ??= []).push(Object.freeze(timing));
       if (operation) { operation.currentPreparation = null; notify(); }
     }
@@ -1396,6 +1479,22 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       completionStatus: injectionText ? 'ready' : 'empty', skipReasons: [...new Set([...receipt.skipReasons, 'qianshiManuallyDeleted'])] };
   }
 
+  function fitReusedPrequel(operation, receipt, contextSize) {
+    const selected = operation.prequelSelection;
+    if (!selected?.injectionText || !receipt?.injectionText) return;
+    const budget = recallBudget(contextSize);
+    const remainingCharacters = Math.max(0, budget.totalCharacters - receipt.injectionText.length);
+    const remainingTokens = Math.max(0, budget.totalTokens - estimateRecallTokens(receipt.injectionText));
+    if (selected.estimatedCharacters <= remainingCharacters && selected.estimatedTokens <= remainingTokens) return;
+    operation.prequelSelection = selectPrequel({
+      text: operation.prequelSourceText,
+      queryContext: operation.queryContext,
+      contextSize,
+      maxCharacters: Math.min(selected.characterBudget, remainingCharacters),
+      maxTokens: Math.min(selected.tokenBudget, remainingTokens),
+    });
+  }
+
   function commitFrozenReceiptIfCurrent({ operation, receipt, userIndex, hostGuard }) {
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     // 人工删除的撤回在此前完成；普通冻结复用不重读来源、时间投影或重选千事。
@@ -1453,7 +1552,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (currentSource.rootVerified === false) { markVerificationFailure('rootVerification', 'sourceUnavailable'); return { ok: false, reason: 'sourceUnavailable' }; }
       if (currentSource.chatId !== source.chatId) return { ok: false, reason: 'chatChanged' };
       if (currentSource.narrativeGeneration !== source.narrativeGeneration) return { ok: false, reason: 'narrativeChanged' };
-      currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint, recentBodyFloorLimit()) });
+      currentSource = Object.freeze({ ...currentSource, bodyMatch: await attachCoreBodyMatch(currentSource, operation.coreBodyWitness, before, operation.sanitizerOptions, fingerprint, recentBodyFloorLimit(), operation.locationReferenceSnapshot) });
     }
     if (!timeDependenciesValid(timeDependencies)) { markVerificationFailure('timeDependencies', 'invalid'); return { ok: false, reason: 'selectedRefsChanged' }; }
     if (timeDependencies.mode === 'projection' || timeDependencies.corrections.length || timeDependencies.reminders.length) {
@@ -1484,7 +1583,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       return { ok: false, reason: 'selectedRefsChanged' };
     }
     const bodyGuardSanitizer = currentSanitizerOptions();
-    const selectedSourceGuards = await captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before, bodyGuardSanitizer, fingerprint);
+    const selectedSourceGuards = await captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
     if (selectedSourceGuards === null) { markVerificationFailure('sourceBodyGuard', 'changed'); return { ok: false, reason: 'selectedRefsChanged' }; }
     const coveredBodyGuards = await captureCoveredBodyGuards(source, currentSource, before, bodyGuardSanitizer, fingerprint);
     if (coveredBodyGuards === null) { markVerificationFailure('coveredBodyGuard', 'changed'); return { ok: false, reason: 'narrativeChanged' }; }
@@ -1590,6 +1689,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.hostChatId = currentHostChatId(before);
       operation.userText = user.message.mes;
       operation.liveFrameKey = liveRecallFrameKey(before);
+      operation.sanitizerOptions = currentSanitizerOptions();
+      operation.locationReferenceSnapshot = captureLatestLocationReference(before, operation.sanitizerOptions, recentBodyFloorLimit());
       notify();
       advanceOperation(operation, 'queryContext');
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
@@ -1607,13 +1708,17 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       for (const value of receiptCandidates(user)) {
         const owner = value === sessionReceipt?.receipt ? sessionReceipt.owner : null;
         const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint, pluginVersion }, fingerprint);
-        if (snapshot) { candidate = snapshot; candidateOwner = owner; break; }
+        const dependency = JSON.stringify(operation.locationReferenceSnapshot);
+        const locationDependencyMatches = snapshot?.schemaVersion >= 18
+          ? snapshot.locationReferenceDependency === dependency
+          : !operation.locationReferenceSnapshot?.values?.length;
+        if (snapshot && locationDependencyMatches) { candidate = snapshot; candidateOwner = owner; break; }
       }
       if (candidate?.selectedFloors.some(value => value.rawWitnesses?.length || value.summaryWitnesses?.length)) {
         // 冻结复用不查询向量；原文见证及旧摘要回执仍按各自来源重新核验。
         advanceOperation(operation, 'receiptSourceVerification');
         const sourceStarted = Date.now();
-        const sanitizerSnapshot = currentSanitizerOptions();
+        const sanitizerSnapshot = operation.sanitizerOptions;
         const realtime = hasRealtimeOrigin();
         let fresh = null;
         // 仅借用根版本完全匹配的既有快照；未命中时继续原来源读取，不等待后台准备。
@@ -1656,6 +1761,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         const commitStarted = Date.now();
         if (typeof qianshiDeletionProvider === 'function' && (candidate.qianshiProgress || (candidate.timeDependencies?.reminders ?? []).some(item => item.qianshiRef))) advanceOperation(operation, 'deletionWitness');
         candidate = await withoutDeletedQianshi(candidate);
+        fitReusedPrequel(operation, candidate, contextSize);
         diagnostic.selectionStatus = 'receiptCandidate'; diagnostic.coverage = clone(candidate.coverage); diagnostic.stages = clone(candidate.stages); diagnostic.selectorDiagnostic = clone(candidate.selectorDiagnostic);
         operation.phase = diagnostic.phase = 'commit'; advanceOperation(operation, 'commitVerification');
         const committed = commitFrozenReceiptIfCurrent({ operation, receipt: candidate, userIndex: user.index, hostGuard });
@@ -1674,7 +1780,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (operation.prequelCommitted) lastPrequel = prequelState(operation);
         bindLastRecall(committed.snapshot, committed.user); lastError = null; active = null; notify(); return getState();
       }
-      const sanitizerSnapshot = currentSanitizerOptions();
+      const sanitizerSnapshot = operation.sanitizerOptions;
       advanceOperation(operation, 'bodyWitness');
       const [coreBodyWitness, baseQueryFingerprint] = await Promise.all([
         captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint, recentBodyFloorLimit()),
@@ -1689,7 +1795,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let source = readSource;
       if (readSource?.status === 'ready') {
         advanceOperation(operation, 'bodyWitness');
-        source = Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint, recentBodyFloorLimit()) });
+        source = Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint, recentBodyFloorLimit(), operation.locationReferenceSnapshot) });
       }
       if (source?.status === 'ready') { advanceOperation(operation, 'qianshiProgress'); source = await attachQianshiProgress(source, queryContext, before); }
       timings.sourceMs = Date.now() - sourceStarted;
@@ -1697,7 +1803,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (source?.status === 'ready') diagnostic.coverage = clone(source.coverage);
       if (source.status !== 'ready') {
         // Technical source failures take the bounded retry path; a valid but uninitialized source can be skipped normally.
-        const reason = source.status === 'timeout' ? 'memoryPreparationTimeout'
+        const reason = source.status === 'uninitialized' ? 'uninitialized'
+          : source.status === 'timeout' ? 'memoryPreparationTimeout'
           : source.sourceReadAttempts?.exitPoint === 'memoryPreparationFailed' ? 'memoryPreparationFailed'
             : source.status === 'stale' ? 'sourceStale' : 'sourceUnavailable';
         const sourceError = technicalSourceError(source);
@@ -1731,8 +1838,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const identityQueryFingerprint = hasIdentityProjection
         ? await fingerprint(JSON.stringify([prequelQueryFingerprint, projection]))
         : prequelQueryFingerprint;
+      const locationQueryFingerprint = await fingerprint(JSON.stringify([identityQueryFingerprint, operation.locationReferenceSnapshot]));
       const queryFingerprint = source.timeProjection?.fingerprint
-        ? await fingerprint(JSON.stringify([identityQueryFingerprint, source.timeProjection.fingerprint])) : identityQueryFingerprint;
+        ? await fingerprint(JSON.stringify([locationQueryFingerprint, source.timeProjection.fingerprint])) : locationQueryFingerprint;
       const afterSource = hostAdapter.snapshot();
       const afterUser = latestUser(afterSource);
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
@@ -1770,6 +1878,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         userMessageIndex: user.index,
         userContentFingerprint: userFingerprint,
         queryFingerprint,
+        locationReferenceDependency: JSON.stringify(operation.locationReferenceSnapshot),
         bodyMatchFingerprint: source.bodyMatch.fingerprint,
         strategyVersion: RECALL_STRATEGY_VERSION,
         generationType: type,
@@ -1782,13 +1891,17 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           towardEntityId: value.towardEntityId, toward: value.toward, text: value.text, reason: value.reason,
           visibility: value.visibility, sourceAssistantSeq: value.sourceAssistantSeq, storylineId: value.storylineId,
         })),
+        selectedLocationReferences: (selection.locationReferences ?? []).map(value => ({
+          text: value.text, sourceFloorId: value.sourceFloorId ?? null, assistantSeq: value.assistantSeq ?? null,
+          hostLocator: value.hostLocator ? { messageIndex: value.hostLocator.messageIndex, swipeId: value.hostLocator.swipeId ?? null, selectedSwipeIndex: value.hostLocator.selectedSwipeIndex ?? null } : null,
+        })),
         selectedCseChanges: (selection.cseChanges ?? []).map(value => ({
           deltaId: value.deltaId, floorId: value.floorId, assistantSeq: value.assistantSeq,
           subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, action: value.action,
           storylineId: value.storylineId,
           relationEvidence: value.relationEvidence,
-          before: value.before ? { stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
-          after: value.after ? { stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
+          before: value.before ? { stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, toward: value.before.toward, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
+          after: value.after ? { stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, toward: value.after.toward, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
         })),
         storylines: (selection.storylines ?? []).map(value => ({ storylineId: value.storylineId, title: value.title, basis: value.basis })),
         selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
@@ -2040,7 +2153,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
         ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
         : null;
-      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
+      if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);
         if (historical) receiptSnapshot = Object.freeze({ ...stateFromReceipt(historical, { restoredReceipt: true }), legacyReadOnly: true });
       }

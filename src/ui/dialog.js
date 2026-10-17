@@ -14,6 +14,7 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>${gouhuaDialogCss}</style>`;
   let effectiveTheme = 'day';
+  let dialogFontUrl = '', dialogFontLink = null;
   const core = createGouhuaDialogCore({
     $,
     mount: { appendChild: element => root.appendChild(element) },
@@ -35,11 +36,20 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
     hasActive: core.hasActive,
     cancelTop: core.cancelActive,
     closeAll: core.cancelActive,
-    setAppearance({ mode = 'auto', effectiveTheme: nextTheme = 'day', palette = {}, fixedScale = 1 } = {}) {
+    setAppearance({ mode = 'auto', effectiveTheme: nextTheme = 'day', palette = {}, fixedScale = 1, family = '', fontCssUrl = '' } = {}) {
       effectiveTheme = nextTheme === 'night' ? 'night' : 'day';
       host.setAttribute('data-theme-mode', mode); host.setAttribute('data-effective-theme', effectiveTheme);
       host.style?.setProperty?.('--qqj-dialog-scale', String(Number.isFinite(Number(fixedScale)) ? Number(fixedScale) : 1));
-      for (const [name, value] of Object.entries({ sheet: palette.panel, surface: palette.paper, ink: palette.ink, soft: palette.soft, divider: palette.line, primary: palette.knot })) if (value) host.style?.setProperty?.(`--qqj-dialog-${name}`, value);
+      for (const [name, value] of Object.entries({ sheet: palette.panel, surface: palette.paper, ink: palette.ink, soft: palette.soft, divider: palette.line, primary: palette.knot, 'on-primary': palette.onPrimary })) if (value) host.style?.setProperty?.(`--qqj-dialog-${name}`, value);
+      const safeFamily = fontCssUrl && typeof family === 'string' ? family.replace(/["\\\r\n]/g, ' ').replace(/\s+/g, ' ').trim() : '';
+      host.style?.setProperty?.('--qqj-dialog-font', safeFamily ? `"${safeFamily}"` : 'system-ui');
+      if (fontCssUrl !== dialogFontUrl) {
+        dialogFontLink?.remove?.(); dialogFontLink = null; dialogFontUrl = fontCssUrl;
+        if (fontCssUrl) {
+          dialogFontLink = documentRef.createElement('link'); dialogFontLink.rel = 'stylesheet'; dialogFontLink.href = fontCssUrl;
+          dialogFontLink.setAttribute('data-qqj-dialog-font', 'true'); root.appendChild(dialogFontLink);
+        }
+      }
     },
   });
 }

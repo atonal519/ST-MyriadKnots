@@ -149,30 +149,12 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
       hostFiles.set(body.file_name, { header: structuredClone(header), chat: structuredClone(chat) });
       return response(200, { ok: true, integrity: 'host-integrity' });
     }
-    if (path === '/api/plugins/st-bainiaodata/v1/health') return response(200, {
-      ok: true, api: { current: 1, supported: [1] },
-      capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordIdList: true },
-    });
-    const recordIdsPrefix = '/api/plugins/st-bainiaodata/v1/record-ids/qianqianjie/';
-    if (path.startsWith(recordIdsPrefix)) {
-      const collection = decodeURIComponent(path.slice(recordIdsPrefix.length));
-      const prefix = `${collection}/`;
-      return response(200, [...backend.records.keys()].filter(key => key.startsWith(prefix))
-        .map(key => key.slice(prefix.length)));
-    }
-    const batchPrefix = '/api/plugins/st-bainiaodata/v1/record-batch/qianqianjie/';
-    if (path.startsWith(batchPrefix) && options.method === 'POST') {
-      const collection = decodeURIComponent(path.slice(batchPrefix.length));
-      const { recordIds } = JSON.parse(options.body);
-      return response(200, recordIds.map(recordId => {
-        const value = backend.records.get(`${collection}/${recordId}`);
-        return value ? { recordId, status: 200, envelope: envelope(value.data, value.revision) }
-          : { recordId, status: 404, error: 'not_found', message: 'Record not found' };
-      }));
-    }
     if (path.startsWith('/api/backends/')) {
       candidateAiCalls += 1;
       throw new Error('候选分支不得调用模型');
+    }
+    if (path === '/api/plugins/st-bainiaodata/v1/health') {
+      return response(200, { ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: false, recordIdList: false } });
     }
     const prefix = '/api/plugins/st-bainiaodata/v1/records/qianqianjie/';
     if (!path.startsWith(prefix)) return response(404, {});

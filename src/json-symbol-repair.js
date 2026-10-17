@@ -93,14 +93,13 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
     if (source[index] === '"') {
       addOperation('insert-key-opening-quote', start, '"');
       output += `"${raw}`;
-      const closingAt = index;
       index += 1;
       output += '"';
-      return { key: raw, repaired: true, end: index, closingAt };
+      return { key: raw };
     }
     addOperation('quote-bare-key', start, '""');
     output += `"${raw}"`;
-    return { key: raw, repaired: true, end: index };
+    return { key: raw };
   };
 
   const inspectKey = at => {
@@ -145,7 +144,7 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
   const parseKey = () => {
     if (source[index] === '"') {
       const token = stringToken();
-      return token ? { key: token.decoded, repaired: false } : null;
+      return token ? { key: token.decoded } : null;
     }
     return bareKeyToken();
   };

@@ -8,6 +8,7 @@ const error = (status, message) => Object.assign(new Error(message), { status })
 const copy = value => JSON.parse(JSON.stringify(value));
 const abort = signal => { if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError'); };
 const encoder = new TextEncoder();
+const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 
 // Rust JSON maps may reorder object fields. Upstream fingerprints include their
 // insertion order, so carry the complete JS serialization across the native ABI.
@@ -149,7 +150,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
       return { ok: true, plugin: { id: 'st-bainiaodata', name: 'Bainiao Data (TT)', version: '0.1.0-tt.3' },
         api: { current: 1, supported: [1] }, storage: { scope: 'tauritavern-data-root', envelopeSchemaVersion: 1 },
         capabilities: { records: true, recordList: true, optimisticRevision: true, atomicReplace: true, trash: true,
-          trashRestore: true, permanentDelete: true, pagination: false, batchTransactions: false, trashGc: false },
+          trashRestore: true, permanentDelete: true, trashGc: true, pagination: false, batchTransactions: false },
         adapter: { version: 3, revisionScope: 'single-app-runtime' } };
     }
     const namespace = segment(parts[1]);
@@ -158,6 +159,75 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     return locked(globalRef, `${STORAGE_NAMESPACE}:${namespace}`, async () => {
       abort(signal);
       const permanent = parts.length === 5 && parts[4] === 'permanent';
+      const collectExpired = parts[0] === 'trash' && parts.length === 3 && parts[2] === 'collect-expired';
+      if (collectExpired) {
+        if (method !== 'POST') throw error(405, 'Unsupported method');
+        let body;
+        try { body = JSON.parse(init.body); } catch { throw error(400, 'Invalid JSON'); }
+        const limit = body?.limit ?? 32;
+        const cursor = body?.cursor ?? null;
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32) throw error(400, 'Invalid collection limit');
+        if (cursor !== null && (!cursor || typeof cursor !== 'object' || Array.isArray(cursor))) throw error(400, 'Invalid collection cursor');
+        const afterTable = cursor === null ? null : segment(cursor.table);
+        const afterKey = cursor === null ? null : segment(cursor.key);
+        const tables = await store.listTables({ namespace: STORAGE_NAMESPACE });
+        if (!Array.isArray(tables)) throw error(500, 'Invalid storage listing');
+        let scanned = 0, deleted = 0, failed = 0, nextCursor = null, hasMore = false;
+        const orderedTables = [...tables].map(segment).sort(compareText);
+        outer: for (const table of orderedTables) {
+          if (afterTable !== null && compareText(table, afterTable) < 0) continue;
+          const listedKeys = await store.listKeys({ namespace: STORAGE_NAMESPACE, table });
+          if (!Array.isArray(listedKeys)) throw error(500, 'Invalid storage listing');
+          const keys = [...listedKeys].map(segment).sort(compareText);
+          for (const key of keys) {
+            if (afterTable !== null && (compareText(table, afterTable) < 0 || (table === afterTable && compareText(key, afterKey) <= 0))) continue;
+            if (scanned >= limit) { hasMore = true; break outer; }
+            abort(signal);
+            let found;
+            try { found = await store.tryGetJson(options(table, key)); }
+            catch (failure) {
+              scanned += 1;
+              nextCursor = { table, key };
+              if (signal?.aborted || failure?.name === 'AbortError') throw failure;
+              failed += 1;
+              continue;
+            }
+            abort(signal);
+            scanned += 1;
+            nextCursor = { table, key };
+            if (found?.found === false) continue;
+            if (found?.found !== true) { failed += 1; continue; }
+            let slot, legacy;
+            try { ({ slot, legacy } = decodeSlot(found.value)); }
+            catch { failed += 1; continue; }
+            if (slot?.namespace !== namespace) continue;
+            try {
+              validateSlot(slot, namespace);
+              if (key !== await keyFor(slot.recordId) || table !== await tableFor(namespace, slot.collection)) throw error(500, 'Stored record identity mismatch');
+            } catch { failed += 1; continue; }
+            if (legacy) {
+              await recoverLegacyIndex(slot.current?.data);
+              for (const item of slot.trash) await recoverLegacyIndex(item.envelope.data);
+            }
+            const expired = [], retained = [];
+            for (const item of slot.trash) {
+              const expiresAt = Date.parse(item.expiresAt);
+              if (!Number.isFinite(expiresAt)) { failed += 1; retained.push(item); }
+              else if (expiresAt <= Date.now()) expired.push(item);
+              else retained.push(item);
+            }
+            if (!expired.length) continue;
+            const nextSlot = { ...slot, trash: retained };
+            abort(signal);
+            try {
+              if (nextSlot.current || nextSlot.trash.length) await store.setJson({ ...options(table, key), value: encodeSlot(nextSlot) });
+              else await store.deleteJson(options(table, key));
+              deleted += expired.length;
+            } catch { failed += expired.length; }
+          }
+        }
+        return { scanned, deleted, failed, nextCursor: hasMore ? nextCursor : null, complete: !hasMore };
+      }
       if (parts[0] === 'records' && ([3, 4].includes(parts.length) || permanent)) {
         if (permanent && method !== 'DELETE') throw error(405, 'Unsupported method');
         const collection = segment(parts[2]);

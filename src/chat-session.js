@@ -21,7 +21,6 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
   if (identityCoordinator !== null && typeof identityCoordinator?.prepare !== 'function') throw new TypeError('session identityCoordinator 无效');
   if (captureTaskInputs !== null && typeof captureTaskInputs !== 'function') throw new TypeError('session captureTaskInputs 无效');
 
-  let epoch = 0;
   let active = null;
   let suspension = null;
   let state = Object.freeze({ status: 'idle' });
@@ -100,7 +99,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     let taskInputs = null;
     try { taskInputs = identityCoordinator ? captureTaskSnapshot(context) : null; }
     catch (error) { return Promise.reject(failPreparation(error, 'snapshotClone')); }
-    const operation = { epoch, host: context.host, controller: new AbortController() };
+    const operation = { host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
       try {
@@ -108,7 +107,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
           ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, taskInputs })
           : await ensureChatId(context.raw, context.host);
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
-        if (!isUuid(chatId)) throw new ChatSessionError('稳定 chatId 保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
+        if (!isUuid(chatId)) throw new ChatSessionError('聊天身份保存后无法确认。请到“记忆管理”页点击“复制状态诊断”反馈。', 'CHAT_SESSION_PERSIST_FAILED');
         const readyIdentity = Object.freeze({ ...publicIdentity(operation.host), chatId });
         const result = Object.freeze({ status: 'ready', identity: readyIdentity });
         try {
@@ -139,7 +138,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     let taskInputs;
     try { taskInputs = captureTaskSnapshot(context); }
     catch (error) { return Promise.reject(error); }
-    const operation = { epoch, host: context.host, controller: new AbortController() };
+    const operation = { host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
       try {
@@ -151,7 +150,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
           taskInputs,
         });
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
-        if (!isUuid(chatId)) throw new ChatSessionError('改名身份保存后未能读回', 'CHAT_SESSION_PERSIST_FAILED');
+        if (!isUuid(chatId)) throw new ChatSessionError('聊天改名后无法确认聊天身份。请到“记忆管理”页点击“复制状态诊断”反馈。', 'CHAT_SESSION_PERSIST_FAILED');
         const result = Object.freeze({ status: 'ready', identity: Object.freeze({ ...publicIdentity(operation.host), chatId }) });
         try { if (sameHost(operation.host, capture().host)) state = result; } catch { /* Result remains bound to its captured host. */ }
         return result;
@@ -179,17 +178,16 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     if (suspension && sameHost(suspension.host, host) && host.chatId === suspension.identity.chatId) {
       throw new ChatSessionError('当前聊天记忆正在清理，请等待完成或重试', 'CHAT_SESSION_SUSPENDED');
     }
-    if (!isUuid(host.chatId)) throw new ChatSessionError('当前聊天尚未建立稳定 chatId', 'CHAT_SESSION_NOT_READY');
+    if (!isUuid(host.chatId)) throw new ChatSessionError('当前聊天身份尚未准备好，请稍候。', 'CHAT_SESSION_NOT_READY');
     if (identityCoordinator && (state.status !== 'ready'
       || state.identity?.chatId !== host.chatId
       || state.identity?.hostChatId !== host.hostChatId)) {
-      throw new ChatSessionError('当前聊天身份尚未完成后端认领', 'CHAT_SESSION_NOT_READY');
+      throw new ChatSessionError('当前聊天身份尚未准备好，请稍候。', 'CHAT_SESSION_NOT_READY');
     }
     return publicIdentity(host);
   }
 
   function invalidate({ cancelTask = false } = {}) {
-    epoch += 1;
     if (cancelTask) active?.controller?.abort('sessionInvalidated');
     active = null;
     let suspendedHere = false;
@@ -206,7 +204,6 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     if (!isUuid(chatId) || context.host.chatId !== chatId || state.status !== 'ready' || state.identity?.chatId !== chatId) {
       throw new ChatSessionError('当前聊天身份尚未准备好，不能清理记忆', 'CHAT_SESSION_NOT_READY');
     }
-    epoch += 1;
     active?.controller?.abort('sessionSuspended');
     active = null;
     suspension = Object.freeze({ host: context.host, identity: state.identity });
@@ -220,7 +217,6 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     const suspendedHost = suspension.host;
     const activeBelongsToSuspendedHost = active && sameHost(active.host, suspendedHost);
     if (activeBelongsToSuspendedHost) {
-      epoch += 1;
       active.controller?.abort('sessionResumed');
       active = null;
     }

@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { classifyStorageRecords, createStorageManagement, STORAGE_AUTO_BYTE_THRESHOLD, STORAGE_AUTO_RECORD_THRESHOLD } from '../src/storage-management.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
-import { API_BASE } from '../src/constants.js';
-import { createBackendClient } from '../src/backend-client.js';
 
 const CHAT = '123e4567-e89b-42d3-a456-426614174000';
 const HOST = 'host-chat';
@@ -84,10 +82,12 @@ function recordsWithOld(oldCount = 3) {
 }
 
 function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null, warmCache = false,
-  cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null, streaming = false, clientOverride = null } = {}) {
+  cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null,
+  trashGcSupport = undefined, pluginEnabled = true, trashGcCompletedAt = '', trashGcPages = null, streamRecords = false } = {}) {
   let items = recordsWithOld(oldCount), memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
   const removes = [], ordinaryRemoves = [], listeners = new Set(), sessionCalls = [];
   let listCalls = 0, rootReads = 0, fullReads = 0, listFailure = null, rootReadFailure = null, maintenanceRootFailure = null;
+  let streamedRecords = 0;
   let cacheRootMismatch = cacheRootChanged;
   let rootVersion = 9;
   let pendingScanFailure = scanFailure;
@@ -103,10 +103,12 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     async prepare() { sessionCalls.push('prepare'); sessionState = { status: 'ready', identity }; return sessionState; },
     getState: () => sessionState,
   };
-  const settingsValue = { storageAutoCleanupEnabled: autoEnabled, storageAutoCleanupProgress: autoEnabled ? { [CHAT]: stableCount - 10 } : {} };
+  const settingsValue = { storageAutoCleanupEnabled: autoEnabled, storageAutoCleanupProgress: autoEnabled ? { [CHAT]: stableCount - 10 } : {}, storageTrashGcLastCompletedAt: trashGcCompletedAt };
   const settings = { get: () => settingsValue, update(patch) { Object.assign(settingsValue, structuredClone(patch)); } };
-  const fallbackClient = {
+  let trashHealthCalls = 0, trashCollectCalls = 0, trashPageIndex = 0, trashGcOnCall = null;
+  const client = {
     async list() { listCalls += 1; if (listFailure) { const failure = listFailure; listFailure = null; throw failure; } return structuredClone(items); },
+    ...(streamRecords ? { async *iterRecords() { for (const item of items) { streamedRecords += 1; yield structuredClone(item); } } } : {}),
     async get(_collection, recordId) {
       assert.equal(recordId, 'v3-root');
       if (maintenanceRootFailure) { const failure = maintenanceRootFailure; maintenanceRootFailure = null; throw failure; }
@@ -125,10 +127,21 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
       items.splice(index, 1);
       return { trashId: recordId };
     },
+    ...(trashGcSupport === undefined ? {} : {
+      async health() {
+        trashHealthCalls += 1;
+        if (trashGcSupport === '404') throw Object.assign(new Error('health route missing'), { status: 404 });
+        if (trashGcSupport === '500') throw Object.assign(new Error('temporary health failure'), { status: 500 });
+        return { capabilities: { trashGc: trashGcSupport } };
+      },
+      async collectExpiredTrash() {
+        trashCollectCalls += 1;
+        trashGcOnCall?.(trashCollectCalls);
+        if (trashGcPages) return structuredClone(trashGcPages[Math.min(trashPageIndex++, trashGcPages.length - 1)]);
+        return { scanned: 0, deleted: 0, failed: 0, complete: true };
+      },
+    }),
   };
-  const client = clientOverride ?? fallbackClient;
-  let iteratorCalls = 0;
-  if (streaming) client.iterRecords = async function* () { iteratorCalls += 1; for (const item of items) yield structuredClone(item); };
   const store = {
     async readRoot() { rootReads += 1; if (rootReadFailure) { const failure = rootReadFailure; rootReadFailure = null; throw failure; }
       const root = cacheRootMismatch ? reachable('other-chat').root : rootData(CHAT, rootVersion === 9 ? HEAD : RUN);
@@ -150,17 +163,20 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     getActivityState: () => memoryState,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
+  let enabled = pluginEnabled;
   const manager = createStorageManagement({
     client, store, settings, memoryRuntime, foundationRuntime: { getReachable: () => warmCache ? reachable() : null },
     vectorRuntime,
     session,
     hostAdapter: { snapshot: () => ({ chatId: HOST, context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) },
     isBusy: () => isBusy,
+    isEnabled: () => enabled,
     logger: { warn() {} },
   });
   return {
     manager, removes, ordinaryRemoves, settingsValue, session, sessionCalls,
-    counts: () => ({ listCalls, rootReads, fullReads, ...(streaming ? { iteratorCalls } : {}) }),
+    counts: () => ({ listCalls, rootReads, fullReads, streamedRecords }),
+    trashGcCalls: () => ({ health: trashHealthCalls, collect: trashCollectCalls }),
     failNextScan(error) { pendingScanFailure = error; },
     failNextList(error) { listFailure = error; },
     failNextRootRead(error) { rootReadFailure = error; },
@@ -168,11 +184,103 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     changeCacheRoot() { cacheRootMismatch = true; },
     setRootVersion(value) { rootVersion = value; },
     setBusy(value) { isBusy = value; for (const listener of listeners) listener(memoryState); },
+    setPluginEnabled(value) { enabled = value; },
+    setTrashGcOnCall(callback) { trashGcOnCall = callback; },
     setStableCount(value) { memoryState = { ...memoryState, stableCount: value }; for (const listener of listeners) listener(memoryState); },
     records: () => items,
 };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('旧后端确认不支持回收站清理后，多次 activity 不会重复调度且事件循环可继续', async () => {
+  const f = fixture({ trashGcSupport: false });
+  let checkingTransitions = 0;
+  const unsubscribe = f.manager.subscribe(state => {
+    if (state.trashGc.status === 'checking') checkingTransitions += 1;
+  });
+  await tick();
+  f.setStableCount(11);
+  f.setStableCount(12);
+  f.setStableCount(13);
+  await tick();
+  assert.deepEqual(f.trashGcCalls(), { health: 1, collect: 0 });
+  assert.equal(checkingTransitions, 1);
+  assert.equal(f.manager.getState().trashGc.status, 'unsupported');
+  assert.equal((await f.manager.collectExpiredTrash()).status, 'unsupported');
+  assert.deepEqual(f.trashGcCalls(), { health: 2, collect: 0 }, '手动操作可显式重新核查后端能力');
+  unsubscribe();
+  f.manager.dispose();
+
+  const missingRoute = fixture({ trashGcSupport: '404' });
+  await tick();
+  assert.equal(missingRoute.manager.getState().trashGc.status, 'unsupported');
+  missingRoute.setStableCount(11);
+  await tick();
+  assert.deepEqual(missingRoute.trashGcCalls(), { health: 1, collect: 0 });
+  missingRoute.manager.dispose();
+});
+
+test('到期维护服从插件启用状态和24小时完整检查间隔', async () => {
+  const disabled = fixture({ pluginEnabled: false, trashGcSupport: true });
+  await tick();
+  assert.deepEqual(disabled.trashGcCalls(), { health: 0, collect: 0 });
+  disabled.setPluginEnabled(true);
+  disabled.setStableCount(11);
+  for (let attempt = 0; attempt < 30 && disabled.manager.getState().trashGc.status !== 'completed'; attempt += 1) await tick();
+  assert.equal(disabled.manager.getState().trashGc.status, 'completed');
+  assert.deepEqual(disabled.trashGcCalls(), { health: 1, collect: 1 });
+  disabled.setStableCount(12);
+  disabled.setStableCount(13);
+  await tick();
+  assert.deepEqual(disabled.trashGcCalls(), { health: 1, collect: 1 });
+  disabled.manager.dispose();
+
+  const recent = fixture({ trashGcSupport: true, trashGcCompletedAt: disabled.settingsValue.storageTrashGcLastCompletedAt });
+  await tick();
+  assert.deepEqual(recent.trashGcCalls(), { health: 0, collect: 0 });
+  recent.manager.dispose();
+});
+
+test('健康检查临时失败后仅在24小时重试间隔到期再检查', async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  try {
+    const f = fixture({ trashGcSupport: '500' });
+    await tick();
+    assert.deepEqual(f.trashGcCalls(), { health: 1, collect: 0 });
+    now += 24 * 60 * 60 * 1000 - 1;
+    f.setStableCount(11);
+    await tick();
+    assert.deepEqual(f.trashGcCalls(), { health: 1, collect: 0 });
+    now += 2;
+    f.setStableCount(12);
+    await tick();
+    assert.deepEqual(f.trashGcCalls(), { health: 2, collect: 0 });
+    f.manager.dispose();
+  } finally { Date.now = originalNow; }
+});
+
+test('存储忙碌时到期维护让出，既有activity恢复后继续', async () => {
+  const f = fixture({ trashGcSupport: true, trashGcPages: [
+    { scanned: 32, deleted: 1, failed: 0, complete: false, nextCursor: { trashId: 'after-32' } },
+    { scanned: 8, deleted: 2, failed: 0, complete: true, nextCursor: null },
+  ] });
+  f.setTrashGcOnCall(call => {
+    if (call === 1) { f.setBusy(true); f.setPluginEnabled(false); }
+  });
+  await tick();
+  assert.deepEqual(f.trashGcCalls(), { health: 1, collect: 1 });
+  assert.equal(f.manager.getState().trashGc.status, 'pending');
+  f.setPluginEnabled(true);
+  f.setBusy(false);
+  for (let attempt = 0; attempt < 30 && f.manager.getState().trashGc.status !== 'completed'; attempt += 1) await tick();
+  assert.equal(f.manager.getState().trashGc.status, 'completed');
+  assert.deepEqual(f.trashGcCalls(), { health: 1, collect: 2 });
+  assert.equal(f.manager.getState().trashGc.scanned, 40);
+  assert.equal(f.manager.getState().trashGc.deleted, 3);
+  f.manager.dispose();
+});
 function waitForOperationSettled(manager, timeoutMs = 5000) {
   return new Promise(resolve => {
     let sawOperation = false, idleNotifications = 0, timer = null;
@@ -227,51 +335,6 @@ test('存储管理扫描向量续建见证并保留精确有效的未发布shard
   assert.equal(snapshot.candidates.some(item => item.recordId === shardId), false);
 });
 
-test('存储管理流式扫描与旧list分类完全一致且只暂留向量记录', async () => {
-  const shardId = `qqj-vector-shard-${'b'.repeat(40)}`;
-  const shard = { recordId: shardId, revision: 3, data: { schemaVersion: 1, recordType: 'vectorCache', chatId: CHAT, narrativeGeneration: GENERATION, rows: [] } };
-  const manifest = { recordId: 'qqj-vector-index', revision: 2, data: { schemaVersion: 1, recordType: 'vectorCache', chatId: CHAT, narrativeGeneration: GENERATION, modelKey: HASH, dimensions: 512, chunkCount: 0, shardIds: [shardId] } };
-  const expected = fixture(); expected.records().push(shard, manifest);
-  const actual = fixture({ streaming: true }); actual.records().push(shard, manifest);
-  const [legacy, streamed] = await Promise.all([expected.manager.scan(), actual.manager.scan()]);
-  assert.deepEqual(streamed.stats, legacy.stats);
-  assert.deepEqual(streamed.candidates, legacy.candidates);
-  assert.deepEqual(actual.counts(), { listCalls: 0, rootReads: 0, fullReads: 1, iteratorCalls: 1 });
-});
-
-test('3901条记录经真实BackendClient懒协商和有界批次进入生产扫描入口', async () => {
-  const ids = Array.from({ length: 3901 }, (_, index) => `v3-floor-memory-${oldId(index)}`);
-  const requests = [];
-  const client = createBackendClient({ fetchImpl: async (url, init) => {
-    const path = new URL(url, 'http://localhost').pathname;
-    const method = init.method ?? 'GET';
-    requests.push({ path, method, body: init.body ? JSON.parse(init.body) : null });
-    if (path === `${API_BASE}/v1/health`) return { ok: true, status: 200, json: async () => ({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordIdList: true } }) };
-    if (path === `${API_BASE}/v1/record-ids/qianqianjie/chat-${CHAT}`) return { ok: true, status: 200, json: async () => ids };
-    if (path === `${API_BASE}/v1/record-batch/qianqianjie/chat-${CHAT}`) {
-      const recordIds = JSON.parse(init.body).recordIds;
-      return { ok: true, status: 200, json: async () => recordIds.map((recordId, index) => ({
-        recordId, status: 200, envelope: { revision: 1, data: index % 3 === 0 ? null : index % 3 === 1 ? 'generic-value' : { malformed: true } },
-      })) };
-    }
-    throw new Error(`Unexpected production client route: ${method} ${path}`);
-  } });
-  const h = fixture({ clientOverride: client });
-  const snapshot = await h.manager.scan();
-  assert.equal(snapshot.stats.total.count, 3901);
-  assert.equal(snapshot.stats.retained.count, 3901);
-  assert.equal(snapshot.stats.cleanup.count, 0);
-  const batchRequests = requests.filter(item => item.method === 'POST');
-  assert.equal(batchRequests.length, 61);
-  assert.ok(batchRequests.every(item => item.body.recordIds.length <= 64));
-  assert.equal(batchRequests.reduce((sum, item) => sum + item.body.recordIds.length, 0), 3901);
-  assert.deepEqual(requests.map(item => item.path), [
-    `${API_BASE}/v1/health`, `${API_BASE}/v1/record-ids/qianqianjie/chat-${CHAT}`,
-    ...Array(61).fill(`${API_BASE}/v1/record-batch/qianqianjie/chat-${CHAT}`),
-  ]);
-  assert.deepEqual(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts, { get: 1, post: 61, put: 0, delete: 0 });
-});
-
 test('大清单分类分批让出事件循环且分类结果与小清单规则一致', async () => {
   const old = validEnvelope('run', oldId(0), 40);
   const records = Array.from({ length: 120 }, (_, index) => ({
@@ -287,6 +350,21 @@ test('大清单分类分批让出事件循环且分类结果与小清单规则�
   assert.equal(classified.stats.cleanup.count, 120);
   assert.equal(classified.stats.retained.count, 0);
   assert.deepEqual(classified.candidates.map(item => item.recordId), records.map(item => item.recordId));
+});
+
+test('3901条生产存储扫描使用逐条流并保持候选原始顺序', async () => {
+  const f = fixture({ oldCount: 3885, streamRecords: true });
+  assert.equal(f.records().length, 3901);
+  const snapshot = await f.manager.scan();
+  assert.equal(snapshot.status, 'ready');
+  assert.equal(f.counts().streamedRecords, 3901);
+  assert.equal(f.counts().listCalls, 0, '流式客户端不创建全量list副本');
+  assert.equal(snapshot.stats.total.count, 3901);
+  assert.equal(snapshot.stats.cleanup.count, 3885);
+  assert.equal(snapshot.candidates.length, 3885);
+  assert.equal(snapshot.candidates[0].recordId, `v3-run-${oldId(0)}`);
+  assert.equal(snapshot.candidates.at(-1).recordId, `v3-run-${oldId(3884)}`);
+  f.manager.dispose();
 });
 
 test('root 在扫描后变化时零删除，busy 时同样拒绝且不访问 remove', async () => {

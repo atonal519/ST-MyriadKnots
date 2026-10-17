@@ -4,16 +4,52 @@ const sameLocator = (left, right) => left?.messageIndex === right?.messageIndex
 
 const contentOf = floor => floor?.content ?? {};
 
+function addPair(index, first, second, value) {
+  let secondIndex = index.get(first);
+  if (!secondIndex) index.set(first, secondIndex = new Map());
+  let values = secondIndex.get(second);
+  if (!values) secondIndex.set(second, values = []);
+  values.push(value);
+}
+
+function pairValues(index, first, second) {
+  return index.get(first)?.get(second) ?? [];
+}
+
+function addLocator(index, locator, value) {
+  let bySwipe = index.get(locator?.messageIndex);
+  if (!bySwipe) index.set(locator?.messageIndex, bySwipe = new Map());
+  let bySelectedSwipe = bySwipe.get(locator?.swipeId);
+  if (!bySelectedSwipe) bySwipe.set(locator?.swipeId, bySelectedSwipe = new Map());
+  let values = bySelectedSwipe.get(locator?.selectedSwipeIndex);
+  if (!values) bySelectedSwipe.set(locator?.selectedSwipeIndex, values = []);
+  values.push(value);
+}
+
+function locatorValues(index, locator) {
+  return index.get(locator?.messageIndex)?.get(locator?.swipeId)?.get(locator?.selectedSwipeIndex) ?? [];
+}
+
 /**
  * Prove a one-to-one mapping between persisted floors and current host candidates.
  * Valid anchors are reserved first, then unanchored candidates may use the same
- * locator with the same canonical body or exact raw body, or a globally unique
- * raw+canonical pair.
+ * locator with the same canonical body or exact raw body, or a unique
+ * raw+canonical pair among the remaining unbound floors and candidates.
  */
 export function matchFloorCandidates(floors = [], candidates = []) {
   const floorList = Array.isArray(floors) ? floors : [];
   const candidateList = Array.isArray(candidates) ? candidates : [];
   const floorById = new Map(floorList.map((floor, floorIndex) => [floor?.id, { floor, floorIndex }]));
+  const floorsByLocator = new Map();
+  const floorsByFingerprint = new Map();
+  const candidatesByFingerprint = new Map();
+  floorList.forEach((floor, floorIndex) => {
+    addLocator(floorsByLocator, floor?.hostLocator, { floor, floorIndex });
+    addPair(floorsByFingerprint, contentOf(floor).rawFingerprint, contentOf(floor).canonicalFingerprint, { floor, floorIndex });
+  });
+  candidateList.forEach((candidate, candidateIndex) => {
+    addPair(candidatesByFingerprint, candidate?.rawFingerprint, candidate?.canonicalFingerprint, { candidate, candidateIndex });
+  });
   const floorMatches = new Map();
   const candidateMatches = new Map();
   let issue = null;
@@ -77,8 +113,7 @@ export function matchFloorCandidates(floors = [], candidates = []) {
   for (const [candidateIndex, candidate] of candidateList.entries()) {
     if (candidate?.archiveCandidate === true) continue;
     if (candidateMatches.has(candidateIndex) || candidate?.messageAnchor?.status !== 'none') continue;
-    const matches = floorList
-      .map((floor, floorIndex) => ({ floor, floorIndex }))
+    const matches = locatorValues(floorsByLocator, candidate?.hostLocator)
       .filter(({ floor, floorIndex }) => !floorMatches.has(floorIndex)
         && sameLocator(floor?.hostLocator, candidate?.hostLocator)
         && (contentOf(floor).canonicalFingerprint === candidate?.canonicalFingerprint
@@ -94,15 +129,15 @@ export function matchFloorCandidates(floors = [], candidates = []) {
   for (const [candidateIndex, candidate] of candidateList.entries()) {
     if (candidate?.archiveCandidate === true) continue;
     if (candidateMatches.has(candidateIndex) || candidate?.messageAnchor?.status !== 'none') continue;
-    const matches = floorList
-      .map((floor, floorIndex) => ({ floor, floorIndex }))
+    const matches = pairValues(floorsByFingerprint, candidate?.rawFingerprint, candidate?.canonicalFingerprint)
       .filter(({ floor, floorIndex }) => !floorMatches.has(floorIndex)
         && contentOf(floor).rawFingerprint === candidate?.rawFingerprint
         && contentOf(floor).canonicalFingerprint === candidate?.canonicalFingerprint);
-    const competingCandidates = matches.length ? candidateList.filter((value, index) => !candidateMatches.has(index)
-      && value?.messageAnchor?.status === 'none'
-      && value.rawFingerprint === candidate.rawFingerprint
-      && value.canonicalFingerprint === candidate.canonicalFingerprint) : [];
+    const competingCandidates = matches.length ? pairValues(candidatesByFingerprint, candidate?.rawFingerprint, candidate?.canonicalFingerprint)
+      .filter(({ candidate: value, candidateIndex: index }) => !candidateMatches.has(index)
+        && value?.messageAnchor?.status === 'none'
+        && value.rawFingerprint === candidate.rawFingerprint
+        && value.canonicalFingerprint === candidate.canonicalFingerprint) : [];
     if (matches.length === 1 && competingCandidates.length === 1) bind(candidateIndex, matches[0].floorIndex, 'uniqueFingerprint');
     else if (matches.length > 0) fail('ambiguousFingerprint', candidateIndex);
   }

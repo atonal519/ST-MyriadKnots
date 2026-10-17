@@ -28,6 +28,27 @@ test('新聊天只持久化稳定 chatId，不读取或写入任何 V1/后端记
     assert.deepEqual(Object.keys(context.chatMetadata), ['qianqianjie']);
 });
 
+test('身份准备未返回可确认身份时保留错误码并指向状态诊断', async () => {
+  const session = createChatSession({
+    contextProvider: () => chatContext('新聊天'),
+    identityCoordinator: { async prepare() { return null; } },
+  });
+  await assert.rejects(session.prepare(), error => error.code === 'CHAT_SESSION_PERSIST_FAILED'
+    && /到“记忆管理”页点击“复制状态诊断”反馈/u.test(error.message));
+});
+
+test('聊天改名后无法确认身份时准确说明聊天改名并保留状态诊断指引', async () => {
+  const session = createChatSession({
+    contextProvider: () => chatContext('改名中的聊天'),
+    captureTaskInputs: () => ({ chat: [], chatMetadata: {} }),
+    identityCoordinator: { async prepare() { return UUID; }, async rename() { return null; } },
+  });
+  await assert.rejects(session.rename({ file_name: '旧聊天' }, null, null), error => error.code === 'CHAT_SESSION_PERSIST_FAILED'
+    && /聊天改名后无法确认聊天身份/u.test(error.message)
+    && !/角色改名/u.test(error.message)
+    && /到“记忆管理”页点击“复制状态诊断”反馈/u.test(error.message));
+});
+
 test('首次身份保存兼容宿主 new_chat 读回，固定目标创建空聊天存档', async () => {
   const chatId = '323e4567-e89b-42d3-a456-426614174000';
   const target = { hostChatId: '新聊天', characterLocator: 'char.png', characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} };
@@ -76,6 +97,84 @@ test('首次身份保存兼容宿主 new_chat 读回，固定目标创建空聊�
   assert.equal(saved.header.chat_metadata.qianqianjie.chatId, userZeroId);
   assert.equal(reads, 4);
   assert.equal(lists, 2);
+});
+
+test('首次身份保存比较QQJ业务内容，并以第二次读取的宿主数据为保存基底', async () => {
+  const chatId = '523e4567-e89b-42d3-a456-426614174000';
+  const target = { hostChatId: '正在记录', characterLocator: 'char.png', characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} };
+  const message = { is_user: false, is_system: false, name: '角色', mes: 'AI0正文', swipes: ['AI0正文', '另一条回复'], swipe_id: 0,
+    extra: { otherPlugin: { view: 0 } }, swipe_info: [{ extra: { otherPlugin: { view: 0 } } }] };
+  const raw = { chatId: target.hostChatId, chat: [structuredClone(message)], chatMetadata: { otherPlugin: { view: 0 } } };
+  const snapshot = { chat: [structuredClone(message)], chatMetadata: { otherPlugin: { view: 0 } } };
+  let saved = { header: { chat_metadata: { otherPlugin: { view: 1 } } }, chat: [structuredClone(message)] };
+  let reads = 0, saves = 0;
+  const fetchImpl = async (url, options) => {
+    if (url === '/api/chats/get') {
+      reads += 1;
+      if (reads === 2) {
+        saved.header.chat_metadata.otherPlugin.view = 2;
+        saved.chat[0].extra.otherPlugin.view = 2;
+        saved.chat[0].swipe_info[0].extra.otherPlugin.view = 2;
+        raw.chatMetadata.otherPlugin.view = 2;
+      }
+      if (reads === 3) {
+        saved.header.chat_metadata.afterSave = 'kept';
+        saved.chat[0].extra.afterSave = 'kept';
+        saved.chat[0].swipe_info[0].extra.afterSave = 'kept';
+        saved.header.chat_metadata.integrity = 'latest-integrity';
+      }
+      return { ok: true, status: 200, async json() { return [structuredClone(saved.header), ...structuredClone(saved.chat)]; } };
+    }
+    assert.equal(url, '/api/chats/save');
+    saves += 1;
+    const body = JSON.parse(options.body);
+    assert.equal(body.force, false);
+    assert.equal(body.chat[0].chat_metadata.otherPlugin.view, 2, '写入基底应包含第二次读取后的 header');
+    assert.equal(body.chat[1].extra.otherPlugin.view, 2, '写入基底应包含第二次读取后的 outer extra');
+    assert.equal(body.chat[1].swipe_info[0].extra.otherPlugin.view, 2, '写入基底应包含第二次读取后的 swipe_info');
+    saved = { header: body.chat[0], chat: body.chat.slice(1) };
+    return { ok: true, status: 200 };
+  };
+  const result = await persistTargetChatIdentity({ coordinates: target, raw, snapshot, chatId,
+    fetchImpl });
+  assert.equal(result.status, 'persisted');
+  assert.equal(reads, 3);
+  assert.equal(saves, 1);
+  assert.equal(result.header.chat_metadata.qianqianjie.chatId, chatId);
+  assert.equal(result.header.chat_metadata.afterSave, 'kept');
+  assert.equal(result.chat[0].extra.afterSave, 'kept');
+  assert.equal(result.chat[0].swipe_info[0].extra.afterSave, 'kept');
+  assert.equal(raw.chatMetadata.otherPlugin.view, 2);
+  assert.equal(raw.chatMetadata.qianqianjie.chatId, chatId);
+  assert.equal(raw.chatMetadata.integrity, 'latest-integrity');
+});
+
+test('首次身份保存仍拒绝正文、所选回复或QQJ身份归属变化', async () => {
+  for (const change of ['body', 'selectedReply', 'identity']) {
+    const chatId = '623e4567-e89b-42d3-a456-426614174000';
+    const target = { hostChatId: `目标-${change}`, characterLocator: 'char.png', characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} };
+    const message = { is_user: false, is_system: false, mes: '原正文', swipes: ['原正文', '另一条'], swipe_id: 0,
+      extra: { qianqianjie_floor: { schemaVersion: 1, chatId, floorId: '723e4567-e89b-42d3-a456-426614174000' } } };
+    const raw = { chatId: target.hostChatId, chat: [structuredClone(message)], chatMetadata: {} };
+    const snapshot = { chat: [structuredClone(message)], chatMetadata: {} };
+    let saved = { header: { chat_metadata: {} }, chat: [structuredClone(message)] }, reads = 0, saves = 0;
+    const fetchImpl = async url => {
+      if (url === '/api/chats/get') {
+        reads += 1;
+        if (reads === 2) {
+          if (change === 'body') saved.chat[0].mes = '编辑后的正文';
+          if (change === 'selectedReply') { saved.chat[0].swipe_id = 1; saved.chat[0].mes = '另一条'; }
+          if (change === 'identity') saved.header.chat_metadata.qianqianjie = { schemaVersion: 1, chatId: '823e4567-e89b-42d3-a456-426614174000' };
+        }
+        return { ok: true, status: 200, async json() { return [structuredClone(saved.header), ...structuredClone(saved.chat)]; } };
+      }
+      saves += 1;
+      return { ok: true, status: 200 };
+    };
+    await assert.rejects(persistTargetChatIdentity({ coordinates: target, raw, snapshot, chatId, fetchImpl }),
+      { code: change === 'identity' ? 'V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH' : 'V3_TARGET_CHAT_CHANGED' }, change);
+    assert.equal(saves, 0, `${change} change must be rejected before save`);
+  }
 });
 
 function recordBackend() {

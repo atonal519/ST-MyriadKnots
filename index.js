@@ -42,6 +42,7 @@ import { createChatBranchInitializer } from './src/v3/chat-branch-inheritance.js
 import { copyLatestPeople } from './src/v3/chat-branch-inheritance.js';
 import { createChatMemoryMigration } from './src/chat-memory-migration.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
+import { scanWorldInfo } from './src/world-info-scanner.js';
 import { installPublicQianshiBridge } from './src/v3/public-qianshi-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
@@ -148,7 +149,14 @@ const calendarContextProvider = () => {
   return { chatId: owner.chatId, calendar: settings.get().storyCalendars[owner.chatId] ?? null };
 };
 // 历法设置按 QQJ 聊天身份保存；读取计算规则不依赖时间推演开关。
-const storyCalendarProvider = () => calendarContextProvider().calendar;
+const storyCalendarProvider = chatId => chatId ? settings.get().storyCalendars[chatId] ?? null : calendarContextProvider().calendar;
+const persistStoryCalendar = (targetChatId, calendar) => {
+  const previous = { ...(settings.get().storyCalendars ?? {}) };
+  if (Object.hasOwn(previous, targetChatId)) return previous[targetChatId] ?? null;
+  try { settings.update({ storyCalendars: { ...previous, [targetChatId]: calendar } }, { observeSaveFailure: true }); }
+  catch (error) { try { settings.update({ storyCalendars: previous }); } catch { /* restore in-memory settings if save scheduling failed */ } throw error; }
+  return settings.get().storyCalendars?.[targetChatId] ?? null;
+};
 const sourcePermissions = createSourcePermissionController({ settings, contextProvider });
 const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
@@ -194,7 +202,8 @@ const timeRuntime = createTimeRuntime({
   newUuid,
   store: timeStore, foundationStore, hostAdapter, session,
   getReachable: () => foundationRuntime.getReachable(),
-  getMemoryState: () => v3MemoryRuntime.getActivityState(),
+  getMemoryState: () => v3MemoryRuntime.getState(),
+  getMemoryActivityState: () => v3MemoryRuntime.getActivityState(),
   generateTimeTask: taskRouter.generateUtilityTask,
   annualSettingsProvider: () => {
     const reachable = foundationRuntime.getReachable(), state = peopleWorkspaceRuntime?.getState?.();
@@ -317,16 +326,16 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   isEnabled: settings.isEnabled,
   isMainGenerationActive: isGenerating,
 });
-let previousPeopleTimeState = (() => {
-  const state = peopleWorkspaceRuntime.getState?.();
-  return state ? { chatId: state.chatId, revision: state.revision, people: state.people } : null;
-})();
+let previousPeopleTimeState = peopleWorkspaceRuntime.getState?.() ?? null;
 peopleWorkspaceRuntime.subscribe?.(state => {
-  if (previousPeopleTimeState && state?.chatId !== previousPeopleTimeState.chatId) previousPeopleTimeState = null;
-  if (state?.status !== 'ready' || state.chatId !== session.identity().chatId) return;
+  const currentChatId = session.identity().chatId;
+  if (state?.status !== 'ready' || state.chatId !== currentChatId) {
+    if (previousPeopleTimeState?.chatId !== state?.chatId || state?.chatId !== currentChatId) previousPeopleTimeState = null;
+    return;
+  }
   if (previousPeopleTimeState?.chatId === state.chatId && previousPeopleTimeState.revision === state.revision
     && previousPeopleTimeState.people === state.people) return;
-  previousPeopleTimeState = { chatId: state.chatId, revision: state.revision, people: state.people };
+  previousPeopleTimeState = state;
   void timeRuntime.runBatch({ chatId: state.chatId });
 });
 const autoHideController = createAutoHideController({
@@ -335,7 +344,8 @@ const autoHideController = createAutoHideController({
   settings,
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
 });
-const captureHistoricalRebuildSources = snapshot => captureRebuildSources(snapshot, {
+const captureHistoricalRebuildSources = (snapshot, overrides = {}) => captureRebuildSources(snapshot, {
+  ...overrides,
   worldInfoBindings: hostAdapter.getWorldInfoBindings(),
   getCharacterLorebooks: () => globalThis.TavernHelper?.getCharLorebooks?.(),
   getGlobalSelection: () => globalThis.TavernHelper?.getLorebookSettings?.()?.selected_global_lorebooks,
@@ -356,7 +366,11 @@ const createHistoricalRebuild = options => runHistoricalRebuildTask({
   csePromptGuidance: csePrompt,
   processingPrompt,
   storyClockReferenceTags: () => settings.get().storyClockReferenceTags,
-  storyCalendarForChat: chatId => settings.get().storyCalendars?.[chatId] ?? null,
+  storyCalendarForChat: chatId => {
+    const calendars = settings.get().storyCalendars ?? {};
+    if (Object.hasOwn(calendars, chatId)) return calendars[chatId] ?? null;
+    return options.storyCalendar ? persistStoryCalendar(chatId, options.storyCalendar) : null;
+  },
   generateTimeTask: taskRouter.generateTimeTask,
   isTimeEvolutionEnabled: () => settings.isEnabled() && settings.get().timeEvolutionEnabled === true,
   filterWorldInfoSources: sourcePermissions.filterWorldInfoSources,
@@ -384,11 +398,7 @@ const chatMemoryManagement = createChatMemoryManagement({
     copyTime: ({ sourceIdentity, targetIdentity, reachable }) => timeStore.copyPrefix(sourceIdentity.chatId, targetIdentity.chatId, reachable.floors, undefined, { migration: true }),
     copyVector: ({ sourceIdentity, targetIdentity, targetNarrativeGeneration, sourceReachable }) => vectorIndex.copyPrefix(sourceIdentity, targetIdentity, targetNarrativeGeneration, sourceReachable),
     captureStoryCalendar: sourceChatId => settings.get().storyCalendars[sourceChatId] ?? null,
-    persistStoryCalendar: (targetChatId, calendar) => {
-      const previous = { ...settings.get().storyCalendars };
-      try { settings.update({ storyCalendars: { ...previous, [targetChatId]: calendar } }, { observeSaveFailure: true }); }
-      catch (error) { try { settings.update({ storyCalendars: previous }); } catch { /* restore in-memory settings if save scheduling failed */ } throw error; }
-    },
+    persistStoryCalendar: (targetChatId, calendar) => persistStoryCalendar(targetChatId, calendar),
   }),
   autoHideController,
   coreRecordCache,
@@ -407,6 +417,7 @@ const storageManagement = createStorageManagement({
   foundationRuntime,
   vectorRuntime: vectorIndex,
   activitySources: [vectorIndex, foundationRuntime, v3RecallRuntime, peopleWorkspaceRuntime, timeRuntime, chatMemoryManagement],
+  isEnabled: () => settings.isEnabled(),
   isBusy: () => {
     const memory = v3MemoryRuntime.getActivityState(), management = chatMemoryManagement.getState();
     return Boolean(vectorIndex.getState().active || management.workBusy || management.status === 'deleting' || timeRuntime.getActivityState().active || memory.qianshiHistoryActive);
@@ -423,6 +434,23 @@ const publicMemoryBridgeMount = installPublicMemoryBridge({
   isEnabled: settings.isEnabled,
   sanitizerOptions,
   identityProjectionProvider,
+  readWorldInfoProvider: async () => {
+    const catalog = await scanWorldInfo(contextProvider(), {
+      bindings: hostAdapter.getWorldInfoBindings(),
+      complete: true,
+      strict: true,
+      includeCatalog: false,
+      filterBookNames: names => sourcePermissions.filterWorldInfoSources(names.map(sourceName => ({ sourceName }))).map(source => source.sourceName),
+    });
+    return { status: 'ready', worldbook: catalog.entries.map(entry => ({
+      uid: entry.key,
+      comment: entry.comment,
+      keys: [...entry.primaryKeys, ...entry.secondaryKeys],
+      content: entry.content,
+      constant: entry.constant,
+      position: null,
+    })) };
+  },
 });
 const publicQianshiBridgeMount = installPublicQianshiBridge({ memoryRuntime: v3MemoryRuntime });
 globalThis.addEventListener?.('beforeunload', publicMemoryBridgeMount.cleanup, { once: true });

@@ -5,7 +5,7 @@ import { validateFoundationCheckpoint, validateFoundationFloor, validateFoundati
 import { validateBaselineRecord, validateCseGraph, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
 import { validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { replayCurrentState } from './cse-engine.js';
-import { createMigrationDescriptor, migrationDescriptorRecordKey, migrationPartition, partitionScannedCandidates, validateMigrationDescriptor } from './migration-prefix.js';
+import { createMigrationDescriptor, migrationPartition, partitionScannedCandidates, validateMigrationDescriptor } from './migration-prefix.js';
 
 const emptyIndexManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const hash = async value => `sha256:${await sha256(JSON.stringify(value))}`;

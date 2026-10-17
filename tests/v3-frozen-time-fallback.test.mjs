@@ -43,7 +43,7 @@ const user = mes => ({ is_user: true, is_system: false, mes });
 const fingerprint = char => `sha256:${char.repeat(64)}`;
 
 function fixture({ host = 'SillyTavern', frozenContent = `<StatusBar>当前状态：${OLD_TIME}</StatusBar>旧档正文`,
-  frozenChronology = [], liveMessage = `<StatusBar>当前状态：${LIVE_TIME}</StatusBar>当前正文`, referenceTags = '', rebound = false,
+  frozenChronology = [], frozenTimeEdited = false, liveMessage = `<StatusBar>当前状态：${LIVE_TIME}</StatusBar>当前正文`, referenceTags = '', rebound = false,
   migration = true, firstCurrentMessage = `<StatusBar>当前状态：${LIVE_TIME}</StatusBar>当前聊天首楼` } = {}) {
   const context = { chatId: 'host-chat', chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: CHAT } },
     name1: '用户', personaId: 'persona', characters: [{ avatar: 'character.png' }], userAvatar: 'persona.png',
@@ -70,7 +70,8 @@ function fixture({ host = 'SillyTavern', frozenContent = `<StatusBar>当前状�
       indexManifest: { floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] },
       activeStateRefs: [], activeThreadRefs: [], stableBoundary: { assistantSeq: 2, floorId: LIVE_ID, canonicalFingerprint: floors[1].content.canonicalFingerprint } },
     checkpoint: { producedRefs: {} }, migrationDescriptor: null, floors, floorMemories: memories,
-    entities: [], stateDeltas: [], currentStates: [], baseline: null, run: null };
+    run: frozenTimeEdited ? { diagnostics: { floorProvenance: { [FROZEN_ID]: { timeEdited: true } } } } : null,
+    entities: [], stateDeltas: [], currentStates: [], baseline: null };
   const frozenPrefix = { ...reachable, floors: [floors[0]], floorMemories: [memories[0]] };
   reachable.migrationDescriptor = migration ? createMigrationDescriptor({ id: '66666666-6666-4666-8666-666666666666', chatId: CHAT,
     source: { chatId: '77777777-7777-4777-8777-777777777777', hostChatId: 'old-host-chat', characterLocator: 'old-character.png',
@@ -79,6 +80,7 @@ function fixture({ host = 'SillyTavern', frozenContent = `<StatusBar>当前状�
     recordRefs: { floors: [FROZEN_ID], floorMemories: [memories[0].id], entities: [], baselineId: null, stateDeltas: [],
       currentStateIds: [], indexKeys: [], timeBatchIds: [], vectorShardIds: [], peopleWorkspaceId: null, peopleSnapshotIds: [] },
     createdAt: '2026-10-15T00:00:00.000Z' }) : null;
+  if (migration) reachable.run = null;
   const foundationState = { status: 'ready', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT,
     pending: null, canInitialize: false, inspectedStableCount: 1, stableCount: 1, lastError: null };
   const foundationRuntime = { start() {}, setEnabled() {}, bind() {}, getState: () => foundationState, getReachable: () => reachable,
@@ -138,15 +140,24 @@ test('冻结正文没有可确认时间或有冲突时间时，不借当前聊�
   assert.equal(ambiguous.viewTime, '时间未明确');
 });
 
-test('冻结楼保留 chronology 时间优先级、人工清空和 date-only 精度', async () => {
-  const manual = fixture({ frozenChronology: [{ time: { sourceText: '人工校准：次日清晨' } }] });
+test('冻结楼保留人工 chronology 优先级、清空和 date-only 精度', async () => {
+  const manual = fixture({ frozenChronology: [{ time: { sourceText: '人工校准：次日清晨' } }], frozenTimeEdited: true });
+  assert.deepEqual(manual.reachable.migrationDescriptor.sourceFloorProvenance, [{ floorId: FROZEN_ID, timeEdited: true, storyClockSignature: null }]);
   const manualResult = await project(manual);
-  assert.equal(manualResult.floor.timeFallback, OLD_TIME);
+  assert.equal(manualResult.floor.manualTime, true);
+  assert.equal(manualResult.floor.timeFallback, '');
   assert.equal(manualResult.inline.time, LIVE_TIME);
   assert.equal(manualResult.viewTime, '人工校准：次日清晨');
 
-  const cleared = fixture({ frozenChronology: [{ time: { sourceText: '时间未明确' } }] });
+  const automated = fixture({ frozenChronology: [{ time: { sourceText: 'AI估计：次日清晨' } }] });
+  const automatedResult = await project(automated);
+  assert.equal(automatedResult.floor.manualTime, false);
+  assert.equal(automatedResult.viewTime, OLD_TIME);
+
+  const cleared = fixture({ frozenChronology: [{ time: { sourceText: '时间未明确' } }], frozenTimeEdited: true });
   const clearedResult = await project(cleared);
+  assert.equal(clearedResult.floor.manualTime, true);
+  assert.equal(clearedResult.floor.timeFallback, '');
   assert.equal(clearedResult.inline.time, LIVE_TIME);
   assert.equal(clearedResult.viewTime, '时间未明确');
 

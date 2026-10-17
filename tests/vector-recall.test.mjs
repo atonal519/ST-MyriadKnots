@@ -29,8 +29,8 @@ async function sourceFixture() {
     rawSources: [{ floorId: 'floor-1', assistantSeq: 1, floorMemoryId: 'memory-1', memoryFloorId: 'floor-1', memoryAssistantSeq: 1, canonicalContent, fingerprint: await hash(canonicalContent) }],
   };
 }
-function harness(source, { api = { embed: async (_config, texts) => vectors(texts) } } = {}) {
-  const records = new Map(), calls = []; let current = source, route = config;
+function harness(source, { api = { embed: async (_config, texts) => vectors(texts) }, isEnabled = () => true } = {}) {
+  const records = new Map(), calls = []; let current = source, route = config, identity = { chatId: source.chatId };
   const client = { get: async (_collection, id) => {
     if (!records.has(id)) throw Object.assign(new Error('not_found'), { status: 404 });
     const { recordId: _recordId, ...envelope } = records.get(id);
@@ -40,9 +40,55 @@ function harness(source, { api = { embed: async (_config, texts) => vectors(text
       assert.equal(revision, records.get(id)?.revision ?? 0);
       const record = { recordId: id, revision: revision + 1, data: structuredClone(data) }; records.set(id, record); calls.push({ collection, id }); return record;
     } };
-  const index = createVectorIndex({ client, api, configProvider: () => route, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => current });
-  return { index, records, calls, client, setSource: value => { current = value; }, setConfig: value => { route = value; } };
+  const index = createVectorIndex({ client, api, configProvider: () => route, identityProvider: () => identity, sourceProvider: async () => current, isEnabled });
+  return { index, records, calls, client, setSource: value => { current = value; }, setConfig: value => { route = value; }, setIdentity: value => { identity = value; } };
 }
+
+test('已读manifest只服务索引读取，查询回执仍独立保留', async () => {
+  const source = await sourceFixture(), h = harness(source);
+  await h.index.query({ source, queryContext: { text: '苹果' } });
+  const receipt = h.index.getState().query;
+  assert.equal(h.index.getState().indexAvailability, undefined, '索引提示不再从查询暖缓存投影');
+  await h.index.readIndexStatus({ chatId: source.chatId, narrativeGeneration: source.narrativeGeneration });
+  assert.equal(h.index.getState().query, receipt, '单manifest读取不改写已完成的查询回执');
+});
+
+test('显式目标索引状态只读取当前manifest并按真实chunkCount返回', async () => {
+  const chatId = 'direct-count-chat', narrativeGeneration = 'generation-current';
+  const route = { ...config }, records = new Map(), gets = [], sourceCalls = [], embeds = [], puts = [];
+  let enabled = true, identityReads = 0, readFailure = null;
+  const index = createVectorIndex({
+    client: { async get(collection, id) { gets.push({ collection, id }); if (readFailure) throw readFailure; if (!records.has(id)) throw Object.assign(new Error('not_found'), { status: 404 }); return structuredClone(records.get(id)); },
+      async put(...args) { puts.push(args); } },
+    api: { async embed(...args) { embeds.push(args); return []; } }, configProvider: () => route,
+    sourceProvider: async () => { sourceCalls.push(true); throw new Error('readIndexStatus must not project source'); },
+    identityProvider: () => { identityReads += 1; throw new Error('readIndexStatus must not read session identity'); }, isEnabled: () => enabled,
+  });
+  assert.deepEqual(await index.readIndexStatus({ chatId, narrativeGeneration }), { status: 'ready', chunkCount: 0 });
+  assert.deepEqual(gets, [{ collection: `chat-${chatId}`, id: VECTOR_INDEX_ID }]);
+  assert.equal(identityReads, 0); assert.equal(sourceCalls.length, 0); assert.equal(embeds.length, 0); assert.equal(puts.length, 0);
+
+  const modelKey = await hash(JSON.stringify([route.url, route.model, route.dimensions]));
+  const manifest = count => ({ recordId: VECTOR_INDEX_ID, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache', chatId,
+    narrativeGeneration, modelKey, dimensions: 2, shardIds: [], chunkCount: count } });
+  records.set(VECTOR_INDEX_ID, manifest(0));
+  assert.deepEqual(await index.readIndexStatus({ chatId, narrativeGeneration }), { status: 'ready', chunkCount: 0 }, '合法空manifest仍是0');
+  records.set(VECTOR_INDEX_ID, manifest(7));
+  assert.deepEqual(await index.readIndexStatus({ chatId, narrativeGeneration }), { status: 'ready', chunkCount: 7 });
+  records.set(VECTOR_INDEX_ID, { ...manifest(7), data: { ...manifest(7).data, chatId: 'other-chat' } });
+  await assert.rejects(index.readIndexStatus({ chatId, narrativeGeneration }), { code: 'VECTOR_CACHE_OWNER_MISMATCH' }, 'manifest归属冲突不能误报为零');
+  records.set(VECTOR_INDEX_ID, manifest(7));
+  assert.deepEqual(await index.readIndexStatus({ chatId, narrativeGeneration: 'old-generation' }), { status: 'ready', chunkCount: 0 }, '旧代际索引不计入当前聊天');
+  route.model = 'changed-model';
+  assert.deepEqual(await index.readIndexStatus({ chatId, narrativeGeneration }), { status: 'ready', chunkCount: 0 }, '旧配置索引不计入当前聊天');
+  records.set(VECTOR_INDEX_ID, { recordId: VECTOR_INDEX_ID, revision: 2, data: { schemaVersion: 1, recordType: 'unexpected' } });
+  await assert.rejects(index.readIndexStatus({ chatId, narrativeGeneration }), { code: 'VECTOR_CACHE_INVALID' }, '损坏manifest不得伪报为0');
+  readFailure = Object.assign(new Error('backend failure'), { code: 'BACKEND_UNAVAILABLE' });
+  await assert.rejects(index.readIndexStatus({ chatId, narrativeGeneration }), { code: 'BACKEND_UNAVAILABLE' }, '真实读取失败继续明确失败');
+  enabled = false; const before = gets.length;
+  assert.deepEqual(await index.readIndexStatus({ chatId, narrativeGeneration }), { status: 'disabled' });
+  assert.equal(gets.length, before, '向量关闭时不读取manifest');
+});
 
 async function rawFloor(source, seq, content = `第${seq}楼的原文苹果内容。`) {
   return { floorId: `floor-${seq}`, assistantSeq: seq, floorMemoryId: `memory-${seq}`, memoryFloorId: `floor-${seq}`,
@@ -1123,7 +1169,12 @@ test('手动建索引：缓存不复制正文/Key；一次批量 API，查询验
   const source = await sourceFixture(), h = harness(source); let calls = 0;
   const api = { embed: async (_config, texts) => { calls++; return vectors(texts); } };
   const index = createVectorIndex({ client: h.client, api, configProvider: () => config, identityProvider: () => ({ chatId: 'chat' }), sourceProvider: async () => source });
+  await index.query({ source, queryContext: { text: '苹果配方' } });
+  const missingQueryReceipt = index.getState().query;
+  assert.equal((await index.readIndexStatus({ chatId: source.chatId, narrativeGeneration: source.narrativeGeneration })).chunkCount, 0);
   await index.build(); assert.equal(calls, 1);
+  assert.equal(index.getState().query, missingQueryReceipt, 'build成功隐藏提示不依赖改写旧查询回执');
+  assert.ok((await index.readIndexStatus({ chatId: source.chatId, narrativeGeneration: source.narrativeGeneration })).chunkCount > 0, '正式build后manifest反映实际片段数');
   const persisted = JSON.stringify([...h.records.values()]);
   assert.equal(persisted.includes(source.rawSources[0].canonicalContent), false); assert.equal(persisted.includes('test-key'), false);
   const selected = await index.query({ source, queryContext: { text: '苹果配方' }, eligibleFloorMemoryIds: ['memory-1'] });
@@ -1209,85 +1260,42 @@ test('普通分支仅复制有效前缀向量且B查询不泄漏截止楼后内�
   assert.equal(embedCalls, 2, '实际B查询单独调用一次查询embedding');
 });
 
-test('多分片复制复用getMany并并发保存目标分片但保持顺序', async () => {
-  const sourceGraph = await branchVectorFixture('bounded-copy-source', 'bounded-copy-generation', 50);
+test('合档向量复制以四片为一组批读，旧客户端逐片回落', async () => {
+  const sourceGraph = await branchVectorFixture('copy-batch-source', 'copy-batch-generation', 17);
   const selected = selectRecallMemories(sourceGraph);
   const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
-  const source = { status: 'ready', chatId: sourceGraph.root.chatId,
-    narrativeGeneration: sourceGraph.root.narrativeGeneration, rawSources: projection.rawSources };
-  const backend = vectorBackend(), batchCalls = [], targetWriteActive = { value: 0, maximum: 0 };
-  const client = {
+  const source = { status: 'ready', chatId: sourceGraph.root.chatId, narrativeGeneration: sourceGraph.root.narrativeGeneration,
+    rawSources: projection.rawSources };
+  const backend = vectorBackend(); let batchCalls = 0, maxBatch = 0;
+  const batchClient = {
     ...backend.client,
     async getMany(collection, ids) {
-      batchCalls.push({ collection, ids: [...ids] });
-      return ids.map(id => {
-        const value = backend.records.get(`${collection}/${id}`);
-        return value ? { recordId: id, status: 200, envelope: structuredClone(value) }
-          : { recordId: id, status: 404, error: 'not_found', message: 'Record not found' };
-      });
-    },
-    async put(collection, id, data, revision) {
-      if (collection === 'chat-bounded-copy-target' && id.startsWith(VECTOR_SHARD_PREFIX)) {
-        targetWriteActive.value += 1;
-        targetWriteActive.maximum = Math.max(targetWriteActive.maximum, targetWriteActive.value);
-        await new Promise(resolve => setImmediate(resolve));
-        try { return await backend.client.put(collection, id, data, revision); }
-        finally { targetWriteActive.value -= 1; }
-      }
-      return backend.client.put(collection, id, data, revision);
+      batchCalls += 1; maxBatch = Math.max(maxBatch, ids.length);
+      return Promise.all(ids.map(async id => {
+        try { const { recordId: _recordId, ...envelope } = await backend.client.get(collection, id); return { recordId: id, status: 200, envelope }; }
+        catch (error) { if (error?.status === 404) return { recordId: id, status: 404, error: 'not_found', message: 'Record not found' }; throw error; }
+      }));
     },
   };
-  const makeIndex = identity => createVectorIndex({ client,
-    api: { embed: async (_config, texts) => vectors(texts) }, configProvider: () => config,
-    identityProvider: () => ({ chatId: identity }), sourceProvider: async () => source });
-  await makeIndex(source.chatId).build();
-  const sourceManifest = backend.records.get(`chat-${source.chatId}/${VECTOR_INDEX_ID}`).data;
-  assert.equal(sourceManifest.chunkCount, 50);
-  assert.equal(sourceManifest.shardIds.length, 4);
-  batchCalls.length = 0;
-  const targetId = 'bounded-copy-target', targetGeneration = 'bounded-copy-target-generation';
-  const copied = await makeIndex(source.chatId).copyPrefix({ chatId: source.chatId }, { chatId: targetId },
-    targetGeneration, sourceGraph);
-  assert.deepEqual(copied, backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data.shardIds);
-  assert.ok(batchCalls.some(call => call.collection === `chat-${source.chatId}`), 'source shard reads use existing getMany');
-  assert.ok(batchCalls.some(call => call.collection === `chat-${targetId}`), 'target shard preflight reads use existing getMany');
-  assert.ok(batchCalls.every(call => call.ids.length > 1 && call.ids.length <= 4), 'each multi-shard request is bounded to four IDs');
-  assert.ok(targetWriteActive.maximum > 1 && targetWriteActive.maximum <= 4, 'target shard writes overlap but remain capped at four');
-  const targetManifest = backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data;
-  const copiedRows = targetManifest.shardIds.flatMap(id => backend.records.get(`chat-${targetId}/${id}`).data.rows);
-  const sourceRows = sourceManifest.shardIds.flatMap(id => backend.records.get(`chat-${source.chatId}/${id}`).data.rows);
-  assert.deepEqual(copiedRows.map(row => row.witness), sourceRows.map(row => row.witness), 'batching preserves source row order');
-  assert.deepEqual(copiedRows.map(row => row.vector), sourceRows.map(row => row.vector), 'batching preserves each stored vector value');
-  assert.ok(backend.calls.findIndex(call => call.collection === `chat-${targetId}` && call.id === VECTOR_INDEX_ID)
-    > backend.calls.findLastIndex(call => call.collection === `chat-${targetId}` && call.id.startsWith(VECTOR_SHARD_PREFIX)),
-  'manifest publication remains after every target shard write');
-});
+  const api = { embed: async (_config, texts) => vectors(texts) };
+  const sourceIndex = createVectorIndex({ client: batchClient, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  await sourceIndex.build();
+  const manifest = backend.records.get(`chat-${source.chatId}/${VECTOR_INDEX_ID}`);
+  assert.equal(manifest.data.shardIds.length, 2, '17条正文片段跨越两个16行分片');
+  const targetGeneration = 'copy-batch-target-generation';
+  const copied = await sourceIndex.copyPrefix({ chatId: source.chatId }, { chatId: 'copy-batch-target' }, targetGeneration, sourceGraph);
+  assert.equal(copied.length, 2);
+  assert.ok(batchCalls >= 2, '源分片和目标分片均按组批读');
+  assert.equal(maxBatch, 2, '每组批读不超过当前两个目标分片');
 
-test('没有getMany的client仍能复制四分片768维索引并保留见证顺序', async () => {
-  const sourceGraph = await branchVectorFixture('no-batch-copy-source', 'no-batch-copy-generation', 50);
-  const selected = selectRecallMemories(sourceGraph);
-  const projection = await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false });
-  const source = { status: 'ready', chatId: sourceGraph.root.chatId,
-    narrativeGeneration: sourceGraph.root.narrativeGeneration, rawSources: projection.rawSources };
-  const backend = vectorBackend();
-  assert.equal(typeof backend.client.getMany, 'undefined');
-  const api = { embed: async (_config, texts) => texts.map(() => Array(768).fill(0.125)) };
-  const makeIndex = identity => createVectorIndex({ client: backend.client, api, configProvider: () => config,
-    identityProvider: () => ({ chatId: identity }), sourceProvider: async () => source });
-  await makeIndex(source.chatId).build();
-  const sourceManifest = backend.records.get(`chat-${source.chatId}/${VECTOR_INDEX_ID}`).data;
-  assert.equal(sourceManifest.shardIds.length, 4);
-  assert.equal(sourceManifest.dimensions, 768);
-  const targetId = 'no-batch-copy-target', targetGeneration = 'no-batch-copy-target-generation';
-  const copied = await makeIndex(source.chatId).copyPrefix({ chatId: source.chatId }, { chatId: targetId },
-    targetGeneration, sourceGraph);
-  const targetManifest = backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data;
-  assert.deepEqual(copied, targetManifest.shardIds);
-  assert.equal(targetManifest.dimensions, 768);
-  const sourceRows = sourceManifest.shardIds.flatMap(id => backend.records.get(`chat-${source.chatId}/${id}`).data.rows);
-  const targetRows = targetManifest.shardIds.flatMap(id => backend.records.get(`chat-${targetId}/${id}`).data.rows);
-  assert.deepEqual(targetRows.map(row => row.witness), sourceRows.map(row => row.witness));
-  assert.deepEqual(targetRows.map(row => row.vector), sourceRows.map(row => row.vector));
+  const fallbackTarget = 'copy-fallback-target';
+  const getsBefore = backend.gets.length;
+  const fallbackIndex = createVectorIndex({ client: backend.client, api, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  const fallbackCopied = await fallbackIndex.copyPrefix({ chatId: source.chatId }, { chatId: fallbackTarget }, `${targetGeneration}-fallback`, sourceGraph);
+  assert.equal(fallbackCopied.length, 2, '不提供getMany时仍逐片复制');
+  assert.ok(backend.gets.length > getsBefore, '旧客户端按get回落');
 });
 
 test('普通分支发现B已有索引后直接保留，不读改写目标目录', async () => {
@@ -2042,4 +2050,218 @@ test('手动建立分批串行；重复建立复用当前有效向量，不增�
   } } });
   await h.index.build(); assert.equal(maximum, 1); assert.ok(calls >= 2);
   const previousCalls = calls; await h.index.build(); assert.equal(calls, previousCalls);
+});
+
+test('正式召回与向量来源投影复用楼层已验证的原文指纹', async t => {
+  const digest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+  const rawTexts = new Set();
+  let summaryDigests = 0;
+  const summaryText = '人物状态已由用户整理。';
+  const expectedSummaryFingerprint = await hash(summaryText);
+  for (const count of [8, 16]) {
+    const floors = [], snapshots = [], sourceFloorIds = [];
+    for (let index = 1; index <= count; index += 1) {
+      const id = `fingerprint-floor-${count}-${index}`;
+      const canonicalContent = `第${index}楼的已验证正文。`;
+      floors.push({ id, assistantSeq: index, content: { canonicalContent, canonicalFingerprint: await hash(canonicalContent) } });
+      snapshots.push({ floorId: id, canonicalContent }); sourceFloorIds.push(id); rawTexts.add(canonicalContent);
+    }
+    const reachable = { status: 'ready', root: { chatId: `fingerprint-chat-${count}`, narrativeGeneration: 'generation', headCheckpointId: 'head' },
+      rootRevision: 1, checkpoint: { id: 'head' }, floors,
+      floorMemories: [{ id: `aggregate-${count}`, floorId: floors.at(-1).id, recordStatus: 'active', sourceFloorIds, sourceFloorSnapshots: snapshots,
+        summary: { effectiveSource: 'user', userText: summaryText } }],
+      entities: [], stateDeltas: [], currentStates: [], baseline: null, cseUnavailable: true };
+    const store = { readRoot: async () => ({ status: 'ready', data: reachable.root, revision: 1 }), readReachable: async () => reachable };
+    const counts = new Map();
+    t.mock.method(globalThis.crypto.subtle, 'digest', async function (algorithm, bytes) {
+      const text = new TextDecoder().decode(bytes);
+      if (rawTexts.has(text)) counts.set(text, (counts.get(text) ?? 0) + 1);
+      if (text === summaryText) summaryDigests += 1;
+      return digest(algorithm, bytes);
+    });
+
+    const recall = await projectRecallSource(reachable, () => new Date('2026-10-16T00:00:00.000Z'));
+    assert.equal(recall.rawSources.length, count);
+    assert.equal(recall.summarySources.length, 1);
+    assert.equal(recall.summarySources[0].fingerprint, expectedSummaryFingerprint);
+    assert.deepEqual(recall.rawSources.map(item => item.floorId), sourceFloorIds);
+    assert.ok(recall.rawSources.every(item => item.fingerprint === floors.find(floor => floor.id === item.floorId).content.canonicalFingerprint));
+    assert.equal([...counts.values()].reduce((sum, value) => sum + value, 0), 0,
+      'selected raw text matches the validated floor fingerprints and should not be hashed again');
+
+    counts.clear();
+    const vectorSource = await readVectorSource({ store, targetIdentity: { chatId: reachable.root.chatId }, cachedReachable: reachable });
+    assert.equal(vectorSource.status, 'ready');
+    assert.equal(vectorSource.rawSources.length, count);
+    assert.deepEqual(vectorSource.rawSources.map(item => item.fingerprint), recall.rawSources.map(item => item.fingerprint));
+    assert.equal([...counts.values()].reduce((sum, value) => sum + value, 0), 0,
+      'vector source reader should reuse the same validated floor fingerprints');
+    assert.equal('summarySources' in vectorSource, false);
+    t.mock.restoreAll();
+  }
+  assert.equal(summaryDigests, 2, '摘要来源仍各自执行一次独立SHA');
+  const legacyText = '缺少已验证指纹的旧单楼正文。';
+  const legacy = await projectVectorSources([{ id: 'legacy-memory', floorId: 'legacy-floor', sourceFloorIds: ['legacy-floor'] }],
+    [{ id: 'legacy-floor', assistantSeq: 1, content: { canonicalContent: legacyText } }], { includeSummaries: false });
+  assert.equal(legacy.rawSources[0].fingerprint, await hash(legacyText), '旧输入没有指纹时仍计算真实原文摘要');
+});
+
+function reverseBatchRecordClient(records) {
+  const gets = [], completed = [], pending = [];
+  let active = 0, maximum = 0, scheduled = false;
+  const scheduleDrain = () => {
+    if (scheduled) return;
+    scheduled = true;
+    setImmediate(() => {
+      scheduled = false;
+      const batch = pending.splice(0).reverse();
+      for (const item of batch) {
+        active -= 1;
+        if (item.id !== VECTOR_INDEX_ID) completed.push(item.id);
+        if (!records.has(item.id)) item.reject(Object.assign(new Error('missing'), { status: 404 }));
+        else {
+          const { recordId: _recordId, ...record } = records.get(item.id);
+          item.resolve(structuredClone(record));
+        }
+      }
+      if (pending.length) scheduleDrain();
+    });
+  };
+  return { gets, completed, maximum: () => maximum, client: { get(_collection, id) {
+    gets.push(id); active += 1; maximum = Math.max(maximum, active);
+    return new Promise((resolve, reject) => { pending.push({ id, resolve, reject }); scheduleDrain(); });
+  } } };
+}
+
+test('首次索引冷读最多四个分片并发、按manifest顺序拼接且保留暖缓存与零向量跳过', async () => {
+  const makeRecords = async count => {
+    const modelKey = await hash(JSON.stringify([config.url, config.model, config.dimensions]));
+    const ids = Array.from({ length: count }, (_, index) => `${VECTOR_SHARD_PREFIX}${String(index + 1).padStart(40, '0')}`);
+    const source = { chatId: `cold-${count}`, narrativeGeneration: 'generation', rawSources: [] };
+    const records = new Map();
+    for (let index = 0; index < count; index += 1) {
+      const assistantSeq = index + 1, floorId = `cold-floor-${count}-${assistantSeq}`;
+      const canonicalContent = `正文${assistantSeq}`;
+      const raw = { floorId, assistantSeq, floorMemoryId: `memory-${assistantSeq}`, memoryFloorId: floorId,
+        memoryAssistantSeq: assistantSeq, canonicalContent, fingerprint: await hash(canonicalContent) };
+      source.rawSources.push(raw);
+      const witness = { floorId, assistantSeq, floorMemoryId: raw.floorMemoryId, memoryFloorId: floorId,
+        memoryAssistantSeq: assistantSeq, offset: 0, length: 1, fingerprint: raw.fingerprint, textFingerprint: await hash(canonicalContent.slice(0, 1)) };
+      records.set(ids[index], { recordId: ids[index], revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+        chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey,
+        rows: [{ witness, vector: 'AACAPwAAAAA=' }] } });
+    }
+    records.set(VECTOR_INDEX_ID, { recordId: VECTOR_INDEX_ID, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+      chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, dimensions: 2, shardIds: ids, chunkCount: count } });
+    return { records, source, ids };
+  };
+  for (const count of [8, 16]) {
+    const { records, source, ids } = await makeRecords(count);
+    let embeds = 0;
+    const backend = reverseBatchRecordClient(records), { gets, completed } = backend;
+    const client = backend.client;
+    const index = createVectorIndex({ client, api: { embed: async (_config, texts) => { embeds += 1; return vectors(texts); } },
+      configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }) });
+    const result = await index.query({ source, queryContext: { text: '当前描述' } });
+    assert.equal(result.diagnostic.status, 'ready');
+    assert.equal(backend.maximum(), Math.min(4, count), 'cold reads should use the approved bounded parallelism');
+    assert.equal(gets[0], VECTOR_INDEX_ID);
+    assert.deepEqual([...gets.slice(1)].sort(), [...ids].sort(), '所有shard恰读一次');
+    assert.deepEqual(completed.slice(0, 4), ids.slice(0, 4).reverse(), '首批响应按manifest逆序完成');
+    assert.deepEqual(result.candidates.map(candidate => candidate.witness.assistantSeq), Array.from({ length: Math.min(12, count) }, (_, index) => index + 1),
+      '真实楼序与manifest一致时，反序响应不改变候选结果');
+    assert.equal(embeds, 1);
+    const getCount = gets.length;
+    const warm = await index.query({ source, queryContext: { text: '当前描述' } });
+    assert.deepEqual(warm.candidates, result.candidates);
+    assert.equal(gets.length, getCount, '同一查询暖命中不再读取manifest或shard');
+    assert.equal(embeds, 1, '同一查询复用已有query vector');
+  }
+  let gets = 0, embeds = 0;
+  const disabled = createVectorIndex({ client: { get: async () => { gets += 1; throw new Error('must not read'); } },
+    api: { embed: async () => { embeds += 1; return [[1, 0]]; } }, configProvider: () => null,
+    identityProvider: () => ({ chatId: 'vector-off' }), isEnabled: () => true });
+  const skipped = await disabled.query({ source: { chatId: 'vector-off', narrativeGeneration: 'generation', rawSources: [] }, queryContext: { text: 'x' } });
+  assert.equal(skipped.diagnostic.status, 'disabled');
+  assert.equal(gets, 0); assert.equal(embeds, 0);
+});
+
+test('冷读58个16行1024维分片在受限并发内完整解码928行', async () => {
+  const shardCount = 58, rowsPerShard = 16, dimensions = 1024;
+  const scaleConfig = { ...config, dimensions };
+  const modelKey = await hash(JSON.stringify([scaleConfig.url, scaleConfig.model, scaleConfig.dimensions]));
+  const ids = Array.from({ length: shardCount }, (_, index) => `${VECTOR_SHARD_PREFIX}${String(index + 1).padStart(40, '0')}`);
+  const source = { chatId: 'bounded-scale', narrativeGeneration: 'generation', rawSources: [] };
+  const records = new Map();
+  const vector = new Float32Array(dimensions); vector[0] = 1;
+  const encodedVector = Buffer.from(vector.buffer).toString('base64');
+  for (let shardIndex = 0; shardIndex < shardCount; shardIndex += 1) {
+    const rows = [];
+    for (let rowIndex = 0; rowIndex < rowsPerShard; rowIndex += 1) {
+      const sourceIndex = shardIndex * rowsPerShard + rowIndex;
+      const floorId = `scale-floor-${sourceIndex + 1}`, canonicalContent = `有界分片原文${sourceIndex + 1}。`;
+      const raw = { floorId, assistantSeq: sourceIndex + 1, floorMemoryId: `scale-memory-${sourceIndex + 1}`, memoryFloorId: floorId,
+        memoryAssistantSeq: sourceIndex + 1, canonicalContent, fingerprint: await hash(canonicalContent) };
+      source.rawSources.push(raw);
+      rows.push({ witness: { floorId, assistantSeq: raw.assistantSeq, floorMemoryId: raw.floorMemoryId, memoryFloorId: floorId,
+        memoryAssistantSeq: raw.memoryAssistantSeq, offset: 0, length: 1, fingerprint: raw.fingerprint, textFingerprint: await hash(canonicalContent.slice(0, 1)) },
+      vector: encodedVector });
+    }
+    records.set(ids[shardIndex], { recordId: ids[shardIndex], revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+      chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, rows } });
+  }
+  records.set(VECTOR_INDEX_ID, { recordId: VECTOR_INDEX_ID, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+    chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, dimensions, shardIds: ids, chunkCount: shardCount * rowsPerShard } });
+  let embeds = 0;
+  const backend = reverseBatchRecordClient(records), { gets, completed } = backend;
+  const client = backend.client;
+  const index = createVectorIndex({ client, api: { embed: async (_config, texts) => { embeds += 1; return texts.map(() => new Array(dimensions).fill(0).map((_, i) => i === 0 ? 1 : 0)); } },
+    configProvider: () => scaleConfig, identityProvider: () => ({ chatId: source.chatId }) });
+  const result = await index.query({ source, queryContext: { text: '当前描述' } });
+  assert.equal(result.diagnostic.status, 'ready');
+  assert.equal(index.getState().query.totalIndexRows, shardCount * rowsPerShard);
+  assert.ok(backend.maximum() > 1 && backend.maximum() <= 4);
+  assert.equal(gets[0], VECTOR_INDEX_ID);
+  assert.deepEqual([...gets.slice(1)].sort(), [...ids].sort());
+  assert.notDeepEqual(completed.slice(0, 4), ids.slice(0, 4), 'fixture makes initial shard responses complete out of manifest order');
+  assert.deepEqual(result.candidates.map(candidate => candidate.witness.floorId),
+    Array.from({ length: 12 }, (_, index) => `scale-floor-${index + 1}`), '928行解码后仍按稳定候选排序返回前12条');
+  assert.equal(embeds, 1);
+});
+
+test('冷读遇到非法分片不发布部分索引，修复后下一次读取完整索引', async () => {
+  const { records, source, ids } = await (async () => {
+    const modelKey = await hash(JSON.stringify([config.url, config.model, config.dimensions]));
+    const shardIds = Array.from({ length: 8 }, (_, index) => `${VECTOR_SHARD_PREFIX}${String(index + 1).padStart(40, '0')}`);
+    const value = { chatId: 'invalid-cold', narrativeGeneration: 'generation', rawSources: [] }, stored = new Map();
+    for (let index = 0; index < shardIds.length; index += 1) {
+      const floorId = `invalid-floor-${index + 1}`, canonicalContent = `可读原文${index + 1}`;
+      const raw = { floorId, assistantSeq: index + 1, floorMemoryId: `invalid-memory-${index + 1}`, memoryFloorId: floorId,
+        memoryAssistantSeq: index + 1, canonicalContent, fingerprint: await hash(canonicalContent) };
+      value.rawSources.push(raw);
+      const witness = { floorId, assistantSeq: raw.assistantSeq, floorMemoryId: raw.floorMemoryId, memoryFloorId: floorId,
+        memoryAssistantSeq: raw.memoryAssistantSeq, offset: 0, length: 1, fingerprint: raw.fingerprint, textFingerprint: await hash(canonicalContent.slice(0, 1)) };
+      stored.set(shardIds[index], { recordId: shardIds[index], revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+        chatId: value.chatId, narrativeGeneration: value.narrativeGeneration, modelKey, rows: [{ witness, vector: 'AACAPwAAAAA=' }] } });
+    }
+    stored.set(VECTOR_INDEX_ID, { recordId: VECTOR_INDEX_ID, revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache',
+      chatId: value.chatId, narrativeGeneration: value.narrativeGeneration, modelKey, dimensions: 2, shardIds, chunkCount: shardIds.length } });
+    return { records: stored, source: value, ids: shardIds };
+  })();
+  const validFirstRows = structuredClone(records.get(ids[0]).data.rows);
+  records.get(ids[0]).data.rows = [];
+  const client = { async get(_collection, id) {
+    if (!records.has(id)) throw Object.assign(new Error('missing'), { status: 404 });
+    const { recordId: _recordId, ...record } = records.get(id); return structuredClone(record);
+  } };
+  const index = createVectorIndex({ client, api: { embed: async (_config, texts) => vectors(texts) }, configProvider: () => config,
+    identityProvider: () => ({ chatId: source.chatId }) });
+  const unavailable = await index.query({ source, queryContext: { text: '当前描述' } });
+  assert.equal(unavailable.diagnostic.status, 'unavailable');
+  assert.equal(index.getState().query.load.exitReason, 'invalid');
+  assert.deepEqual(unavailable.candidates, []);
+  records.get(ids[0]).data.rows = validFirstRows;
+  const ready = await index.query({ source, queryContext: { text: '当前描述' } });
+  assert.equal(ready.diagnostic.status, 'ready');
+  assert.equal(ready.candidates.length, 8);
 });

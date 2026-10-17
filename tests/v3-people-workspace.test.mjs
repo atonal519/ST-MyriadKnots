@@ -40,7 +40,8 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     floorMemories: peopleEntities.map((person, index) => ({ recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: `${person.displayName}在第${index + 1}楼出现。` }, participants: [{ entityId: person.id }] })),
     baseline: { characterCard: { entityId: SYNTHETIC_CHAR, name: '剧情标题', description: '角色卡描述', personality: '角色卡性格', scenario: '场景' } },
   };
-  let memoryState = { cseSubjects: peopleEntities.map((person, index) => ({ subjectEntityId: person.id, displayName: person.displayName, core: index === 0 ? [{ text: '谨慎', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }] : [], adaptive: [], situational: [] })) };
+  let memoryState = { baselineId: 'baseline-a', currentStateId: 'state-a', currentStateFingerprint: 'fingerprint-a',
+    cseSubjects: peopleEntities.map((person, index) => ({ subjectEntityId: person.id, displayName: person.displayName, core: index === 0 ? [{ text: '谨慎', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }] : [], adaptive: [], situational: [] })) };
   const listeners = new Set(), foundationListeners = new Set();
   let memoryRefreshes = 0, memoryStateReads = 0;
   const memoryRuntime = { getState: () => { memoryStateReads += 1; return memoryState; }, refreshStatus: async () => { memoryRefreshes += 1; return memoryState; }, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
@@ -156,27 +157,45 @@ test('身份成功续接可复用已准备的记忆，只读加载一次人物 w
 
 test('人物工作区复用 memory 通知携带的同次状态，不在订阅回调重复读取完整状态', async () => {
   const h = harness();
-  const initialState = { baselineId: 'baseline-1', currentStateId: 'current-1', currentStateFingerprint: 'fingerprint-1',
-    cseSubjects: [{ subjectEntityId: ids[0], core: [{ text: '原状态', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }], adaptive: [], situational: [] }] };
-  h.setMemoryState(initialState, false);
   await h.runtime.refresh({ refreshMemory: false });
   const beforeReads = h.memoryStateReads();
-  let traversals = 0;
-  const track = values => new Proxy(values, { get(target, property, receiver) {
-    if (property === Symbol.iterator) return function* () { traversals += 1; yield* target; };
-    return Reflect.get(target, property, receiver);
-  } });
-  h.setReachable({ ...h.reachable, floorMemories: track(h.reachable.floorMemories), entities: track(h.reachable.entities) });
-  h.notifyMemory();
-  assert.ok(traversals > 0, 'fixture确认完整人物投影会遍历当前记忆和实体数组');
-  traversals = 0;
-  h.notifyMemory(); h.notifyMemory();
-  assert.equal(traversals, 0, '相同权威快照的重复通知不重建人物投影');
+  h.emitMemory({ baselineId: 'baseline-a', currentStateId: 'state-notification', currentStateFingerprint: 'fingerprint-notification',
+    cseSubjects: [{ subjectEntityId: ids[0], core: [{ text: '通知中的新状态', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }], adaptive: [], situational: [] }] });
   assert.equal(h.memoryStateReads(), beforeReads, 'subscriber 直接消费 memoryRuntime 提供的 snapshot');
-  h.setMemoryState({ ...initialState, currentStateId: 'current-2', currentStateFingerprint: 'fingerprint-2',
-    cseSubjects: [{ ...initialState.cseSubjects[0], core: [{ ...initialState.cseSubjects[0].core[0], text: '通知中的新状态' }] }] });
-  assert.ok(traversals > 0, '真实CSE身份见证变化仍重新计算人物投影');
   assert.equal(h.runtime.getState().people.find(person => person.entityId === ids[0]).cse.core[0].text, '通知中的新状态');
+});
+
+test('记忆纯处理阶段通知不重扫3901条人物参与记录，处理完成仍更新CSE人物资料', async () => {
+  const h = harness();
+  const personId = h.peopleEntities[0].id;
+  let visits = 0;
+  const floorMemories = new Proxy(Array.from({ length: 3901 }, (_, index) => ({
+    recordStatus: 'active', floorId: `floor-${index}`, participants: [{ entityId: personId }],
+  })), {
+    get(target, property, receiver) {
+      if (property !== Symbol.iterator) return Reflect.get(target, property, receiver);
+      return function* () { for (const item of target) { visits += 1; yield item; } };
+    },
+  });
+  h.setMemoryState({ baselineId: 'baseline-1', currentStateId: 'state-1', currentStateFingerprint: 'fingerprint-1', cseSubjects: h.memoryState.cseSubjects }, false);
+  h.setReachable({ ...h.reachable, floorMemories });
+  await h.runtime.refresh({ refreshMemory: false });
+  assert.equal(h.runtime.getState().people.find(person => person.entityId === personId).appearanceCount, 3901);
+  const afterProjection = visits;
+  h.setMemoryState({ baselineId: 'baseline-1', currentStateId: 'state-1', currentStateFingerprint: 'fingerprint-1',
+    memoryWorkBusy: true, activeExtraction: { floorId: 'floor-3901', phase: 'extracting' }, cseSubjects: h.memoryState.cseSubjects });
+  assert.equal(visits, afterProjection, '提取阶段只改变处理状态，不重复计算参与次数');
+  const changedCse = [
+    { subjectEntityId: personId, core: [{ text: '新CSE事实', origin: 'delta', sourceFloorId: 'floor-3901' }], adaptive: [], situational: [] },
+  ];
+  h.setMemoryState({ baselineId: 'baseline-1', currentStateId: 'state-2', currentStateFingerprint: 'fingerprint-2',
+    memoryWorkBusy: true, activeExtraction: { floorId: 'floor-3901', phase: 'committing' }, cseSubjects: changedCse });
+  assert.equal(visits, afterProjection + 3901, '最终业务数据通知按一次完整候选投影更新');
+  assert.equal(h.runtime.getState().people.find(person => person.entityId === personId).cse.core[0].text, '新CSE事实');
+  const afterChangedCse = visits;
+  h.setMemoryState({ baselineId: 'baseline-1', currentStateId: 'state-2', currentStateFingerprint: 'fingerprint-2',
+    memoryWorkBusy: false, activeExtraction: null, cseSubjects: changedCse });
+  assert.equal(visits, afterChangedCse, '相同稳定CSE指纹的结束通知不重复投影');
 });
 
 test('ready checkpoint 刷新只移出失联旧 ID，保留同名新人物选择与旧档案', async () => {
@@ -1220,6 +1239,60 @@ test('每十个稳定AI楼触发一次共享原文粗扫，摘要不参与筛楼
   assert.match(JSON.stringify(requests[0].recentFloors), /第1楼正文外貌/);
   assert.equal(Object.hasOwn(requests[0], 'summaryUpdates'), false);
   assert.equal(Object.hasOwn(requests[0], 'allowedWorldInfo'), false);
+  assert.equal(Object.hasOwn(requests[0], 'characterCard'), false, '十楼粗扫不附加完整角色卡');
+  assert.ok(requests[0].people.every(person => !Object.hasOwn(person, 'characterCard') && !Object.hasOwn(person, 'sourceFragments')));
+});
+
+test('十楼粗扫每个请求准备与CAS保存阶段只投影一次3901规模人物楼层', async () => {
+  let request, passesAtRequest = 0, visitsAtRequest = 0;
+  let projectionPasses = 0, memoryVisits = 0;
+  const h = harness({ generate: async options => {
+    request = JSON.parse(options.taskMessages[0].content);
+    passesAtRequest = projectionPasses; visitsAtRequest = memoryVisits;
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, appearance: '有明确新事实' })) } };
+  } });
+  const [first, second] = h.peopleEntities;
+  const floorRecord = index => ({ id: `floor-${String(index + 1).padStart(4, '0')}`, assistantSeq: index + 1,
+    content: { canonicalContent: `楼${index + 1}短正文` } });
+  const memoryRecord = (floor, index) => ({ floorId: floor.id, assistantSeq: index + 1, recordStatus: 'active',
+    summary: { effectiveSource: 'ai', aiText: '' }, participants: [{ entityId: first.id }, { entityId: second.id }] });
+  const initialFloors = Array.from({ length: 3891 }, (_, index) => floorRecord(index));
+  h.setReachable({ ...h.reachable, floors: initialFloors, floorMemories: initialFloors.map(memoryRecord) });
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([first.id, second.id]);
+  await h.markProfileInitialized([first.id, second.id]);
+  h.setMainGenerationActive(false);
+
+  const floors = Array.from({ length: 3901 }, (_, index) => floorRecord(index));
+  const memories = floors.map(memoryRecord);
+  const countedMemories = new Proxy(memories, {
+    get(target, property, receiver) {
+      if (property !== Symbol.iterator) return Reflect.get(target, property, receiver);
+      const stack = new Error().stack ?? '';
+      if (!stack.includes('candidateProjection')) return target[Symbol.iterator].bind(target);
+      projectionPasses += 1;
+      const iterate = target[Symbol.iterator].bind(target);
+      return function* () {
+        for (const memory of iterate()) { memoryVisits += 1; yield memory; }
+      };
+    },
+  });
+  h.setReachable({ ...h.reachable, floors, floorMemories: countedMemories });
+  h.notifyFoundation();
+  const deadline = Date.now() + 5000;
+  while ((!request || h.runtime.getState().active !== null) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.ok(request && h.runtime.getState().active === null, `未完成粗扫：${JSON.stringify({ active: h.runtime.getState().active, error: h.runtime.getState().lastError?.message,
+    selected: h.runtime.getState().selectedEntityIds, profiled: h.runtime.getState().people.filter(person => person.selected).map(person => ({ id: person.entityId, profiled: person.profiled, material: person.profile?.notes })) })}`);
+
+  assert.equal(initialFloors.length, 3891); assert.equal(floors.length, 3901);
+  assert.equal(memories.length, floors.length);
+  assert.ok(memories.every((memory, index) => memory.floorId === floors[index].id && memory.assistantSeq === floors[index].assistantSeq));
+  assert.equal(request.people.length, 2); assert.equal(h.runtime.getState().profilesByEntityId[first.id].appearance, '有明确新事实');
+  assert.equal(h.runtime.getState().profilesByEntityId[second.id].appearance, '有明确新事实');
+  assert.equal(passesAtRequest, 2, '目标选择与同批请求资料各投影一次');
+  assert.equal(visitsAtRequest, 2 * floors.length);
+  assert.equal(projectionPasses, 4, 'CAS updater 复用单次候选投影，之后 adopt 各自按需投影');
+  assert.equal(memoryVisits, 4 * floors.length);
 });
 
 test('新增选择只为真实空档自动首次整理，并排除宿主关闭世界书条目', async () => {
@@ -1653,16 +1726,17 @@ test('单人主动重整超窗、其他参数错误、输出截断或拒绝时�
   assert.equal(h.runtime.getState().profilesByEntityId[id].notes, '人工资料');
 });
 
-test('单人重整返回空结果或无法绑定人物时明确报告本次未保存', async () => {
+test('单人重整返回空结果、无效字段或无法绑定人物时明确报告本次未保存', async () => {
   let mode = 'empty';
-  const h = harness({ generate: async () => ({ jsonData: { profiles: mode === 'empty' ? [] : [{ personKey: 'unknown-person', name: '不应写入' }] } }) });
+  const h = harness({ generate: async () => ({ jsonData: { profiles: mode === 'empty' ? [] : mode === 'invalid-fields'
+    ? [{ personKey: 'person-1', name: { unsupported: true } }] : [{ personKey: 'unknown-person', name: '不应写入' }] } }) });
   await h.runtime.refresh(); const id = h.peopleEntities[0].id; await h.runtime.setSelectedEntityIds([id]);
   await h.runtime.saveProfile(id, { name: '旧 AI 姓名', notes: '人工资料' }, { manualFields: ['notes'] });
   const original = structuredClone(h.runtime.getState().profilesByEntityId[id]);
-  for (const scenario of ['empty', 'unbound']) {
+  for (const scenario of ['empty', 'invalid-fields', 'unbound']) {
     mode = scenario; const putsBefore = h.db.calls.filter(call => call[0] === 'put').length;
     await assert.rejects(h.runtime.regenerateProfile(id), error => error.code === 'QQJ_PEOPLE_GENERATION_BINDING_INVALID'
-      && /本次未保存/u.test(error.message) && !/此前批次已保存/u.test(error.message));
+      && /这次回复没有可保存的人物资料/u.test(error.message) && /本次没有保存资料/u.test(error.message));
     assert.equal(h.db.calls.filter(call => call[0] === 'put').length, putsBefore, `${scenario} 不产生档案或进度写入`);
     assert.deepEqual(h.runtime.getState().profilesByEntityId[id], original);
   }
@@ -1706,4 +1780,99 @@ test('迁移人物旧资料按人物展开读取不可变snapshot且不扫描同
   assert.deepEqual(history.map(value => [value.sourceChatId, value.sourceRevision, value.profile.name, value.profile.notes]), [[CHAT_A, 4, '源人物资料', '冻结内容']]);
   const reads = h.db.calls.slice().filter(call => call[0] === 'get').slice(before);
   assert.deepEqual(reads.map(call => call[2]), [snapshotId], '仅按需读取descriptor列出的旧快照，不遍历人物/楼记录');
+});
+
+test('多人卡首次建档将完整角色卡作为单份公共来源并按personKey保存NSFW', async () => {
+  let calls = 0, request;
+  const h = harness({ generate: async options => {
+    calls += 1; request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName, nsfw: `成人向资料:${person.currentName}` })) } };
+  } });
+  const description = '人物1是守塔人，{{user}}曾与{{char}}在港口相遇。人物2是记录员，人物3负责修船。NSFW设定：三位人物均为成年人，亲密互动须双方明确自愿。';
+  const card = { entityId: SYNTHETIC_CHAR, name: '港湾多人卡', description, personality: '人物1谨慎；人物2细致；人物3直率。', scenario: '三人共同经营港湾。' };
+  h.setReachable({ ...h.reachable, baseline: { userPersona: { name: '阿檀' }, characterCard: card } });
+  await h.runtime.refresh();
+  await h.runtime.setSelectedEntityIds(h.peopleEntities.slice(0, 3).map(person => person.id));
+  await h.runtime.generateMissingProfiles();
+
+  assert.equal(calls, 1, '多个人物共用一次首次建档请求');
+  assert.deepEqual(request.characterCard, { name: '港湾多人卡', description: description.replaceAll('{{user}}', '阿檀').replaceAll('{{char}}', '港湾多人卡'), personality: '人物1谨慎；人物2细致；人物3直率。', scenario: '三人共同经营港湾。' });
+  assert.equal(request.people.length, 3);
+  assert.ok(request.people.every(person => !Object.hasOwn(person, 'characterCard')));
+  const serialized = JSON.stringify(request);
+  for (const marker of ['人物1是守塔人', '人物2是记录员', '人物3负责修船', 'NSFW设定：三位人物均为成年人，亲密互动须双方明确自愿。']) assert.equal(serialized.split(marker).length - 1, 1, `${marker}只随共享角色卡发送一次`);
+  for (let index = 0; index < 3; index += 1) {
+    const person = h.peopleEntities[index];
+    assert.equal(h.runtime.getState().profilesByEntityId[person.id].name, person.displayName);
+    assert.equal(h.runtime.getState().profilesByEntityId[person.id].nsfw, `成人向资料:${person.displayName}`);
+  }
+});
+
+test('单人完整重整把公共卡长片段完整提供一次并继续保护人工NSFW', async () => {
+  let calls = 0, request;
+  const h = harness({ generate: async options => {
+    calls += 1; request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', name: '模型姓名', nsfw: '模型不应覆盖人工值' }] } };
+  } });
+  const description = `人物1明确归属的完整设定：${'长卡资料'.repeat(4200)}：尾段仍应送达。`;
+  const card = { entityId: SYNTHETIC_CHAR, name: '剧情标题', description, personality: '目标人物谨慎。', scenario: '港口设定。' };
+  h.setReachable({ ...h.reachable, baseline: { characterCard: card } });
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '旧档姓名', nsfw: '人工保留的成人向资料' }, { manualFields: ['nsfw'] });
+  await h.runtime.regenerateProfile(target.id);
+
+  assert.equal(calls, 1, '单人主动完整重整仍是一次完整请求');
+  const cardFragments = request.people[0].sourceFragments.filter(item => item.kind === 'characterCard');
+  assert.equal(cardFragments.filter(item => item.label === 'description').map(item => item.content).join(''), description);
+  assert.equal(cardFragments.filter(item => item.label === 'personality').map(item => item.content).join(''), '目标人物谨慎。');
+  assert.equal(cardFragments.filter(item => item.label === 'scenario').map(item => item.content).join(''), '港口设定。');
+  assert.equal(cardFragments.map(item => item.content).join('').split('尾段仍应送达').length - 1, 1);
+  assert.equal(request.people[0].manualProfile.nsfw, '人工保留的成人向资料');
+  const saved = h.runtime.getState().profilesByEntityId[target.id];
+  assert.equal(saved.name, '模型姓名'); assert.equal(saved.nsfw, '人工保留的成人向资料');
+  assert.deepEqual(saved.manualFields, ['nsfw']);
+});
+
+test('首次长材料分批仍连续覆盖共享卡全文且每个请求只出现一次', async () => {
+  let calls = 0; const requests = [];
+  const h = harness({ generate: async options => {
+    calls += 1; const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: [{ personKey: 'person-1', ...(calls === 1 ? { name: '人物1' } : {}), ...((request.batch?.index ?? 1) === (request.batch?.total ?? 1) ? { notes: '长材料完成' } : {}) }] } };
+  } });
+  const description = `多人卡长段开始${'完整设定'.repeat(7000)}多人卡长段末尾`;
+  h.setReachable({ ...h.reachable, baseline: { characterCard: { entityId: SYNTHETIC_CHAR, name: '剧情标题', description, personality: '', scenario: '' } } });
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
+
+  assert.ok(calls > 1, '超出单次输入预算时沿用既有长资料分批');
+  const fragments = requests.flatMap(request => request.people.flatMap(person => person.sourceFragments.filter(item => item.kind === 'characterCard' && item.label === 'description')))
+    .sort((left, right) => left.part - right.part);
+  assert.equal(fragments.map(item => item.content).join(''), description, '所有连续卡片片段完整且顺序不变');
+  assert.equal(fragments.length, fragments.filter((item, index) => fragments.findIndex(other => other.part === item.part) === index).length,
+    '每个公共卡分片只发送一次');
+  assert.ok(requests.every(request => !Object.hasOwn(request, 'characterCard')));
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].notes, '长材料完成');
+});
+
+test('真实首次建档队列把多人卡公共设定送达目标并保存对应NSFW资料', async () => {
+  let request;
+  const h = harness({ generate: async options => {
+    request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', name: '人物1', nsfw: '明确归属人物1的成人向资料' }] } };
+  } });
+  const card = { entityId: SYNTHETIC_CHAR, name: '群像卡标题', description: '人物1是酒馆调酒师。人物2负责信使工作。', personality: '人物1做事稳妥，人物2喜欢冒险。', scenario: '两人都生活在海湾城。' };
+  h.setReachable({ ...h.reachable, baseline: { characterCard: card } });
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh({ refreshMemory: false });
+  await h.runtime.setSelectedEntityIds([target.id]);
+  h.setMainGenerationActive(false);
+  await waitFor(() => Boolean(request) && h.runtime.getState().active === null && Boolean(h.runtime.getState().profileMaterialProgressByEntityId[target.id]));
+  assert.equal(request.task, '主动重新整理选中人物的静态基础资料');
+  assert.equal(request.people.length, 1);
+  const cardFragments = request.people[0].sourceFragments.filter(item => item.kind === 'characterCard');
+  assert.equal(cardFragments.filter(item => item.label === 'description').map(item => item.content).join(''), card.description);
+  assert.ok(request.people.every(person => !Object.hasOwn(person, 'characterCard')));
+  assert.equal(JSON.stringify(request).split('人物2负责信使工作').length - 1, 1);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].nsfw, '明确归属人物1的成人向资料');
 });

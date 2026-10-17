@@ -23,8 +23,18 @@ const CODE_COPY = Object.freeze({
   V3_MEMORY_LOAD_FAILED: '记忆数据读取失败，请稍后重试。',
   V3_MEMORY_PERSIST_FAILED: '记忆保存失败，请稍后重试。',
   V3_MEMORY_COMMIT_FAILED: '记忆保存失败，请稍后重试。',
+  V3_MEMORY_SUMMARY_TOO_LONG: '摘要超过 4000 字，请缩短后保存。',
+  V3_MEMORY_REVISION_NOTE_TOO_LONG: '修订说明超过 1000 字，请缩短后保存。',
   V3_RECALL_FAILED: '记忆召回失败，请稍后重试。',
   V3_CSE_FAILED: '人物状态分析失败，请稍后重试。',
+  V3_EXTRACTOR_SUMMARY_INVALID: '模型没有返回可用摘要，请重新提取本楼。',
+  V3_EXTRACTOR_MULTIPLE_RESULTS: '模型返回了多份不同摘要，无法确认；请重新提取本楼。',
+  V3_EXTRACTOR_LOCAL_SCOPE_INVALID: '当前楼与提取目标不一致，请刷新后重新提取本楼。',
+  V3_EXTRACTOR_LOCAL_CATALOG_INVALID: '人物资料与当前记忆不一致，请刷新后重新提取本楼。',
+  V3_EXTRACTOR_ENTITY_KEY_INVALID: '返回的人物身份无法确认，请重新提取本楼。',
+  V3_EXTRACTOR_ENTITY_TYPE_CONFLICT: '返回的人物类型与现有身份不一致，请重新提取本楼。',
+  V3_EXTRACTOR_ENTITY_AMBIGUOUS: '人物称谓对应多人，无法确认；请重新提取本楼。',
+  V3_EXTRACTOR_USER_ROLE_CONFLICT: '返回的人物身份与用户身份冲突，请检查称谓后重试。',
 });
 
 const clean = value => String(value ?? '')

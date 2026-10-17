@@ -108,6 +108,7 @@ export function createPanel({
     navigatorRef: documentRef.defaultView?.navigator ?? globalThis.navigator,
   });
 
+  let dialogAppearanceRevision = 0;
   const syncHeader = appearance => {
     const mode = settings?.get?.().appearanceTheme ?? 'auto';
     const next = mode === 'auto' ? '日间' : mode === 'day' ? '夜间' : '跟随酒馆';
@@ -129,7 +130,13 @@ export function createPanel({
       fabToggleButton.setAttribute('aria-label', showFab ? '隐藏悬浮球' : '显示悬浮球');
       fabToggleButton.setAttribute('aria-pressed', String(showFab));
     }
-    dialog?.setAppearance?.(appearance);
+    const revision = ++dialogAppearanceRevision;
+    const applyDialogAppearance = () => {
+      const current = settings?.get?.() ?? {};
+      dialog?.setAppearance?.({ ...appearance, family: current.appearanceFontFamily ?? '', fontCssUrl: current.appearanceFontCssUrl ?? '' });
+    };
+    applyDialogAppearance();
+    Promise.resolve(appearance.fontReady).then(() => { if (revision === dialogAppearanceRevision) applyDialogAppearance(); });
     onAppearanceChange?.(appearance);
   };
   const appearance = createAppearanceController({ host, root, settings, documentRef, onChange: syncHeader });
@@ -303,7 +310,7 @@ export function createPanel({
     const worldbook = sourcePermissionView?.renderSettings?.({
       open: subOpen('worldbook'), onDrawerToggle: subToggle('worldbook'),
     });
-    const prompts = createPromptsSettings({ settings, documentRef, open: subOpen('prompts'), onToggle: subToggle('prompts'), onStoryClockChange });
+    const prompts = createPromptsSettings({ settings, documentRef, open: subOpen('prompts'), onToggle: subToggle('prompts'), onStoryClockChange, customImpl: options => dialog?.custom?.(options) });
     const appearanceSettings = createAppearanceSettings({
       settings, documentRef, open: subOpen('appearance'), onToggle: subToggle('appearance'),
       applyAppearance: () => appearance.apply(),
@@ -475,8 +482,7 @@ export function createPanel({
     updateCopyResult();
     page.append(documentationGroup);
 
-    v3FoundationView.setPage?.('management');
-    v3FoundationView.mount(managementMount);
+    v3FoundationView.mount(managementMount, { page: 'management' });
     mountedContentView = 'foundation-settings';
     view.append(page);
     if (enabled) void activateManagement();
@@ -515,6 +521,22 @@ export function createPanel({
     const previous = trigger;
     trigger = null;
     previous?.focus?.();
+  }
+
+  function openVectorSettings() {
+    if (screen !== 'settings') return false;
+    settingsDrawerState.open('general');
+    settingsDrawerState.open('api');
+    settingsDrawerState.open('api-vector');
+    const general = view?.querySelector?.('#qqj-settings-group-general');
+    const api = view?.querySelector?.('#qqj-settings-api');
+    const vector = view?.querySelector?.('#qqj-settings-vector-api');
+    if (!general || !api || !vector) return false;
+    // 直接展开已有节点，以保留未保存的 API 输入。
+    general.open = true; api.open = true; vector.open = true;
+    vector.scrollIntoView?.({ block: 'center' });
+    vector.querySelector?.('summary')?.focus?.();
+    return true;
   }
 
   function setEnabled(value) {
@@ -572,6 +594,7 @@ export function createPanel({
     root,
     show,
     openMemory(nextTrigger) { selectTab('events'); return show(nextTrigger); },
+    openVectorSettings,
     close,
     setEnabled,
     showStatus,

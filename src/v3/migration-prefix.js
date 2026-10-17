@@ -208,7 +208,7 @@ export function partitionScannedCandidates(reachable, chat, chatId, scanned) {
   for (const candidate of scanned) {
     const index = candidate.hostLocator.messageIndex, aliasId = chat?.[index]?.extra?.[MIGRATION_ALIAS_KEY];
     const alias = aliasesById.get(aliasId);
-    const message = chat?.[index], frozenFloor = alias && frozenById.get(alias.floorId);
+    const frozenFloor = alias && frozenById.get(alias.floorId);
     const exactAlias = Boolean(alias && frozenFloor && aliasLocations.get(alias.aliasId)?.length === 1
       && candidate.rawFingerprint === alias.rawFingerprint && candidate.canonicalFingerprint === alias.canonicalFingerprint
       && candidate.rawFingerprint === frozenFloor.content.rawFingerprint

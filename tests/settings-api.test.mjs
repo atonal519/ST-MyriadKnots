@@ -87,7 +87,7 @@ test('记忆提取周期固定为 1，旧配置与更新请求都不能继续生
   settings.update({ autoMemoryEnabled: true, autoMemoryBatchSize: 20 });
   assert.equal('autoMemoryEnabled' in extensionSettings.qianqianjie, false);
   assert.equal(extensionSettings.qianqianjie.autoMemoryBatchSize, 1);
-  assert.equal(saves(), 1);
+  assert.equal(saves(), 2);
 
   settings.update({ autoMemoryBatchSize: 2 });
   assert.equal(settings.get().autoMemoryBatchSize, 1);
@@ -134,19 +134,23 @@ test('楼层召回与记忆卡片默认显示，分别持久化且旧设置继�
   assert.equal(saves(), 2);
 });
 
-test('存储自动清理默认关闭，只保存合法的逐聊天稳定楼进度', () => {
+test('存储维护进度只保存合法的逐聊天楼号与完整回收站检查时间', () => {
   const extensionSettings = {};
   const { settings, saves } = setup(extensionSettings);
   assert.equal(settings.get().storageAutoCleanupEnabled, false);
   assert.deepEqual(settings.get().storageAutoCleanupProgress, {});
+  assert.equal(settings.get().storageTrashGcLastCompletedAt, '');
   settings.update({ storageAutoCleanupEnabled: true, storageAutoCleanupProgress: {
     '123e4567-e89b-42d3-a456-426614174000': 20,
     invalid: 10,
     '223e4567-e89b-42d3-a456-426614174000': -1,
-  } });
+  }, storageTrashGcLastCompletedAt: '2026-10-16T08:00:00.000Z' });
   assert.equal(settings.get().storageAutoCleanupEnabled, true);
   assert.deepEqual(settings.get().storageAutoCleanupProgress, { '123e4567-e89b-42d3-a456-426614174000': 20 });
-  assert.equal(saves(), 1);
+  assert.equal(settings.get().storageTrashGcLastCompletedAt, '2026-10-16T08:00:00.000Z');
+  settings.update({ storageTrashGcLastCompletedAt: 'invalid' });
+  assert.equal(settings.get().storageTrashGcLastCompletedAt, '');
+  assert.equal(saves(), 2);
 });
 
 test('旧千事重要覆盖设置读取时保持原样，但不再进入默认值或更新接口', () => {

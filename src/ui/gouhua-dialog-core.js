@@ -169,6 +169,15 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
             };
             $overlay.find('.sp-dialog-submit').on('click', runSubmit);
             $overlay.find('.sp-dialog-cancel').on('click', session.close);
+            if (String(content.tagName ?? content.tag ?? '').toLowerCase() === 'form') {
+                content.addEventListener?.('submit', event => { event.preventDefault(); runSubmit(); });
+                content.addEventListener?.('keydown', event => {
+                    const target = event.target;
+                    const type = String(target?.type ?? target?.getAttribute?.('type') ?? 'text').toLowerCase();
+                    if (String(target?.tagName ?? target?.tag ?? '').toLowerCase() !== 'input' || !['text', 'search', 'url', 'tel', 'email', 'password', 'number', 'date', 'datetime-local', 'month', 'time', 'week'].includes(type) || event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+                    event.preventDefault(); runSubmit();
+                });
+            }
             schedule(() => $overlay.find('.sp-dialog-submit').trigger('focus'), 0);
         });
     }

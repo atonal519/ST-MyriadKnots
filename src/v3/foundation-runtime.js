@@ -132,7 +132,7 @@ function exactOrphanMarkerRepair(value, candidates, bindings, stableCount) {
 function normalizedIdentity(contextProvider) {
   const raw = contextProvider();
   const state = readHostState(raw);
-  if (state?.ok !== true || !isUuid(state.chatId)) throw new Error('当前聊天尚未建立稳定 chatId');
+  if (state?.ok !== true || !isUuid(state.chatId)) throw new Error('当前聊天身份尚未准备好，请稍候。');
   return Object.freeze({
     hostChatId: state.hostChatId,
     chatId: state.chatId,
@@ -228,7 +228,7 @@ function runSummary(run, result = null) {
   if (!run) return null;
   return Object.freeze({ id: run.id, mode: run.mode, phase: run.phase, ...(result ? { result } : {}) });
 }
-function statusError(status, message = '后端操作未完成，请稍后重试。') {
+function statusError(status, message = '聊天记忆操作失败。请到“记忆管理”页点击“复制状态诊断”反馈。') {
   return Object.assign(new Error(message), { code: `V3_${String(status).toUpperCase()}`, operationStatus: status });
 }
 
@@ -439,7 +439,7 @@ export function createFoundationRuntime({
           settled = await store.replaceRecord(completed, winner.revision, { signal: operation.controller.signal });
         }
       }
-      if (!['saved', 'reused'].includes(settled.status)) throw statusError(settled.status, '待完成的后端写入恢复失败。');
+      if (!['saved', 'reused'].includes(settled.status)) throw statusError(settled.status, '继续保存聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
       loaded = { ...loaded, run: settled.data ?? completed, runRevision: settled.revision };
     }
     const orderedFloors = [...loaded.floors].sort((left, right) => left.assistantSeq - right.assistantSeq);
@@ -485,7 +485,7 @@ export function createFoundationRuntime({
         hostLocator: { messageIndex: right.candidates[index]?.messageIndex, swipeId: right.candidates[index]?.swipeId, selectedSwipeIndex: right.candidates[index]?.selectedSwipeIndex },
         rawFingerprint: right.candidates[index]?.rawFingerprint, canonicalFingerprint: right.candidates[index]?.canonicalFingerprint,
         sanitizerFingerprint: right.candidates[index]?.sanitizerFingerprint }, item)));
-  function stableCountFor(candidates, floors, confirmLatest, stableThrough = null, manualConfirmation = null) {
+  function stableCountFor(candidates, floors, stableThrough = null, manualConfirmation = null) {
     if (stableThrough) {
       const boundaryIndex = candidates.findIndex(candidate => candidate.assistantSeq === stableThrough.assistantSeq
         && candidate.hostLocator.messageIndex === stableThrough.messageIndex
@@ -517,11 +517,11 @@ export function createFoundationRuntime({
     }
     return count;
   }
-  async function findOrphanAnchorRepair(value, candidates, bindings, { confirmLatest = false, stableThrough = null, manualConfirmation = null } = {}) {
+  async function findOrphanAnchorRepair(value, candidates, bindings, { stableThrough = null, manualConfirmation = null } = {}) {
     const tailRepair = orphanTailAnchorRepair(value, candidates, bindings);
     if (tailRepair) return tailRepair;
     let stableCount = 0;
-    try { stableCount = stableCountFor(candidates, value?.floors ?? [], confirmLatest, stableThrough, manualConfirmation); }
+    try { stableCount = stableCountFor(candidates, value?.floors ?? [], stableThrough, manualConfirmation); }
     catch { return null; }
     const replacement = exactOrphanMarkerRepair(value, candidates, bindings, stableCount);
     if (!replacement || !hasTimeFloorReference) return null;
@@ -538,7 +538,7 @@ export function createFoundationRuntime({
     if (!value?.root) return reason('missingRoot');
     const bindings = matchFloorCandidates(value.floors ?? [], candidates);
     if (bindings.issue) return reason('markerMismatch', bindings.issue.assistantSeq, bindings.issue.messageIndex, value.floors.length, candidates.length, { markerStatus: bindings.issue.markerStatus, bindingIssue: bindings.issue.code });
-    const stableCount = stableCountFor(candidates, value.floors ?? [], false, null);
+    const stableCount = stableCountFor(candidates, value.floors ?? []);
     if (stableCount !== (value.floors?.length ?? 0)) {
       const differenceIndex = Math.min(stableCount, value.floors?.length ?? 0);
       return reason('stableCountMismatch', candidates[differenceIndex]?.assistantSeq ?? value.floors?.[differenceIndex]?.assistantSeq ?? null,
@@ -628,13 +628,13 @@ export function createFoundationRuntime({
       }
       const loaded = await store.readReachable({ mode: 'projection' });
       if (inspectEpoch !== sessionEpoch) return publicState;
-      inspectedStableCount = stableCountFor(candidates, loaded?.floors ?? [], false, null);
+      inspectedStableCount = stableCountFor(candidates, loaded?.floors ?? []);
       if (['ready', 'needsReseal'].includes(loaded.status)) {
         const orderedFloors = [...loaded.floors].sort((left, right) => left.assistantSeq - right.assistantSeq);
         cache = { ...loaded, floors: restoreActiveFloorViews(orderedFloors, loaded.indexes) };
         if (loaded.migrationDescriptor) {
           candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
-          inspectedStableCount = stableCountFor(candidates, cache.floors, false, null);
+          inspectedStableCount = stableCountFor(candidates, cache.floors);
         }
         lastRun = runSummary(loaded.run, 'inspected');
       } else if (loaded.status === 'uninitialized') {
@@ -655,7 +655,7 @@ export function createFoundationRuntime({
     } catch (error) {
       if (inspectEpoch !== sessionEpoch) return publicState;
       if (captured) {
-        lastError = publicErrorMessage(error, { fallback: '后端数据检查失败，请稍后重试。' });
+        lastError = publicErrorMessage(error, { fallback: '读取聊天记忆失败。请稍后重试；仍失败时，请到“记忆管理”页点击“复制状态诊断”反馈。' });
         return publish('error');
       }
       if (cache?.root) return publicState;
@@ -666,14 +666,14 @@ export function createFoundationRuntime({
         const candidates = await scanCandidates(host.chat, { sanitizerOptions: sanitizerOptions() });
         if (inspectEpoch !== sessionEpoch) return publicState;
         if (cache?.root) return publicState;
-        inspectedStableCount = stableCountFor(candidates, [], false, null);
+        inspectedStableCount = stableCountFor(candidates, []);
         updateCandidateProjection(candidates, [], inspectedStableCount);
         cache = null;
         lastRun = null;
         lastError = null;
         return publish('uninitialized');
       } catch {
-        lastError = publicErrorMessage(error, { fallback: '后端数据检查失败，请稍后重试。' });
+        lastError = publicErrorMessage(error, { fallback: '读取聊天记忆失败。请稍后重试；仍失败时，请到“记忆管理”页点击“复制状态诊断”反馈。' });
         return publish('error');
       }
     }
@@ -709,7 +709,7 @@ export function createFoundationRuntime({
   function observeDeferredPreparation(expectedEpoch) {
     void Promise.resolve().then(() => prepareSession()).catch(error => {
       if (expectedEpoch !== sessionEpoch || !enabled()) return;
-      lastError = publicErrorMessage(error, { fallback: '聊天身份准备失败，请稍后重试。' });
+      lastError = publicErrorMessage(error, { fallback: '聊天身份准备失败。请到“记忆管理”页点击“复制状态诊断”反馈。' });
       publish('error');
     });
   }
@@ -742,7 +742,7 @@ export function createFoundationRuntime({
         else result = await store.replaceRecord(record, winner.revision, { signal: operation.controller.signal });
       }
     }
-    if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, '后端任务状态写入失败。');
+    if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, '保存聊天记忆进度失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
     operation.runRevision = result.revision;
     operation.runRecord = result.data ?? record;
     return operation.runRecord;
@@ -751,12 +751,12 @@ export function createFoundationRuntime({
   async function recoverPreparedRun(operation, runId, { parentCheckpointId, inputSnapshotFingerprint, narrativeGeneration }) {
     const result = await store.readRecord('run', runId);
     if (result.status === 'missing') return null;
-    if (result.status !== 'ready') throw statusError(result.status, '待提交任务读取失败。');
+    if (result.status !== 'ready') throw statusError(result.status, '读取未完成的聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
     const record = result.data;
     if (record.parentCheckpointId !== parentCheckpointId
       || record.inputSnapshotFingerprint !== inputSnapshotFingerprint
       || record.narrativeGeneration !== narrativeGeneration) {
-      throw Object.assign(new Error('待提交任务与当前输入不一致。'), { code: 'V3_STAGED_SCOPE_MISMATCH' });
+      throw Object.assign(new Error('未完成的记忆与当前聊天内容不一致，无法继续保存。请到“记忆管理”页点击“复制状态诊断”反馈。'), { code: 'V3_STAGED_SCOPE_MISMATCH' });
     }
     operation.runRevision = result.revision;
     operation.runRecord = record;
@@ -769,7 +769,7 @@ export function createFoundationRuntime({
     if (operation.resumePreparedRefs?.has(key)) {
       const existing = await store.readRecord(record.recordType, key);
       if (existing.status === 'ready' && sameFoundationRecordContent(existing.data, record)) return { status: 'reused', data: existing.data, revision: existing.revision, recordId: key };
-      if (existing.status !== 'missing') throw Object.assign(new Error('待提交记录内容发生冲突。'), { code: 'V3_STAGED_CONFLICT' });
+      if (existing.status !== 'missing') throw Object.assign(new Error('聊天记忆记录与待保存内容不一致，无法继续保存。请到“记忆管理”页点击“复制状态诊断”反馈。'), { code: 'V3_STAGED_CONFLICT' });
     }
     return store.putRecord(record, { signal: operation.controller.signal });
   }
@@ -786,8 +786,8 @@ export function createFoundationRuntime({
           const freshness = current(operation);
           if (freshness !== 'current') throw statusError(freshness);
           const result = await persistPreparedRecord(operation, records[index]);
-          if (result.status === 'conflict') throw Object.assign(new Error('待提交记录发生冲突。'), { code: 'V3_STAGED_CONFLICT' });
-          if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, '待提交记录写入失败。');
+          if (result.status === 'conflict') throw Object.assign(new Error('聊天记忆记录发生冲突，无法完成保存。请到“记忆管理”页点击“复制状态诊断”反馈。'), { code: 'V3_STAGED_CONFLICT' });
+          if (!['saved', 'reused'].includes(result.status)) throw statusError(result.status, '保存聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
         } catch (error) {
           firstError ??= error;
         }
@@ -797,15 +797,15 @@ export function createFoundationRuntime({
     if (firstError) throw firstError;
   }
 
-  async function scanCurrentSnapshot(operation, { confirmLatest = false, stableThrough = operation?.stableThrough ?? null, manualConfirmation = operation?.manualConfirmation ?? null } = {}) {
+  async function scanCurrentSnapshot(operation, { stableThrough = operation?.stableThrough ?? null, manualConfirmation = operation?.manualConfirmation ?? null } = {}) {
     if (current(operation) !== 'current') throw statusError('stale');
     if (targetRecoveryLeaf && targetChatIo?.requireSourceValidation === true) await targetChatIo.readLatest();
     const captured = capture();
     const candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
     if (current(operation) !== 'current') throw statusError('stale');
     const bindings = matchFloorCandidates(cache?.floors ?? [], candidates);
-    if (bindings.issue) throw statusError('needsReview', '当前消息记忆标识存在冲突，本次操作不再提交。');
-    const stableCount = stableCountFor(candidates, cache?.floors ?? [], confirmLatest, stableThrough, manualConfirmation);
+    if (bindings.issue) throw statusError('needsReview', '当前消息的记忆标识与已保存内容冲突，无法确认对应关系。请到“记忆管理”页点击“复制状态诊断”反馈。');
+    const stableCount = stableCountFor(candidates, cache?.floors ?? [], stableThrough, manualConfirmation);
     const snapshot = await inputSnapshotForCandidates(candidates, stableCount);
     return { candidates, stableCount, snapshot };
   }
@@ -853,7 +853,7 @@ export function createFoundationRuntime({
     if (captured.host.context.groupId !== null && captured.host.context.groupId !== undefined) return publicState;
     const evidence = { identity: captured.identity, epoch: sessionEpoch, newLen: captured.host.chat.length };
     const candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
-    if (!tailDeletionMatches(evidence, candidates, cache?.floors ?? [], stableCountFor(candidates, cache?.floors ?? [], false))) return publicState;
+    if (!tailDeletionMatches(evidence, candidates, cache?.floors ?? [], stableCountFor(candidates, cache?.floors ?? []))) return publicState;
     const messageSnapshot = messages => JSON.stringify(messages.map(message => ({
       is_user: message?.is_user, is_system: message?.is_system, mes: message?.mes,
       swipes: message?.swipes, swipe_id: message?.swipe_id, send_date: message?.send_date,
@@ -1075,10 +1075,10 @@ export function createFoundationRuntime({
     const frozenFloorIds = new Set(migrationPartition(cache).frozenFloorIds);
     const memoryFloorIds = new Set((cache.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').flatMap(memorySourceFloorIds));
     const bindings = matchFloorCandidates(existing, stableCandidates);
-    if (bindings.issue?.code === 'markerRejected') throw statusError('needsReview', '消息记忆标识无效或来自其他聊天，未静默接管。');
-    if (bindings.issue?.code === 'markerConflict') throw statusError('needsReview', '消息记忆标识指向当前图中不存在的楼，未静默猜测。');
-    if (bindings.issue?.code === 'duplicateMarker' || bindings.issue?.code === 'duplicateBinding') throw statusError('needsReview', '多条消息使用了同一个记忆楼标识，未静默合并。');
-    if (bindings.issue) throw statusError('needsReview', '旧聊天存在重复正文，无法唯一迁移消息记忆标识。');
+    if (bindings.issue?.code === 'markerRejected') throw statusError('needsReview', '一条消息的记忆标识无效或来自其他聊天，无法确认对应关系。请到“记忆管理”页点击“复制状态诊断”反馈。');
+    if (bindings.issue?.code === 'markerConflict') throw statusError('needsReview', '一条消息的记忆标识找不到对应记忆，无法自动匹配。请到“记忆管理”页点击“复制状态诊断”反馈。');
+    if (bindings.issue?.code === 'duplicateMarker' || bindings.issue?.code === 'duplicateBinding') throw statusError('needsReview', '多条消息使用了重复的记忆标识，无法确认对应关系。请到“记忆管理”页点击“复制状态诊断”反馈。');
+    if (bindings.issue) throw statusError('needsReview', '聊天中有内容相同的消息，无法确定原有记忆对应哪一条。请到“记忆管理”页点击“复制状态诊断”反馈。');
     const aligned = stableCandidates.map((_, index) => bindings.candidateMatches.get(index)?.floor ?? null);
     const usedFloorIds = new Set(bindings.matches.map(match => match.floor.id));
     const unmatchedCandidates = bindings.unmatchedCandidateIndexes.map(index => stableCandidates[index]);
@@ -1179,15 +1179,15 @@ export function createFoundationRuntime({
     await persistPreparedRecords(operation, [...newFloors, ...newStateDeltas, ...(currentState ? [currentState] : []), ...indexes]);
     const checkpointResult = await persistPreparedRecord(operation, checkpoint);
     if (checkpointResult.status === 'conflict') throw Object.assign(new Error('待提交的记忆快照发生冲突。'), { code: 'V3_STAGED_CONFLICT' });
-    if (!['saved', 'reused'].includes(checkpointResult.status)) throw statusError(checkpointResult.status, '待提交的记忆快照写入失败。');
+    if (!['saved', 'reused'].includes(checkpointResult.status)) throw statusError(checkpointResult.status, '保存聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
     run = await persistRunPhase(operation, 'committing', { completedFloorIds: newFloors.map(floor => floor.id) });
     const freshness = current(operation);
     if (freshness !== 'current') throw statusError(freshness);
-    const beforeCommit = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough, manualConfirmation });
+    const beforeCommit = await scanCurrentSnapshot(operation, { stableThrough, manualConfirmation });
     if (beforeCommit.snapshot.fingerprint !== snapshot.fingerprint) {
       const staleRun = await persistRunPhase(operation, 'stale', { completedFloorIds: newFloors.map(floor => floor.id) });
       lastRun = runSummary(staleRun, 'sourceChangedBeforeCommit');
-      lastError = '后端数据的输入在提交前已变化，旧快照已作废并将自动同步。';
+      lastError = '聊天内容在保存前发生变化，本次保存未完成，正在同步最新内容。';
       dirtyReason = 'sourceChangedBeforeCommit';
       return publishOperation(operation, 'stale');
     }
@@ -1207,7 +1207,7 @@ export function createFoundationRuntime({
     if (committed.status === 'conflict') {
       unreachableCount += newFloors.length + indexes.length + 2;
       const winner = await store.readReachable();
-      const currentInput = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough, manualConfirmation });
+      const currentInput = await scanCurrentSnapshot(operation, { stableThrough, manualConfirmation });
       const samePreparedWinner = winner.status === 'ready'
         && winner.checkpoint.runId === runId
         && winner.root.sourceSnapshotFingerprint === snapshot.fingerprint;
@@ -1216,7 +1216,7 @@ export function createFoundationRuntime({
         : await persistRunPhase(operation, 'stale', { completedFloorIds: newFloors.map(floor => floor.id) });
       if (currentInput.snapshot.fingerprint !== snapshot.fingerprint) {
         lastRun = runSummary(staleRun, 'casConflictSourceChanged');
-        lastError = '并发提交期间正文又发生变化，旧快照已作废并将自动收敛。';
+        lastError = '聊天内容在同步期间发生变化，正在更新记忆。';
         cache = winner.status === 'ready' ? { ...winner, floors: restoreActiveFloorViews([...winner.floors].sort((left, right) => left.assistantSeq - right.assistantSeq), winner.indexes) } : null;
         updateCandidateProjection(currentInput.candidates, cache?.floors ?? [], currentInput.stableCount);
         dirtyReason = 'casConflictSourceChanged';
@@ -1235,11 +1235,11 @@ export function createFoundationRuntime({
         }
       }
       lastRun = runSummary(staleRun, 'casConflict');
-      lastError = '后端数据提交遇到并发更新，当前快照无法安全同步。';
+      lastError = '聊天记忆同时被其他操作更新，当前内容未能保存。请到“记忆管理”页点击“复制状态诊断”反馈。';
       cache = null;
       return publishOperation(operation, 'conflict');
     }
-    if (committed.status !== 'saved') throw statusError(committed.status, '后端入口记录提交失败。');
+    if (committed.status !== 'saved') throw statusError(committed.status, '保存聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。');
     const committedReachable = committed.reachable;
     if (!committedReachable || committedReachable.status !== 'ready'
       || committedReachable.rootRevision !== committed.revision
@@ -1247,17 +1247,17 @@ export function createFoundationRuntime({
       || committedReachable.root?.headCheckpointId !== checkpointId
       || committedReachable.root?.narrativeGeneration !== narrativeGeneration
       || committedReachable.root?.sourceSnapshotFingerprint !== snapshot.fingerprint) {
-      throw Object.assign(new Error('后端入口记录已提交，但无法读到一致的完整记忆数据。'), { code: 'V3_COMMIT_REACHABLE_MISMATCH' });
+      throw Object.assign(new Error('聊天记忆保存后无法确认完整结果。请到“记忆管理”页点击“复制状态诊断”反馈。'), { code: 'V3_COMMIT_REACHABLE_MISMATCH' });
     }
     cache = { ...committedReachable, floors: activeFloorViews(committedReachable.floors, stableCandidates) };
-    const afterCommit = await scanCurrentSnapshot(operation, { confirmLatest, stableThrough, manualConfirmation });
+      const afterCommit = await scanCurrentSnapshot(operation, { stableThrough, manualConfirmation });
     if (afterCommit.snapshot.fingerprint !== snapshot.fingerprint) {
       const staleRun = await persistRunPhase(operation, 'stale', { completedFloorIds: newFloors.map(floor => floor.id) });
       cache.run = staleRun;
       lastRun = runSummary(staleRun, 'sourceChangedAfterCommit');
-      lastError = '提交响应返回时正文已变化，正在自动收敛到最新快照。';
+      lastError = '聊天内容在保存期间发生变化，正在同步最新内容。';
       if (rebaseAttempt < 2) {
-        const latest = await scanCurrentSnapshot(operation, { confirmLatest: false, stableThrough, manualConfirmation });
+        const latest = await scanCurrentSnapshot(operation, { stableThrough, manualConfirmation });
         return seal(operation, { ...latest, confirmLatest: false, stableThrough, manualConfirmation, sourceSnapshot: latest.snapshot, rebaseAttempt: rebaseAttempt + 1 });
       }
       dirtyReason = 'sourceChangedAfterCommit';
@@ -1295,6 +1295,7 @@ export function createFoundationRuntime({
       try {
         if (prepareSession) {
           const prepared = await prepareSession();
+          if (prepared?.status === 'idle') return publishOperation(operation, 'uninitialized');
           if (prepared?.status && prepared.status !== 'ready') throw statusError(prepared.status, '当前聊天身份尚未准备完成。');
         }
         if (operation.epoch !== sessionEpoch || operation.controller.signal.aborted) return publishOperation(operation, enabled() ? 'stale' : 'disabled');
@@ -1313,7 +1314,7 @@ export function createFoundationRuntime({
         metrics = Object.freeze({ assistantFloors: candidates.length, canonicalCharacters: candidates.reduce((sum, item) => sum + item.canonicalContent.length, 0), scanMs: elapsed, maximumChunkMs: scanMetrics.maximumChunkMs ?? elapsed, algorithm: 'ordered-O(n)' });
         let candidateBindings = matchFloorCandidates(loaded.floors, candidates);
         const orphanRepair = await findOrphanAnchorRepair(loaded, candidates, candidateBindings,
-          { confirmLatest, stableThrough, manualConfirmation: operation.manualConfirmation });
+          { stableThrough, manualConfirmation: operation.manualConfirmation });
         if (orphanRepair && operation.orphanRepairAttempted !== true && !targetRecoveryLeaf) {
           operation.orphanRepairAttempted = true;
           if (operation.recoveryTarget) return await runOrphanTargetRecovery(operation.recoveryTarget);
@@ -1328,20 +1329,20 @@ export function createFoundationRuntime({
           candidateBindings = matchFloorCandidates(loaded.floors, candidates);
         }
         if (candidateBindings.issue) {
-          inspectedStableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough, operation.manualConfirmation);
+          inspectedStableCount = stableCountFor(candidates, loaded.floors, stableThrough, operation.manualConfirmation);
           updateCandidateProjection(candidates, loaded.floors, inspectedStableCount);
           reviewReason = bindingReviewReason(candidateBindings.issue, loaded.floors, candidates);
           lastError = null;
           return publishOperation(operation, 'needsReview');
         }
         if (operation.manualConfirmation) {
-          const ordinaryStableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough, null);
+          const ordinaryStableCount = stableCountFor(candidates, loaded.floors, stableThrough, null);
           const currentScope = confirmationScopeFor(candidates, loaded.floors, ordinaryStableCount);
           if (!sameConfirmationScope({ chatId: operation.chatId, candidates: operation.manualConfirmation }, currentScope)) {
             throw statusError('stale', '连续 AI 确认范围已经变化，本次操作未写入。');
           }
         }
-        const stableCount = stableCountFor(candidates, loaded.floors, confirmLatest, stableThrough, operation.manualConfirmation);
+        const stableCount = stableCountFor(candidates, loaded.floors, stableThrough, operation.manualConfirmation);
     const sourceSnapshot = await inputSnapshotForCandidates(candidates, stableCount);
         if (!loaded.root && stableCount === 0) {
           emptyRealtimeObservation = Object.freeze({ chatId: operation.chatId });
@@ -1368,7 +1369,7 @@ export function createFoundationRuntime({
         } else if (!lastRun || lastRun.id !== operation.id) {
           lastRun = Object.freeze({ id: operation.id, mode: reason, phase: 'retryableError', code: error?.code ?? null });
         }
-        lastError = publicErrorMessage(error, { fallback: '后端数据处理失败，请稍后重试。' });
+        lastError = publicErrorMessage(error, { fallback: '处理聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。' });
         logger?.warn?.('[qianqianjie] V3 foundation failed', { code: error?.code ?? error?.name ?? 'V3_FOUNDATION_FAILED' });
         return publishOperation(operation, 'error');
       } finally {
@@ -1383,7 +1384,7 @@ export function createFoundationRuntime({
           dirtyReason = null;
           dirtyStableThrough = null;
           dirtyTailDeletion = null;
-          Promise.resolve().then(() => reconcile(nextReason, { stableThrough: nextStableThrough, tailDeletion: nextTailDeletion })).catch(error => { lastError = publicErrorMessage(error, { fallback: '后端数据同步任务启动失败，请稍后重试。' }); publish('error'); });
+          Promise.resolve().then(() => reconcile(nextReason, { stableThrough: nextStableThrough, tailDeletion: nextTailDeletion })).catch(error => { lastError = publicErrorMessage(error, { fallback: '同步聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。' }); publish('error'); });
         }
       }
     })();
@@ -1402,7 +1403,7 @@ export function createFoundationRuntime({
       const nextTailDeletion = dirtyTailDeletion; dirtyTailDeletion = null;
       return reconcile(next, { tailDeletion: nextTailDeletion });
     }).catch(error => {
-      lastError = publicErrorMessage(error, { fallback: '后端数据同步任务启动失败，请稍后重试。' });
+      lastError = publicErrorMessage(error, { fallback: '同步聊天记忆失败。请到“记忆管理”页点击“复制状态诊断”反馈。' });
       logger?.warn?.('[qianqianjie] V3 foundation schedule failed', { code: error?.code ?? error?.name ?? 'V3_SCHEDULE_FAILED' });
       return publish('error');
     });
@@ -1520,7 +1521,7 @@ export function createFoundationRuntime({
     if (captured.identity.chatId !== projectedChatId || scope?.chatId !== captured.identity.chatId) return publish('stale');
     const bindings = matchFloorCandidates(cache.floors ?? [], candidates);
     if (bindings.issue) return reconcile('manualConfirmConsecutive');
-    const stableCount = stableCountFor(candidates, cache.floors ?? [], false, null);
+    const stableCount = stableCountFor(candidates, cache.floors ?? []);
     const currentScope = confirmationScopeFor(candidates, cache.floors ?? [], stableCount);
     if (!sameConfirmationScope(scope, currentScope)) {
       updateCandidateProjection(candidates, cache.floors ?? [], stableCount);

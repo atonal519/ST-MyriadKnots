@@ -2,17 +2,19 @@ const copy = value => { try { return structuredClone(value); } catch { return nu
 const list = value => Array.isArray(value) ? value.filter(item => typeof item === 'string' && item.trim()) : typeof value === 'string' && value.trim() ? [value] : [];
 
 export function captureHistoricalRebuildSources(snapshot, {
+  chatId = snapshot?.context?.chatMetadata?.qianqianjie?.chatId,
   worldInfoBindings = {},
   getCharacterLorebooks = () => null,
   getGlobalSelection = () => null,
   loadWorldInfo = async () => null,
+  calendarForChat = () => null,
 } = {}) {
   const rawContext = snapshot?.context;
   if (!rawContext || typeof rawContext !== 'object') throw new TypeError('历史重构作者来源不可用');
   const read = (provider, fallback = null) => { try { return copy(provider?.()) ?? fallback; } catch { return fallback; } };
   let helperCharacters = null, helperGlobals = null;
   try { helperCharacters = copy(getCharacterLorebooks()); } catch { /* selected character books can be absent */ }
-  try { helperGlobals = copy(getGlobalSelection()); } catch { /* global selection can be absent */ }
+  try { helperGlobals = copy(getGlobalSelection()); } catch { /* the host may have no global selection */ }
   const rawCharacter = Array.isArray(rawContext.characters) ? rawContext.characters[rawContext.characterId] : rawContext.characters?.[rawContext.characterId];
   const data = rawCharacter?.data ?? {};
   const character = {
@@ -29,6 +31,8 @@ export function captureHistoricalRebuildSources(snapshot, {
   const chatWorldInfoGlobalSelection = (() => { try { return copy(rawContext.chatWorldInfo?.globalSelection); } catch { return null; } })() ?? [];
   const selected = read(worldInfoBindings.getSelectedWorldInfo, []);
   const settings = read(worldInfoBindings.getWorldInfoSettings, {});
+  let storyCalendar = null;
+  try { storyCalendar = copy(calendarForChat(chatId)); } catch { /* an unconfigured calendar remains absent */ }
   const names = [...new Set([
     ...list(selected), ...list(read(worldInfoBindings.getWorldInfoNames, [])), ...list(helperGlobals),
     ...list(helperCharacters?.primary), ...list(helperCharacters?.additional),
@@ -53,5 +57,5 @@ export function captureHistoricalRebuildSources(snapshot, {
     extensionSettings: { note: copy(rawContext.extensionSettings?.note) ?? {} },
     characterAuxWorlds: auxWorlds, chatWorldInfoNames, chatWorldInfoGlobalSelection,
   });
-  return Object.freeze({ context, userIdentity: copy(snapshot.userIdentity), worldInfo });
+  return Object.freeze({ context, userIdentity: copy(snapshot.userIdentity), worldInfo, storyCalendar });
 }

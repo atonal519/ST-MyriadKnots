@@ -6,13 +6,22 @@ const RECORD_TYPE_PREFIXES = Object.freeze([
   ['v3-entity-', 'entity'], ['v3-baseline-', 'baseline'], ['v3-state-delta-', 'stateDelta'],
   ['v3-current-state-', 'currentState'], ['v3-index-', 'index'],
 ]);
-function safeError(status) { return new Error(`后端请求失败（HTTP ${status}），请查看详细诊断。`); }
+const ACTION_FOR_METHOD = Object.freeze({ GET: '读取记忆', POST: '读取记忆', PUT: '保存记忆', DELETE: '删除记忆' });
+const DIAGNOSTIC_NEXT_STEP = '请到“记忆管理”页点击“复制状态诊断”反馈。';
+function safeError(status, action) {
+  return new Error(`${action}失败（HTTP ${status}）。${DIAGNOSTIC_NEXT_STEP}`);
+}
 function shortDiagnosticText(value, limit) {
   if (typeof value !== 'string') return undefined;
   const text = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
   return text || undefined;
 }
-function timeoutError() { const error = new Error('后端请求超时'); error.name = 'TimeoutError'; error.code = 'BACKEND_TIMEOUT'; return error; }
+function timeoutError(action = null) {
+  const message = action
+    ? `${action}超时，记忆存储服务未及时响应。请稍后重试；仍失败时，${DIAGNOSTIC_NEXT_STEP}`
+    : '后端请求超时';
+  const error = new Error(message); error.name = 'TimeoutError'; error.code = 'BACKEND_TIMEOUT'; return error;
+}
 // Fetch receives one complete body (without streaming-duplex); the shared abort also cancels preparation.
 async function gzipRequestBody(bytes, signal) {
   if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
@@ -83,7 +92,9 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
   };
   const request = async (path, options = {}, requestDiagnostic = null, requestTimeoutMs = timeoutMs) => {
     const startedAt = Date.now();
+    const action = requestDiagnostic ? ACTION_FOR_METHOD[requestDiagnostic.method] ?? null : null;
     let http400Diagnostic = null;
+    let fetchFailed = false;
     if (requestDiagnostic) {
       const method = requestDiagnostic.method.toLowerCase();
       diagnostic.sinceClientCreatedRequestCounts[method] ??= 0;
@@ -117,7 +128,13 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
         if (!transport.contentEncoding) transport = { bodyBytes: bytes.byteLength, encodedBodyBytes: bytes.byteLength, contentEncoding: 'identity' };
       }
       if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException('Aborted', 'AbortError');
-      const response = await fetchImpl(`${baseUrl}${path}`, { ...requestOptions, signal: controller.signal, headers: requestHeaders });
+      let response;
+      try {
+        response = await fetchImpl(`${baseUrl}${path}`, { ...requestOptions, signal: controller.signal, headers: requestHeaders });
+      } catch (error) {
+        fetchFailed = true;
+        throw error;
+      }
       if (!response.ok) {
         if (response.status === 400 && requestDiagnostic) {
           try {
@@ -130,19 +147,25 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
             }
           } catch { /* 保留原始 HTTP 400；诊断响应可能不是 JSON。 */ }
         }
-        const error = safeError(response.status); error.status = response.status; throw error;
+        const error = safeError(response.status, action ?? '请求'); error.status = response.status; throw error;
       }
       const body = await response.json();
       finishDiagnostic(requestDiagnostic, startedAt, 'success', { transport });
       return body;
     } catch (error) {
       if (timedOut) {
-        const timeout = timeoutError();
+        const timeout = timeoutError(action);
         finishDiagnostic(requestDiagnostic, startedAt, 'timeout', { code: timeout.code, transport });
         throw timeout;
       }
       if (Number.isSafeInteger(error?.status)) finishDiagnostic(requestDiagnostic, startedAt, 'httpError', { httpStatus: error.status, ...(error.status === 400 ? http400Diagnostic : {}), transport });
       else finishDiagnostic(requestDiagnostic, startedAt, outerSignal?.aborted ? 'aborted' : 'failure', { transport });
+      if (action && fetchFailed && !useTauri && error?.name === 'TypeError' && !outerSignal?.aborted) {
+        const failure = new Error(`${action}失败，无法连接记忆存储服务。请稍后重试；仍失败时，${DIAGNOSTIC_NEXT_STEP}`, { cause: error });
+        failure.name = error?.name ?? 'Error';
+        if (error?.code !== undefined) failure.code = error.code;
+        throw failure;
+      }
       throw error;
     }
     finally { clearTimeout(timer); outerSignal?.removeEventListener?.('abort', abortFromOuter); }
@@ -229,6 +252,10 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
     async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }, { method: 'PUT', recordType: recordTypeFromId(recordId) }); },
     async remove(collection, recordId, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
     async removePermanent(collection, recordId, expectedRevision, { signal } = {}) { return request(`${key(collection, recordId)}/permanent`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
+    async collectExpiredTrash(namespace = NAMESPACE, { limit = 32, cursor = null, signal } = {}) {
+      const path = `/v1/trash/${encodeURIComponent(namespace)}/collect-expired`;
+      return request(path, { method: 'POST', body: JSON.stringify({ limit, cursor }), signal }, null, listTimeoutMs);
+    },
     getDiagnosticSnapshot() {
       const copy = value => value ? { ...value } : null;
       return {

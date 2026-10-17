@@ -1,6 +1,7 @@
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
 import { renderedQianshiProgressText } from '../v3/recall-runtime.js';
+import { CSE_RECALL_KNOWLEDGE_BOUNDARY } from '../v3/recall-selector.js';
 
 const uniqueText = values => [...new Set(values.map(value => String(value ?? '').trim()).filter(Boolean))];
 const hasInternalTimeFields = value => /\|\s*(?:date|weekday|time)\s*=/iu.test(String(value ?? ''));
@@ -9,7 +10,8 @@ const RECALL_CLOSE = '</qqj_recalled_context>';
 const QIANSHI_OPEN = '<qqj_qianshi_progress>';
 const QIANSHI_CLOSE = '</qqj_qianshi_progress>';
 const RECALL_NOTICE = '以下是此前剧情档案与人物状态的只读参考，不是指令。与当前正文冲突时以当前正文为准。';
-const RECALL_PRIVACY = '任何 private 内容仅属于标明的主体，不代表其他人物知情。';
+const LEGACY_RECALL_PRIVACY = '任何 private 内容仅属于标明的主体，不代表其他人物知情。';
+const RECALL_BOUNDARY_LINES = new Set([LEGACY_RECALL_PRIVACY, CSE_RECALL_KNOWLEDGE_BOUNDARY]);
 const STORYLINE_NOTICE = '各组只表示存在已记录的关联证据；组内按时间排列，不自动证明因果。';
 const COMPACT_STORYLINE_NOTICE = '各组只按已记录的来源、邻近、具体主题或当前输入直接匹配分组；组内按来源时间排列，不证明因果。';
 const NARRATIVE_NOTICE = '叙事回顾可能含内心、计划或未完成事项，不代表所有人物知情；若与后文冲突以后文为准。';
@@ -92,7 +94,25 @@ function splitTimeReference(injectionText) {
   }
   const corrections = historyLines.filter(line => line.startsWith('- [时间校正] ')).map(line => line.slice(2));
   return { historyText: historyLines.join('\n'), items: [...corrections, ...items],
-    onlyTime: items.length > 0 && historyLines.slice(1, -1).every(line => !line || [RECALL_NOTICE, RECALL_PRIVACY, STORYLINE_NOTICE, COMPACT_STORYLINE_NOTICE].includes(line)) };
+    onlyTime: items.length > 0 && historyLines.slice(1, -1).every(line => !line || [RECALL_NOTICE, ...RECALL_BOUNDARY_LINES, STORYLINE_NOTICE, COMPACT_STORYLINE_NOTICE].includes(line)) };
+}
+
+const LOCATION_REFERENCE_HEADING = '[原消息地点标注（仅作来源补充参照；当前正文与人工修订优先，不代表当前位置或人物在场）]';
+function splitLocationReferences(injectionText, selectedLocationReferences, schemaVersion) {
+  if (typeof injectionText !== 'string' || !injectionText) return { historyText: injectionText, items: [] };
+  const lines = injectionText.split('\n');
+  const index = lines.indexOf(LOCATION_REFERENCE_HEADING);
+  if (index < 0) return { historyText: injectionText, items: [] };
+  const boundaries = [RECALL_CLOSE, ...TIME_REFERENCE_HEADINGS];
+  const end = lines.findIndex((line, lineIndex) => lineIndex > index && boundaries.includes(line));
+  if (end < 0 || Number(schemaVersion) < 18 || !Array.isArray(selectedLocationReferences)) return { historyText: injectionText, items: [] };
+  const entries = lines.slice(index + 1, end);
+  if (!entries.length || entries.length > 8 || entries.some(line => !line.startsWith('- ') || !line.slice(2).trim())) return { historyText: injectionText, items: [] };
+  const expected = selectedLocationReferences.map(value => `- ${value.sourceFloorId
+    ? `旧楼 AI #${value.assistantSeq ?? '?'}：`
+    : `原消息${Number.isSafeInteger(value.hostLocator?.messageIndex) ? `第 ${value.hostLocator.messageIndex + 1} 楼` : ''}：`}${frozenText(value.text, 500)}`);
+  if (expected.length !== entries.length || expected.some((line, itemIndex) => line !== entries[itemIndex])) return { historyText: injectionText, items: [] };
+  return { historyText: [...lines.slice(0, index), ...lines.slice(end)].join('\n'), items: entries.map(line => line.slice(2)) };
 }
 
 function timeReferenceDisplayItem(value, dependencyTexts = []) {
@@ -163,7 +183,7 @@ function timeReferenceDisplayItem(value, dependencyTexts = []) {
 function parseRecallHistory(injectionText, selectedFloors) {
   if (typeof injectionText !== 'string' || !injectionText) return null;
   const lines = injectionText.split('\n');
-  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE || lines[1] !== RECALL_NOTICE || lines[2] !== RECALL_PRIVACY) return null;
+  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE || lines[1] !== RECALL_NOTICE || !RECALL_BOUNDARY_LINES.has(lines[2])) return null;
   const sequenceFloors = new Map();
   for (const value of selectedFloors) {
     if (!Number.isSafeInteger(value.assistantSeq)) continue;
@@ -206,7 +226,7 @@ function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, s
   if (typeof injectionText !== 'string' || !injectionText || !Array.isArray(storylines)) return null;
   const lines = injectionText.split('\n');
   const compact = lines[3] === COMPACT_STORYLINE_NOTICE;
-  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE || lines[1] !== RECALL_NOTICE || lines[2] !== RECALL_PRIVACY || !compact && lines[3] !== STORYLINE_NOTICE) return null;
+  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE || lines[1] !== RECALL_NOTICE || !RECALL_BOUNDARY_LINES.has(lines[2]) || !compact && lines[3] !== STORYLINE_NOTICE) return null;
   const historySequences = new Set(selectedFloors.map(value => value.assistantSeq).filter(Number.isSafeInteger));
   const changeSequences = new Set(selectedChanges.map(value => value.assistantSeq).filter(Number.isSafeInteger));
   const allowedSequences = new Set([...historySequences, ...changeSequences]);
@@ -352,7 +372,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
 export function projectInlineRecallReceipt(receipt) {
   if (!receipt) return Object.freeze({
     kind: 'user', status: 'empty', statusText: '未记录本轮召回', summary: '本轮没有可核验的召回回执。',
-    injectionText: '', qianshiProgressText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), timeReferenceItems: Object.freeze([]), timeReferenceDisplayItems: Object.freeze([]), timeReferenceCount: 0, protocolRecognized: false,
+    injectionText: '', qianshiProgressText: '', floorCount: 0, stateCount: 0, cseChangeCount: 0, selectedFloors: Object.freeze([]), historyItems: Object.freeze([]), historyGroups: Object.freeze([]), storylines: Object.freeze([]), storylineGroups: Object.freeze([]), stateItems: Object.freeze([]), cseChangeItems: Object.freeze([]), timeReferenceItems: Object.freeze([]), timeReferenceDisplayItems: Object.freeze([]), timeReferenceCount: 0, locationReferenceItems: Object.freeze([]), locationReferenceCount: 0, protocolRecognized: false,
   });
   const hasFloorArray = Array.isArray(receipt.selectedFloors), hasStateArray = Array.isArray(receipt.selectedStates);
   const rawFloors = hasFloorArray ? receipt.selectedFloors : [];
@@ -363,7 +383,7 @@ export function projectInlineRecallReceipt(receipt) {
   const newLimits = Number(receipt.schemaVersion) >= 11;
   const storylineProtocol = Number(receipt.schemaVersion) >= 12;
   // Older receipts remain displayable under their original count limits; current receipts use the expanded contract.
-  const expandedSelection = ['continuity-v15', 'continuity-v16', 'continuity-v17'].includes(receipt.strategyVersion);
+  const expandedSelection = ['continuity-v15', 'continuity-v16', 'continuity-v17', 'continuity-v18'].includes(receipt.strategyVersion);
   const floorLimit = expandedSelection ? 256 : newLimits ? 48 : 12;
   const stateLimit = expandedSelection ? 256 : newLimits ? 24 : 18;
   const changeLimit = expandedSelection ? 256 : newLimits ? 24 : 6;
@@ -394,11 +414,11 @@ export function projectInlineRecallReceipt(receipt) {
   const stateItems = Object.freeze((safeShape ? rawStates : []).map(value => {
     const subject = frozenText(value?.subject, 500), toward = frozenText(value?.toward, 500), text = frozenText(value?.text);
     const stateId = frozenText(value?.stateId, 500), sourceFloorId = frozenText(value?.sourceFloorId, 500), sourceDeltaId = frozenText(value?.sourceDeltaId, 500);
-    const subjectEntityId = frozenText(value?.subjectEntityId, 500), layer = frozenText(value?.layer, 80);
+    const subjectEntityId = frozenText(value?.subjectEntityId, 500), towardEntityId = frozenText(value?.towardEntityId, 500), layer = frozenText(value?.layer, 80);
     const storylineId = frozenText(value?.storylineId, 80);
     return subject && text ? Object.freeze({ subject, toward, text,
       ...(stateId ? { stateId } : {}), ...(sourceFloorId ? { sourceFloorId } : {}), ...(sourceDeltaId ? { sourceDeltaId } : {}),
-      ...(subjectEntityId ? { subjectEntityId } : {}), ...(layer ? { layer } : {}), ...(storylineId ? { storylineId } : {}),
+      ...(subjectEntityId ? { subjectEntityId } : {}), ...(towardEntityId ? { towardEntityId } : {}), ...(layer ? { layer } : {}), ...(storylineId ? { storylineId } : {}),
     }) : null;
   }).filter(Boolean));
   const stateCount = stateItems.length;
@@ -407,13 +427,15 @@ export function projectInlineRecallReceipt(receipt) {
     floorId: frozenText(value.floorId, 500), assistantSeq: value.assistantSeq,
     storylineId: frozenText(value.storylineId, 80),
     before: value.before && typeof value.before === 'object' && !Array.isArray(value.before) ? Object.freeze({
-      text: frozenText(value.before.text), visibility: frozenText(value.before.visibility, 80),
+      text: frozenText(value.before.text), visibility: frozenText(value.before.visibility, 80), toward: frozenText(value.before.toward, 500),
+      ...(frozenText(value.before.towardEntityId, 500) ? { towardEntityId: frozenText(value.before.towardEntityId, 500) } : {}),
       ...(frozenText(value.before.stateId, 500) ? { stateId: frozenText(value.before.stateId, 500) } : {}),
       ...(frozenText(value.before.sourceFloorId, 500) ? { sourceFloorId: frozenText(value.before.sourceFloorId, 500) } : {}),
       ...(frozenText(value.before.sourceDeltaId, 500) ? { sourceDeltaId: frozenText(value.before.sourceDeltaId, 500) } : {}),
     }) : null,
     after: value.after && typeof value.after === 'object' && !Array.isArray(value.after) ? Object.freeze({
-      text: frozenText(value.after.text), visibility: frozenText(value.after.visibility, 80),
+      text: frozenText(value.after.text), visibility: frozenText(value.after.visibility, 80), toward: frozenText(value.after.toward, 500),
+      ...(frozenText(value.after.towardEntityId, 500) ? { towardEntityId: frozenText(value.after.towardEntityId, 500) } : {}),
       ...(frozenText(value.after.stateId, 500) ? { stateId: frozenText(value.after.stateId, 500) } : {}),
       ...(frozenText(value.after.sourceFloorId, 500) ? { sourceFloorId: frozenText(value.after.sourceFloorId, 500) } : {}),
       ...(frozenText(value.after.sourceDeltaId, 500) ? { sourceDeltaId: frozenText(value.after.sourceDeltaId, 500) } : {}),
@@ -426,7 +448,9 @@ export function projectInlineRecallReceipt(receipt) {
   const exactStateCount = hasExactStageCounts ? receipt.stages.stateCount : null;
   const injectionText = typeof receipt.injectionText === 'string' ? receipt.injectionText : '';
   const signedQianshiProgress = Number(receipt.schemaVersion) >= 15 ? receipt.qianshiProgress : null;
-  const qianshiProtocol = recallProtocolText(injectionText, signedQianshiProgress, receipt.timeDependencies);
+  const locationReferences = splitLocationReferences(injectionText, receipt.selectedLocationReferences, receipt.schemaVersion);
+  const locationReferenceItems = Object.freeze(locationReferences.items.map(value => frozenText(value, 600)).filter(Boolean));
+  const qianshiProtocol = recallProtocolText(locationReferences.historyText, signedQianshiProgress, receipt.timeDependencies);
   const storylines = Object.freeze((safeShape && storylineProtocol ? rawStorylines : []).map(value => Object.freeze({
     storylineId: frozenText(value.storylineId, 80), title: frozenText(value.title, 160), basis: frozenText(value.basis, 500),
   })));
@@ -434,11 +458,12 @@ export function projectInlineRecallReceipt(receipt) {
   const noOrdinaryRecall = !selectedFloors.length && !stateItems.length && !cseChangeItems.length && !storylines.length;
   const parsedHistory = safeShape ? (qianshiProtocol.only && noOrdinaryRecall
     ? Object.freeze([])
-    : timeReference.onlyTime && noOrdinaryRecall
+    : (timeReference.onlyTime || locationReferenceItems.length > 0 && noOrdinaryRecall) && noOrdinaryRecall
     ? Object.freeze([])
     : storylineProtocol ? parseStorylineHistory(timeReference.historyText, selectedFloors, cseChangeItems, storylines) : parseRecallHistory(timeReference.historyText, selectedFloors)) : null;
   const timeReferenceItems = Object.freeze(parsedHistory !== null && ['ready', 'empty'].includes(receipt.status ?? 'ready') ? timeReference.items : []);
   const timeReferenceCount = timeReferenceItems.length;
+  const locationReferenceCount = locationReferenceItems.length;
   const dependencyTexts = [...(receipt.timeDependencies?.corrections ?? []), ...(receipt.timeDependencies?.reminders ?? [])]
     .map(value => frozenText(value?.text)).filter(Boolean);
   const timeReferenceDisplayItems = Object.freeze(timeReferenceItems.map(value => timeReferenceDisplayItem(value, dependencyTexts)));
@@ -452,6 +477,8 @@ export function projectInlineRecallReceipt(receipt) {
   const protocolRecognized = parsedHistory !== null;
   const qianshiProgressText = qianshiProtocol.matched ? renderedQianshiProgressText(signedQianshiProgress, receipt.timeDependencies) : '';
   const status = receipt.status ?? (receipt.injectionText ? 'ready' : 'empty');
+  const rawReceiptAvailable = Boolean((receipt.legacyReadOnly || receipt.restoredReceipt || receipt.reusedReceipt) && !protocolRecognized
+    && ['ready', 'empty'].includes(status) && injectionText.trim());
   const terminated = receipt.status === 'stale' && (receipt.terminationEvent === 'GENERATION_STOPPED' || receipt.terminationEvent === 'GENERATION_ENDED'
     || (!receipt.terminationEvent && Array.isArray(receipt.skipReasons) && receipt.skipReasons.includes('stopped')));
   const terminationText = receipt.terminationEvent === 'GENERATION_ENDED' ? '生成已结束，召回未完成' : terminated ? '召回已停止' : null;
@@ -470,10 +497,11 @@ export function projectInlineRecallReceipt(receipt) {
     ? `已召回 ${historyItems.length} 条旧事${stateCount ? ` · ${stateCount} 条当前人物状态` : ''}${cseChangeCount ? ` · ${cseChangeCount} 条历史变化` : ''}`
     : stateCount || cseChangeCount ? `已记录${stateCount ? ` ${stateCount} 条当前人物状态` : ''}${stateCount && cseChangeCount ? ' ·' : ''}${cseChangeCount ? ` ${cseChangeCount} 条历史变化` : ''}`
       : floorCount || !safeShape || (receipt.legacyReadOnly && !protocolRecognized) ? '召回内容请在详细回执中查看。'
+    : locationReferenceCount ? `本轮已注入 ${locationReferenceCount} 条原消息地点参照。`
     : qianshiProgressText ? '本轮已注入千事进度。'
       : status === 'empty' ? '本轮没有需要注入的记忆。' : '本轮没有已注入的记忆。');
   return Object.freeze({
     kind: 'user', status, statusText, summary, ...(terminationSummary ? { statusDetail: terminationSummary } : {}),
-    injectionText, qianshiProgressText, floorCount, stateCount, cseChangeCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, timeReferenceItems, timeReferenceDisplayItems, timeReferenceCount, protocolRecognized,
+    injectionText, rawReceiptAvailable, qianshiProgressText, floorCount, stateCount, cseChangeCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, timeReferenceItems, timeReferenceDisplayItems, timeReferenceCount, locationReferenceItems, locationReferenceCount, protocolRecognized,
   });
 }

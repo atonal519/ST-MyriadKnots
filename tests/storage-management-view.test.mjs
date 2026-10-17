@@ -23,7 +23,7 @@ const stats = {
 };
 
 function fixture() {
-  let state = { status: 'idle', stats: null, busy: false, autoEnabled: false, autoPending: false, error: null };
+  let state = { status: 'idle', stats: null, busy: false, autoEnabled: false, autoPending: false, error: null, trashGc: { status: 'idle', scanned: 0, deleted: 0, failed: 0 } };
   const listeners = new Set(), calls = [];
   const publish = () => { for (const listener of listeners) listener(state); };
   const manager = {
@@ -31,6 +31,7 @@ function fixture() {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async scan() { calls.push('scan'); state = { ...state, status: 'ready', stats }; publish(); return state; },
     async cleanup() { calls.push('cleanup'); state = { ...state, status: 'ready', stats: { ...stats, cleanup: { count: 0, bytes: 0 } } }; publish(); return { status: 'completed', deletedCount: 180, convergedCount: 0, remainingCount: 0 }; },
+    async collectExpiredTrash() { calls.push('trashGc'); state = { ...state, trashGc: { status: 'completed', scanned: 64, deleted: 4, failed: 0 } }; publish(); return { status: 'completed', scanned: 64, deleted: 4, failed: 0 }; },
     setAutoEnabled(value) { calls.push(['auto', value]); state = { ...state, autoEnabled: value }; publish(); return state; },
   };
   return { manager, calls, setState(patch) { state = { ...state, ...patch }; publish(); } };
@@ -60,6 +61,32 @@ test('存储面板渲染约数、刷新、自动开关和危险清理确认；�
   refresh = nodes.find(node => node.tag === 'button' && node.textContent === '刷新统计');
   clean = nodes.find(node => node.tag === 'button' && node.textContent === '清理旧版本');
   assert.equal(refresh.disabled, true); assert.equal(clean.disabled, true);
+});
+
+test('storage面板提供到期回收站手动清理并显示实际结果', async () => {
+  const f = fixture(), container = new Node('div');
+  const view = createStorageManagementView({ manager: f.manager, documentRef, confirmImpl: () => true });
+  view.mount(container); await view.activate();
+  const button = flatten(container).find(node => node.tag === 'button' && node.textContent === '清理到期回收站');
+  await button.fire('click');
+  assert.ok(f.calls.includes('trashGc'));
+  assert.match(container.textContent, /回收站检查完成：已查 64 项，清理 4 项/u);
+  view.deactivate();
+});
+
+test('回收站检查期间禁用会触发冲突的存储管理操作', async () => {
+  const f = fixture(), container = new Node('div');
+  const view = createStorageManagementView({ manager: f.manager, documentRef });
+  view.mount(container); await view.activate();
+  f.setState({ status: 'trashGc', busy: false, stats });
+  const nodes = flatten(container);
+  assert.equal(nodes.find(node => node.tag === 'button' && node.textContent === '刷新统计').disabled, true);
+  assert.equal(nodes.find(node => node.tag === 'button' && node.textContent === '清理旧版本').disabled, true);
+  assert.equal(nodes.find(node => node.tag === 'button' && node.textContent === '清理到期回收站').disabled, true);
+  assert.equal(nodes.find(node => node.tag === 'input').disabled, true);
+  assert.match(container.textContent, /旧版本清理仅针对本聊天/u);
+  assert.match(container.textContent, /回收站记录保留 30 天/u);
+  view.deactivate();
 });
 
 test('确认弹窗等待期间停用视图，迟到确认不会执行清理或污染新界面', async () => {

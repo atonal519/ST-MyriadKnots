@@ -92,11 +92,27 @@ test('提示词模块字段 change 即持久化', () => {
   assert.equal(fieldControl(node, '通用附加提示词'), undefined, '退役入口不得继续显示');
 });
 
-test('提示词模块提供时间戳开关、独立参考标签、原样自定义、恢复默认与协调状态', async () => {
+test('长提示词从编辑入口打开草稿弹窗，取消不写设置', async () => {
+  const current = { sourceKeepTags: 'content', sourceExtraTags: '', processingPrompt: '原文本' };
+  const patches = [], opened = [];
+  const settings = { get: () => ({ ...current }), update: patch => { patches.push(patch); Object.assign(current, patch); } };
+  const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { opened.push(options); return Promise.resolve(true); } });
+  const edit = node.find(n => n.tagName === 'button' && n.textContent === '编辑破限提示词');
+  assert.ok(edit, '长提示词应由明确编辑入口打开');
+  await edit.fire('click');
+  assert.equal(opened.length, 1);
+  const input = opened[0].content.find(n => n.tagName === 'textarea');
+  assert.equal(input.value, '原文本');
+  input.value = '取消的草稿';
+  await opened[0].onClose?.();
+  assert.deepEqual(patches, [], '取消不得写入设置');
+});
+
+test('提示词模块提供时间戳开关、独立参考标签与保存后生效的时间戳编辑弹窗', async () => {
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', storyClockReferenceTags: '' };
-  const patches = [], refreshes = [];
+  const patches = [], refreshes = []; let active = null;
   const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
-  const { node } = createPromptsSettings({ settings, documentRef, onStoryClockChange: options => { refreshes.push(options ?? {}); return { label: current.storyClockPrompt ? '使用自定义时间戳提示词' : '已调用千千结时间戳' }; } });
+  const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); }, onStoryClockChange: options => { refreshes.push(options ?? {}); return { label: current.storyClockPrompt ? '使用自定义时间戳提示词' : '已调用千千结时间戳' }; } });
   assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '已调用千千结时间戳');
   const referenceTags = fieldControl(node, '正文时间参考标签');
   assert.equal(referenceTags.value, '');
@@ -104,49 +120,66 @@ test('提示词模块提供时间戳开关、独立参考标签、原样自定�
   referenceTags.value = 'Ti,时标'; await referenceTags.fire('change');
   assert.deepEqual(patches.at(-1), { storyClockReferenceTags: 'Ti,时标' });
   assert.match(node.textContent, /不改变正文清洗/);
-  const textarea = node.find(n => n.tagName === 'textarea' && /千千结/.test(n.placeholder));
+  assert.equal(node.find(n => n.tagName === 'textarea'), undefined, '长提示词仅在弹窗中编辑');
+  await node.find(n => n.tagName === 'button' && n.textContent === '编辑时间戳提示词').fire('click');
+  let textarea = active.content.find(n => n.tagName === 'textarea');
+  assert.equal(textarea.value, '');
   textarea.value = '  自定义\n'; await textarea.fire('change');
+  assert.equal(current.storyClockPrompt, '', '输入仍是草稿'); assert.equal(refreshes.length, 1, '输入不刷新时间服务');
+  await active.submit(); active = null;
   assert.deepEqual(patches.at(-1), { storyClockPrompt: '  自定义\n' });
   assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '使用自定义时间戳提示词');
-  await node.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '编辑时间戳提示词').fire('click');
+  textarea = active.content.find(n => n.tagName === 'textarea');
+  assert.equal(textarea.value, '  自定义\n', '再次打开从最新设置读取');
+  await active.onClose?.(); active = null;
+  assert.equal(current.storyClockPrompt, '  自定义\n', '取消不回滚已保存内容');
+  await node.find(n => n.tagName === 'button' && n.textContent === '编辑时间戳提示词').fire('click');
+  textarea = active.content.find(n => n.tagName === 'textarea');
+  await active.content.find(n => n.tagName === 'button' && n.textContent === '载入内置默认').fire('click');
   assert.match(textarea.value, /<!-- QQJ-start/); assert.doesNotMatch(textarea.value, /myknots-start/);
-  assert.match(node.textContent, /QQJ-start\/end.*兼容 SDC 和旧 myknots 格式/);
-  await node.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+  await active.content.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+  assert.equal(textarea.value, ''); assert.equal(current.storyClockPrompt, '  自定义\n', '恢复默认按钮也只改草稿');
+  await active.submit(); active = null;
   assert.deepEqual(patches.at(-1), { storyClockPrompt: '' }); assert.equal(textarea.value, '');
-  assert.equal(refreshes[0].readOnly, true); assert.ok(refreshes.length >= 3);
+  assert.match(node.textContent, /QQJ-start\/end.*兼容 SDC 和旧 myknots 格式/);
+  assert.equal(refreshes[0].readOnly, true); assert.equal(refreshes.length, 3);
 });
 
-test('破限、摘要、CSE 与人物资料提示词各自 change 即存，可载入内置文本并恢复默认', async () => {
+test('破限、摘要、CSE 与人物资料提示词在弹窗保存后生效，默认操作留在草稿直到保存', async () => {
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', processingPrompt: '', summaryPrompt: '', csePrompt: '', profilePrompt: '' };
-  const patches = [];
+  const patches = []; let active = null;
   const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
-  const { node } = createPromptsSettings({ settings, documentRef });
+  const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); } });
   const processingDrawer = node.find(n => n.id === 'qqj-settings-processing-prompt');
   const summaryDrawer = node.find(n => n.id === 'qqj-settings-summary-prompt');
   const cseDrawer = node.find(n => n.id === 'qqj-settings-cse-prompt');
   const profileDrawer = node.find(n => n.id === 'qqj-settings-profile-prompt');
-  const processing = fieldControl(processingDrawer, '破限提示词');
-  const summary = fieldControl(summaryDrawer, '摘要内容要求');
-  const cse = fieldControl(cseDrawer, 'CSE 推演要求');
-  const profile = fieldControl(profileDrawer, '人物资料整理要求');
-
-  processing.value = '  用户破限文本\n'; await processing.fire('change');
-  summary.value = '  用户摘要要求\n'; await summary.fire('change');
-  cse.value = '  用户 CSE 要求\n'; await cse.fire('change');
-  profile.value = '  用户人物资料要求\n'; await profile.fire('change');
+  const prompts = [
+    [processingDrawer, '破限提示词', 'processingPrompt', '  用户破限文本\n'],
+    [summaryDrawer, '摘要内容指导', 'summaryPrompt', '  用户摘要要求\n'],
+    [cseDrawer, 'CSE 内容指导', 'csePrompt', '  用户 CSE 要求\n'],
+    [profileDrawer, '人物资料内容指导', 'profilePrompt', '  用户人物资料要求\n'],
+  ];
+  const savedTextareas = [];
+  for (const [drawer, labelText, key, value] of prompts) {
+    await drawer.find(n => n.tagName === 'button' && n.textContent === `编辑${labelText}`).fire('click');
+    const textarea = active.content.find(n => n.tagName === 'textarea'); textarea.value = value;
+    assert.equal(current[key], '', '输入不立即写设置');
+    await active.submit(); active = null; savedTextareas.push(textarea);
+  }
   assert.deepEqual(patches.slice(-4), [{ processingPrompt: '  用户破限文本\n' }, { summaryPrompt: '  用户摘要要求\n' }, { csePrompt: '  用户 CSE 要求\n' }, { profilePrompt: '  用户人物资料要求\n' }]);
 
-  await processingDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
-  await summaryDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
-  await cseDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
-  await profileDrawer.find(n => n.tagName === 'button' && n.textContent === '载入默认再改').fire('click');
-  assert.match(processing.value, /fictional_content_processing_protocol/); assert.equal(summary.value, DEFAULT_EXTRACTOR_GUIDANCE); assert.equal(cse.value, DEFAULT_CSE_GUIDANCE); assert.equal(profile.value, DEFAULT_PROFILE_GUIDANCE);
-  await processingDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
-  await summaryDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
-  await cseDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
-  await profileDrawer.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+  for (const [drawer, labelText, key] of prompts) {
+    await drawer.find(n => n.tagName === 'button' && n.textContent === `编辑${labelText}`).fire('click');
+    const textarea = active.content.find(n => n.tagName === 'textarea'); assert.equal(textarea.value, current[key], '重开读取已保存值');
+    await active.content.find(n => n.tagName === 'button' && n.textContent === '载入内置默认').fire('click');
+    await active.content.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+    assert.equal(current[key], prompts.find(item => item[2] === key)[3], '默认操作未提交前保持原值');
+    await active.submit(); active = null;
+  }
   assert.deepEqual(patches.slice(-4), [{ processingPrompt: '' }, { summaryPrompt: '' }, { csePrompt: '' }, { profilePrompt: '' }]);
-  assert.equal(processing.value, ''); assert.equal(summary.value, ''); assert.equal(cse.value, ''); assert.equal(profile.value, '');
+  assert.deepEqual(savedTextareas.map(textarea => textarea.value), ['  用户破限文本\n', '  用户摘要要求\n', '  用户 CSE 要求\n', '  用户人物资料要求\n']);
 });
 
 test('外观模块内联选择即存并即时应用；程序设置同步标签，改 URL 清空缓存 family', async () => {

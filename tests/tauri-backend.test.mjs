@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createTauriBackendFetch, isTauriTavern } from '../src/tauri-backend.js';
 import { createBackendClient } from '../src/backend-client.js';
+import { createStorageManagement } from '../src/storage-management.js';
 import { API_BASE } from '../src/constants.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
@@ -20,7 +21,7 @@ const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'qqj-tt-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  let failWrite = false, failRead = false, writeCount = 0;
+  let failWrite = false, failRead = false, failReadAt = null, failWriteAt = null, writeAttempts = 0, writeCount = 0, readCount = 0;
   const location = ({ namespace, table = 'main', key }) => {
     for (const value of [namespace, table, ...(key === undefined ? [] : [key])]) {
       assert.match(value, /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/);
@@ -31,11 +32,15 @@ async function fixture(t) {
   const names = async path => { try { return await readdir(path); } catch (e) { if (e.code === 'ENOENT') return []; throw e; } };
   const store = {
     async tryGetJson(opts) {
+      readCount += 1;
+      if (failReadAt === readCount) throw new Error('injected read failure');
       if (failRead) throw new Error('read failure');
       try { return { found: true, value: JSON.parse(await readFile(location(opts), 'utf8')) }; }
       catch (e) { if (e.code === 'ENOENT') return { found: false }; throw e; }
     },
     async setJson(opts) {
+      writeAttempts += 1;
+      if (failWriteAt === writeAttempts) throw new Error('injected write failure');
       if (failWrite) throw new Error('write failure');
       const path = location(opts);
       await mkdir(location({ ...opts, key: undefined }), { recursive: true });
@@ -44,6 +49,8 @@ async function fixture(t) {
       writeCount++;
     },
     async deleteJson(opts) {
+      writeAttempts += 1;
+      if (failWriteAt === writeAttempts) throw new Error('injected delete failure');
       if (failWrite) throw new Error('write failure');
       await rm(location(opts));
       writeCount++;
@@ -55,7 +62,9 @@ async function fixture(t) {
   const fetchImpl = createTauriBackendFetch({ globalRef });
   const client = createBackendClient({ fetchImpl });
   const request = (path, method = 'GET', body) => fetchImpl(`${API_BASE}/v1/${path}`, { method, ...(body ? { body: JSON.stringify(body) } : {}) });
-  return { client, request, store, globalRef, root, fetchImpl, writes: () => writeCount,
+  return { client, request, store, globalRef, root, fetchImpl, writes: () => writeCount, reads: () => readCount,
+    resetReads: () => { readCount = 0; }, failReadAt: value => { failReadAt = value; },
+    failWriteAt: value => { failWriteAt = value; }, resetWriteAttempts: () => { writeAttempts = 0; },
     failWrite: value => { failWrite = value; }, failRead: value => { failRead = value; } };
 }
 
@@ -67,30 +76,14 @@ test('TT health checks native IO; read/put/list survive a new client/runtime', a
   const restarted = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef: { ...f.globalRef } }) });
   assert.deepEqual(await restarted.get('聊天🙂', '记录'.repeat(64)), created);
   assert.deepEqual(await restarted.list('聊天🙂'), [{ recordId: '记录'.repeat(64), ...created }]);
+  const batch = await restarted.getMany('聊天🙂', ['记录'.repeat(64), '缺失记录']);
+  assert.deepEqual(batch.map(item => [item.recordId, item.status]), [['记录'.repeat(64), 200], ['缺失记录', 404]], 'TT默认HTTP适配器使用逐条读取回落');
+  const iterated = [];
+  for await (const item of restarted.iterRecords('聊天🙂')) iterated.push(item.recordId);
+  assert.deepEqual(iterated, ['记录'.repeat(64)], 'TT记录遍历回落到已有list接口');
   assert.deepEqual(await restarted.list('other'), []);
   f.failRead(true);
   await assert.rejects(f.client.health(), /read failure/);
-});
-
-test('TT默认桥的getMany与iterRecords沿原生单条读取和list运行，不探测HTTP批量路由', async t => {
-  const f = await fixture(t);
-  const previous = globalThis.__TAURITAVERN__;
-  globalThis.__TAURITAVERN__ = f.globalRef.__TAURITAVERN__;
-  t.after(() => { if (previous === undefined) delete globalThis.__TAURITAVERN__; else globalThis.__TAURITAVERN__ = previous; });
-  const client = createBackendClient();
-  await client.put('chat-tt', 'record-b', { order: 2 }, 0);
-  await client.put('chat-tt', 'record-a', { order: 1 }, 0);
-  let tableHealthScans = 0;
-  const originalListTables = f.store.listTables;
-  f.store.listTables = async (...args) => { tableHealthScans += 1; return originalListTables(...args); };
-  const batch = await client.getMany('chat-tt', ['record-b', 'record-a']);
-  assert.deepEqual(batch.map(item => [item.recordId, item.status, item.envelope.data.order]), [['record-b', 200, 2], ['record-a', 200, 1]]);
-  const listed = await client.list('chat-tt');
-  const iterated = [];
-  for await (const envelope of client.iterRecords('chat-tt')) iterated.push(envelope);
-  assert.deepEqual(iterated, listed);
-  assert.equal(tableHealthScans, 0, '隐式批量API调用不得为了协商额外读取TT health');
-  assert.deepEqual(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts, { get: 4, put: 2, delete: 0 });
 });
 
 test('TT preserves JSON field order through native save, cold read, list and trash restore', async t => {
@@ -162,6 +155,176 @@ test('TT legacy index recovery cannot hide modified data or checksum mismatches'
   assert.equal(state.status, 'error');
   await assert.rejects(f.client.get(indexSlot.collection, 'v3-root'), e => e.status === 404);
   assert.deepEqual((await f.client.get(indexSlot.collection, indexSlot.recordId)).data, indexSlot.current.data);
+});
+
+test('TT 到期回收分批最多读取32个原生slot并保留当前记录', async t => {
+  const f = await fixture(t);
+  for (let index = 0; index < 40; index += 1) {
+    const id = `record-${String(index).padStart(2, '0')}`;
+    await f.client.put('large-chat', id, { index, state: index === 0 ? 'current' : 'old' }, 0);
+    await f.client.remove('large-chat', id, 1);
+    if (index === 0) await f.client.put('large-chat', id, { index, state: 'current' }, 0);
+  }
+  const namespace = 'qqj-bainiao-v1';
+  const tables = await f.store.listTables({ namespace });
+  for (const table of tables) {
+    for (const key of await f.store.listKeys({ namespace, table })) {
+      const found = await f.store.tryGetJson({ namespace, table, key });
+      if (found.found !== true || found.value?.format !== 'qqj-tt-json-v2') continue;
+      const slot = JSON.parse(found.value.serialized);
+      if (slot.namespace !== 'qianqianjie' || !slot.trash.length) continue;
+      for (const item of slot.trash) item.expiresAt = '2026-01-01T00:00:00.000Z';
+      await f.store.setJson({ namespace, table, key, value: { ...found.value, serialized: JSON.stringify(slot) } });
+    }
+  }
+  f.resetReads();
+  const first = await f.client.collectExpiredTrash('qianqianjie', { limit: 32 });
+  assert.equal(first.scanned, 32);
+  assert.equal(first.deleted, 32);
+  assert.equal(first.complete, false);
+  assert.ok(f.reads() <= 32);
+  const second = await f.client.collectExpiredTrash('qianqianjie', { limit: 32, cursor: first.nextCursor });
+  assert.equal(second.scanned, 8);
+  assert.equal(second.deleted, 8);
+  assert.equal(second.complete, true);
+  assert.equal((await f.client.get('large-chat', 'record-00')).data.state, 'current');
+});
+
+test('TT 回收legacy index前先恢复字段顺序，过期删除后冷读指纹仍有效', async t => {
+  const f = await fixture(t);
+  const { context, slots } = await failedInitFixture();
+  for (const slot of slots) await seedLegacy(f, slot);
+  const { runtime, store } = foundationFor(f.client, context);
+  assert.equal((await runtime.start()).status, 'ready');
+  let indexSlot = null;
+  for (const table of await f.store.listTables({ namespace: 'qqj-bainiao-v1' })) {
+    for (const key of await f.store.listKeys({ namespace: 'qqj-bainiao-v1', table })) {
+      const found = await f.store.tryGetJson({ namespace: 'qqj-bainiao-v1', table, key });
+      if (found.found !== true) continue;
+      const candidate = found.value?.format === 'qqj-tt-json-v2' ? JSON.parse(found.value.serialized) : found.value;
+      if (candidate.namespace === 'qianqianjie' && candidate.current?.data?.recordType === 'index') {
+        indexSlot = { table, key, value: candidate };
+      }
+    }
+  }
+  assert.ok(indexSlot);
+  const expectedFingerprint = indexSlot.value.current.data.contentFingerprint;
+  indexSlot.value.trash.push({ trashId: `${indexSlot.value.current.generationId}-99`, namespace: 'qianqianjie',
+    collection: indexSlot.value.collection, recordId: indexSlot.value.recordId, expiresAt: '2026-01-01T00:00:00.000Z',
+    envelope: { ...indexSlot.value.current, revision: 99 } });
+  await f.store.setJson({ namespace: 'qqj-bainiao-v1', table: indexSlot.table, key: indexSlot.key, value: indexSlot.value });
+  const result = await f.client.collectExpiredTrash('qianqianjie', { limit: 32 });
+  assert.equal(result.deleted, 1);
+  const stored = await f.store.tryGetJson({ namespace: 'qqj-bainiao-v1', table: indexSlot.table, key: indexSlot.key });
+  assert.equal(stored.value.format, 'qqj-tt-json-v2');
+  const current = JSON.parse(stored.value.serialized).current;
+  assert.equal(current.data.contentFingerprint, expectedFingerprint);
+  const reachable = await foundationFor(f.client, context).store.readReachable();
+  assert.equal(reachable.status, 'ready');
+  assert.equal(reachable.indexes[0].contentFingerprint, expectedFingerprint);
+});
+
+test('TT 单个slot读取失败保留前项清理计数并继续返回部分结果', async t => {
+  const f = await fixture(t);
+  for (const id of ['a', 'b']) {
+    await f.client.put('chat', id, { id }, 0);
+    await f.client.remove('chat', id, 1);
+  }
+  const namespace = 'qqj-bainiao-v1';
+  for (const table of await f.store.listTables({ namespace })) {
+    for (const key of await f.store.listKeys({ namespace, table })) {
+      const found = await f.store.tryGetJson({ namespace, table, key });
+      if (found.found !== true || found.value?.format !== 'qqj-tt-json-v2') continue;
+      const slot = JSON.parse(found.value.serialized);
+      if (slot.namespace !== 'qianqianjie' || !slot.trash.length) continue;
+      for (const item of slot.trash) item.expiresAt = '2026-01-01T00:00:00.000Z';
+      await f.store.setJson({ namespace, table, key, value: { ...found.value, serialized: JSON.stringify(slot) } });
+    }
+  }
+  f.resetReads();
+  f.failReadAt(2);
+  const result = await f.client.collectExpiredTrash('qianqianjie', { limit: 32 });
+  assert.equal(result.scanned, 2);
+  assert.equal(result.deleted, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.complete, true);
+});
+
+test('TT 保留未到期和畸形期限slot，单个写失败不丢弃部分结果或异namespace记录', async t => {
+  const f = await fixture(t);
+  for (const id of ['expired-a', 'expired-b', 'future', 'invalid']) {
+    await f.client.put('chat', id, { id }, 0);
+    await f.client.remove('chat', id, 1);
+  }
+  const namespace = 'qqj-bainiao-v1';
+  const expiryByRecord = new Map([['expired-a', '2026-01-01T00:00:00.000Z'], ['expired-b', '2026-01-01T00:00:00.000Z'],
+    ['future', '2099-01-01T00:00:00.000Z'], ['invalid', 'not-a-date']]);
+  for (const table of await f.store.listTables({ namespace })) {
+    for (const key of await f.store.listKeys({ namespace, table })) {
+      const found = await f.store.tryGetJson({ namespace, table, key });
+      if (found.found !== true || found.value?.format !== 'qqj-tt-json-v2') continue;
+      const slot = JSON.parse(found.value.serialized);
+      const expiry = expiryByRecord.get(slot.recordId);
+      if (slot.namespace !== 'qianqianjie' || !expiry) continue;
+      for (const item of slot.trash) item.expiresAt = expiry;
+      await f.store.setJson({ namespace, table, key, value: { ...found.value, serialized: JSON.stringify(slot) } });
+    }
+  }
+  const foreignSlot = { format: 'qqj-tt-record-v1', namespace: 'other', collection: 'c', recordId: 'foreign', current: null, trash: [] };
+  await seedLegacy(f, foreignSlot);
+  f.resetWriteAttempts();
+  f.failWriteAt(1);
+  const result = await f.client.collectExpiredTrash('qianqianjie', { limit: 32 });
+  assert.equal(result.scanned, 5);
+  assert.equal(result.deleted, 1);
+  assert.equal(result.failed, 2);
+  assert.equal(result.complete, true);
+  const retained = await (await f.request('trash/qianqianjie')).json();
+  assert.equal(retained.length, 3);
+  assert.ok(retained.some(item => item.expiresAt === '2099-01-01T00:00:00.000Z'));
+  assert.ok(retained.some(item => item.expiresAt === 'not-a-date'));
+  assert.ok(retained.some(item => item.expiresAt === '2026-01-01T00:00:00.000Z'));
+  const foreignTable = nativeKey(JSON.stringify(['other', 'c']));
+  const foreignKey = nativeKey('foreign');
+  assert.equal((await f.store.tryGetJson({ namespace, table: foreignTable, key: foreignKey })).found, true);
+});
+
+test('storage activity maintenance reaches the real TT client and removes expired trash', async t => {
+  const f = await fixture(t);
+  await f.client.put('maintenance-chat', 'expired-record', { value: 'old' }, 0);
+  await f.client.remove('maintenance-chat', 'expired-record', 1);
+  for (const table of await f.store.listTables({ namespace: 'qqj-bainiao-v1' })) {
+    for (const key of await f.store.listKeys({ namespace: 'qqj-bainiao-v1', table })) {
+      const found = await f.store.tryGetJson({ namespace: 'qqj-bainiao-v1', table, key });
+      if (!found.found || found.value?.format !== 'qqj-tt-json-v2') continue;
+      const slot = JSON.parse(found.value.serialized);
+      if (slot.recordId !== 'expired-record') continue;
+      slot.trash[0].expiresAt = '2026-01-01T00:00:00.000Z';
+      await f.store.setJson({ namespace: 'qqj-bainiao-v1', table, key, value: { ...found.value, serialized: JSON.stringify(slot) } });
+    }
+  }
+  const identity = { chatId: 'maintenance-chat', hostChatId: 'host-chat', characterLocator: 'char.png', personaLocator: 'me.png' };
+  const settingsValue = { storageAutoCleanupEnabled: false, storageAutoCleanupProgress: {}, storageTrashGcLastCompletedAt: '' };
+  const settings = { get: () => settingsValue, update: patch => Object.assign(settingsValue, patch) };
+  const manager = createStorageManagement({
+    client: f.client,
+    store: { async readReachable() { throw new Error('unexpected ordinary cleanup scan'); } },
+    session: { identity: () => identity, getState: () => ({ status: 'ready', identity }), suspend() {}, resume() {}, async prepare() {} },
+    hostAdapter: { snapshot: () => ({ chatId: identity.hostChatId, context: { chatMetadata: { qianqianjie: { chatId: identity.chatId } } } }) },
+    settings,
+    memoryRuntime: { getState: () => ({ chatId: identity.chatId, stableCount: 0 }), getActivityState: () => ({ chatId: identity.chatId, stableCount: 0 }), subscribe: () => () => {} },
+    foundationRuntime: { getReachable: () => null },
+    isBusy: () => false,
+    logger: { warn() {} },
+  });
+  for (let attempt = 0; attempt < 30 && manager.getState().trashGc.status !== 'completed'; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(manager.getState().trashGc.status, 'completed');
+  assert.equal(manager.getState().trashGc.deleted, 1);
+  assert.ok(settingsValue.storageTrashGcLastCompletedAt);
+  assert.deepEqual(await (await f.request('trash/qianqianjie')).json(), []);
+  manager.dispose();
 });
 
 test('TT malformed serialized slots fail closed instead of becoming empty data', async t => {

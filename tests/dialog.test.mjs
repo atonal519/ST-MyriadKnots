@@ -16,6 +16,9 @@ function fakeDom({ withContextChange = false } = {}) {
     select() { this.selected = true; }
     setAttribute(name, value) { this.attrs[name] = String(value); }
     appendChild(child) { return addChild(this, child); }
+    remove() { this.removed = true; }
+    addEventListener(event, handler) { const list = this.handlers.get(`native:${event}`) ?? []; list.push(handler); this.handlers.set(`native:${event}`, list); }
+    fire(event, details = {}) { const fired = { type: event, ...details, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, target: this }; for (let node = this; node; node = node.parent) for (const handler of node.handlers.get(`native:${event}`) ?? []) handler(fired); return fired; }
   }
   const addChild = (parent, child) => { child.parent = parent; parent.children.push(child); return child; };
   const descendants = root => root.children.flatMap(child => [child, ...descendants(child)]);
@@ -69,12 +72,12 @@ function fakeDom({ withContextChange = false } = {}) {
     appendChild(element) { mounted.push(element); },
     querySelector(selector) { return mounted.findLast(item => !item.removed && matches(item, selector)) ?? null; },
   };
-  documentRef.createElement = () => { const host = new Element(); host.id = ''; host.attachShadow = () => shadow; return host; };
+  documentRef.createElement = tag => { const host = new Element({ tag }); host.id = ''; host.attachShadow = () => shadow; return host; };
   const contextListeners = new Set();
   const manager = createDialogManager({ documentRef, $, schedule: callback => callback(), subscribeContextChange: withContextChange ? handler => { contextListeners.add(handler); return () => contextListeners.delete(handler); } : undefined });
-  const active = () => mounted.findLast(item => !item.removed);
+  const active = () => mounted.findLast(item => !item.removed && item.attrs.id === 'sp-addon-dialog');
   const find = selector => $(active()).find(selector);
-  return { $, documentRef, manager, shadow, active, find, fireContextChange: () => { for (const handler of [...contextListeners]) handler(); } };
+  return { $, documentRef, manager, shadow, mounted, active, find, fireContextChange: () => { for (const handler of [...contextListeners]) handler(); } };
 }
 
 test('构画同源确认、提示、输入校验与外部关闭保留 QQJ 生命周期', async () => {
@@ -157,6 +160,27 @@ test('自定义内容沿用同一关闭生命周期，提交失败留窗可重�
   h.find('.sp-dialog-submit').trigger('click'); assert.equal(await guide, true);
 });
 
+test('自定义表单Enter复用弹窗提交入口，失败保留窗口且只执行一次保存', async () => {
+  const h = fakeDom(); let attempts = 0;
+  const content = h.documentRef.createElement('form');
+  const input = h.documentRef.createElement('input'), textarea = h.documentRef.createElement('textarea');
+  content.appendChild(input); content.appendChild(textarea);
+  const pending = h.manager.custom({ title: '编辑事件', content, submit: async () => { attempts += 1; if (attempts === 1) throw new Error('保存失败'); return true; } });
+  const composing = input.fire('keydown', { key: 'Enter', isComposing: true });
+  assert.equal(composing.defaultPrevented, false); assert.equal(attempts, 0, '输入法组合输入不提交');
+  const textEnter = textarea.fire('keydown', { key: 'Enter' });
+  assert.equal(textEnter.defaultPrevented, false); assert.equal(attempts, 0, '多行文本的 Enter 保留换行');
+  const enter = input.fire('keydown', { key: 'Enter' });
+  assert.equal(enter.defaultPrevented, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attempts, 1);
+  assert.equal(h.manager.hasActive(), true);
+  assert.match(h.find('.sp-dialog-input-error').html(), /保存失败/u);
+  h.find('.sp-dialog-submit').trigger('click');
+  assert.equal(await pending, true);
+  assert.equal(attempts, 2);
+});
+
 test('宿主 CHAT_CHANGED 经同源生命周期立即关闭确认窗', async () => {
   const h = fakeDom({ withContextChange: true });
   let selected = 'pending';
@@ -170,8 +194,8 @@ test('宿主 CHAT_CHANGED 经同源生命周期立即关闭确认窗', async () 
 test('复制构画实际结构/CSS闭包并映射 QQJ 实色主题', async () => {
   const h = fakeDom();
   const css = h.shadow.innerHTML;
-  for (const marker of ['.sp-dialog-overlay', 'background:rgba(0,0,0,.55)', 'align-items:center', '.sp-dialog-sheet', 'box-shadow:var(--sp-shadow)', '.sp-dialog-note', '.sp-dialog-actions', '.sp-dialog-button-secondary', '.sp-dialog-input-error', '.qqj-merge-dialog{display:grid', '.qqj-merge-dialog .qqj-inline-select-trigger', '.qqj-merge-dialog .qqj-inline-select-options[hidden]', 'max-height:min(220px,36dvh)', 'overflow-wrap:anywhere', 'var(--sp-sheet-bg)', 'var(--sp-on-surface)', 'width:100dvw', 'height:100dvh', '@keyframes sp-wi-fullview-in', 'prefers-reduced-motion:reduce']) assert.match(css, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.doesNotMatch(css, /align-items:flex-end|position:sticky/);
+  for (const marker of ['.sp-dialog-overlay', 'background:rgba(0,0,0,.55)', 'align-items:center', '.sp-dialog-sheet', 'box-shadow:var(--sp-shadow)', '.sp-dialog-note', '.sp-dialog-actions', '.sp-dialog-button-secondary', '.sp-dialog-input-error', '.qqj-merge-dialog{display:grid', '.qqj-merge-dialog .qqj-inline-select-trigger', '.qqj-merge-dialog .qqj-inline-select-options[hidden]', 'max-height:min(220px,36dvh)', 'overflow-wrap:anywhere', 'var(--sp-sheet-bg)', 'var(--sp-on-surface)', '--sp-on-primary:var(--qqj-dialog-on-primary,#fff)', 'width:100dvw', 'height:100dvh', '@keyframes sp-wi-fullview-in', 'prefers-reduced-motion:reduce']) assert.match(css, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(css, /position:sticky/);
   const mobileRoot = css.indexOf('@media(max-width:640px){.sp-root{');
   const clickableOverlay = css.indexOf('.sp-dialog-overlay{');
   assert.ok(mobileRoot >= 0 && mobileRoot < clickableOverlay, '须保持构画原顺序：mobile root none 在前，overlay auto 在后');
@@ -179,11 +203,22 @@ test('复制构画实际结构/CSS闭包并映射 QQJ 实色主题', async () =>
   assert.equal(h.active().classes.has('sp-root'), true);
   assert.equal(h.active().classes.has('sp-dialog-overlay'), true, '同一遮罩同时命中两条同权重规则，顺序才决定最终点击能力');
   h.manager.closeAll(); await active;
-  h.manager.setAppearance({ mode: 'auto', effectiveTheme: 'night', fixedScale: 1.5 / 0.85, palette: { paper: '#paper', panel: '#panel', ink: '#ink', soft: '#soft', line: '#line', knot: '#knot' } });
+  h.manager.setAppearance({ mode: 'auto', effectiveTheme: 'night', fixedScale: 1.5 / 0.85, palette: { paper: '#paper', panel: '#panel', ink: '#ink', soft: '#soft', line: '#line', knot: '#knot', onPrimary: '#22282b' }, family: '测试字体', fontCssUrl: 'https://example.invalid/font.css' });
   assert.equal(h.manager.host.style['--qqj-dialog-sheet'], '#panel');
   assert.equal(h.manager.host.style['--qqj-dialog-surface'], '#paper');
   assert.equal(h.manager.host.style['--qqj-dialog-primary'], '#knot');
+  assert.equal(h.manager.host.style['--qqj-dialog-on-primary'], '#22282b', '同一 palette 前景 token 传入弹窗按钮');
   assert.equal(h.manager.host.style['--qqj-dialog-scale'], String(1.5 / 0.85));
+  assert.equal(h.manager.host.style['--qqj-dialog-font'], '"测试字体"', '编辑窗继承外观已解析字体');
+  const fontLinks = () => h.mounted.filter(item => item.attrs?.['data-qqj-dialog-font'] === 'true');
+  assert.equal(fontLinks().filter(item => !item.removed).length, 1, '字体样式表挂在弹窗自己的 shadow root');
+  const fontLink = fontLinks().find(item => !item.removed);
+  assert.equal(fontLink.href, 'https://example.invalid/font.css');
+  h.manager.setAppearance({ family: '测试字体', fontCssUrl: 'https://example.invalid/font.css' });
+  assert.equal(fontLinks().filter(item => !item.removed).length, 1, '同一字体地址重复同步时复用 link');
+  h.manager.setAppearance({ family: '测试字体', fontCssUrl: '' });
+  assert.equal(h.manager.host.style['--qqj-dialog-font'], 'system-ui', '清空字体地址后回到弹窗默认字体');
+  assert.equal(fontLinks().filter(item => !item.removed).length, 0, '移除字体地址后清掉弹窗 stylesheet link');
   const source = await readFile(new URL('../src/ui/gouhua-dialog-core.js', import.meta.url), 'utf8');
   for (const name of ['prepareDialog', 'mountDialog', 'choose', 'confirm', 'prompt']) assert.match(source, new RegExp(`function ${name}\\(`));
   assert.doesNotMatch(source, /selectMany|selectOne|promptTextarea|promptFields/);

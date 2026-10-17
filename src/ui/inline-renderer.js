@@ -287,7 +287,7 @@ export function createInlineRenderer({
     catch { clearHistoricalPending(validBatch); return; }
     const sourceIndexes = new Map();
     for (const item of validBatch) {
-      const { result, message, messageIndex, messageText, receipt, stamp, chatId, sourceChat, view, pendingReceipt } = item;
+      const { result, messageIndex, messageText, receipt, stamp, chatId, sourceChat, view, pendingReceipt } = item;
       if (view.receiptPending !== pendingReceipt) continue;
       view.receiptPending = null;
       const settledProjection = result ? projectInlineRecallReceipt(result) : projectInlineRecallReceipt(null);

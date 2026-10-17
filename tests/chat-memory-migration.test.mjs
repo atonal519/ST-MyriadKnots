@@ -4,6 +4,8 @@ import { chooseCarry, cleanOwnedMessage, createChatMemoryMigration, selectCarrie
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
+import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
+import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import { selectCompletedCarriedAliases } from '../src/v3/memory-migration.js';
 import { CHAT_IDENTITY_COLLECTION } from '../src/chat-identity.js';
 import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
@@ -35,9 +37,10 @@ function makeContext(chat) {
     openCharacterChat(name) { this.opened = name; } };
 }
 
-async function fixture(chat, { holdSourceRead = false } = {}) {
+async function fixture(chat, { holdSourceRead = false, mutateTargetRead = null, host = 'native' } = {}) {
   const trace = [], store = backend(trace), context = makeContext(chat);
-  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } });
+  const hostRoot = { getContext: () => context };
+  const hostAdapter = createHostAdapter({ globalRef: host === 'luker' ? { Luker: hostRoot } : { SillyTavern: hostRoot } });
   const sourceIdentity = { hostChatId: 'A-file', chatId: A, characterLocator: 'character.png', personaLocator: 'persona.png' };
   const sourceStore = createFoundationStore({ client: store.client, contextProvider: () => sourceIdentity });
   const runtime = createFoundationRuntime({ hostAdapter, store: sourceStore, contextProvider: () => context,
@@ -48,7 +51,12 @@ async function fixture(chat, { holdSourceRead = false } = {}) {
     const body = JSON.parse(request.body), key = body.file_name;
     if (url.endsWith('/api/chats/save')) { files.set(key, structuredClone(body.chat)); return { ok: true, status: 200, async json() { return {}; } }; }
     if (url.endsWith('/api/chats/get')) return files.has(key)
-      ? { ok: true, status: 200, async json() { return structuredClone(files.get(key)); } }
+      ? { ok: true, status: 200, async json() {
+        const value = structuredClone(files.get(key));
+        mutateTargetRead?.(value, key);
+        files.set(key, structuredClone(value));
+        return value;
+      } }
       : { ok: false, status: 404, async json() { return {}; } };
     throw new Error(`unexpected ${url}`);
   };
@@ -71,7 +79,44 @@ async function fixture(chat, { holdSourceRead = false } = {}) {
   });
   // Keep the fake open operation observable without changing the captured source target.
   context.openCharacterChat = name => opened.push(name);
-  return { ...store, trace, context, sourceIdentity, sourceStore, runtime, migration, files, opened, releaseSourceRead };
+  return { ...store, trace, context, sourceIdentity, hostAdapter, sourceStore, runtime, migration, files, opened, releaseSourceRead };
+}
+
+async function completedMemoryFixture(chat, migrateOptions = {}) {
+  const h = await fixture(chat, migrateOptions);
+  const utility = async options => {
+    if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: {
+      summary: '林岚在书房把钥匙放进木盒。', people: [{ name: '林岚' }],
+    } };
+    const request = JSON.parse(options.taskMessages[0].content);
+    const subject = request.payload?.trackedSubjects?.[0]?.name;
+    return { jsonData: subject ? { subjects: [{ subject, situational: [
+      { text: '把钥匙放进木盒', reason: '本楼正文明确描述', visibility: 'observable' },
+    ] }] } : { noMaterialChange: true } };
+  };
+  const memoryRuntime = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.sourceStore, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: utility, generateUtilityTask: utility, isEnabled: true,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), now: () => new Date(NOW), newUuid: uuidFactory(),
+    logger: { warn() {} } });
+  await memoryRuntime.start();
+  assert.equal(h.hostAdapter.snapshot().context.chatMetadata.qianqianjie.chatId, A, 'memory runtime固定在来源身份');
+  assert.equal(memoryRuntime.getState().chatId, A, '真实memory runtime已同步来源身份');
+  const floor = memoryRuntime.getState().floors.find(value => value.assistantSeq === 1);
+  assert.ok(floor, '来源消息经真实foundation扫描为稳定楼');
+  await memoryRuntime.extractFloor(floor.floorId);
+  const reachable = await h.sourceStore.readReachable({ mode: 'runtime' });
+  assert.equal(reachable.status, 'ready');
+  assert.equal(reachable.floorMemories.find(value => value.floorId === floor.floorId)?.recordStatus, 'active', 'summary通过真实memory runtime落盘');
+  assert.equal(reachable.stateDeltas.find(value => value.floorId === floor.floorId)?.recordStatus, 'active', 'CSE通过真实memory runtime落盘');
+  const source = reachable.floors.find(value => value.id === floor.floorId);
+  assert.ok(source?.content?.rawFingerprint && source?.content?.canonicalFingerprint);
+  const eligible = selectCompletedCarriedAliases({ reachable,
+    carried: [{ sourceMessageIndex: floor.messageIndex, targetMessageIndex: 1, sourceFloorId: floor.floorId,
+      rawFingerprint: source.content.rawFingerprint, canonicalFingerprint: source.content.canonicalFingerprint }],
+    sourceCandidates: [{ hostLocator: { messageIndex: floor.messageIndex }, rawFingerprint: source.content.rawFingerprint,
+      canonicalFingerprint: source.content.canonicalFingerprint }], newUuid: uuidFactory() });
+  assert.equal(eligible.length, 1, '该摘要和CSE完成楼确实满足搬家alias选择条件');
+  return { ...h, memoryRuntime, sourceReachable: reachable, sourceFloorId: floor.floorId };
 }
 
 test('尾部待回复用户消息与最近AI按原顺序优先携带，搬家只发布B文件与独立图', async () => {
@@ -181,4 +226,41 @@ test('显式来源楼指纹不符时不回退到同号B活动楼', () => {
     sourceCandidates: [{ hostLocator: { messageIndex: 0 }, rawFingerprint: 'new-raw', canonicalFingerprint: 'new-canonical' }],
     newUuid: () => '33333333-3333-4333-8333-333333333333' });
   assert.deepEqual(aliases, [], '显式来源与正文见证冲突时不认领B同号楼');
+});
+
+test('搬家读回忽略宿主显示元数据，但继续核对正文与已完成楼的迁移alias', async t => {
+  const cases = [
+    { name: '原生：正常保存读回', host: 'native', mutation: null, expected: 'completed' },
+    { name: 'Luker：正常保存读回', host: 'luker', mutation: null, expected: 'completed' },
+    { name: '原生：宿主只更新外部显示字段', host: 'native', mutation: chat => { chat[1].extra.otherPluginDisplay = { label: '宿主更新后的标题' }; }, verifyExternalDisplay: true, expected: 'completed' },
+    { name: 'Luker：宿主只更新外部显示字段', host: 'luker', mutation: chat => { chat[1].extra.otherPluginDisplay = { label: '宿主更新后的标题' }; }, verifyExternalDisplay: true, expected: 'completed' },
+    { name: '读回正文变化', mutation: chat => { chat[1].mes += ' 被改动'; }, expected: 'QQJ_MIGRATION_HOST_VERIFY_FAILED' },
+    { name: '已选alias在读回时缺失', mutation: chat => { delete chat[1].extra[MIGRATION_ALIAS_KEY]; }, expected: 'QQJ_MIGRATION_HOST_VERIFY_FAILED' },
+    { name: '已选alias在读回时变化', mutation: chat => { chat[1].extra[MIGRATION_ALIAS_KEY] = '99999999-9999-4999-8999-999999999999'; }, expected: 'QQJ_MIGRATION_HOST_VERIFY_FAILED' },
+  ];
+  for (const item of cases) await t.test(item.name, async () => {
+    const mutation = item.mutation;
+    const h = await completedMemoryFixture([user('林岚问起旧钥匙'), assistant('林岚在书房把钥匙放进木盒。'), user('确认这段记录')], {
+      mutateTargetRead: mutation ? chat => mutation(chat) : null,
+      host: item.host ?? 'native',
+    });
+    assert.equal(h.hostAdapter.snapshot().source, item.host === 'luker' ? 'Luker' : 'SillyTavern');
+    const sourceBefore = JSON.stringify([...h.records].filter(([key]) => key.startsWith(`chat-${A}/`)));
+    if (item.expected === 'completed') {
+      const result = await h.migration.migrateCurrent();
+      assert.equal(result.status, 'completed');
+      const target = h.files.get(result.hostChatId);
+      const copiedAi = target.find(value => value.is_user === false);
+      assert.ok(copiedAi.extra[MIGRATION_ALIAS_KEY], '真实完成摘要/CSE楼获得已接受alias');
+      if (item.verifyExternalDisplay) {
+        assert.deepEqual(copiedAi.extra.otherPluginDisplay, { label: '宿主更新后的标题' }, '读回的宿主显示字段被保留');
+      }
+      assert.equal(h.records.has(`${CHAT_IDENTITY_COLLECTION}/binding-${result.chatId}`), true, '通过业务核验后才发布B身份绑定');
+    } else {
+      await assert.rejects(() => h.migration.migrateCurrent(), error => error.code === item.expected);
+      assert.equal(h.records.size && [...h.records.keys()].some(key => key.startsWith(`${CHAT_IDENTITY_COLLECTION}/binding-`)), false,
+        '读回业务冲突时不发布B身份绑定');
+    }
+    assert.equal(JSON.stringify([...h.records].filter(([key]) => key.startsWith(`chat-${A}/`))), sourceBefore, '所有读回结果都不改写A来源图');
+  });
 });

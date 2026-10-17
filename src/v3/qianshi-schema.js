@@ -54,13 +54,20 @@ export function validateQianshiDelta(input, { floorId = null, floorIds = null } 
     const eventIds = new Set();
     // 人工覆盖只包含已修订字段；物品或时间的 null 表示明确清空，不能当作缺省。
     for (const [index, item] of value.manualEventOverrides.entries()) {
-      exactKeysWithOptional(item, ['eventId'], ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime'], `qianshiDelta.manualEventOverrides[${index}]`);
-      const hasOverride = ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime'].some(key => Object.hasOwn(item, key));
+      exactKeysWithOptional(item, ['eventId'], ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime', 'scheduledTime', 'people'], `qianshiDelta.manualEventOverrides[${index}]`);
+      const hasOverride = ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime', 'scheduledTime', 'people'].some(key => Object.hasOwn(item, key));
       if (!uuid(item.eventId) || eventIds.has(item.eventId) || !hasOverride
         || Object.hasOwn(item, 'title') && !clean(item.title, 500)
         || Object.hasOwn(item, 'description') && !clean(item.description, 4000)
         || Object.hasOwn(item, 'object') && item.object !== null && !clean(item.object, 1000)
         || Object.hasOwn(item, 'storyTime') && item.storyTime !== null && !clean(item.storyTime, 500)
+        || Object.hasOwn(item, 'scheduledTime') && item.scheduledTime !== null && !clean(item.scheduledTime, 500)
+        || Object.hasOwn(item, 'people') && (!Array.isArray(item.people) || item.people.length > 40
+          || item.people.some(person => {
+            try { exactKeys(person, ['entityId', 'name'], `qianshiDelta.manualEventOverrides[${index}].people`); }
+            catch { return true; }
+            return person.entityId !== null && !uuid(person.entityId) || !clean(person.name, 500);
+          }))
         || Object.hasOwn(item, 'status') && !STATUSES.has(item.status)
         || Object.hasOwn(item, 'actionStatus') && !STATUSES.has(item.actionStatus)) {
         fail(`qianshiDelta.manualEventOverrides[${index}]`);

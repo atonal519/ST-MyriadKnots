@@ -59,7 +59,6 @@ function bounded(promise, timeoutMs = IO_TIMEOUT_MS, phase = 'storage-io', onFai
     throw error;
   }).finally(() => clearTimeout(timer));
 }
-
 function plainRecord(value) { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
 function encoded(value) { return encodeURIComponent(String(value)); }
 function witnessKey(witness) { return JSON.stringify([
@@ -125,7 +124,6 @@ export function createIndexedDbCoreRecordCache({
   let publishUnavailable = false;
   const disableIo = () => { ioUnavailable = true; publishUnavailable = true; stats.available = false; };
   const publishers = new Map();
-  const publishingScopes = new Map();
   const scopeVersions = new Map();
   const identityVersions = new Map();
 
@@ -680,15 +678,12 @@ export function createIndexedDbCoreRecordCache({
     if (ioUnavailable || publishUnavailable) return false;
     const current = publishers.get(lockKey);
     if (current) return current;
-    if (publishingScopes.has(scope)) return false;
     if (!publicationVersionIsCurrent(scope, expectedVersion)) return false;
     const task = publishNow(scope, witness, records, recordRefs, expectedVersion, verifyRoot);
     publishers.set(lockKey, task);
-    publishingScopes.set(scope, lockKey);
     try { return await task; }
     finally {
       if (publishers.get(lockKey) === task) publishers.delete(lockKey);
-      if (publishingScopes.get(scope) === lockKey) publishingScopes.delete(scope);
     }
   }
 
@@ -819,5 +814,3 @@ export function createIndexedDbCoreRecordCache({
     maintain,
     getStats: () => Object.freeze({ ...stats, firstFailure: publicFailure(stats.firstFailure), lastFailure: publicFailure(stats.lastFailure) }) });
 }
-
-export const V3_CORE_CACHE_RECORD_TYPES = Object.freeze([...CORE_TYPES]);

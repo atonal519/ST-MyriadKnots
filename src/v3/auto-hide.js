@@ -37,7 +37,7 @@ export function planAutoHide({ chat = [], memoryState = null, keepAiCount = 3, r
     keepFrom = previousAssistant ? previousAssistant.messageIndex + 1 : 0;
     const floors = [...(memoryState?.floors ?? [])].sort((left, right) => (left.assistantSeq ?? 0) - (right.assistantSeq ?? 0));
     let liveStartIndex = 0;
-    // 没有正文 alias 时，冻结楼的来源坐标和 CSE 不能证明当前聊天正文已覆盖。
+    // Frozen imported floors retain source coordinates and cannot prove current body coverage.
     if (Array.isArray(memoryState?.migrationAliases) && memoryState.migrationAliases.length === 0 && floors[0]?.frozen === true) {
       let prefixEnd = 0;
       while (floors[prefixEnd]?.frozen === true) prefixEnd += 1;

@@ -1,19 +1,250 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, access } from 'node:fs/promises';
-import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
+import { createContext, runInContext, SourceTextModule, SyntheticModule } from 'node:vm';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { normalizeStoryCalendar } from '../src/v3/calendar-rules.js';
 import { ChatSessionError } from '../src/chat-session.js';
 import { cloneHostJsonMetadata } from '../src/host-context.js';
+import { createHostAdapter } from '../src/v3/host-adapter.js';
+import { createFoundationStore } from '../src/v3/foundation-store.js';
+import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
+import { projectHistoricalRecallReceipt } from '../src/v3/recall-runtime.js';
+import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
+import { compileCseResponse } from '../src/v3/cse-engine.js';
+import { estimateRecallTokens, recallBudget, selectRecall } from '../src/v3/recall-selector.js';
+import { selectPrequel } from '../src/v3/recall-prequel.js';
+import { readRecallSource } from '../src/v3/recall-source.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 
-async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled, withExistingPanel = false, mainApi = 'openai', invokeTypes = [], initializeWithoutSubtle = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false } = {}) {
+async function readyFoundationRecords(hostGlobalName, host) {
+  const records = new Map();
+  const failed = status => Object.assign(new Error(`HTTP ${status}`), { status });
+  const envelope = (data, revision) => ({ schemaVersion: 1, revision, generationId: '11111111-1111-4111-8111-111111111111',
+    createdAt: '2026-09-13T00:00:00.000Z', updatedAt: '2026-09-13T00:00:00.000Z', data: structuredClone(data) });
+  const client = {
+    async get(collection, key) {
+      const value = records.get(`${collection}/${key}`);
+      if (!value) throw failed(404);
+      return envelope(value.data, value.revision);
+    },
+    async put(collection, key, data, expectedRevision) {
+      const recordKey = `${collection}/${key}`, previous = records.get(recordKey);
+      if ((previous?.revision ?? 0) !== expectedRevision) throw failed(409);
+      const record = { revision: expectedRevision + 1, data: structuredClone(data) };
+      records.set(recordKey, record);
+      return envelope(record.data, record.revision);
+    },
+  };
+  const hostAdapter = createHostAdapter({ globalRef: { [hostGlobalName]: { getContext: () => host } } });
+  const identity = { hostChatId: host.chatId, chatId: host.chatMetadata.qianqianjie.chatId, characterLocator: 'char.png', personaLocator: 'me.png' };
+  const store = createFoundationStore({ client, contextProvider: () => identity });
+  const runtime = createFoundationRuntime({ hostAdapter, store, contextProvider: () => host,
+    now: () => new Date('2026-09-13T00:00:00.000Z'), logger: { warn() {} },
+    fetchImpl: async url => {
+      if (String(url) === '/api/chats/get') return { ok: true, status: 200, async json() { return [
+        { chat_metadata: structuredClone(host.chatMetadata) }, ...structuredClone(host.chat),
+      ]; } };
+      if (String(url) === '/api/chats/save') return { ok: true, status: 200, async json() { return { ok: true }; } };
+      throw new Error(`unexpected offline fixture request: ${String(url)}`);
+    },
+  });
+  const state = await runtime.start();
+  assert.equal(state.status, 'ready', '正式foundation runtime应生成可读的真实checkpoint fixture');
+  const reachable = await store.readReachable({ mode: 'projection', allowRecallCseFallback: true });
+  assert.equal(reachable.status, 'ready');
+  assert.ok(reachable.checkpoint, '召回来源必须有经正式Store验证的checkpoint');
+  assert.equal(reachable.floors.length, 1);
+  return records;
+}
+
+class ReceiptUiNode {
+  constructor(tag = 'div') {
+    this.tagName = tag.toUpperCase(); this.children = []; this.parentElement = null; this.attributes = {}; this.dataset = {};
+    this.className = ''; this._textContent = ''; this.hidden = false; this.disabled = false; this.style = {};
+    this.listeners = new Map(); this.shadowRoot = null;
+  }
+  get textContent() { return this._textContent + this.children.map(child => child.textContent ?? '').join(''); }
+  set textContent(value) { this.replaceChildren(); this._textContent = String(value ?? ''); }
+  get classList() { return { contains: value => this.className.split(/\s+/u).includes(value) }; }
+  get isConnected() {
+    let node = this;
+    while (node) { if (node.__documentRoot) return true; node = node.parentElement ?? node.host ?? null; }
+    return false;
+  }
+  append(...nodes) {
+    for (const node of nodes) {
+      const child = typeof node === 'string' ? Object.assign(new ReceiptUiNode('#text'), { textContent: node }) : node;
+      child.remove?.(); child.parentElement = this; this.children.push(child);
+    }
+  }
+  replaceChildren(...nodes) { for (const child of this.children) child.parentElement = null; this.children = []; this._textContent = ''; this.append(...nodes); }
+  remove() {
+    if (!this.parentElement) return;
+    const index = this.parentElement.children.indexOf(this);
+    if (index >= 0) this.parentElement.children.splice(index, 1);
+    this.parentElement = null;
+  }
+  setAttribute(name, value) {
+    const text = String(value); this.attributes[name] = text;
+    if (name.startsWith('data-')) this.dataset[name.slice(5).replace(/-([a-z])/gu, (_, letter) => letter.toUpperCase())] = text;
+    if (name === 'id') this.id = text;
+  }
+  getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; }
+  addEventListener(name, handler) { const values = this.listeners.get(name) ?? []; values.push(handler); this.listeners.set(name, values); }
+  emit(name, event = {}) { for (const handler of this.listeners.get(name) ?? []) handler({ currentTarget: this, target: this, ...event }); }
+  click() { this.emit('click'); }
+  focus() {}
+  attachShadow() { const root = new ReceiptUiNode('shadow-root'); root.host = this; this.shadowRoot = root; return root; }
+  matches(selector) {
+    const tag = /^([a-z][a-z0-9-]*)/iu.exec(selector)?.[1];
+    if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+    const id = /#([\w-]+)/u.exec(selector)?.[1];
+    if (id && this.id !== id) return false;
+    for (const match of selector.matchAll(/\.([\w-]+)/gu)) if (!this.classList.contains(match[1])) return false;
+    for (const match of selector.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/gu)) {
+      const value = this.getAttribute(match[1]);
+      if (value === null || (match[2] !== undefined && value !== match[2])) return false;
+    }
+    return true;
+  }
+  querySelectorAll(selector) {
+    const result = [];
+    const visit = node => { for (const child of node.children) { if (child.matches(selector)) result.push(child); visit(child); } };
+    visit(this); return result;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
+}
+
+class ReceiptUiDocument {
+  constructor(messages) {
+    this.body = new ReceiptUiNode('body'); this.body.__documentRoot = true;
+    this.head = new ReceiptUiNode('head'); this.defaultView = globalThis;
+    this.chat = new ReceiptUiNode('main'); this.chat.id = 'chat'; this.chat.setAttribute('id', 'chat'); this.body.append(this.chat);
+    for (let index = 0; index < messages.length; index += 1) {
+      const source = messages[index];
+      const message = new ReceiptUiNode('div'); message.className = `mes${index === messages.length - 1 ? ' last_mes' : ''}${source.is_user ? ' user_mes' : ''}`;
+      message.setAttribute('mesid', String(index)); message.setAttribute('is_user', String(source.is_user === true));
+      const block = new ReceiptUiNode('div'); block.className = 'mes_block';
+      const text = new ReceiptUiNode('div'); text.className = 'mes_text'; text.textContent = source.mes;
+      block.append(text); message.append(block); this.chat.append(message);
+    }
+    this.panel = { __qqjInstance: { show() {}, refresh() {}, setEnabled() {}, openMemory() {} } };
+  }
+  createElement(tag) { return new ReceiptUiNode(tag); }
+  getElementById(id) { return id === 'qqj-panel-host' ? this.panel : this.body.querySelector(`#${id}`); }
+  querySelector(selector) { return this.body.matches(selector) ? this.body : this.body.querySelector(selector); }
+  querySelectorAll(selector) { return [...(this.body.matches(selector) ? [this.body] : []), ...this.body.querySelectorAll(selector)]; }
+}
+
+async function generatedLegacyReceipt10(userMessage) {
+  const chatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const personId = '66666666-6666-4666-8666-666666666666';
+  const empty = { chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
+  const floorIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'];
+  const memoryIds = ['44444444-4444-4444-8444-444444444441', '44444444-4444-4444-8444-444444444442', '44444444-4444-4444-8444-444444444443'];
+  const deltaIds = ['55555555-5555-4555-8555-555555555551', '55555555-5555-4555-8555-555555555552', '55555555-5555-4555-8555-555555555553'];
+  const floors = floorIds.map((id, index) => ({ id, assistantSeq: index + 1 }));
+  const memories = floors.map((floor, index) => ({ id: memoryIds[index], floorId: floor.id, recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: `旧楼摘要${floor.assistantSeq}` }, ...empty }));
+  const privateState = { id: '77777777-7777-4777-8777-777777777771', text: '仍在钟楼等候', visibility: 'private', reason: '未公开的旧约', origin: 'floor', towardEntityId: null, sourceFloorId: floorIds[0], sourceDeltaId: deltaIds[0] };
+  const headId = '88888888-8888-4888-8888-888888888888';
+  const trackedBindings = [{ entityId: personId, labels: ['裴晚生', '阿裴'], specialRole: 'char' }];
+  const compile = async (index, situational, previousCurrentState) => compileCseResponse({
+    response: { subjects: [{ subject: '裴晚生', situational }] },
+    envelope: { scope: { floorId: floorIds[index], floorMemoryId: memoryIds[index], chatId, narrativeGeneration: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', baselineId: '99999999-9999-4999-8999-999999999999', trackedBindings, knownBindings: trackedBindings, evidenceSources: [], coreUserEditedSubjectEntityIds: [] } },
+    previousCurrentState, now: '2026-09-10T00:00:00.000Z', deltaId: deltaIds[index],
+  });
+  const first = await compile(0, [{ text: privateState.text, visibility: privateState.visibility, reason: privateState.reason },
+    { text: '仍在钟楼保管赴约钥匙', visibility: 'private', reason: '为赴约留门' }], null);
+  const second = await compile(1, [], { id: deltaIds[0], subjects: first.delta.subjectSnapshots });
+  const third = await compile(2, [{ text: '已经回到钟楼准备赴约', visibility: 'private', reason: '重新履行旧约' }], { id: deltaIds[1], subjects: second.delta.subjectSnapshots });
+  const reachable = { status: 'ready', rootRevision: 1,
+    root: { chatId, narrativeGeneration: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', headCheckpointId: headId },
+    checkpoint: { id: headId }, baseline: { id: '99999999-9999-4999-8999-999999999999' }, floors, floorMemories: memories,
+    currentStates: [], entities: [{ id: personId, entityType: 'person', displayName: '裴晚生', aliases: [{ name: '阿裴' }], specialRole: 'char', recordStatus: 'active', status: 'established' }],
+    stateDeltas: [first.delta, second.delta, third.delta] };
+  const chat = [{ is_user: false, is_system: false, mes: '旧楼正文' }, userMessage];
+  const context = { chatMetadata: { qianqianjie: { chatId } }, constants: { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } }, setExtensionPrompt() {}, async saveChat() {} };
+  const runtime = createV3RecallRuntime({ store: { readReachable: async () => structuredClone(reachable) }, hostAdapter: { snapshot: () => ({ context, chat }) },
+    sourceReader: ({ now }) => readRecallSource({ store: { readReachable: async () => structuredClone(reachable) }, now }),
+    selector: selectRecall, pluginVersion: '0.1.8-test', now: () => new Date('2026-09-10T00:00:00.000Z'), logger: { warn() {} } });
+  const generated = await runtime.intercept(chat, 12000, null, 'normal');
+  assert.equal(generated.lastRecall.status, 'ready', '旧版签名材料应来自正式runtime封签');
+  const receipt = structuredClone(userMessage.extra.qqj_v3_recall_receipt);
+  receipt.schemaVersion = 10; receipt.strategyVersion = 'continuity-v5';
+  receipt.selectedFloors = []; receipt.selectedStates = [];
+  receipt.injectionText = '旧版召回原文：这段文本应按纯文本折叠展示。';
+  receipt.selectedCseChanges = [{ deltaId: deltaIds[0], floorId: floorIds[0], assistantSeq: 1,
+    subjectEntityId: personId, subject: '林岚', layer: 'situational', action: 'add', before: null,
+    after: { text: '仍维持同一约定', visibility: 'private', reason: '持续状态', origin: 'floor', toward: '周宁',
+      towardEntityId: '11111111-1111-4111-8111-111111111112', sourceAssistantSeq: null } }];
+  for (const key of ['qianshiDeletionWitness', 'selectedLocationReferences', 'locationReferenceDependency', 'qianshiProgress', 'storylines', 'timeDependencies', 'stateProgressions']) delete receipt[key];
+  receipt.userMessageIndex = 1;
+  const digest = value => `sha256:${createHash('sha256').update(String(value ?? '')).digest('hex')}`;
+  receipt.userContentFingerprint = digest(userMessage.mes);
+  receipt.receiptFingerprint = digest(JSON.stringify([receipt.schemaVersion, receipt.pluginVersion, receipt.chatId, receipt.narrativeGeneration,
+    receipt.headCheckpointId, receipt.rootRevision, receipt.userMessageIndex, receipt.userContentFingerprint, receipt.queryFingerprint,
+    receipt.generationType, receipt.selectedFloors, receipt.selectedStates, receipt.coverage, receipt.injectionText, receipt.stages,
+    receipt.skipReasons, receipt.completionStatus, receipt.createdAt, receipt.bodyMatchFingerprint, receipt.strategyVersion,
+    receipt.selectedCseChanges, receipt.selectorDiagnostic, receipt.timings]));
+  return receipt;
+}
+
+async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, rootRecord, contextSize }) {
+  const chatId = rootRecord.data.chatId;
+  const narrativeGeneration = rootRecord.data.narrativeGeneration;
+  const headCheckpointId = rootRecord.data.headCheckpointId;
+  const personId = '99999999-9999-4999-8999-999999999991';
+  const stateId = '99999999-9999-4999-8999-999999999992';
+  const archiveText = `Archive ledger: ${'This is a neutral archival note about records and context. '.repeat(70)}`.slice(0, 3900);
+  // A narrow source DTO keeps this bundle test on the real receipt producer and selector without inventing a saved floor summary.
+  const source = {
+    status: 'ready', rootRevision: rootRecord.revision,
+    chatId, narrativeGeneration, headCheckpointId,
+    coverage: { stableAiFloors: 0, stableThroughAssistantSeq: 0, rememberedAiFloors: 0, missingAssistantSeq: [], cseThroughAssistantSeq: 0, memoryComplete: true, cseCurrent: true },
+    floors: [], floorMemories: [], bodyMatchRefs: [], cseChanges: [],
+    entities: [{ entityId: personId, entityType: 'person', displayName: '林岚', aliases: [], specialRole: 'char' }],
+    currentState: [{ subjectEntityId: personId, core: [{
+      stateId, text: archiveText, visibility: 'authorial', reason: '持续设定', origin: 'baseline',
+      towardEntityId: null, sourceFloorId: null, sourceDeltaId: null, sourceAssistantSeq: null,
+    }], adaptive: [], situational: [] }],
+    readiness: { status: 'caughtUp', hostConfirmed: true, summaryStatus: 'caughtUp', summaryMissingFloorIds: [], visibleSummaryFloorIds: [] },
+    sourceReadAttempts: { reachableReads: 0, exitPoint: 'testSourceDto' },
+  };
+  const context = {
+    chatId: 'host-chat', chatMetadata: { qianqianjie: { chatId } },
+    constants: { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } },
+    setExtensionPrompt() {}, async saveChat() { return true; },
+  };
+  const store = {
+    async readReachable() { throw new Error('narrow DTO fixture should not read a graph'); },
+    async readRoot() { return { status: 'ready', revision: rootRecord.revision, data: structuredClone(rootRecord.data) }; },
+  };
+  const runtimeWarnings = [];
+  const runtime = createV3RecallRuntime({ store,
+    hostAdapter: { snapshot: () => ({ context, chat }) },
+    selector: selectRecall,
+    sourceReader: async () => source,
+    pluginVersion: JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8')).version,
+    now: () => new Date('2026-09-13T00:00:00.000Z'), logger: { warn(...args) { runtimeWarnings.push(args.map(value => value instanceof Error
+      ? { name: value.name, code: value.code ?? null, message: value.message, stack: value.stack }
+      : value)); } },
+  });
+  const result = await runtime.intercept(chat, contextSize, null, 'normal');
+  await new Promise(resolvePromise => setImmediate(resolvePromise));
+  assert.equal(result.lastRecall.status, 'ready', `${hostGlobalName} 正式runtime应生成当前回执：${JSON.stringify({ status: result.lastRecall.status, skipReasons: result.lastRecall.skipReasons, stages: result.lastRecall.stages, coverage: result.lastRecall.coverage, error: result.lastRecall.error ?? null, warnings: runtimeWarnings })}`);
+  const receipt = userMessage.extra?.qqj_v3_recall_receipt;
+  assert.equal(receipt?.schemaVersion, 18, `${hostGlobalName} 预算输入应来自当前receipt producer`);
+  assert.equal(receipt?.pluginVersion, JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8')).version);
+  return { receipt, result };
+}
+
+async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const eventRegistrations = new Map();
@@ -21,6 +252,9 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
   const testConsole = { ...console, warn(...args) { startupWarnings.push(args); } };
   const backendRecords = new Map();
   const ttRecords = new Map();
+  let backendWriteCalls = 0;
+  let saveMetadataCalls = 0;
+  let chatSaveCalls = 0;
   const ttKey = ({ namespace, table = 'main', key }) => `${namespace}/${table}/${key}`;
   const ttStore = {
     async tryGetJson(options) { const key = ttKey(options); return ttRecords.has(key) ? { found: true, value: structuredClone(ttRecords.get(key)) } : { found: false }; },
@@ -31,25 +265,55 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
   };
   let hostShaCalls = 0;
   const hostShaInputs = [];
+  let ai0BodyReads = 0;
+  const ai0Text = '新聊天正在生成的 AI0 正文';
+  const ai0Message = { is_user: false, is_system: false, get mes() { ai0BodyReads += 1; return ai0Text; }, swipes: [ai0Text], swipe_id: 0 };
+  const hostChat = locationReferenceChat ? [
+    { is_user: false, is_system: false, mes: '明天继续讨论住处。<location>东区公寓·卧室</location>', swipes: ['明天继续讨论住处。<location>东区公寓·卧室</location>'], swipe_id: 0 },
+    { is_user: true, is_system: false, mes: '接着说下去', send_date: '2026-09-13T00:00:00.000Z', extra: {} },
+  ] : legacyReceiptUi ? [
+    { is_user: false, is_system: false, mes: legacyReceiptPrequelBudget ? '旧楼正文' : '昨晚讨论了住处和约定。', swipes: [legacyReceiptPrequelBudget ? '旧楼正文' : '昨晚讨论了住处和约定。'], swipe_id: 0 },
+    { is_user: true, is_system: false, mes: legacyReceiptPrequelBudget ? '林岚，请继续 archive ledger 的归档说明。' : '继续刚才的话题。', send_date: '2026-09-13T00:00:00.000Z', extra: {} },
+    ...(!legacyReceiptPrequelBudget ? [{ is_user: true, is_system: false, mes: '再接着说。', send_date: '2026-09-13T00:01:00.000Z', extra: {} }] : []),
+  ] : unstableAi0 ? [ai0Message] : initializeWithoutSubtle ? [
+    { is_user: false, is_system: false, mes: '产物指纹🙂', swipes: ['产物指纹🙂'], swipe_id: 0 },
+    { is_user: true, is_system: false, mes: '确认', send_date: '2026-09-13T00:00:00.000Z' },
+  ] : [];
   const host = {
     characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png', name: '角色' }], userAvatar: 'me.png',
     chatMetadata: enabled ? {
-      qianqianjie: { schemaVersion: 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      qianqianjie: withoutQqjIdentity ? { schemaVersion: 1 } : { schemaVersion: 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      ...(legacyReceiptPrequelBudget ? { qianqianjiePrequel: legacyReceiptPrequelBudget.text } : {}),
       ...(metadataWithUncloneableField ? { otherPlugin: { label: '保留字段', transient: () => 'not stored' } } : {}),
     } : {},
-    chat: initializeWithoutSubtle ? [
-      { is_user: false, is_system: false, mes: '产物指纹🙂', swipes: ['产物指纹🙂'], swipe_id: 0 },
-      { is_user: true, is_system: false, mes: '确认', send_date: '2026-09-13T00:00:00.000Z' },
-    ] : [],
+    chat: hostChat,
     mainApi,
     uuidv4: () => '11111111-1111-4111-8111-111111111111',
-    async saveMetadata() {},
+    async saveMetadata() { saveMetadataCalls += 1; },
+    ...(locationReferenceChat ? { async saveChat() { chatSaveCalls += 1; return true; } } : {}),
     getRequestHeaders: () => ({}), eventTypes: { CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
     eventSource: { on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
+  const readyRecords = locationReferenceChat || legacyReceiptUi ? await readyFoundationRecords(hostGlobalName, host) : null;
+  if (legacyReceiptUi) {
+    const receipt = legacyReceiptPrequelBudget
+      ? (await generatedCurrentReceipt18({ hostGlobalName, chat: hostChat, userMessage: hostChat[1],
+        rootRecord: readyRecords.get(`chat-${host.chatMetadata.qianqianjie.chatId}/v3-root`), contextSize: legacyReceiptPrequelBudget.contextSize })).receipt
+      : await generatedLegacyReceipt10(hostChat[1]);
+    hostChat[1].extra ??= {};
+    hostChat[1].extra.qqj_v3_recall_receipt = receipt;
+  }
+  if (legacyReceiptUi) assert.equal(hostChat[1].extra.qqj_v3_recall_receipt?.schemaVersion, legacyReceiptPrequelBudget ? 18 : 10,
+    'bundle启动前的回执必须由对应的正式当前/历史producer生成');
+  const initialHistoricalReceiptSchemaVersion = legacyReceiptUi ? hostChat[1].extra.qqj_v3_recall_receipt.schemaVersion : null;
+  const initialLegacyReceiptFingerprint = legacyReceiptUi ? hostChat[1].extra.qqj_v3_recall_receipt.receiptFingerprint : null;
+  const initialBudgetReceipt = legacyReceiptPrequelBudget ? structuredClone(hostChat[1].extra.qqj_v3_recall_receipt) : null;
+  const historicalReceiptCheck = legacyReceiptUi
+    ? await projectHistoricalRecallReceipt(hostChat[1], { chatId: host.chatMetadata.qianqianjie.chatId, userMessageIndex: 1 }) : null;
   if (metadataProxy) host.chatMetadata = new Proxy(host.chatMetadata, {});
   let hostFile = { header: { chat_metadata: metadataWithUncloneableField ? JSON.parse(JSON.stringify(host.chatMetadata)) : structuredClone(host.chatMetadata) }, chat: structuredClone(host.chat) };
-  if (initializeWithoutSubtle) backendRecords.set('/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-identity-bindings/binding-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
+  const initialAi0BodyReads = ai0BodyReads;
+  if ((initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi) && !withoutQqjIdentity) backendRecords.set('/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-identity-bindings/binding-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
     revision: 1,
     data: {
       schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -57,7 +321,13 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
       state: 'ready', sourceChatId: null, createdAt: '2026-09-13T00:00:00.000Z', updatedAt: '2026-09-13T00:00:00.000Z',
     },
   });
+  if (locationReferenceChat || legacyReceiptUi) {
+    for (const [key, record] of readyRecords) backendRecords.set(`/api/plugins/st-bainiaodata/v1/records/qianqianjie/${key}`, record);
+  }
   let backendCalls = 0;
+  let backendHealthCalls = 0;
+  let backendDataCalls = 0;
+  let backendTrashGcPostCalls = 0;
   let localForageCreateCalls = 0;
   let mesAppendCalls = 0;
   let styleAppendCalls = 0;
@@ -74,7 +344,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
     append(...nodes) { mesAppendCalls += nodes.length; this.children.push(...nodes); },
   };
   const existingPanel = { __qqjInstance: { show() {}, refresh() {}, setEnabled() {}, openMemory() {} } };
-  const documentRef = withExistingPanel ? {
+  const receiptDocument = legacyReceiptUi ? new ReceiptUiDocument(hostChat) : null;
+  const documentRef = legacyReceiptUi ? receiptDocument : withExistingPanel ? {
     body: { append() {} }, head: { append(...nodes) { styleAppendCalls += nodes.length; } },
     getElementById: id => id === 'qqj-panel-host' ? existingPanel : null,
     querySelectorAll: selector => selector === '.mes[mesid]' ? [message] : [],
@@ -89,12 +360,24 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
         ? { ok: true, status: 200, async json() { return [structuredClone(hostFile.header), ...structuredClone(hostFile.chat)]; } }
         : { ok: true, status: 200, async json() { return { new_chat: true }; } };
       if (String(url) === '/api/chats/save') {
+        chatSaveCalls += 1;
         const body = JSON.parse(options.body), [header, ...chat] = body.chat;
         header.chat_metadata.integrity = 'host-integrity';
         hostFile = { header, chat };
         return { ok: true, status: 200, async json() { return { ok: true, integrity: 'host-integrity' }; } };
       }
       backendCalls += 1;
+      if (options.method && options.method !== 'GET') backendWriteCalls += 1;
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/v1/health')) {
+        backendHealthCalls += 1;
+        if (backendRecords.size > 0) {
+          return { ok: true, status: 200, async json() { return { ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: false, recordIdList: false } }; } };
+        }
+        return { ok: false, status: 404, async json() { return {}; } };
+      }
+      backendDataCalls += 1;
+      if (options.method === 'POST' && /\/v1\/trash\/[^/]+\/collect-expired(?:\?|$)/u.test(requestUrl)) backendTrashGcPostCalls += 1;
       if (privateDiagnostics && String(url).endsWith('/diagnostics.local.json')) return { ok: true, json: async () => ({ enabled: true }) };
       if (privateDiagnostics && String(url).includes('/private-diagnostics/')) {
         if (options.method === 'PUT') {
@@ -105,10 +388,15 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
         const value = privateRecords.get(String(url));
         return value ? { ok: true, json: async () => structuredClone(value) } : { ok: false, status: 404 };
       }
-      if (initializeWithoutSubtle) {
+      if (initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi) {
+        if (allowIdentityWrites && options.method === 'PUT' && String(url).includes('/chat-identity-bindings/')) {
+          const body = JSON.parse(options.body), record = { revision: body.expectedRevision + 1, data: body.data };
+          backendRecords.set(String(url), record);
+          return { ok: true, status: 200, async json() { return structuredClone(record); } };
+        }
         const record = backendRecords.get(String(url));
         return record
-          ? { ok: true, status: 200, async json() { return structuredClone(record); } }
+          ? { ok: true, status: 200, async json() { return locationReferenceChat || legacyReceiptUi ? vmJson(record) : structuredClone(record); } }
           : { ok: false, status: 404, async json() { return {}; } };
       }
       if (enabled) return { ok: false, status: 404, async json() { return {}; } };
@@ -120,6 +408,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
       ...(initializeWithoutSubtle ? { libs: { sha256(bytes) { hostShaCalls += 1; hostShaInputs.push(new Uint8Array(bytes)); return createHash('sha256').update(bytes).digest('hex'); } } } : {}),
     },
   });
+  const vmJson = value => runInContext(`JSON.parse(${JSON.stringify(JSON.stringify(value))})`, context);
   const cache = new Map();
   const synthetic = (identifier, exports) => new SyntheticModule(Object.keys(exports), function initialize() {
     for (const [name, value] of Object.entries(exports)) this.setExport(name, value);
@@ -167,6 +456,27 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
     }
   }
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
+  let locationReferenceResult = null;
+  if (invokeLocationReference) {
+    const cleanedCore = hostChat.map(message => ({ ...message, mes: message.mes.replace(/<location>[\s\S]*?<\/location>/giu, '').trim() }));
+    locationReferenceResult = await context.qqj_v3_recall_interceptor(cleanedCore, 8192, () => { abortCalls += 1; }, 'normal');
+    await new Promise(resolvePromise => setImmediate(resolvePromise));
+  }
+  let legacyReceiptPrequelBudgetResult = null;
+  if (legacyReceiptPrequelBudget) {
+    const intercept = await context.qqj_v3_recall_interceptor(hostChat, legacyReceiptPrequelBudget.contextSize, () => { abortCalls += 1; }, 'regenerate');
+    await new Promise(resolvePromise => setImmediate(resolvePromise));
+    const lastSlot = name => promptCalls.filter(call => call[0] === name).at(-1)?.[1] ?? '';
+    legacyReceiptPrequelBudgetResult = {
+      intercept,
+      recallSlot: lastSlot('qqj_v3_recalled_context'),
+      prequelSlot: lastSlot('qqj_v3_prequel_context'),
+      promptSnapshot: context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.() ?? null,
+      receipt: hostChat[1]?.extra?.qqj_v3_recall_receipt ?? null,
+      initialReceiptFingerprint: initialLegacyReceiptFingerprint,
+      initialReceipt: initialBudgetReceipt,
+    };
+  }
   if (privateDiagnostics) {
     try {
       for (let attempt = 0; attempt < 100 && privateRecords.size === 0; attempt++) await new Promise(resolvePromise => setTimeout(resolvePromise, 20));
@@ -178,7 +488,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, backendCalls, localForageCreateCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, abortCalls };
+  return { status: entry.status, get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
 }
 
 test('实际生产启动入口捕获首次 host event bind 异常并继续完成模块求值', async () => {
@@ -217,6 +527,30 @@ test('实际生产 bundle 缺少 crypto.subtle 时经宿主 SHA 完成身份认�
   assert.equal(result.hostShaInputs.some(bytes => new TextDecoder().decode(bytes) === '产物指纹🙂'), true, '实际地基扫描没有计算正文指纹');
 });
 
+test('实际生产入口把只有 AI0 正文的新聊天留在待记录状态，不报身份尚未建立错误', async () => {
+  for (const hostName of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(hostName, { enabled: true, initializeWithoutSubtle: true, unstableAi0: true });
+    const bindings = [...result.backendRecords.values()].filter(record => record.data?.kind === 'qqj-chat-identity-binding');
+    assert.equal(result.status, 'evaluated');
+    assert.equal(result.startupWarnings.length, 0, `${hostName} 的正常待记录状态不能记为启动故障`);
+    assert.equal(bindings.length, 1, `${hostName} 已有聊天名时仍应完成真实 QQJ 身份准备`);
+    assert.ok(result.ai0BodyReadCount > 0, `${hostName} 生产入口应实际读取未稳定 AI0 正文`);
+  }
+});
+
+test('实际生产入口为新卡正常准备身份，未稳定 AI0 仍不误报记忆读取失败', async () => {
+  for (const hostName of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(hostName, { enabled: true, initializeWithoutSubtle: true, allowIdentityWrites: true, unstableAi0: true, withoutQqjIdentity: true });
+    assert.equal(result.status, 'evaluated');
+    assert.equal(result.startupWarnings.length, 0, `${hostName} 后端完成既有身份准备后不应留下读取错误`);
+    assert.ok(result.backendWriteCalls > 0, `${hostName} 正常新卡流程应保存身份绑定`);
+    assert.ok(result.chatSaveCalls > 0, `${hostName} 正常新卡流程应通过宿主聊天保存入口写入身份`);
+    assert.equal([...result.backendRecords.values()].filter(record => record.data?.kind === 'qqj-chat-identity-binding').length, 1);
+    assert.ok(result.finalQqjMetadata?.chatId, `${hostName} 已有宿主聊天后应按既有合同准备 QQJ 身份`);
+    assert.ok(result.ai0BodyReadCount > 0, `${hostName} 生产扫描会读取正文但不把未稳定 AI0 封存`);
+  }
+});
+
 test('实际生产 bundle 原生与 Luker 启动均能捕获含其他插件临时字段的宿主元数据', async () => {
   for (const hostGlobalName of ['SillyTavern', 'Luker']) {
     const result = await isolateBundle(hostGlobalName, {
@@ -237,7 +571,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.7.21');
+  assert.equal(manifest.version, '0.8.0');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -470,11 +804,18 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/v3/vector-auto-update.js', { createVectorAutoUpdater: options => { vectorAutoOptions = options; return { dispose() {}, refresh() { vectorWakeCount += 1; } }; } });
   define('./src/v3/recall-source.js', { readRecallSource: async options => options });
   define('./src/v3/vector-source-reader.js', { readVectorSource: async options => options });
-  define('./src/source-permission.js', { createSourcePermissionController: () => ({}) });
+  let scannedWorldInfoSources = null;
+  define('./src/source-permission.js', { createSourcePermissionController: () => ({
+    filterWorldInfoSources(sources) { return sources.filter(source => source.sourceName !== 'blocked-book'); },
+  }) });
+  define('./src/world-info-scanner.js', { scanWorldInfo: async (_context, options) => {
+    scannedWorldInfoSources = options.filterBookNames(['blocked-book', 'allowed-book']);
+    return { entries: [{ key: 'allowed-book::7', comment: '灯塔', primaryKeys: ['灯塔'], secondaryKeys: [], content: '世界书原文', constant: true }] };
+  } });
   const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png', name: '角色' }] };
   define('./src/v3/host-adapter.js', {
     captureTargetChatCoordinates: (_snapshot, identity) => ({ hostChatId: identity.hostChatId, characterLocator: identity.characterLocator, characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} }),
-    createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, snapshot: () => ({}) }; },
+    createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, getWorldInfoBindings: () => ({}), snapshot: () => ({}) }; },
   });
   define('./src/v3/foundation-store.js', { createFoundationStore: options => { foundationStoreOptions.push(options); return {}; } });
   define('./src/v3/historical-rebuild-task.js', { runHistoricalRebuildTask: async options => { historicalRebuildOptions = options; return { status: 'complete' }; } });
@@ -497,23 +838,23 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const startupBindingError = new TypeError('PRIVATE source startup binding detail');
   const qianshiRecallInputs = [];
   const timeBatches = [];
+  let peopleWorkspaceListener = null;
   let calendarInvalidations = 0, calendarRefreshes = 0;
-  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), getActivityState: () => ({}), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => { currentStoryContextReads += 1; return { currentTime: { raw: '5月3日' } }; }, stop: async () => {}, bind(options) { timeBindOptions = options; } };
+  const timeRuntime = { runBatch: receipt => { timeBatches.push(receipt); }, getState: () => ({}), getActivityState: () => ({ active: false }), invalidate() { calendarInvalidations += 1; }, async refreshStatus() { calendarRefreshes += 1; }, completeStoredUpdate() { timeOptions.onInvalidate?.(); }, recallProjection: async () => null, currentStoryContext: async () => { currentStoryContextReads += 1; return { currentTime: { raw: '5月3日' } }; }, stop: async () => {}, bind(options) { timeBindOptions = options; } };
   define('./src/v3/time-runtime.js', { createTimeStore: () => ({}), createTimeRuntime: options => { timeOptions = options; return timeRuntime; } });
   const memoryStartOptions = [];
   let failMemoryStart = false;
-  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start(startOptions) { memoryStartOptions.push(startOptions); backgroundStarts.push('memory'); if (failMemoryStart) throw new TypeError('PRIVATE late memory failure'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, async confirmConsecutiveAssistants() { confirmationCalls += 1; }, getState: () => ({}), getActivityState: () => ({}), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
+  define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start(startOptions) { memoryStartOptions.push(startOptions); backgroundStarts.push('memory'); if (failMemoryStart) throw new TypeError('PRIVATE late memory failure'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, async confirmConsecutiveAssistants() { confirmationCalls += 1; }, getState: () => ({}), getActivityState: () => ({ memoryWorkBusy: false, activeExtraction: false, activeCse: false, qianshiHistoryActive: false }), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/preparation-diagnostic.js', { preparationFailureDiagnostic: error => ({ prepareStep: null, name: error?.name ?? null, code: error?.code ?? null, detail: null, location: null }) });
   define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors, persistTargetChatIdentity: async () => ({ status: 'persisted' }) });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, invalidate(reason) { recallInvalidations.push(reason); }, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });
-  let peopleWorkspaceListener;
-  let peopleWorkspaceState = { status: 'ready', chatId: 'test', revision: 1, people: [{ entityId: 'awake-id' }],
+  let peopleWorkspaceState = { status: 'ready', chatId: 'test',
     profilesByEntityId: { 'awake-id': { name: '在场人物', birthday: '1月1日' }, 'sleep-id': { name: '休眠人物', birthday: '2月2日' }, 'old-id': { name: '旧身份', birthday: '3月3日' }, 'deleted-id': { name: '已删除', birthday: '4月4日' } },
-    identityRedirectsByEntityId: { 'old-id': 'awake-id' }, deletedEntityIds: ['deleted-id'] };
-  const peopleWorkspaceRuntime = { async refresh(options) { backgroundStarts.push(['people', options]); }, async setEnabled(value) { runtimeEnables.push(`people:${value}`); }, invalidate() {},
-    getState: () => peopleWorkspaceState, subscribe(listener) { peopleWorkspaceListener = listener; return () => { if (peopleWorkspaceListener === listener) peopleWorkspaceListener = null; }; } };
+    identityRedirectsByEntityId: { 'old-id': 'awake-id' }, deletedEntityIds: ['deleted-id'], revision: 1, people: [{ entityId: 'awake-id' }] };
+  const peopleWorkspaceRuntime = { async refresh(options) { backgroundStarts.push(['people', options]); }, async setEnabled(value) { runtimeEnables.push(`people:${value}`); }, invalidate() {}, getState: () => peopleWorkspaceState,
+    subscribe(listener) { peopleWorkspaceListener = listener; return () => { peopleWorkspaceListener = null; }; } };
   define('./src/v3/people-workspace.js', {
     createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read() {}, put() {} }; },
     createPeopleWorkspaceRuntime: options => { peopleWorkspaceOptions = options; return peopleWorkspaceRuntime; },
@@ -598,12 +939,24 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(timeOptions.isEnabled(), false);
   assert.equal(Object.hasOwn(v3MemoryOptions, 'onMemoryBatchCommitted'), false, '时间从foundation生命周期读正文，不等摘要CSE完成回调');
   assert.equal(timeBatches.length, 0);
-  peopleWorkspaceListener({ ...peopleWorkspaceState, active: { kind: 'generating', batchIndex: 1, batchTotal: 2 } });
-  peopleWorkspaceListener({ ...peopleWorkspaceState, active: null });
-  assert.equal(timeBatches.length, 0, '人物整理的阶段开始/结束不重复触发时间更新');
-  peopleWorkspaceState = { ...peopleWorkspaceState, revision: 2, people: [...peopleWorkspaceState.people, { entityId: 'new-person' }] };
+  peopleWorkspaceListener({ ...peopleWorkspaceState });
+  assert.equal(timeBatches.length, 0, '人物处理状态通知不重跑正文扫描与时间事项读取');
+  const unchangedPeople = peopleWorkspaceState.people;
+  peopleWorkspaceState = { ...peopleWorkspaceState, status: 'generating', people: unchangedPeople };
   peopleWorkspaceListener(peopleWorkspaceState);
-  assert.deepEqual(nativeJson(timeBatches), [{ chatId: 'test' }], '实际人物投影与 revision 改变仍触发时间更新');
+  peopleWorkspaceState = { ...peopleWorkspaceState, status: 'ready', people: unchangedPeople };
+  peopleWorkspaceListener(peopleWorkspaceState);
+  assert.equal(timeBatches.length, 0, '同人物内容的忙碌/进度阶段结束不额外触发时间更新');
+  peopleWorkspaceState = { ...peopleWorkspaceState, revision: 2,
+    people: [{ entityId: 'awake-id', profile: { name: '在场人物', birthday: '2月2日' } }] };
+  peopleWorkspaceListener(peopleWorkspaceState);
+  assert.equal(timeBatches.length, 1, '人物资料/生日变化仍触发时间更新');
+  assert.equal(timeBatches[0].chatId, 'test');
+  timeBatches.length = 0;
+  peopleWorkspaceState = { ...peopleWorkspaceState, revision: 3, identityRedirectsByEntityId: { 'former-id': 'awake-id' },
+    people: [{ entityId: 'awake-id', profile: { name: '在场人物', birthday: '2月2日' } }] };
+  peopleWorkspaceListener(peopleWorkspaceState);
+  assert.equal(timeBatches.length, 1, '人物身份归并变化仍触发时间更新');
   timeBatches.length = 0;
   assert.equal(bootstrapOptions.calendarContextProvider().calendar, null);
   for (const code of ['CHAT_SESSION_DISABLED', 'CHAT_SESSION_NOT_READY', 'CHAT_SESSION_CONTEXT_INVALID', 'CHAT_SESSION_SUSPENDED']) {
@@ -619,6 +972,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   await bootstrapOptions.onCalendarChange({ chatId: 'test', calendar: { months: 4, prefix: '启航' } });
   assert.deepEqual(nativeJson(productionSettings.storyCalendars.test), { months: 4, prefix: '启航' });
   assert.equal(v3MemoryOptions.storyCalendarProvider().months, 4);
+  productionSettings.storyCalendars.other = { months: 6, prefix: '远航' };
+  assert.deepEqual(nativeJson(v3MemoryOptions.storyCalendarProvider('other')), { months: 6, prefix: '远航' }, '历史目标按其QQJ chatId读取已确认历法，不沿用当前可见聊天');
+  assert.equal(v3MemoryOptions.storyCalendarProvider().months, 4, '无目标参数时仍沿用当前聊天历法');
   assert.equal(timeOptions.storyCalendarProvider().prefix, '启航');
   assert.equal(calendarInvalidations, 1); assert.equal(calendarRefreshes, 1);
   assert.equal(timeBatches.length, 0, '保存历法只刷新计算视图，不开启时间 API');
@@ -730,6 +1086,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(publicQianshiBridgeOptions.memoryRuntime, v3MemoryRuntime, '千事公共桥必须复用生产 memory runtime');
   assert.equal(typeof publicMemoryBridgeOptions.isEnabled, 'function');
   assert.equal(typeof publicMemoryBridgeOptions.sanitizerOptions, 'function');
+  const worldInfo = await publicMemoryBridgeOptions.readWorldInfoProvider();
+  assert.deepEqual(scannedWorldInfoSources, ['allowed-book'], '生产入口将整本排除权限映射到 scanner 的书名过滤契约');
+  assert.deepEqual(worldInfo.worldbook.map(entry => [entry.uid, entry.content]), [['allowed-book::7', '世界书原文']]);
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.equal(v3RecallOptions.generateUtilityTask, recallTask);
@@ -784,18 +1143,14 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(foundationStoreOptions.at(-2).coreRecordCache, null, '关闭后主要Store接收null');
   assert.equal(foundationStoreOptions.at(-1).coreRecordCache, null, '关闭后向量来源Store接收null');
   assert.equal(memoryManagementOptions.coreRecordCache, null, '关闭后记忆管理失效消费者接收null');
-  await memoryManagementOptions.createHistoricalRebuild({});
+  const inheritedCalendar = { months: 4, prefix: '启航' }, rebuiltTargetId = 'rebuild-target-without-calendar';
+  await memoryManagementOptions.createHistoricalRebuild({ storyCalendar: inheritedCalendar });
   assert.equal(historicalRebuildOptions.coreRecordCache, null, '关闭后历史重建消费者接收null');
+  assert.deepEqual(historicalRebuildOptions.storyCalendarForChat(rebuiltTargetId), inheritedCalendar, 'index生产入口为新身份继承开始时捕获的目标历法');
+  assert.deepEqual(nativeJson(productionSettings.storyCalendars[rebuiltTargetId]), inheritedCalendar, '新身份历法经正式设置保存入口持久化');
+  productionSettings.storyCalendars['preconfigured-rebuild-target'] = { months: 12, prefix: '远航' };
+  assert.deepEqual(historicalRebuildOptions.storyCalendarForChat('preconfigured-rebuild-target'), { months: 12, prefix: '远航' }, '目标身份已有历法时保留该值');
   assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()).coreCache, { available: false, enabled: false });
-});
-
-test('生产dist在原生SillyTavern与Luker关闭缓存后不创建IndexedDB实例，正式身份存储入口仍运行', async () => {
-  for (const host of ['SillyTavern', 'Luker']) {
-    const result = await isolateBundle(host, { enabled: true, coreCacheEnabled: false });
-    assert.equal(result.status, 'evaluated', `${host}生产包应正常启动`);
-    assert.equal(result.localForageCreateCalls, 0, `${host}关闭设置不得创建localForage实例`);
-    assert.equal(result.backendCalls, 3, `${host}正式身份/地基存储请求仍沿后端执行`);
-  }
 });
 
 test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时零后端请求', async () => {
@@ -808,24 +1163,44 @@ test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时
   assert.equal(result.publicBridgePromptSnapshotType, 'function');
   assert.equal(result.publicBridgePromptSnapshotStatus, 'disabled');
   assert.equal(result.backendCalls, 0);
+  assert.equal(result.backendHealthCalls, 0);
+  assert.equal(result.backendDataCalls, 0);
 });
 
 test('生产 bundle 在 Luker-only 且插件启用时真实进入身份绑定与旧 V3 root 核对路径', async () => {
   const result = await isolateBundle('Luker', { enabled: true });
   assert.equal(result.status, 'evaluated');
-  assert.equal(result.backendCalls, 3, '依次读取绑定、核对旧 root，并尝试 CAS 认领');
+  assert.equal(result.backendDataCalls, 3, '依次读取绑定、核对旧 root，并尝试 CAS 认领');
+  assert.equal(result.backendHealthCalls, 1, '旧后端 capability 只核对一次');
+  assert.equal(result.backendTrashGcPostCalls, 0, '旧后端不支持时不能提交回收站清理请求');
+  assert.equal(result.backendWriteCalls, 1, '仍只尝试一次身份 CAS');
 });
 
 test('生产 bundle 在 official-only 且插件启用时真实进入身份绑定与旧 V3 root 核对路径', async () => {
   const result = await isolateBundle('SillyTavern', { enabled: true });
   assert.equal(result.status, 'evaluated');
-  assert.equal(result.backendCalls, 3, '依次读取绑定、核对旧 root，并尝试 CAS 认领');
+  assert.equal(result.backendDataCalls, 3, '依次读取绑定、核对旧 root，并尝试 CAS 认领');
+  assert.equal(result.backendHealthCalls, 1, '旧后端 capability 只核对一次');
+  assert.equal(result.backendTrashGcPostCalls, 0, '旧后端不支持时不能提交回收站清理请求');
+  assert.equal(result.backendWriteCalls, 1, '仍只尝试一次身份 CAS');
   const clockCalls = result.promptCalls.filter(call => call[0] === 'myknots_story_clock');
   assert.deepEqual(clockCalls[0], ['myknots_story_clock', '']);
   assert.equal(clockCalls.length, 2);
   assert.match(clockCalls[1][1], /<!-- QQJ-start/);
   assert.match(clockCalls[1][1], /<!-- QQJ-end/);
   assert.deepEqual(clockCalls[1].slice(2), [17, 0, false, 29]);
+});
+
+test('生产dist在原生SillyTavern与Luker关闭缓存后不创建IndexedDB实例，正式身份存储入口仍运行', async () => {
+  for (const host of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(host, { enabled: true, coreCacheEnabled: false });
+    assert.equal(result.status, 'evaluated', `${host}生产包应正常启动`);
+    assert.equal(result.localForageCreateCalls, 0, `${host}关闭设置不得创建localForage实例`);
+    assert.equal(result.backendDataCalls, 3, `${host}正式身份/地基存储请求仍沿后端执行`);
+    assert.equal(result.backendHealthCalls, 1, `${host}旧后端 capability 只核对一次`);
+    assert.equal(result.backendTrashGcPostCalls, 0, `${host}旧后端不提交回收站清理请求`);
+    assert.equal(result.backendWriteCalls, 1, `${host}正式身份存储仍只尝试一次 CAS`);
+  }
 });
 
 test('生产 bundle 不向现有消息楼插入节点、样式或楼卡专属订阅', async () => {
@@ -851,5 +1226,113 @@ test('生产 bundle 的原生/Luker × Text/Chat 入口动态调用同一 recall
     assert.equal(recallCalls.length, 4, `${hostGlobalName}/${mainApi}`);
     for (const call of recallCalls) assert.deepEqual(call, ['qqj_v3_recalled_context', '', 17, 2, false, 29]);
     assert.deepEqual(clockCalls, [['myknots_story_clock', '']], `${hostGlobalName}/${mainApi}`);
+  }
+});
+
+test('生产 bundle 的 native 与 Luker 入口将未清理正文中的地点标注送入真实召回提示与回执', async () => {
+  for (const hostGlobalName of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(hostGlobalName, {
+      enabled: true, locationReferenceChat: true, invokeLocationReference: true,
+    });
+    assert.equal(result.status, 'evaluated', `${hostGlobalName} bundle 应正常启动`);
+    const prompt = result.promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context').at(-1);
+    assert.ok(prompt, `${hostGlobalName} 实际入口应调用 QQJ 召回槽`);
+    assert.match(prompt[1], /东区公寓·卧室/u, `${hostGlobalName} 真实提示应包含来源地点参考（result=${JSON.stringify(result.locationReferenceResult)}，warnings=${JSON.stringify(result.startupWarnings.map(item => String(item[1]?.stack ?? item[1])))}，prompt=${JSON.stringify(prompt[1])}，receipt=${JSON.stringify(result.hostChat[1]?.extra?.qqj_v3_recall_receipt)}，backend=${result.backendDataCalls}/${result.backendWriteCalls}）`);
+    const receipt = result.hostChat[1]?.extra?.qqj_v3_recall_receipt;
+    assert.equal(receipt?.schemaVersion, 18, `${hostGlobalName} 应保存新版地点参考回执`);
+    assert.ok(result.chatSaveCalls > 0, `${hostGlobalName} 应通过宿主保存入口持久化回执`);
+    assert.ok(receipt?.selectedLocationReferences?.some(value => value.text === '东区公寓·卧室'), `${hostGlobalName} 回执应记录选中的地点参考`);
+    assert.equal(receipt.injectionText, prompt[1], `${hostGlobalName} 已保存回执应与实际提示全文一致`);
+    assert.match(receipt.injectionText, /东区公寓·卧室/u, `${hostGlobalName} 回执正文应与实际注入相符`);
+    assert.equal(receipt.selectedLocationReferences[0].hostLocator.messageIndex, 0, `${hostGlobalName} 应保留真实宿主来源楼号`);
+    assert.equal(Object.hasOwn(receipt.selectedLocationReferences[0], 'floorId'), false, `${hostGlobalName} 未摘要楼不能伪造floorId`);
+  }
+});
+
+test('候选 bundle 的 native/Luker 旧回执复用让前情与普通召回共享预算并同步公开快照', async () => {
+  const contextSize = 8192;
+  const prequelText = Array.from({ length: 160 }, (_, index) =>
+    `此前林岚在月台整理旧账，第${index + 1}段记录信件编号与后续约定。`
+  ).join('\n');
+  const standalonePrequel = selectPrequel({ text: prequelText, contextSize });
+  assert.ok(standalonePrequel.injectionText.length > 0, '独立前情选择应产生可比较的格式化片段');
+  for (const hostGlobalName of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(hostGlobalName, {
+      enabled: true,
+      legacyReceiptUi: true,
+      legacyReceiptPrequelBudget: { contextSize, text: prequelText },
+    });
+    assert.equal(result.status, 'evaluated', `${hostGlobalName} bundle应启动`);
+    assert.ok(result.historicalReceiptCheck?.restoredReceipt, `${hostGlobalName} 输入应是有效旧签名回执`);
+    const measured = result.legacyReceiptPrequelBudgetResult;
+    assert.equal(measured?.intercept?.lastRecall?.reusedReceipt, true, `${hostGlobalName} 应复用同一USER的旧回执`);
+    assert.equal(measured?.receipt?.schemaVersion, 18, `${hostGlobalName} 不应重写当前回执版本`);
+    assert.equal(measured?.receipt?.receiptFingerprint, measured?.initialReceiptFingerprint, `${hostGlobalName} 原回执签名保持不变`);
+    const ordinaryInjectionText = measured?.initialReceipt?.injectionText ?? '';
+    const budget = recallBudget(contextSize);
+    assert.ok(ordinaryInjectionText.length > 0 && ordinaryInjectionText.length <= budget.totalCharacters,
+      `${hostGlobalName} 首轮正式普通召回应非空且处于单独额度内`);
+    assert.ok(estimateRecallTokens(ordinaryInjectionText) <= budget.totalTokens,
+      `${hostGlobalName} 首轮正式普通召回应处于单独token额度内`);
+    assert.match(ordinaryInjectionText, /林岚/u, `${hostGlobalName} 正式选择应匹配具名人物`);
+    assert.match(ordinaryInjectionText, /archive ledger/iu, `${hostGlobalName} 正式选择应匹配查询主题`);
+    assert.ok(ordinaryInjectionText.length + standalonePrequel.injectionText.length > budget.totalCharacters
+      || estimateRecallTokens(ordinaryInjectionText) + standalonePrequel.estimatedTokens > budget.totalTokens,
+    `${hostGlobalName} 未收紧的正式普通召回与独立前情应至少超出一种共同预算`);
+    assert.equal(measured?.receipt?.injectionText, ordinaryInjectionText, `${hostGlobalName} 普通回执原文保持不变`);
+    assert.equal(measured?.recallSlot, ordinaryInjectionText, `${hostGlobalName} 实际普通注入槽保留正式回执全文`);
+    assert.equal(typeof measured?.prequelSlot, 'string', `${hostGlobalName} 应记录实际前情槽，即使剩余额度不足以注入片段`);
+    assert.ok(measured.recallSlot.length + measured.prequelSlot.length <= budget.totalCharacters, `${hostGlobalName} 两槽字符不超共同预算`);
+    assert.ok(estimateRecallTokens(measured.recallSlot) + estimateRecallTokens(measured.prequelSlot) <= budget.totalTokens, `${hostGlobalName} 两槽token不超共同预算`);
+    assert.equal(measured.promptSnapshot?.recall?.text, measured.recallSlot, `${hostGlobalName} 公开普通召回快照应与注入槽一致`);
+    assert.equal(measured.promptSnapshot?.prequel?.text, measured.prequelSlot, `${hostGlobalName} 公开前情快照应与注入槽一致`);
+    console.log(`[prequel-budget] ${JSON.stringify({ host: hostGlobalName, ordinaryCharacters: ordinaryInjectionText.length,
+      ordinaryTokens: estimateRecallTokens(ordinaryInjectionText), prequelCharacters: measured.prequelSlot.length,
+      prequelTokens: estimateRecallTokens(measured.prequelSlot), combinedBudgetCharacters: budget.totalCharacters,
+      combinedBudgetTokens: budget.totalTokens, untrimmedPrequelCharacters: standalonePrequel.injectionText.length,
+      untrimmedPrequelTokens: standalonePrequel.estimatedTokens, reused: measured.intercept?.lastRecall?.reusedReceipt === true })}`);
+  }
+});
+
+test('生产 bundle 的 native/Luker 默认历史reader将旧回执接入楼卡并按需展开原文与目标对象', async () => {
+  for (const hostGlobalName of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(hostGlobalName, { enabled: true, legacyReceiptUi: true });
+    assert.equal(result.status, 'evaluated', `${hostGlobalName} bundle 应正常启动`);
+    assert.equal(result.initialHistoricalReceiptSchemaVersion, 10, '生产bundle启动前应提供旧schema10原始回执');
+    assert.ok(result.historicalReceiptCheck?.restoredReceipt, `${hostGlobalName} 测试夹具必须是默认历史reader可读的旧签名回执`);
+    let card;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const message = result.receiptDocument.chat.querySelectorAll('.mes')[1];
+      const inlineHost = message?.querySelector('.mes_text')?.querySelector('[data-qqj-inline-host="true"]');
+      card = inlineHost?.__qqjInlineCard;
+      if (card?.recallUi?.events?.querySelector('.legacy-receipt')) break;
+      await new Promise(resolvePromise => setImmediate(resolvePromise));
+    }
+    assert.ok(card, `${hostGlobalName} 应由实际inline renderer挂载用户楼卡`);
+    let publicSnapshot = null;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      publicSnapshot = result.getPublicSnapshot();
+      if (publicSnapshot?.memory?.status === 'ready' && publicSnapshot.memory.syncStatus === 'idle') break;
+      await new Promise(resolvePromise => setImmediate(resolvePromise));
+    }
+    assert.equal(publicSnapshot?.memory?.status, 'ready', `${hostGlobalName} 的已有记忆投影应完成准备`);
+    assert.equal(publicSnapshot.memory.syncStatus, 'idle', `${hostGlobalName} 的既有记忆同步应处于空闲状态`);
+    await new Promise(resolvePromise => setImmediate(resolvePromise));
+    card.toggle.click();
+    let drawer = card.recallUi.events.querySelector('.legacy-receipt');
+    assert.ok(drawer, `${hostGlobalName} 默认历史reader应识别签名schema10回执（startup=${JSON.stringify(result.startupWarnings.map(item => String(item[1]?.stack ?? item[1])))}；receipt=${JSON.stringify(result.hostChat[1]?.extra?.qqj_v3_recall_receipt)}；publicCheck=${JSON.stringify(result.historicalReceiptCheck)}）`);
+    assert.equal(drawer.open, false, '原文默认折叠');
+    assert.equal(drawer.querySelector('.legacy-receipt-copy'), null, '折叠时不构建完整原文节点');
+    const backendCallsBeforeExpand = result.backendCalls;
+    drawer.open = true; drawer.emit('toggle');
+    const original = drawer.querySelector('.legacy-receipt-copy');
+    assert.equal(original?.textContent, '旧版召回原文：这段文本应按纯文本折叠展示。', `${hostGlobalName} 展开显示已签回执原文`);
+    card.recallUi.peopleTab.click();
+    await new Promise(resolvePromise => setImmediate(resolvePromise));
+    const changeRows = card.recallUi.people.querySelectorAll('.change-entry');
+    assert.equal(changeRows.length, 1, `${hostGlobalName} 人物页应展示旧回执中的变化`);
+    assert.match(changeRows[0].textContent, /→ 周宁：仍维持同一约定/u, `${hostGlobalName} 变化行应显示目标名称`);
+    assert.doesNotMatch(changeRows[0].textContent, /11111111-1111-4111-8111-111111111112/u, '内部目标ID不展示');
+    assert.equal(result.backendCalls, backendCallsBeforeExpand, '切页与展开原文不应发起额外后端请求');
   }
 });

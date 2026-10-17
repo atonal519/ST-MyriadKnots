@@ -16,6 +16,9 @@ const sourceStatus = value => value?.status === 'stale' ? 'stale' : 'unavailable
 const chronologyText = item => safeText(item?.time?.sourceText || item?.time?.normalized || item?.description, 2000);
 const CHRONOLOGY_KIND = Object.freeze({ explicit: '明确时间', relative: '相对时间', sequenceOnly: '先后顺序', unknown: '时间未知' });
 const CHRONOLOGY_PRECISION = Object.freeze({ approximate: '约略', unresolved: '未解析' });
+const hostLocatorDto = floor => floor?.hostLocator && Number.isSafeInteger(floor.hostLocator.messageIndex)
+  ? Object.freeze({ messageIndex: floor.hostLocator.messageIndex, swipeId: floor.hostLocator.swipeId ?? null,
+    selectedSwipeIndex: floor.hostLocator.selectedSwipeIndex ?? null }) : null;
 
 export function formatChronologyAnchor(chronology) {
   const values = [];
@@ -45,7 +48,7 @@ function chronologyDto(memory, floorSeqById) {
   })));
 }
 
-function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new Map() } = {}) {
+function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new Map(), floorById = new Map() } = {}) {
   const sourceFloorIds = memorySourceFloorIds(memory);
   const sourceRefs = refs => Object.freeze((refs ?? []).map(ref => Object.freeze({
     floorId: ref.floorId,
@@ -59,6 +62,12 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
     sourceFloorIds: Object.freeze(sourceFloorIds),
     sourceAssistantSeqs: Object.freeze(sourceFloorIds.map(floorId => floorSeqById.get(floorId)).filter(Number.isSafeInteger)),
     summary: summaryText(memory),
+    locationReferences: Object.freeze((Array.isArray(memory.sourceFloorSnapshots)
+      ? memory.sourceFloorSnapshots.flatMap(snapshot => Array.isArray(snapshot.locationReference) ? snapshot.locationReference.map(text => Object.freeze({ text: safeText(text, 500), sourceFloorId: snapshot.floorId, assistantSeq: floorSeqById.get(snapshot.floorId) ?? null, hostLocator: hostLocatorDto(floorById.get(snapshot.floorId)) })) : [])
+      : Array.isArray(memory.sourceLocationReference) ? memory.sourceLocationReference.map(text => Object.freeze({ text: safeText(text, 500), sourceFloorId: floor.id, assistantSeq: floor.assistantSeq, hostLocator: hostLocatorDto(floor) })) : [])),
+    locationReferenceSources: Object.freeze(Array.isArray(memory.sourceFloorSnapshots)
+      ? memory.sourceFloorSnapshots.map(snapshot => Object.freeze({ sourceFloorId: snapshot.floorId, cleared: snapshot.locationReference === null && Object.hasOwn(snapshot, 'locationReference') }))
+      : Object.hasOwn(memory, 'sourceLocationReference') ? [Object.freeze({ sourceFloorId: floor.id, cleared: memory.sourceLocationReference === null })] : []),
     chronology: chronologyAllowed ? chronologyDto(memory, floorSeqById) : Object.freeze([]),
     participants: Object.freeze((memory.participants ?? []).map(item => ({ entityId: item.entityId, presence: item.presence }))),
     locations: Object.freeze((memory.locations ?? []).map(item => ({ name: safeText(item.name, 500), change: item.change, entityId: item.entityId ?? null, participantEntityIds: Object.freeze([...(item.participantEntityIds ?? [])]), sourceRefs: sourceRefs(item.evidenceRefs) }))),
@@ -243,7 +252,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     }).filter(Boolean), ...(readiness?.unregisteredSummaryRefs ?? [])]),
     floorMemories: Object.freeze(activeMemories.map(memory => {
       const floor = floorById.get(memory.floorId);
-      return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq });
+      return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq, floorById });
     })),
     ...(await projectVectorSources(activeMemories, floors)),
     currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds),

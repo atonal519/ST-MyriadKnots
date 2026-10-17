@@ -1,5 +1,4 @@
 import { isUuid } from '../identity.js';
-import { cloneHostJsonMetadata } from '../host-context.js';
 
 export const MESSAGE_FLOOR_ANCHOR_KEY = 'qianqianjie_floor';
 export const MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION = 1;
@@ -23,6 +22,16 @@ const ownValue = (object, key) => Object.hasOwn(object ?? {}, key)
   ? Object.freeze({ present: true, value: object[key] }) : Object.freeze({ present: false });
 const qqjMessageMetadataProjection = extra => Object.freeze(Object.fromEntries(BRANCH_QQJ_MESSAGE_KEYS
   .filter(key => Object.hasOwn(extra ?? {}, key)).map(key => [key, extra[key]])));
+// Identity preparation checks message business and QQJ ownership, ignores display metadata, and writes only QQJ identity on the latest host-file base.
+export function sameQqjChatMetadata(left, right, { includePrequel = false } = {}) {
+  const keys = includePrequel ? ['qianqianjie', 'qianqianjiePrequel'] : ['qianqianjie'];
+  return stableJson(Object.fromEntries(keys.map(key => [key, ownValue(left, key)])))
+    === stableJson(Object.fromEntries(keys.map(key => [key, ownValue(right, key)])));
+}
+const sameTargetBusiness = (capturedMetadata, capturedChat, persistedMetadata, persistedChat) => Array.isArray(capturedChat)
+  && Array.isArray(persistedChat)
+    && sameQqjChatMetadata(capturedMetadata, persistedMetadata)
+  && stableJson(capturedChat.map(branchMessageBusinessProjection)) === stableJson(persistedChat.map(branchMessageBusinessProjection));
 
 function branchQqjMessageProjection(chat) {
   return chat.map(message => ({
@@ -57,6 +66,26 @@ export function branchMessageBusinessProjection(message) {
         ? message.swipe_info.map(swipe => ownValue(swipe?.extra, MESSAGE_FLOOR_ANCHOR_KEY)) : [],
     }),
   });
+}
+
+export function messageCoreAndQqjDataProjection(message) {
+  return { core: branchMessageCoreProjection(message), qqj: {
+    outer: qqjMessageMetadataProjection(message?.extra),
+    swipes: Array.isArray(message?.swipe_info) ? message.swipe_info.map(swipe => qqjMessageMetadataProjection(swipe?.extra)) : null,
+  } };
+}
+
+export function snapshotChatCoreAndQqjData(chat) {
+  return Array.isArray(chat) ? chat.map(message => structuredClone(messageCoreAndQqjDataProjection(message))) : null;
+}
+
+export function sameChatCoreAndQqjDataSnapshot(snapshot, chat) {
+  return Array.isArray(snapshot) && Array.isArray(chat) && snapshot.length === chat.length
+    && stableJson(snapshot) === stableJson(chat.map(messageCoreAndQqjDataProjection));
+}
+
+export function sameMessageCoreAndQqjData(left, right) {
+  return stableJson(messageCoreAndQqjDataProjection(left)) === stableJson(messageCoreAndQqjDataProjection(right));
 }
 
 export function sameBranchMessageCore(left, right) {
@@ -450,18 +479,17 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
     create = true;
     before = { header: { chat_metadata: structuredClone(snapshot.chatMetadata) }, chat: structuredClone(snapshot.chat) };
   }
-  const withoutIntegrity = value => {
-    const next = structuredClone(value);
-    if (next?.chat_metadata && typeof next.chat_metadata === 'object') delete next.chat_metadata.integrity;
-    return next;
-  };
-  const capturedMetadata = structuredClone(snapshot.chatMetadata);
-  const persistedMetadata = structuredClone(before.header.chat_metadata ?? {});
-  delete capturedMetadata.integrity;
-  delete persistedMetadata.integrity;
-  if (JSON.stringify(snapshot.chat) !== JSON.stringify(before.chat)
-    || JSON.stringify(capturedMetadata) !== JSON.stringify(persistedMetadata)) {
-    throw fail('V3_TARGET_CHAT_CHANGED', '固定聊天在身份准备期间被修改，未覆盖已保存内容。');
+  if (!sameTargetBusiness(snapshot.chatMetadata, snapshot.chat, before.header.chat_metadata ?? {}, before.chat)) {
+    throw fail('V3_TARGET_CHAT_CHANGED', '聊天内容或千千结身份已变化，未保存身份。请确认当前聊天内容后，重新打开当前聊天。');
+  }
+  if (!create) {
+    const latest = await readTargetChat(target, { signal, fetchImpl, allowMissingIdentity: true,
+      allowedChatIds: [capturedQqjId, chatId].filter(Boolean) });
+    if (!sameTargetBusiness(snapshot.chatMetadata, snapshot.chat, latest.header.chat_metadata ?? {}, latest.chat)) {
+      throw fail('V3_TARGET_CHAT_CHANGED', '聊天内容或千千结身份已变化，未保存身份。请确认当前聊天内容后，重新打开当前聊天。');
+    }
+    // Save from the newest host payload so display metadata and unrelated message fields survive this QQJ-only update.
+    before = latest;
   }
   const header = structuredClone(before.header);
   header.chat_metadata ??= {};
@@ -472,26 +500,19 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
     ...(header.chat_metadata.qianqianjie && typeof header.chat_metadata.qianqianjie === 'object' ? header.chat_metadata.qianqianjie : {}),
     schemaVersion: 2, chatId,
   };
-  if (!create) {
-    const latest = await readTargetChat(target, { signal, fetchImpl, allowMissingIdentity: true,
-      allowedChatIds: [capturedQqjId, chatId].filter(Boolean) });
-    if (JSON.stringify(latest.header) !== JSON.stringify(before.header) || JSON.stringify(latest.chat) !== JSON.stringify(before.chat)) {
-      throw fail('V3_TARGET_CHAT_CHANGED', '固定聊天在身份保存期间被修改，未覆盖已保存内容。');
-    }
-  }
   const response = await fetchImpl('/api/chats/save', {
     method: 'POST', cache: 'no-cache', headers: target.requestHeaders ?? {},
     body: JSON.stringify({ ch_name: target.characterName, file_name: target.hostChatId, avatar_url: target.avatarUrl,
       chat: [header, ...before.chat], force: false }), signal,
   });
-  if (!response?.ok) throw fail([400, 409].includes(response?.status) ? 'V3_TARGET_CHAT_CHANGED' : 'V3_TARGET_CHAT_SAVE_FAILED', '固定聊天身份未能保存。');
+  if (!response?.ok) throw fail([400, 409].includes(response?.status) ? 'V3_TARGET_CHAT_CHANGED' : 'V3_TARGET_CHAT_SAVE_FAILED', '千千结身份未能保存到聊天。请确认当前聊天仍可正常保存，再重新打开当前聊天。');
   const persisted = await readTargetChat(target, { signal, fetchImpl });
-  if (JSON.stringify(withoutIntegrity(persisted.header)) !== JSON.stringify(withoutIntegrity(header))
-    || JSON.stringify(persisted.chat) !== JSON.stringify(before.chat)) {
-    throw fail('V3_TARGET_CHAT_VERIFY_FAILED', '固定聊天身份保存后读回不一致。');
+  if (!sameQqjChatMetadata(header.chat_metadata, persisted.header.chat_metadata ?? {})
+    || stableJson(before.chat.map(branchMessageBusinessProjection)) !== stableJson(persisted.chat.map(branchMessageBusinessProjection))) {
+    throw fail('V3_TARGET_CHAT_VERIFY_FAILED', '保存后无法确认聊天身份已写入。请到“记忆管理”页点击“复制状态诊断”反馈。');
   }
   if (raw?.chatId === coordinates.hostChatId && raw?.chatMetadata
-    && JSON.stringify(withoutIntegrity({ chat_metadata: cloneHostJsonMetadata(raw.chatMetadata) })) === JSON.stringify(withoutIntegrity({ chat_metadata: snapshot.chatMetadata }))) {
+    && sameQqjChatMetadata(raw.chatMetadata, snapshot.chatMetadata)) {
     raw.chatMetadata.qianqianjie = { ...(raw.chatMetadata.qianqianjie ?? {}), schemaVersion: 2, chatId };
     if (Object.hasOwn(persisted.header.chat_metadata, 'integrity')) raw.chatMetadata.integrity = persisted.header.chat_metadata.integrity;
     else delete raw.chatMetadata.integrity;

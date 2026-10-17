@@ -9,8 +9,8 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-33';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-14';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-38';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-17';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
@@ -28,7 +28,9 @@ relevantPriorContext 若存在，是用户导入的过去经历资料，仅用�
 
 subjectRelevantEvidence 按 tracked subject 汇集角色相关条目；每项只给 floorMemory 同名数组中从 0 开始的 index 和 relationToSubject，请按 index 读取 floorMemory 中的完整条目。这个索引只用于定位结构化背景，不是可填入 evidence.source 的来源标识。relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
 
-previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。为精简请求，Core/Adaptive 前态不重复传输旧 reason；这不表示原状态没有依据，旧状态仍不是本楼新 evidence。Situational 前态保留原 reason，因为完整情境列表需要用它核对是否发生变化。某条状态出现在这些材料中，不代表其他人物已经知道它。作者态推断与人物本人已知必须分开：observable 只用于正文中实际可观察的状态，private 只属于该人物的内心或明确知情，authorial 只作作者塑造参考。
+previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态，不代表其他人物已经知道这些状态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。为精简请求，Core/Adaptive 前态不重复传输旧 reason；这不表示原状态没有依据，旧状态仍不是本楼新 evidence。Situational 前态保留原 reason，因为完整情境列表需要用它核对是否发生变化。
+
+五种 visibility 按信息本身和正文证据判断，所有主体使用同一标准。private 是主体未向他人显露的内心或未公开认知；正文明确写出的内心可直接记录，不因主体是用户或非用户而区别，也不得从外在表现猜成确定的私密心理。expressed 是主体通过言语或行为明确表达的想法、意图或态度；表达不等于已被他人接收，也不证明表达内容客观为真。observable 是外在动作、身体表现、位置等实际可感知的状态或处境；可观察不等于任意人物实际在场观察，不能把内心或判断混成外在事实。shared 是正文已证实相关人物共同知情的内容，只限证据支持的共同范围，不等于全员知情。authorial 是作者设定或仅供塑造的参考，不代表本人或任何角色已知。需要区分表达者、接收者或共同知情范围时，在现有 text/reason 中保留有依据的归属，不强迫补全受众；不确定时不扩大知情范围。toward 只表示态度对象，不表示接收或知情。
 
 只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
 
@@ -38,7 +40,7 @@ previousState 按 subject 分列各人的 ownState，只说明对应人物自身
 
 仅针对填写了 toward 的 Adaptive，text 直接写具体长期倾向，省略“在和某人相处过程中”“面对某人时”等仅重复 toward 对象、没有新增语义的套话开头。例如同一含义应写成“更愿意主动解释误会”，不要写成“在和人物乙相处过程中，更愿意主动解释误会”。必要的适用条件、第三人，以及本身有实际语义的对象名称仍应保留；不要为调整措辞增加证据、扩大长期程度、放宽 refine/evidence 合同，也不要把应 keep 的旧项强制改成 refine。
 
-Situational 记录本楼结束时仍在进行或仍限制人物的当前情境，不是“已发生事实”清单。某个事实仍然成立，不等于它必须一直占据当前情境。已发送或已收到消息、已拍到照片、已完成部署、已达成一次行动、已得知一条信息等已经完成的过程默认交给摘要；若确有未解决后果，只写仍在生效的后果，不保留过程流水。这些过程退出当前列表不需要正文逐条宣布“结束”，也不代表否认历史、人物失忆或把尚未完成的任务写成完成。保留真正持续的伤势、未解决处境、仍有效约定和有依据的当下关系反应，不能仅因本楼未提及就删除仍在持续的状态；有新依据表明它们结束或被替代时再移除或更新。同一处境或变化过程提炼合并为简短当前状态，text 和 reason 都不要逐楼追加历史行动链。每次输出某人物的 situational 完整列表时，必须同时清理 previousState 中已经结束、已被替代或只剩历史意义的条目，只留下仍有当下影响的部分；确有依据判断没有需要保留的当前项时用 []，不得以省略分类冒充清空。是否保留得知的信息、获得的事物或行动表现，应按其仍然造成的当下影响判断，并遵守上述事实、隐私和知识来源边界。
+Situational 记录本楼结束时仍在进行或仍限制人物的当前情境，不是“已发生事实”清单。某个事实仍然成立，不等于它必须一直占据当前情境。已发送或已收到消息、已拍到照片、已完成部署、已达成一次行动、已得知一条信息等已经完成的过程默认交给摘要；若确有未解决后果，只写仍在生效的后果，不保留过程流水。这些过程退出当前列表不需要正文逐条宣布“结束”，也不代表否认历史、人物失忆或把尚未完成的任务写成完成。保留真正持续的伤势、未解决处境、仍有效约定和有依据的当下关系反应，不能仅因本楼未提及就删除仍在持续的状态；有新依据表明它们结束或被替代时再移除或更新。同一处境或变化过程提炼合并为简短当前状态，text 和 reason 都不要逐楼追加历史行动链。每次输出某人物的 situational 时，使用完整分区对象 {"self":[...],"relations":[...]}：self 只放自身情境且不填 toward；relations 每项都须用 toward 指向唯一可绑定的人物。两区各自都是本楼结束时的完整列表；输出完整列表时清理 previousState 中已结束、已被替代或只剩历史意义的条目，只保留仍有当下影响的状态。只有两区都明确为 [] 才清空整类。缺少任一区或结构不完整时保留旧情境，不把缺项当成空数组；关系对象无法唯一绑定时沿既有隔离规则处理，不能改放进 self。编译后按 self 再 relations 的顺序合并到现有情境数组，总数上限120。是否保留得知的信息、获得的事物或行动表现，应按其仍然造成的当下影响判断，并遵守上述事实、隐私和知识来源边界。
 
 【持续校准合同】
 若本次请求包含 userCoreExtraction，必须独立检查 relevantBaseline.userPersona.description 中是否存在有原句支持的稳定长期核心特质。该任务不依赖本楼是否出现变化，也不依赖 previousState 中是否已有 Core：没有新变化或旧 Core 为空都不能作为跳过理由。有明确依据时，在用户 subject 的 additions.core 中写入特质及 userPersona 逐字证据，并返回 userCoreExtraction:{status:"traits"}；依据不足时不新增 Core，并返回 userCoreExtraction:{status:"insufficient"}。此提取任务不得仅凭 Persona 改动其他人物或其他分类；本楼对所有 trackedSubjects 的常规状态分析仍照常进行。
@@ -60,17 +62,17 @@ Situational 记录本楼结束时仍在进行或仍限制人物的当前情境�
 
 Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以新增或改写 Core；Adaptive 可随新事实、反例和旧依据不足而保持、收窄或撤回。coreUserEdited 为 true 时，只有 currentUserInput 中明确的作者纠正才可改变 Core；它不锁定 Adaptive。
 
-currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。evidence.source 必须逐字使用 evidenceSourceCatalog 中的 source；世界书使用其中的具体键，例如 worldbook:1，不填写书名或泛称 worldbook。quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人，characterCard 只支持对应角色；worldbook 需判断人物归属。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
+currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。evidence.source 必须逐字使用 evidenceSourceCatalog 中的 source；世界书使用其中的具体键，例如 worldbook:1，不填写书名或泛称 worldbook。quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人；characterCard 和 worldbook 是可能包含多个人物设定的作者材料，按来源原文明确描述的人物判断归属；不因卡名或来源名称推断归属，也不把一个人物的设定套给他人。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
 authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑造方向不等于已经发生的事实、所有人物已经知情或人物的永久性格。它不能单独作为新增或改写 Core 的证据。
 
 Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
-省略人物或分类表示保留已有状态。situational 是本楼结束时的完整列表：保留仍有当下影响的条目，清理已结束、被替代或只剩历史意义者；[] 表示有依据清空，没有足够依据更新时省略。review 或 additions 中某类的空数组只表示没有相应操作，不清空旧项；清除旧 Core/Adaptive 须逐项 remove 并给证据。
+省略人物或分类表示保留已有状态。situational 使用自身与关系两个完整分区；两区都为 [] 表示有依据清空整类，没有足够依据更新时省略分类。review 或 additions 中某类的空数组只表示没有相应操作，不清空旧项；清除旧 Core/Adaptive 须逐项 remove 并给证据。
 
 返回一个实际分析结果的 JSON 对象。确无需要输出的状态变化时，返回 {"subjects":[]}；不要返回 JSON Schema、空对象、null 或格式说明。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
 英文 JSON 字段名保持示例写法；状态 text、reason 使用中文。变化说明由程序按实际前后状态生成，无需填写 changeSummary。根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
-推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：
-{"subjects":[{"subject":"主体甲","review":{"adaptive":[{"previousText":"旧模式","toward":"对象乙","action":"refine","text":"保留有效条件与例外的当前模式","reason":"本楼支持调整的原因","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"situational":[{"reason":"本楼结束时仍生效的后果","text":"当前情境","visibility":"private","origin":"floor"}]}]}
+推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：自身情境不填写 toward；正文明确指向某人的当下态度仍在影响人物时，可单独列出该情境并填写对象姓名。
+{"subjects":[{"subject":"主体甲","review":{"adaptive":[{"previousText":"旧模式","toward":"对象乙","action":"refine","text":"保留有效条件与例外的当前模式","reason":"本楼支持调整的原因","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"situational":{"self":[{"reason":"本楼结束时仍生效的自身处境","text":"赶路后感到疲倦，想先休息","visibility":"private","origin":"floor"}],"relations":[{"reason":"主体甲明确说仍想自己拿行李并先保持距离","text":"此刻仍对对象乙保持距离，暂不愿让对方接手行李","toward":"对象乙","visibility":"expressed","origin":"floor"}]}}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 // 新生成统一走证据校准协议；编译器仍可读取旧 after-state 格式。
@@ -273,7 +275,8 @@ function cseEvidenceSources({ floor, baseline, currentUserInput, requestSources 
   const sources = [
     { source: 'canonicalContent', kind: 'story', subjectEntityId: null, contents: [floor.content.canonicalContent] },
     { source: 'userPersona', kind: 'authorialSetting', subjectEntityId: baseline.userPersona.entityId, contents: [userPersona.description] },
-    { source: 'characterCard', kind: 'authorialSetting', subjectEntityId: baseline.characterCard.entityId, contents: [characterCard.description, characterCard.personality, characterCard.scenario] },
+    // 角色卡可包含多人设定，具体人物归属由正文语义判断，不固定归给卡名对应实体。
+    { source: 'characterCard', kind: 'authorialSetting', subjectEntityId: null, contents: [characterCard.description, characterCard.personality, characterCard.scenario] },
     ...worldInfoSources.map((entry, index) => ({ source: `worldbook:${index + 1}`, kind: 'authorialSetting', subjectEntityId: null, contents: [entry.content] })),
   ];
   if (requestSources.authorNote?.content) sources.push({ source: 'authorNote', kind: 'authorialReference', subjectEntityId: null, contents: [requestSources.authorNote.content] });
@@ -328,6 +331,9 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
   const effectiveUserPersona = effectiveSources.userPersona ?? baseline.userPersona;
   const effectiveCharacterCard = effectiveSources.characterCard ?? baseline.characterCard;
   const effectiveWorldInfoSources = Array.isArray(effectiveSources.worldInfoSources) ? effectiveSources.worldInfoSources : requestWorldInfoSources;
+  const sourceLocationReference = Array.isArray(floorMemory.sourceFloorSnapshots)
+    ? floorMemory.sourceFloorSnapshots.find(snapshot => snapshot.floorId === floor.id)?.locationReference
+    : floorMemory.sourceLocationReference;
   const evidenceSources = cseEvidenceSources({ floor, baseline, currentUserInput, requestSources: { ...effectiveSources, worldInfoSources: effectiveWorldInfoSources } });
   const coreUserEdited = new Set(coreUserEditedSubjectEntityIds);
   const previousSubjects = previousSubjectsForPrompt(currentState, trackedSubjects);
@@ -358,6 +364,10 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       ...(userAdaptiveReview ? { userAdaptiveReview } : {}),
       canonicalContent: floor.content.canonicalContent,
       floorMemory: semanticMemory(floorMemory, entities),
+      ...(Array.isArray(sourceLocationReference) && sourceLocationReference.length ? { sourceLocationReference: {
+        label: '对应来源楼原消息地点标注（仅补充参照；正文和人工修订优先，不代表当前位置或人物在场）',
+        values: sourceLocationReference,
+      } } : {}),
       ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: auxiliaryStateSnapshotForPrompt(floorMemory.sourceVariableReference) } : {}),
       previousState: previousForPrompt(previousSubjects, entities, coreUserEdited),
       relevantBaseline: {
@@ -371,7 +381,9 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
         source: `userAdaptiveHistory:${entry.floorId}`, floorId: entry.floorId,
         assistantSeq: entry.assistantSeq, content: entry.content,
       })) } : {}),
-      evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind, ...(source.subjectEntityId ? { subject: nameForSubjectId(source.subjectEntityId) } : {}) })),
+      evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind,
+        ...(source.subjectEntityId ? { subject: nameForSubjectId(source.subjectEntityId) }
+          : source.kind === 'authorialSetting' ? { subjectScope: '按来源原文明确描述的人物' } : {}) })),
       subjectRelevantEvidence: subjectRelevantEvidence(floorMemory, trackedSubjects, entities),
       authorialOtherStateContext: authorialOtherStateContext(currentState, entities, previousSubjectIds),
       ...(relevantPriorContext ? { relevantPriorContext } : {}),
@@ -428,14 +440,46 @@ function normalizeCsePacket(value, { rejectSituationalConflict = false } = {}) {
   return updates ?? packet;
 }
 
-function parsePacket(value, { finishReason } = {}) {
-  if (Array.isArray(value)) return normalizeCsePacket(value);
-  if (value && typeof value === 'object' && !Array.isArray(value)) return normalizeCsePacket(value);
-  let raw = String(value ?? '').trim();
-  const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/giu)];
-  if (fences.length) raw = fences[0][1].trim();
+function collectFencedBlocks(raw) {
+  const blocks = [];
+  let quoted = false, escaped = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') { quoted = true; continue; }
+    if (!raw.startsWith('```', index)) continue;
+    const headerEnd = raw.indexOf('\n', index + 3);
+    if (headerEnd < 0) break;
+    const start = headerEnd + 1;
+    let innerQuoted = false, innerEscaped = false, close = -1;
+    for (let cursor = start; cursor < raw.length; cursor += 1) {
+      const inner = raw[cursor];
+      if (innerQuoted) {
+        if (innerEscaped) innerEscaped = false;
+        else if (inner === '\\') innerEscaped = true;
+        else if (inner === '"') innerQuoted = false;
+        continue;
+      }
+      if (inner === '"') { innerQuoted = true; continue; }
+      if (raw.startsWith('```', cursor)) { close = cursor; break; }
+    }
+    if (close < 0) break;
+    blocks.push(raw.slice(start, close).trim());
+    index = close + 2;
+    quoted = false; escaped = false;
+  }
+  return blocks;
+}
+
+function parsePacketContent(raw, { finishReason } = {}) {
+  raw = String(raw ?? '').trim();
   try { return normalizeCsePacket(JSON.parse(raw)); } catch { /* limited wrapper recovery */ }
-  const symbolRepaired = fences.length <= 1 ? parseJsonWithSymbolRepair(raw, { finishReason })?.value : null;
+  const symbolRepaired = parseJsonWithSymbolRepair(raw, { finishReason })?.value;
   if (symbolRepaired) return normalizeCsePacket(symbolRepaired);
   const start = raw.indexOf('{'), end = raw.lastIndexOf('}');
   if (start >= 0 && end > start) {
@@ -454,6 +498,43 @@ function parsePacket(value, { finishReason } = {}) {
   });
   if (repairedMiddle) return repairedMiddle;
   const error = new TypeError('CSE 返回不是可识别的 JSON。'); error.code = 'V3_CSE_FORMAT_INVALID'; throw error;
+}
+
+function formalPacketSignature(packet, { compareUserCoreExtraction = false } = {}) {
+  const userCoreExtraction = field(packet, ['userCoreExtraction', '用户核心特质提取']);
+  const extractionStatus = userCoreExtraction && typeof userCoreExtraction === 'object' && !Array.isArray(userCoreExtraction)
+    ? normalized(field(userCoreExtraction, ['status', '状态'])) || null
+    : null;
+  return stableCandidate({ noMaterialChange: field(packet, ['noMaterialChange']) === true, subjects: selectSubjectResults(packet) ?? null,
+    ...(compareUserCoreExtraction ? { userCoreExtractionStatus: extractionStatus } : {}) });
+}
+
+function parsePacket(value, { finishReason, compareUserCoreExtraction = false } = {}) {
+  if (Array.isArray(value)) return normalizeCsePacket(value);
+  if (value && typeof value === 'object') return normalizeCsePacket(value);
+  const raw = String(value ?? '').trim();
+  try { return normalizeCsePacket(JSON.parse(raw)); } catch { /* wrapped JSON follows */ }
+
+  const blocks = collectFencedBlocks(raw);
+  if (blocks.length) {
+    const candidates = [];
+    for (const block of blocks) {
+      try {
+        const packet = parsePacketContent(block, { finishReason });
+        if (hasRecognizableCseResult(packet)) candidates.push(packet);
+      } catch (error) {
+        if (error?.code === 'V3_CSE_SUBJECT_RESULT_AMBIGUOUS') throw error;
+      }
+    }
+    if (candidates.length) {
+      const signature = formalPacketSignature(candidates[0], { compareUserCoreExtraction });
+      if (candidates.some(candidate => formalPacketSignature(candidate, { compareUserCoreExtraction }) !== signature)) {
+        throw errorWith('V3_CSE_SUBJECT_RESULT_AMBIGUOUS', '模型返回了多份不同的人物状态，无法确认；请重新分析本楼。');
+      }
+      return candidates[0];
+    }
+  }
+  return parsePacketContent(raw, { finishReason });
 }
 
 const CSE_SUBJECT_RESULT_FIELDS = Object.freeze(['subjects', 'people', 'characters', 'states', '人物', '角色', '状态']);
@@ -510,7 +591,7 @@ const itemSemantic = item => typeof item === 'string' ? item.trim() : text(field
 const stateMeaning = item => [item.text, item.visibility, item.reason, item.origin, item.towardEntityId ?? ''];
 const storedProjection = subject => ({ core: subject.core.map(stateMeaning), adaptive: subject.adaptive.map(stateMeaning), situational: subject.situational.map(stateMeaning) });
 
-async function compileItems({ raw, category, binding, knownBindings, deltaId, floorId, previous, isolated, acceptedIntents }) {
+async function compileItems({ raw, category, binding, knownBindings, deltaId, floorId, isolated, acceptedIntents }) {
   const output = [];
   for (const [index, item] of list(raw).slice(0, 120).entries()) {
     const value = itemSemantic(item);
@@ -533,6 +614,29 @@ async function compileAfterStateCategory(options) {
   const output = await compileItems(options);
   if (Array.isArray(options.raw) && options.raw.length === 0) { options.acceptedIntents.count += 1; return output; }
   return output.length ? output : options.previous;
+}
+
+async function compileSituationalCategory(options) {
+  const { raw } = options;
+  if (Array.isArray(raw) || raw === null || raw === undefined || typeof raw !== 'object'
+    || (!Object.hasOwn(raw, 'self') && !Object.hasOwn(raw, 'relations'))) return compileAfterStateCategory(options);
+  if (!Array.isArray(raw.self) || !Array.isArray(raw.relations)) {
+    options.isolated.push({ field: 'situational', index: 0, code: 'V3_CSE_OPTIONAL_ITEM_INVALID' });
+    return options.previous;
+  }
+  if (raw.self.length === 0 && raw.relations.length === 0) {
+    options.acceptedIntents.count += 1;
+    return [];
+  }
+  const self = raw.self.slice(0, 120).map(item => {
+    const toward = field(item, ['toward', 'target', 'object', '对谁', '对象']);
+    return toward !== undefined && toward !== null && String(toward).trim() ? null : item;
+  });
+  const relations = raw.relations.slice(0, Math.max(0, 120 - self.length)).map(item => {
+    const toward = field(item, ['toward', 'target', 'object', '对谁', '对象']);
+    return toward !== undefined && toward !== null && String(toward).trim() ? item : null;
+  });
+  return compileAfterStateCategory({ ...options, raw: [...self, ...relations] });
 }
 
 const categoryNames = category => category === 'core' ? ['core', '核心', '核心人格'] : ['adaptive', '适应', '长期适应'];
@@ -706,7 +810,7 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
 }
 
 export async function compileCseResponse({ response, finishReason, envelope, previousCurrentState, now, deltaId, userCoreExtraction = null }) {
-  const packet = parsePacket(response, { finishReason });
+  const packet = parsePacket(response, { finishReason, compareUserCoreExtraction: Boolean(userCoreExtraction) });
   if (!hasRecognizableCseResult(packet)) throw errorWith('V3_CSE_FORMAT_INVALID', 'CSE 返回不含可识别的人物状态结果。');
   const isolated = [];
   const previousById = new Map((previousCurrentState?.subjects ?? []).map(subject => [subject.subjectEntityId, subject]));
@@ -734,7 +838,7 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
     }
     const proposedCore = calibratedCore ?? (hasCore ? await compileAfterStateCategory({ raw: field(raw, categoryNames('core')), category: 'core', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.core, isolated, acceptedIntents }) : previous.core);
     const adaptive = calibratedAdaptive ?? (hasAdaptive ? await compileAfterStateCategory({ raw: field(raw, categoryNames('adaptive')), category: 'adaptive', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.adaptive, isolated, acceptedIntents }) : previous.adaptive);
-    const situational = hasSituational ? await compileAfterStateCategory({ raw: field(raw, ['situational', 'situation', '短期状态', '情境']), category: 'situational', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.situational, isolated, acceptedIntents }) : previous.situational;
+    const situational = hasSituational ? await compileSituationalCategory({ raw: field(raw, ['situational', 'situation', '短期状态', '情境']), category: 'situational', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.situational, isolated, acceptedIntents }) : previous.situational;
     const explicitChallenges = list(field(raw, ['coreChallenges', 'coreChallenge', '核心挑战'])).map(itemSemantic).filter(Boolean);
     let core = proposedCore;
     const challenges = [...explicitChallenges];
@@ -811,22 +915,27 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
 
 const categoryAllowsToward = category => category === 'adaptive' || category === 'situational';
 const manualItemMeaning = (item, category) => [item.text, item.visibility, categoryAllowsToward(category) ? item.towardEntityId ?? null : null];
+const manualCategoryLabel = category => ({ core: '核心特质', adaptive: '长期倾向', situational: '当前情境' })[category] ?? '人物状态';
 
 async function manualStateItems({ edits, originals, category, subjectEntityId, floorId, oldDeltaId, deltaId, allowedTowardEntityIds }) {
-  if (!Array.isArray(edits) || edits.length > 120) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 编辑内容无效。`);
+  const label = manualCategoryLabel(category);
+  if (!Array.isArray(edits)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${label}编辑内容无效，请调整后重试。`);
+  if (edits.length > 120) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${label}最多120项，请删减后保存。`);
   const originalById = new Map(originals.map(item => [item.id, item]));
   const usedIds = new Set();
   const output = [];
   for (const [index, raw] of edits.entries()) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 第 ${index + 1} 项无效。`);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${label}第${index + 1}项格式无效，请重新编辑。`);
     const itemId = typeof raw.itemId === 'string' && raw.itemId ? raw.itemId : null;
     const original = itemId ? originalById.get(itemId) : null;
-    if (itemId && (!original || usedIds.has(itemId))) throw errorWith('V3_CSE_MANUAL_INPUT_STALE', `${category} 第 ${index + 1} 项已变化，请重新打开编辑。`);
+    if (itemId && (!original || usedIds.has(itemId))) throw errorWith('V3_CSE_MANUAL_INPUT_STALE', `${label}第${index + 1}项已变化，请重新打开编辑。`);
     if (itemId) usedIds.add(itemId);
     const itemText = typeof raw.text === 'string' ? raw.text.trim() : '';
-    if (!itemText || itemText.length > 4000 || !CSE_VISIBILITIES.includes(raw.visibility)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${category} 第 ${index + 1} 项内容或可见性无效。`);
+    if (!itemText) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${label}第${index + 1}项内容为空，请填写或删除该项。`);
+    if (itemText.length > 4000) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${label}第${index + 1}项内容超过4000字，请缩短后保存。`);
+    if (!CSE_VISIBILITIES.includes(raw.visibility)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', `${label}第${index + 1}项信息范围无效，请重新选择。`);
     const towardEntityId = categoryAllowsToward(category) && typeof raw.towardEntityId === 'string' && raw.towardEntityId ? raw.towardEntityId : null;
-    if (towardEntityId && !allowedTowardEntityIds.has(towardEntityId)) throw errorWith('V3_CSE_MANUAL_TOWARD_INVALID', '关系对象不在当前锚点可用人物范围内。');
+    if (towardEntityId && !allowedTowardEntityIds.has(towardEntityId)) throw errorWith('V3_CSE_MANUAL_TOWARD_INVALID', '所选关系对象当前不可用，请重新选择人物。');
     const nextMeaning = [itemText, raw.visibility, towardEntityId];
     if (original && JSON.stringify(manualItemMeaning(original, category)) === JSON.stringify(nextMeaning)) {
       if (original.sourceDeltaId !== oldDeltaId) { output.push(original); continue; }
@@ -934,7 +1043,7 @@ export async function runCseRequest({ generateAnalysisTask, envelope, previousCu
   }
 }
 
-export function filterReachableDeltas({ floors = [], floorMemories = [], stateDeltas = [] }) {
+export function filterReachableDeltas({ floors = [], stateDeltas = [] }) {
   const order = new Map(floors.map((floor, index) => [floor.id, index]));
   const candidates = new Map();
   for (const delta of stateDeltas) {

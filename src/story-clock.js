@@ -86,6 +86,7 @@ function namespaceCandidate(source, namespace, calendar) {
     endMeta,
     duplicate,
     complete: pairs.length > 0,
+    singleEnd: starts.length === 0 && ends.length === 1 && ends[0].meta.complete,
     pairs: Object.freeze(pairs),
     tokens: Object.freeze(tokens.map(token => Object.freeze({ kind: token.kind, raw: token.meta.raw }))),
     sourceIndex: tokens[0].index,
@@ -98,6 +99,21 @@ export function parseSharedStoryClock(value, calendar = null) {
   if (!candidates.length) return null;
   candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex);
   const usable = candidates.filter(candidate => candidate.complete);
+  if (!usable.length) {
+    const singleEnds = candidates.filter(candidate => candidate.singleEnd);
+    if (singleEnds.length) {
+      const key = candidate => JSON.stringify([candidate.endMeta.date, candidate.endMeta.weekday, candidate.endMeta.time]);
+      if (singleEnds.some(candidate => key(candidate) !== key(singleEnds[0]))) return Object.freeze({ ...singleEnds[0], complete: false, ambiguous: true });
+      return singleEnds[0];
+    }
+    return candidates[0];
+  }
+  const loneEnds = candidates.filter(candidate => candidate.singleEnd);
+  if (loneEnds.length) {
+    const endKey = value => JSON.stringify([value?.date, value?.weekday, value?.time]);
+    const pairedEnd = usable[0].pairs.at(-1)?.endMeta;
+    if (loneEnds.some(candidate => endKey(candidate.endMeta) !== endKey(pairedEnd))) return Object.freeze({ ...usable[0], complete: false, ambiguous: true });
+  }
   if (usable.length < 2) return candidates[0];
   const shape = candidate => JSON.stringify(candidate.pairs.map(pair => [pair.startMeta.date, pair.startMeta.weekday, pair.startMeta.time, pair.endMeta.date, pair.endMeta.weekday, pair.endMeta.time]));
   if (usable.every(candidate => shape(candidate) === shape(usable[0]))) return usable[0];
@@ -164,7 +180,7 @@ export function parseStoryClockReference(value, referenceTags = '') {
 export function parseStoryClockEvidence(value, referenceTags = '', calendar = null) {
   const shared = parseSharedStoryClock(value, calendar);
   const reference = parseStoryClockReference(value, referenceTags);
-  return shared?.ambiguous || shared?.complete ? shared : reference ?? shared;
+  return shared?.ambiguous || shared?.complete || shared?.singleEnd ? shared : reference ?? shared;
 }
 
 export function resolveStoryClock(value, referenceTags = '', calendar = null) {
@@ -174,6 +190,11 @@ export function resolveStoryClock(value, referenceTags = '', calendar = null) {
   if (evidence.complete && !evidence.referenceText) {
     const currentPair = evidence.pairs?.at(-1);
     const meta = currentPair?.endMeta ?? evidence.endMeta ?? evidence.startMeta;
+    return Object.freeze({ status: 'available', source: 'timestamp', evidence, meta,
+      text: [meta?.date, meta?.time].filter(Boolean).join(' '), signature: storyClockSignature(evidence) });
+  }
+  if (evidence.singleEnd && !evidence.referenceText) {
+    const meta = evidence.endMeta;
     return Object.freeze({ status: 'available', source: 'timestamp', evidence, meta,
       text: [meta?.date, meta?.time].filter(Boolean).join(' '), signature: storyClockSignature(evidence) });
   }

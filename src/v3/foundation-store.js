@@ -4,7 +4,6 @@ import {
   validateFoundationFloor,
   validateFoundationFloorContent,
   validateFoundationIndex,
-  validateFoundationGraph,
   validateFoundationRoot,
   validateFoundationRun,
   sameFoundationRecordContent,
@@ -240,7 +239,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   const operationState = () => enabled() ? 'current' : 'disabled';
   function execute(task, fixedIdentity = null) {
     if (!enabled()) return Promise.resolve({ status: 'disabled' });
-    const operation = { identity: fixedIdentity ?? capture(), fixedIdentity: fixedIdentity !== null, cacheScope: null, cacheVersion: null, cacheWitness: null, cacheManifest: null, cacheObserved: null, cacheHits: 0 };
+    const operation = { identity: fixedIdentity ?? capture(), cacheScope: null, cacheVersion: null, cacheWitness: null, cacheManifest: null, cacheObserved: null, cacheHits: 0 };
     try { operation.cacheVersion = coreRecordCache?.captureIdentityVersion?.(operation.identity) ?? null; } catch { operation.cacheVersion = null; }
     return (async () => {
       try { operation.cacheScope = await coreRecordCache?.scopeFor?.(operation.identity) ?? null; } catch { operation.cacheScope = null; }
@@ -286,7 +285,9 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   }
   async function readManyBatched(operation, values, recordType, identityValue, reader, { settled = false } = {}) {
     const items = Array.from(values ?? []);
-    if (!items.length || operation.cacheManifest || typeof client.getMany !== 'function') return readMany(operation, items, value => reader(value, null), { settled });
+    if (!items.length || operation.cacheManifest || typeof client.getMany !== 'function') {
+      return readMany(operation, items, value => reader(value, null), { settled });
+    }
     const results = new Array(items.length);
     for (let offset = 0; offset < items.length; offset += 64) {
       const before = operationState(operation);
@@ -303,12 +304,17 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         for (let index = 0; index < chunk.length; index += 1) results[offset + index] = { status: 'rejected', reason: transportFailure };
       } else {
         if (!Array.isArray(batch) || batch.length !== keys.length) fail('V3_STORE_BATCH_RESPONSE_INVALID');
-        const loaded = new Array(batch.length); let cursor = 0;
+        const loaded = new Array(batch.length);
+        let cursor = 0;
         await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, batch.length) }, async () => {
           while (true) {
-            const index = cursor++; if (index >= batch.length) return;
+            const index = cursor++;
+            if (index >= batch.length) return;
             const item = batch[index];
-            if (!item || item.recordId !== keys[index] || ![200, 404, 500].includes(item.status)) { loaded[index] = { status: 'rejected', reason: Object.assign(new TypeError('V3_STORE_BATCH_RESPONSE_INVALID'), { code: 'V3_STORE_BATCH_RESPONSE_INVALID' }) }; continue; }
+            if (!item || item.recordId !== keys[index] || ![200, 404, 500].includes(item.status)) {
+              loaded[index] = { status: 'rejected', reason: Object.assign(new TypeError('V3_STORE_BATCH_RESPONSE_INVALID'), { code: 'V3_STORE_BATCH_RESPONSE_INVALID' }) };
+              continue;
+            }
             try { loaded[index] = { status: 'fulfilled', value: await reader(chunk[index], item) }; }
             catch (reason) { loaded[index] = { status: 'rejected', reason }; }
           }
@@ -346,7 +352,10 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     try {
       if (batchItem?.status === 404) return { status: missingStatus };
       if (batchItem && batchItem.status !== 200) {
-        const error = new Error(batchItem.message || '后端读取记录失败'); error.status = batchItem.status; error.code = batchItem.error; throw error;
+        const error = new Error(batchItem.message || '后端读取记录失败');
+        error.status = batchItem.status;
+        error.code = batchItem.error;
+        throw error;
       }
       const envelope = batchItem ? batchItem.envelope : await client.get(collection(identityValue), key);
       const safe = validateEnvelope(envelope, validator, identityValue.chatId);
@@ -475,13 +484,14 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     if (baselineResult && baselineResult.status !== 'ready') fail('V3_STORE_BASELINE_MISSING');
     if (deltaResults.some(result => result.status !== 'ready')) fail('V3_STORE_STATE_DELTA_MISSING');
     if (currentStateResults.some(result => result.status !== 'ready')) fail('V3_STORE_CURRENT_STATE_MISSING');
+    const activeFloors = activeFloorViews(floorResults.map(result => result.data), indexResults.map(result => result.data));
     await validateCseGraph({
       root,
       checkpoint,
       run: runResult.data,
-      floors: activeFloorViews(floorResults.map(result => result.data), indexResults.map(result => result.data)),
+      floors: activeFloors,
       floorMemories: memoryResults.map(result => result.data),
-      entities: projectEntityFloorBounds(entityResults.map(result => result.data), activeFloorViews(floorResults.map(result => result.data), indexResults.map(result => result.data)), memoryResults.map(result => result.data), deltaResults.map(result => result.data)),
+      entities: projectEntityFloorBounds(entityResults.map(result => result.data), activeFloors, memoryResults.map(result => result.data), deltaResults.map(result => result.data)),
       indexes: indexResults.map(result => result.data),
       indexKeys,
       baseline: baselineResult?.data ?? null,

@@ -1,4 +1,5 @@
 import { VECTOR_INDEX_ID, vectorRecordOwned } from './v3/vector-index.js';
+import { NAMESPACE } from './constants.js';
 import {
   validateFoundationCheckpoint,
   validateFoundationFloorContent,
@@ -38,6 +39,7 @@ const VALIDATOR_BY_TYPE = Object.freeze({
 });
 const AUTO_FLOOR_INTERVAL = 10;
 const CLASSIFICATION_BATCH_SIZE = 50;
+const TRASH_GC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const STORAGE_AUTO_RECORD_THRESHOLD = 100;
 export const STORAGE_AUTO_BYTE_THRESHOLD = 8 * 1024 * 1024;
 
@@ -117,26 +119,20 @@ function createStorageClassifier(reachable, chatId) {
       const classified = vectorOwned ? { type: 'vectorCache', category: 'runtime' } : await safeFoundationEnvelope(envelope, chatId);
       if (activeIds.has(envelope?.recordId)) {
         active.count += 1; active.bytes += bytes;
-        const safe = classified;
-        if (safe) {
-          breakdown.active[safe.category].count += 1;
-          breakdown.active[safe.category].bytes += bytes;
+        if (classified) {
+          breakdown.active[classified.category].count += 1;
+          breakdown.active[classified.category].bytes += bytes;
         }
+      } else if (classified) {
+        cleanup.count += 1; cleanup.bytes += bytes;
+        breakdown.cleanup[classified.category].count += 1;
+        breakdown.cleanup[classified.category].bytes += bytes;
+        candidates.push({ sourceIndex, value: Object.freeze({ recordId: envelope.recordId, revision: envelope.revision }) });
       } else {
-        const safe = classified;
-        if (safe) {
-          cleanup.count += 1; cleanup.bytes += bytes;
-          breakdown.cleanup[safe.category].count += 1;
-          breakdown.cleanup[safe.category].bytes += bytes;
-          candidates.push({ sourceIndex, value: Object.freeze({ recordId: envelope.recordId, revision: envelope.revision }) });
-        } else {
-          // Unreachable is not proof of QQJ ownership; malformed or foreign records stay out of cleanup candidates.
-          retained.count += 1; retained.bytes += bytes;
-        }
+        // Unreachable is not proof of QQJ ownership; malformed or foreign records stay out of cleanup candidates.
+        retained.count += 1; retained.bytes += bytes;
       }
-      if (processed % CLASSIFICATION_BATCH_SIZE === 0) {
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
+      if (processed % CLASSIFICATION_BATCH_SIZE === 0) await new Promise(resolve => setTimeout(resolve, 0));
     },
     finish() {
       candidates.sort((left, right) => left.sourceIndex - right.sourceIndex);
@@ -171,6 +167,7 @@ export function createStorageManagement({
   vectorRuntime = null,
   activitySources = [],
   isBusy = () => false,
+  isEnabled = () => true,
   logger = console,
 } = {}) {
   if (!client?.list || !client?.get || !client?.remove || !store?.readReachable
@@ -181,6 +178,12 @@ export function createStorageManagement({
   let operation = null;
   let resultState = { status: 'idle', chatId: null, stats: null, lastResult: null, error: null, autoPending: false };
   let automaticCheck = null;
+  let trashGcCapability = null;
+  let trashGcCapabilityCheck = null;
+  let trashGcCheck = null;
+  let trashGcProgress = null;
+  let trashGcRetryAfter = 0;
+  let trashGcState = { status: 'idle', scanned: 0, deleted: 0, failed: 0, error: null, automatic: false };
   const automaticAttempts = new Map();
   let reusableAutomaticSnapshot = null;
   let disposed = false;
@@ -223,6 +226,7 @@ export function createStorageManagement({
       busy: workBusy(),
       autoEnabled: autoEnabled(),
       autoPending: sameChat && resultState.autoPending === true,
+      trashGc: Object.freeze({ ...trashGcState }),
     });
   };
   const notify = () => {
@@ -487,7 +491,114 @@ export function createStorageManagement({
     const next = { ...progress(), [chatId]: Math.max(0, Math.floor(Number(stableCount) || 0)) };
     settings.update({ storageAutoCleanupProgress: next });
   };
+  async function readTrashGcCapability({ retry = false } = {}) {
+    if (retry && (trashGcCapability === 'error' || trashGcCapability === false)) trashGcCapability = null;
+    if (trashGcCapability !== null) return trashGcCapability;
+    if (!client?.collectExpiredTrash || typeof client?.health !== 'function') {
+      trashGcCapability = false;
+      return false;
+    }
+    if (!trashGcCapabilityCheck) trashGcCapabilityCheck = (async () => {
+      try {
+        const health = await client.health();
+        trashGcCapability = health?.capabilities?.trashGc === true;
+        return trashGcCapability;
+      } catch (error) {
+        if (error?.status === 404) {
+          trashGcCapability = false;
+          const unsupported = errorWith('QQJ_TRASH_GC_UNSUPPORTED', '回收站尚未清理；请更新白鳥数据后端并重启酒馆。');
+          trashGcState = { ...trashGcState, status: 'unsupported', error: unsupported, automatic: true };
+          notify();
+          return false;
+        }
+        trashGcCapability = 'error';
+        trashGcState = { ...trashGcState, status: 'error', error, automatic: true };
+        notify();
+        return 'error';
+      } finally { trashGcCapabilityCheck = null; }
+    })();
+    return trashGcCapabilityCheck;
+  }
+  async function collectExpiredTrash({ automatic = false } = {}) {
+    if (trashGcCheck) return trashGcCheck;
+    if (automatic && trashGcCapability === false) return { status: 'unsupported', deleted: 0 };
+    if (automatic) {
+      if (disposed || !isEnabled?.()) return { status: 'idle', deleted: 0 };
+      const completedAt = Date.parse(settings.get().storageTrashGcLastCompletedAt);
+      if (Number.isFinite(completedAt) && Date.now() - completedAt < TRASH_GC_INTERVAL_MS) return { status: 'idle', deleted: 0 };
+      if (Date.now() < trashGcRetryAfter) return { status: 'pending', deleted: 0 };
+    }
+    if (workBusy() || operation) {
+      trashGcState = { ...trashGcState, status: 'pending', automatic, error: null };
+      notify();
+      return { status: 'pending', deleted: 0 };
+    }
+    const current = { kind: 'trashGc', identity: (() => { try { return currentIdentity(); } catch { return null; } })(), promise: null };
+    operation = current;
+    trashGcState = { ...trashGcState, status: 'checking', error: null, automatic };
+    notify();
+    current.promise = (async () => {
+      const capability = await readTrashGcCapability({ retry: !automatic || (trashGcCapability === 'error' && Date.now() >= trashGcRetryAfter) });
+      if (capability === false) {
+        const error = errorWith('QQJ_TRASH_GC_UNSUPPORTED', '回收站尚未清理；请更新白鳥数据后端并重启酒馆。');
+        trashGcProgress = null;
+        trashGcRetryAfter = Date.now() + TRASH_GC_INTERVAL_MS;
+        trashGcState = { ...trashGcState, status: 'unsupported', error, automatic };
+        return { status: 'unsupported', deleted: 0, error };
+      }
+      if (capability === 'error') {
+        const error = trashGcState.error ?? errorWith('QQJ_TRASH_GC_HEALTH_FAILED', '无法确认后端回收站清理能力。');
+        trashGcRetryAfter = Date.now() + TRASH_GC_INTERVAL_MS;
+        return { status: 'error', deleted: 0, error };
+      }
+      trashGcProgress ??= { cursor: null, scanned: 0, deleted: 0, failed: 0 };
+      trashGcState = { status: 'running', ...trashGcProgress, error: null, automatic };
+      let complete = false;
+      while (!complete) {
+        const page = await client.collectExpiredTrash(NAMESPACE, { limit: 32, cursor: trashGcProgress.cursor });
+        if (!page || !Number.isSafeInteger(page.scanned) || page.scanned < 0
+          || !Number.isSafeInteger(page.deleted) || page.deleted < 0
+          || !Number.isSafeInteger(page.failed) || page.failed < 0 || typeof page.complete !== 'boolean'
+          || (!page.complete && (!page.nextCursor || JSON.stringify(page.nextCursor) === JSON.stringify(trashGcProgress.cursor)))) {
+          throw errorWith('QQJ_TRASH_GC_RESPONSE_INVALID', '后端回收站清理没有返回有效进度。');
+        }
+        trashGcProgress = { cursor: page.complete ? null : page.nextCursor,
+          scanned: trashGcProgress.scanned + page.scanned, deleted: trashGcProgress.deleted + page.deleted,
+          failed: trashGcProgress.failed + page.failed };
+        trashGcState = { status: 'running', ...trashGcProgress, error: null, automatic };
+        notify();
+        complete = page.complete;
+        if (!complete && (disposed || !isEnabled?.() || workBusy())) {
+          trashGcState = { status: 'pending', ...trashGcProgress, error: null, automatic };
+          return { status: 'pending', ...trashGcProgress };
+        }
+      }
+      const result = { ...trashGcProgress };
+      trashGcProgress = null;
+      if (result.failed) {
+        trashGcRetryAfter = Date.now() + TRASH_GC_INTERVAL_MS;
+        trashGcState = { status: 'partial', ...result, error: errorWith('QQJ_TRASH_GC_PARTIAL', '部分回收站记录未能核验或清理；可在存储管理中手动重试。'), automatic };
+        return { status: 'partial', ...result, error: trashGcState.error };
+      }
+      settings.update({ storageTrashGcLastCompletedAt: new Date().toISOString() });
+      trashGcRetryAfter = 0;
+      trashGcState = { status: 'completed', ...result, error: null, automatic };
+      return { status: 'completed', ...result };
+    })().catch(error => {
+      trashGcRetryAfter = Date.now() + TRASH_GC_INTERVAL_MS;
+      trashGcState = { status: 'error', ...(trashGcProgress ?? { scanned: 0, deleted: 0, failed: 0 }), error, automatic };
+      return { status: 'error', ...trashGcProgress, error };
+    }).finally(() => {
+      if (operation === current) operation = null;
+      notify();
+      scheduleAutomatic();
+    });
+    trashGcCheck = current.promise.finally(() => { trashGcCheck = null; });
+    return trashGcCheck;
+  }
   async function checkAutomatic() {
+    if (disposed) return;
+    if (isEnabled?.()) await collectExpiredTrash({ automatic: true });
     if (disposed || !autoEnabled() || automaticCheck) return;
     const memory = memoryRuntime.getActivityState();
     if (!memory?.chatId || !Number.isSafeInteger(memory.stableCount) || memory.stableCount < 0) return;
@@ -574,6 +685,7 @@ export function createStorageManagement({
   return Object.freeze({
     scan,
     cleanup,
+    collectExpiredTrash() { return collectExpiredTrash({ automatic: false }); },
     setAutoEnabled,
     getState: scopedState,
     subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('存储管理 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },

@@ -8,6 +8,7 @@ test('面板标题与人物名沿用用户字体，不再由固定宋体覆盖',
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.doesNotMatch(css, /宋体,"Songti SC",serif/u);
   assert.equal(css.match(/var\(--qqj-custom-font,inherit\),-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif/gu)?.length, 23);
+  assert.match(css, /\.primary-action\{[^}]*color:var\(--on-primary,#fff\)/u);
 });
 
 test('外观仅写千千结 host 与其 Shadow Root 字体链接', () => {
@@ -144,13 +145,13 @@ test('字体异步结果仅在 URL 仍为当前选择时应用', async () => {
   assert.equal(properties['--qqj-custom-font'], '"Font E"', '旧失败晚到不得把新字体改回系统字体');
 });
 
-test('跟随酒馆使用有效宿主色，透明宿主色回退，并随根节点主题变化', () => {
+test('跟随酒馆将实际透明主题背景合成到外观底色并保留文字 RGB', () => {
   const values = {
-    '--SmartThemeBodyColor': 'rgba(232, 236, 238, .08)',
-    '--SmartThemeQuoteColor': 'rgba(120, 45, 55, .9)',
-    '--SmartThemeChatTintColor': 'transparent',
-    '--SmartThemeBotMesBlurTintColor': 'rgba(1, 2, 3, .1)',
-    '--SmartThemeUserMesBlurTintColor': '#09101120',
+    '--SmartThemeBodyColor': 'rgba(206, 206, 206, 1)',
+    '--SmartThemeQuoteColor': 'rgba(199, 174, 203, .9)',
+    '--SmartThemeChatTintColor': 'rgba(26, 26, 26, .7)',
+    '--SmartThemeBotMesBlurTintColor': 'rgba(237, 233, 229, 0)',
+    '--SmartThemeUserMesBlurTintColor': 'rgba(162, 163, 189, .15)',
   };
   let observerCallback = null;
   class Observer { constructor(callback) { observerCallback = callback; } observe() {} disconnect() {} }
@@ -166,17 +167,51 @@ test('跟随酒馆使用有效宿主色，透明宿主色回退，并随根节�
   const settings = { get: () => ({ appearanceTheme: 'auto', appearanceScale: 1, appearanceFontCssUrl: '' }) };
   const initial = resolveAppearance({ value: settings.get(), documentRef, windowRef });
   assert.equal(initial.effectiveTheme, 'night', '宿主亮文字代表深色主题');
-  assert.equal(initial.palette.ink, 'rgb(232, 236, 238)', '低透明宿主色应保留 RGB 并转为实色');
-  assert.equal(initial.palette.knot, 'rgb(120, 45, 55)');
-  assert.equal(initial.palette.paper, '#13181b', '透明宿主色应回退本地实色');
-  assert.equal(initial.palette.panel, 'rgb(1, 2, 3)', '低 alpha 面板色不能因透明度被丢弃');
-  assert.equal(initial.palette.thread, '#091011', '八位 hex 应剥离 alpha');
+  assert.equal(initial.palette.ink, 'rgb(206, 206, 206)', '正文前景继续使用宿主 RGB');
+  assert.equal(initial.palette.knot, 'rgb(199, 174, 203)', '强调前景继续使用宿主 RGB');
+  assert.equal(initial.palette.paper, 'rgb(24, 25, 26)', '聊天背景按 .7 alpha 合成到夜间 paper');
+  assert.equal(initial.palette.panel, '#1c2327', 'alpha 0 的浅 RGB 不得成为实色卡片');
+  assert.equal(initial.palette.thread, 'rgb(68, 81, 91)', '用户背景按 alpha 合成到夜间 thread');
+  assert.equal(initial.palette.onPrimary, '#22282b', '浅紫强调底色使用深色按钮文字');
   assert.equal(Object.values(initial.palette).some(color => /rgba\(|#[\da-f]{8}$/iu.test(color)), false, '解析后的可绘制 palette 不得携带 alpha');
   const controller = createAppearanceController({ host, root: { querySelector: () => null }, settings, documentRef, windowRef, onChange: state => states.push(state) });
-  assert.equal(states.at(-1).palette.knot, 'rgb(120, 45, 55)', '解析后的实色 palette 必须传给 FAB 与自有对话框');
+  assert.equal(states.at(-1).palette.knot, 'rgb(199, 174, 203)', '解析后的实色 palette 必须传给 FAB 与自有对话框');
   values['--SmartThemeBodyColor'] = 'rgb(30 35 40 / 12%)'; observerCallback();
   assert.equal(states.at(-1).effectiveTheme, 'day', '酒馆根节点换色后应即时同步有效主题');
-  assert.equal(properties['--paper'], '#e8ecec', '透明聊天色不得穿透已解析回退色');
+  assert.equal(properties['--paper'], 'rgb(88, 89, 89)', '聊天背景按切换后的日间 paper 合成');
   assert.equal(properties['--ink'], 'rgb(30, 35, 40)');
+  applyAppearance({ host, root: { querySelector: () => null }, settings: settings.get(), documentRef, windowRef });
+  assert.equal(properties['--on-primary'], '#22282b', 'auto palette 通过面板主按钮语义 token 输出前景');
   controller.destroy();
+});
+
+test('auto palette 合成 HEX alpha，手动主题仍用固定按钮前景', () => {
+  const values = {
+    '--SmartThemeBodyColor': '#cecece',
+    '--SmartThemeQuoteColor': '#c7aecbe6',
+    '--SmartThemeChatTintColor': '#1a1a1ab3',
+    '--SmartThemeBotMesBlurTintColor': '#ede9e500',
+    '--SmartThemeUserMesBlurTintColor': '#a2a3bd26',
+  };
+  const windowRef = { getComputedStyle: () => ({ getPropertyValue: name => values[name] ?? '' }), matchMedia: () => ({ matches: false }) };
+  const documentRef = { documentElement: {}, defaultView: windowRef };
+  const auto = resolveAppearance({ value: { appearanceTheme: 'auto' }, documentRef, windowRef });
+  assert.equal(auto.palette.paper, 'rgb(24, 25, 26)');
+  assert.equal(auto.palette.panel, '#1c2327');
+  assert.equal(auto.palette.thread, 'rgb(68, 80, 91)');
+  assert.equal(auto.palette.onPrimary, '#22282b');
+  Object.assign(values, {
+    '--SmartThemeQuoteColor': 'rgba(40, 20, 30, 1)',
+    '--SmartThemeChatTintColor': '#1a1a1a',
+    '--SmartThemeBotMesBlurTintColor': 'rgba(20, 30, 40, 1)',
+    '--SmartThemeUserMesBlurTintColor': '#121314',
+  });
+  const opaque = resolveAppearance({ value: { appearanceTheme: 'auto' }, documentRef, windowRef });
+  assert.equal(opaque.palette.knot, 'rgb(40, 20, 30)', '普通不透明宿主强调色保留原 RGB');
+  assert.equal(opaque.palette.paper, '#1a1a1a', '不透明聊天颜色仍直接使用');
+  assert.equal(opaque.palette.panel, 'rgb(20, 30, 40)', '不透明机器人颜色仍直接使用');
+  assert.equal(opaque.palette.thread, '#121314', '不透明用户颜色仍直接使用');
+  assert.equal(opaque.palette.onPrimary, '#fff', '深色强调底色使用白色按钮文字');
+  assert.equal(resolveAppearance({ value: { appearanceTheme: 'day' }, documentRef, windowRef }).palette.onPrimary, '#fff');
+  assert.equal(resolveAppearance({ value: { appearanceTheme: 'night' }, documentRef, windowRef }).palette.onPrimary, '#fff');
 });

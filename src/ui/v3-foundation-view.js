@@ -1,9 +1,8 @@
 import { createInlineSelect } from './inline-select.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
 import { bindHorizontalStrip, openPeopleOrderDialog } from './people-interactions.js';
-import { scrollManualEditorToTop } from './manual-editor-scroll.js';
 import { publicErrorMessage } from '../public-error.js';
-import { formatStoryTime } from '../v3/time-engine.js';
+import { formatStoryTime, mainlineTimeText } from '../v3/time-engine.js';
 
 function text(value, fallback = '—') { return value === null || value === undefined || value === '' ? fallback : String(value); }
 
@@ -72,7 +71,7 @@ const floorCopy = (state, reference, fallback = '楼号未提供', { knownFloor 
   if ((reference?.frozen === true || floor?.frozen === true) && Number.isSafeInteger(origin?.sourceMessageIndex)) return `来源聊天第 ${origin.sourceMessageIndex} 楼`;
   const range = Array.isArray(reference?.sourceMessageIndexes) ? reference.sourceMessageIndexes.filter(validMessageIndex) : [];
   if (range.length > 1) return `第 ${range[0]}–${range.at(-1)} 楼`;
-  const messageIndex = messageIndexFor(state, reference);
+  const messageIndex = knownFloor && validMessageIndex(reference?.messageIndex) ? reference.messageIndex : messageIndexFor(state, reference);
   return messageIndex === null ? fallback : `第 ${messageIndex} 楼`;
 };
 const memoryFloorTitle = (state, floor) => {
@@ -80,8 +79,7 @@ const memoryFloorTitle = (state, floor) => {
   const origin = floor.sourceOrigin;
   const number = validMessageIndex(origin?.sourceMessageIndex) ? `第 ${origin.sourceMessageIndex} 楼` : floorCopy(state, floor, '归档楼', { knownFloor: true });
   const source = typeof origin?.sourceHostChatId === 'string' ? origin.sourceHostChatId.trim() : '';
-  const shortSource = source.replace(/\.jsonl$/iu, '');
-  return shortSource ? `${number} · ${shortSource}` : number;
+  return source ? `${number} · ${source.replace(/\.jsonl$/iu, '')}` : number;
 };
 const sourceFloorCopy = (state, reference) => {
   const value = floorCopy(state, reference.sourceFloorId
@@ -139,12 +137,13 @@ const selectorFailureCopy = value => ({
 })[value] ?? text(value, '无');
 const skipReasonCopy = value => ({
   coreBodyDuplicate: '已排除当前正文完整覆盖的摘要', partialAggregateBodyOverlap: '部分聚合摘要与当前正文来源重叠；整条材料仍参与相关性和预算筛选，可能重复，未逐成员拆分',
+  uninitialized: '尚未开始记录，本轮不注入记忆，正文继续生成',
   noReliableMemoryMatch: '未找到可靠的远期匹配', persistentStateDuplicate: '已去除重复材料',
   dynamicStateCoverageIncomplete: '当前人物状态覆盖不完整，本轮只参考可信历史变化', cseReplayUnavailable: '人物状态重放不可用',
   memoryNotReady: '当前记忆仍有缺口', coverageUnconfirmed: '记忆与正文对应关系尚未确认', memoryRebuildFailed: '上次记忆补齐未完成',
   historicalRebuildRequired: '仍有历史摘要缺口', memoryPreparationTimeout: '记忆准备超时，本轮召回失败并停止正文生成', memoryPreparationFailed: '记忆准备失败，本轮召回失败并停止正文生成',
 })[value] ?? text(value);
-const workBusy = state => Boolean(state.memoryWorkBusy || state.activeAutoMemory || state.activeExtraction || state.activeCse);
+const workBusy = state => Boolean(state.memoryWorkBusy || state.activeMemoryWork || state.activeAutoMemory || state.activeExtraction || state.activeCse);
 const memoryBusy = state => Boolean((state.activeExtraction && state.activeExtraction.phase !== 'analyzingCse') || ['revising', 'extracting', 'reconciling', 'committing'].includes(state.activeMemoryWork?.phase) || state.activeAutoMemory?.phase === 'extracting');
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
 const workPhaseCopy = state => ({ reconciling: '正在同步楼层', syncing: '正在同步记忆状态', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建后端数据', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
@@ -228,10 +227,12 @@ function automationErrorDiagnostic(value, sourceKnown = true) {
 const diagnosticVersion = value => typeof value === 'string' && /^[0-9A-Za-z][0-9A-Za-z.-]{0,39}$/.test(value) ? value : 'unknown';
 const splitPeople = value => [...new Set(String(value ?? '').split(/[、,，\n]/u).map(item => item.trim()).filter(Boolean))];
 const timeDisplay = chronology => [...new Set((chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description).map(item => String(item ?? '').trim()).filter(Boolean))].join('；');
-const hasInternalTimeFields = value => /\|\s*(?:date|weekday|time)\s*=/iu.test(String(value ?? ''));
-const floorTimeDisplay = (chronology, fallback) => {
-  const saved = timeDisplay(chronology), extracted = String(fallback ?? '').trim();
-  return saved && extracted && hasInternalTimeFields(saved) ? extracted : saved || extracted;
+const floorTimeDisplay = (memory, floor) => {
+  const chronology = memory?.chronology ?? [], saved = floor?.manualTime ? timeDisplay(chronology)
+    : mainlineTimeText(memory);
+  const extracted = String(floor?.timeFallback ?? '').trim();
+  if (floor?.manualTime) return saved;
+  return extracted || saved;
 };
 const comparableLocations = locations => (locations ?? []).map(item => ({ itemId: item?.itemId ?? null, name: String(item?.name ?? '').trim() })).filter(item => item.name);
 const sameList = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -241,6 +242,7 @@ const unchangedDraft = (draft, payload) => String(payload.summary ?? '').trim() 
   && sameList(payload.participantNames, draft.originalParticipantNames)
   && !String(payload.revisionNote ?? '').trim();
 const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed', '已表达'], ['observable', '可观察'], ['shared', '共享'], ['authorial', '作者设定']]);
+const visibilityBadgeCopy = value => CSE_VISIBILITY_OPTIONS.find(([key]) => key === value)?.[1] ?? '未标注';
 const visibilityCopy = value => Object.fromEntries(CSE_VISIBILITY_OPTIONS)[value] ?? text(value);
 const originCopy = value => ({ baseline: '聊天基线', floor: '本楼分析', reasonableProgression: '合理进展', manual: '用户纠正' })[value] ?? '本地重放';
 const plainSearchIncludes = (value, query) => String(value ?? '').toLocaleLowerCase().includes(String(query ?? '').trim().toLocaleLowerCase());
@@ -253,12 +255,13 @@ const searchSnippet = (value, query, limit = 110) => {
   return `${start > 0 ? '…' : ''}${source.slice(start, end).replace(/\s+/gu, ' ').trim()}${end < source.length ? '…' : ''}`;
 };
 
-export function createV3FoundationView({ runtime, recallRuntime = null, vectorRuntime = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, backendDiagnosticProvider = null, pluginDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, vectorRuntime = null, onOpenVectorSettings = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, prepareSession = null, backendDiagnosticProvider = null, pluginDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
   if (memoryManagement && (typeof memoryManagement.getState !== 'function' || typeof memoryManagement.deleteCurrent !== 'function')) throw new TypeError('当前聊天记忆管理器无效');
   if (sessionStateProvider !== null && typeof sessionStateProvider !== 'function') throw new TypeError('聊天身份状态 provider 无效');
+  if (prepareSession !== null && typeof prepareSession !== 'function') throw new TypeError('聊天身份准备 provider 无效');
   if (uiDiagnosticProvider !== null && typeof uiDiagnosticProvider !== 'function') throw new TypeError('界面诊断 provider 无效');
   if (!documentRef?.createElement) throw new TypeError('V3 foundation view documentRef 无效');
 
@@ -266,16 +269,17 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null, pageFeedbackNode = null, managementFeedbackNode = null;
+  let vectorIndexLink = null, vectorIndexReadErrorNode = null;
+  let vectorReadArmed = false, vectorReadStarted = false, vectorReadPromise = Promise.resolve(), vectorIndexResult = null;
   let syncingChatId = null;
   let recentItemsOpen = false, recentItemsUi = null, showStoppedItems = false, recentItemDraft = null, recentBatchMode = false;
-  let memorySearchQuery = '', cseSearchQuery = '';
-  let memoryListPage = 0;
+  let memorySearchQuery = '', memoryListPage = 0, cseSearchQuery = '';
+  let renderedMemoryInputs = null, activeMemoryFloorId = null;
+  let memoryWorkControls = [], memoryRowWorkControls = [], memoryRowMenus = [];
+  const memoryCardStatusViews = new Map();
+  let cseHistoryUi = null;
   const selectedRecentItems = new Map();
   let relationSwitcherNode = null, relationSwitcherSignature = null, relationSwitcherChatId = chatId, relationSwitcherScrollLeft = 0;
-  let renderedMemoryInputs = null, memoryWorkControls = [], memorySyncControls = [];
-  let memoryRowWorkControls = [], memoryRowSyncControls = [], memoryRowMenus = [];
-  const memoryCardStatusViews = new Map();
-  let activeMemoryFloorId = null;
   const drafts = new Map();
   const cseDrafts = new Map();
   let prequelDraft = null;
@@ -289,10 +293,14 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (value !== '') node.textContent = value;
     return node;
   };
+  const currentSituationLine = value => { const line = element('span', 'qqj-current-situation-line'); line.append(element('small', 'qqj-current-situation-visibility', visibilityBadgeCopy(value.visibility)), element('span', 'v3-cse-item-text', cseReadingText(value.text))); return line; };
   const confirmHistoricalMode = async ({ fullRebuild = false } = {}) => {
     const title = fullRebuild ? '完全重构当前聊天记忆' : '补齐当前聊天记忆';
+    const hasArchivedPrefix = typeof foundationState?.migrationDescriptorId === 'string' && foundationState.migrationDescriptorId.length > 0;
     const body = fullRebuild
-      ? '删除本聊天全部千千结记录后，调用 API 从头重建。摘要、双丝网、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改都会清除；聊天正文、其他插件和全局设置保留。时间事项按正文分批补查，完成后最多追加一次评估，失败不自动重试。'
+      ? hasArchivedPrefix
+        ? '保留归档历史、千人人物资料（含头像与重要人物选择）和前情；重新整理当前部分的摘要与人物状态，并补查时间事项。聊天正文、其他插件数据和全局设置保留。时间事项按正文分批补查，完成后最多追加一次评估，失败不自动重试。'
+        : '删除本聊天全部千千结记录后，调用 API 从头重建。摘要、双丝网、千人人物资料、头像、重要人物选择、时间事项、前情及所有人工修改都会清除；聊天正文、其他插件和全局设置保留。时间事项按正文分批补查，完成后最多追加一次评估，失败不自动重试。'
       : '已有摘要和人物状态会保留，只处理缺失部分；刷新页面后不会自动续跑。';
     if (typeof chooseImpl !== 'function') {
       if (!fullRebuild) return Object.freeze({ aggregate: false });
@@ -310,7 +318,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     }));
     return typeof selected === 'boolean' ? Object.freeze({ aggregate: selected }) : null;
   };
-  const scrollEditorToTop = selector => scrollManualEditorToTop(container.querySelector(selector));
   const row = (label, value) => { const node = element('div', 'v3-foundation-row'); node.append(element('dt', '', label), element('dd', '', text(value))); return node; };
   const stageRow = (label, value) => {
     const node = element('div', 'v3-foundation-row'), copy = element('dd');
@@ -329,7 +336,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
     chatId = nextChatId;
     for (const [key, draft] of drafts) if (!draft.saving) drafts.delete(key);
-    cseDrafts.clear(); openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; memoryListPage = 0; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
+    cseDrafts.clear(); cseHistoryUi = null; openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; memoryListPage = 0; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -369,9 +376,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   const errorCopy = state => sessionErrorCopy() || (page === 'memories' ? errorMessage(state.lastExtractorError) || errorMessage(state.lastError)
     : page === 'people' ? peopleSharedError(state) || errorMessage(state.lastCseError)
       : errorMessage(state.memorySyncError) || errorMessage(state.lastExtractorError) || errorMessage(state.lastError));
-  const healthCopy = state => {
+  const healthCopy = (state, timeSnapshot = null) => {
     if (state.pluginEnabled === false) return '千千结已关闭';
-    const time = timeRuntime?.getActivityState?.();
+    const time = timeSnapshot ?? timeRuntime?.getState?.();
     const sessionError = sessionErrorCopy(); if (sessionError) return `记忆读取失败 · ${sessionError}`;
     if (state.memorySnapshotStatus === 'syncing' && !(state.floors ?? []).length) return '正在读取当前聊天记忆';
     if (state.activeExtraction && state.activeExtraction.phase !== 'analyzingCse' && state.activeCse) return `摘要与人物状态并行 · 摘要 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 人物状态待分析 ${state.csePendingCount ?? 0} 楼`;
@@ -412,9 +419,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       || !['ready', 'uninitialized'].includes(effectiveStatus(state));
     return `qqj-page-health ${checking ? 'checking' : 'healthy'}`;
   };
-  const updateHealth = state => {
+  const updateHealth = (state, timeSnapshot = null) => {
     if (!healthNode) return;
-    healthNode.textContent = healthCopy(state);
+    healthNode.textContent = healthCopy(state, timeSnapshot);
     healthNode.className = healthClass(state);
   };
   const updatePageFeedback = state => {
@@ -429,12 +436,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     memorySyncStatus: state?.memorySyncStatus ?? null,
     memorySyncError: state?.memorySyncError ? `${state.memorySyncError.code ?? ''}|${state.memorySyncError.message ?? ''}` : '',
     reviewReason: state?.reviewReason ? `${state.reviewReason.code ?? ''}|${state.reviewReason.assistantSeq ?? ''}|${state.reviewReason.messageIndex ?? ''}|${state.reviewReason.bindingIssue ?? ''}` : '',
-    stableCount: state?.stableCount ?? null,
-    rememberedCount: state?.rememberedCount ?? null, unprocessedCount: state?.unprocessedCount ?? null,
-    failedCount: state?.failedCount ?? null,
+    stableCount: state?.stableCount ?? null, rememberedCount: state?.rememberedCount ?? null,
+    unprocessedCount: state?.unprocessedCount ?? null, failedCount: state?.failedCount ?? null,
     pendingAssistantSeq: state?.pending?.assistantSeq ?? null, pendingMessageIndex: state?.pending?.messageIndex ?? null,
     unregisteredCandidates: state?.unregisteredCandidates, consecutiveAssistantConfirmation: state?.consecutiveAssistantConfirmation,
-    lastExtractorError: state?.lastExtractorError, lastCseError: state?.lastCseError ? `${state.lastCseError.floorId ?? ''}|${state.lastCseError.code ?? ''}|${state.lastCseError.message ?? ''}|${state.lastCseError.lastFailedAt ?? ''}` : '',
+    lastExtractorError: state?.lastExtractorError,
+    lastCseError: state?.lastCseError ? `${state.lastCseError.floorId ?? ''}|${state.lastCseError.code ?? ''}|${state.lastCseError.message ?? ''}|${state.lastCseError.lastFailedAt ?? ''}` : '',
     lastError: state?.lastError, lastAutoMemory: state?.lastAutoMemory });
   const sameMemoryInputs = (left, right) => {
     if (!left || !right) return false;
@@ -442,13 +449,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     return Object.keys(current).every(key => left[key] === current[key]);
   };
   const trackMemoryRowWorkControl = control => { memoryWorkControls.push(control); memoryRowWorkControls.push(control); };
-  const trackMemoryRowSyncControl = control => { memorySyncControls.push(control); memoryRowSyncControls.push(control); };
   const forgetMemoryRows = () => {
-    const rowWork = new Set(memoryRowWorkControls), rowSync = new Set(memoryRowSyncControls);
+    const rowWork = new Set(memoryRowWorkControls);
     memoryWorkControls = memoryWorkControls.filter(control => !rowWork.has(control));
-    memorySyncControls = memorySyncControls.filter(control => !rowSync.has(control));
     for (const menu of memoryRowMenus) operationMenus.unregister(menu);
-    memoryRowWorkControls = []; memoryRowSyncControls = []; memoryRowMenus = [];
+    memoryRowWorkControls = []; memoryRowMenus = [];
     memoryCardStatusViews.clear(); activeMemoryFloorId = null;
   };
   const updateMemoryFloorStatus = (floorId, state) => {
@@ -459,7 +464,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (!floor) return;
     const userEdited = floor.summarySource === 'user' && floor.status === 'ready';
     view.card.className = `qqj-memory-card status-${floor.status}`;
-    view.statusNode.textContent = running ? workPhaseCopy(state) : floor.frozen ? '来源归档 · 只读' : userEdited ? '人工修订' : statusCopy(floor.status);
+    view.statusNode.textContent = running ? workPhaseCopy(state) : userEdited ? '人工修订' : statusCopy(floor.status);
     view.statusNode.className = `v3-memory-status${userEdited ? ' is-user' : ''}`;
   };
   const updateMemoryFloorStatuses = state => {
@@ -470,8 +475,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   };
   const updateMemoryControls = state => {
     for (const control of memoryWorkControls) control.node.disabled = control.disabled(state);
-    const syncing = state?.memorySnapshotStatus === 'syncing' || state?.memorySyncStatus === 'syncing';
-    for (const node of memorySyncControls) node.disabled = syncing;
   };
   const currentFeedback = state => feedback === statusCopy('running')
     ? (errorCopy(state) || (workBusy(state) || state.status === 'running' ? workPhaseCopy(state) : '记忆状态已刷新。')) : feedback;
@@ -482,6 +485,59 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     pageFeedbackNode = element('p', `v3-foundation-feedback${copy.includes('失败') || (!feedback && errorCopy(state)) ? ' error' : ''}`, copy);
     block.append(healthNode, pageFeedbackNode);
     return block;
+  };
+  const updateManagementVectorIndex = state => {
+    if (!vectorIndexLink && !vectorIndexReadErrorNode) return;
+    const matches = vectorIndexResult?.chatId === state?.chatId && vectorIndexResult?.narrativeGeneration === state?.narrativeGeneration;
+    const result = matches ? vectorIndexResult : null;
+    const zero = result?.status === 'ready' && result.chunkCount === 0;
+    const readError = result?.status === 'error';
+    if (vectorIndexLink) vectorIndexLink.hidden = page !== 'management' || !zero;
+    if (vectorIndexReadErrorNode) {
+      vectorIndexReadErrorNode.hidden = page !== 'management' || !readError;
+      vectorIndexReadErrorNode.textContent = readError
+        ? `读取当前聊天的向量索引失败：${result.message}。${result.code === 'VECTOR_CACHE_INVALID' ? '请到设置的“向量召回”中点击“建立索引”。' : '请重新打开记忆管理重试。'}`
+        : '';
+    }
+  };
+  const readVectorIndexForReadyState = (state, { refresh = false } = {}) => {
+    if (!vectorReadArmed || !active || page !== 'management' || !vectorRuntime?.readIndexStatus
+      || state?.memorySnapshotStatus !== 'ready' || typeof state.chatId !== 'string' || !state.chatId
+      || typeof state.narrativeGeneration !== 'string' || !state.narrativeGeneration) return Promise.resolve();
+    if (refresh) {
+      const mine = epoch;
+      vectorReadPromise = Promise.resolve(vectorReadPromise).then(() => {
+        if (!active || mine !== epoch || !vectorReadArmed || page !== 'management') return;
+        vectorReadStarted = false;
+        return readVectorIndexForReadyState(state);
+      });
+      return vectorReadPromise;
+    }
+    if (vectorReadStarted) return vectorReadPromise;
+    vectorReadStarted = true;
+    const target = { chatId: state.chatId, narrativeGeneration: state.narrativeGeneration };
+    const mine = epoch;
+    vectorReadPromise = Promise.resolve().then(() => vectorRuntime.readIndexStatus(target)).then(result => {
+      if (!active || mine !== epoch) return;
+      vectorIndexResult = { ...result, ...target };
+      updateManagementVectorIndex(foundationState);
+    }, error => {
+      if (!active || mine !== epoch) return;
+      vectorIndexResult = { status: 'error', code: typeof error?.code === 'string' ? error.code : null,
+        ...target, message: publicErrorMessage(error, { fallback: '索引状态暂时无法读取。' }) };
+      updateManagementVectorIndex(foundationState);
+    });
+    return vectorReadPromise;
+  };
+  const renderManagementVectorIndex = state => {
+    const link = element('button', 'qqj-vector-index-link', '还没有向量索引，去建立吧 →');
+    link.type = 'button'; link.hidden = true;
+    link.addEventListener('click', () => { onOpenVectorSettings?.(); });
+    vectorIndexLink = link;
+    vectorIndexReadErrorNode = element('p', 'settings-hint qqj-vector-index-read-error');
+    vectorIndexReadErrorNode.hidden = true;
+    updateManagementVectorIndex(state);
+    return [link, vectorIndexReadErrorNode];
   };
   const heading = (title, description, state) => {
     const block = element('header', 'qqj-view-heading');
@@ -517,6 +573,16 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const management = readDiagnosticState(() => memoryManagement?.getState?.());
     const memoryKnown = memory !== null, identityKnown = identity !== null, recallKnown = recall !== null, managementKnown = management !== null;
     const deleting = management?.status === 'deleting', deletePending = management?.status === 'failed';
+    const indexMatchesMemory = Boolean(memory && vectorIndexResult
+      && vectorIndexResult.chatId === memory.chatId
+      && vectorIndexResult.narrativeGeneration === memory.narrativeGeneration);
+    const indexCheckStatus = indexMatchesMemory && ['ready', 'error'].includes(vectorIndexResult.status)
+      ? vectorIndexResult.status : 'notChecked';
+    const indexStatusDiagnostic = {
+      indexCheckStatus,
+      indexChunkCount: indexCheckStatus === 'ready' && Number.isSafeInteger(vectorIndexResult.chunkCount) && vectorIndexResult.chunkCount >= 0 ? vectorIndexResult.chunkCount : null,
+      indexChatMatchesMemory: indexMatchesMemory,
+    };
     return {
         formatVersion: 2,
       pluginVersion: diagnosticVersion(pluginVersion),
@@ -575,10 +641,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       },
       vector: (() => {
         const build = vector?.buildDiagnostic;
-        if (!build) return { status: enumDiagnostic(vector?.status, VECTOR_RUNTIME_STATUS), build: null };
+        if (!build) return { status: enumDiagnostic(vector?.status, VECTOR_RUNTIME_STATUS), ...indexStatusDiagnostic, build: null };
         const request = build.request;
         const safeField = value => typeof value === 'string' && value.length <= 80 && /^[A-Za-z0-9_.:\-\[\]]+$/u.test(value) ? value : null;
-        return { status: enumDiagnostic(vector?.status, VECTOR_RUNTIME_STATUS), build: {
+        return { status: enumDiagnostic(vector?.status, VECTOR_RUNTIME_STATUS), ...indexStatusDiagnostic,
+          build: {
           status: enumDiagnostic(build.status, VECTOR_BUILD_STATUS),
           phase: enumDiagnostic(build.phase, VECTOR_BUILD_PHASE),
           batchNumber: countDiagnostic(build.batchNumber), completedChunks: countDiagnostic(build.completedChunks), totalChunks: countDiagnostic(build.totalChunks),
@@ -699,7 +766,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     return `刷新状态结束：${statusCopy(effectiveStatus(state))}`;
   };
   function validateDrafts(state) {
-    if (!drafts.size) return true;
     let valid = true;
     const floors = new Map((state.floors ?? []).map(floor => [floor.floorId, floor]));
     for (const [key, draft] of drafts) {
@@ -716,14 +782,129 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     return { state, mustReplace: chatChanged || state?.pluginEnabled === false || !draftsValid };
   }
 
-  function renderMemoryFloor(floor, state) {
+  function openMemoryEditor(floor, state, key, draft) {
+    if (typeof customImpl !== 'function') { feedback = '当前环境无法打开记忆编辑窗口。'; render(state); return; }
+    drafts.set(key, draft);
+    const editor = element('div', 'qqj-editor-dialog qqj-memory-edit');
+    const draw = (keepLocationsOpen = false) => {
+      const controls = [];
+      const priorLocationGroup = Array.from(editor.children).find(node => (node.tag === 'details' || node.tagName?.toLowerCase() === 'details') && node.children[0]?.textContent === '地点');
+      keepLocationsOpen ||= priorLocationGroup?.open === true;
+      editor.replaceChildren(element('p', 'qqj-editor-intro', '只修改本楼摘要与已有元信息；保存会保留原来的楼层对应关系。'));
+      const label = (copy, control) => { const node = element('label', 'qqj-memory-edit-field'); node.append(element('span', '', copy), control); controls.push(control); return node; };
+      const summary = element('textarea', 'settings-input'); summary.value = draft.summary; summary.placeholder = '输入用户修订摘要'; summary.rows = 8; summary.addEventListener('input', () => { draft.summary = summary.value; });
+      const summaryGroup = element('section', 'qqj-editor-group'); summaryGroup.append(element('h3', '', '摘要'), label('摘要正文', summary)); editor.append(summaryGroup);
+      const time = element('input', 'settings-input'); time.value = draft.timeText; time.placeholder = '日期、时间范围或相对时间'; time.addEventListener('input', () => { draft.timeText = time.value; });
+      const timeGroup = element('details', 'qqj-editor-group'); timeGroup.append(element('summary', 'qqj-editor-group-summary', '时间'), label('时间', time)); editor.append(timeGroup);
+      const locations = element('details', 'qqj-editor-group'); locations.open = keepLocationsOpen; locations.append(element('summary', 'qqj-editor-group-summary', '地点'));
+      draft.locations.forEach((item, index) => {
+        const row = element('div', 'qqj-memory-edit-row'), input = element('input', 'settings-input'); input.value = item.name ?? ''; input.placeholder = '地点名称'; input.addEventListener('input', () => { item.name = input.value; }); controls.push(input);
+        const remove = element('button', 'secondary-action', '删除地点'); remove.type = 'button'; remove.addEventListener('click', () => { draft.locations.splice(index, 1); draw(true); }); controls.push(remove); row.append(input, remove); locations.append(row);
+      });
+      const add = element('button', 'secondary-action', '添加地点'); add.type = 'button'; add.addEventListener('click', () => { draft.locations.push({ itemId: null, name: '' }); draw(true); }); controls.push(add); locations.append(add); editor.append(locations);
+      const people = element('textarea', 'settings-input'); people.value = draft.peopleText; people.placeholder = '张三、李四、路人甲'; people.addEventListener('input', () => { draft.peopleText = people.value; });
+      const peopleGroup = element('details', 'qqj-editor-group'); peopleGroup.append(element('summary', 'qqj-editor-group-summary', '人物'), label('人物名称', people)); editor.append(peopleGroup);
+      const note = element('input', 'settings-input'); note.value = draft.note; note.placeholder = '修订说明（可选）'; note.addEventListener('input', () => { draft.note = note.value; });
+      const noteGroup = element('details', 'qqj-editor-group'); noteGroup.append(element('summary', 'qqj-editor-group-summary', '修订说明'), note); editor.append(noteGroup);
+      controls.push(note); draft.controls = controls;
+    };
+    draw();
+    let saved = false;
+    void Promise.resolve(customImpl({ title: `编辑摘要 · ${floorCopy(state, floor)}`, content: editor, confirmText: '保存', cancelText: '取消', submit: async () => {
+      const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations, participantNames: splitPeople(draft.peopleText), revisionNote: draft.note };
+      if (unchangedDraft(draft, payload)) { saved = true; drafts.delete(key); return true; }
+      const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
+      let failure = null;
+      await run('保存本楼记忆', task, { after: () => { drafts.delete(key); saved = true; return true; }, failed: error => { draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '本楼记忆没有保存，请重试。' })}`; failure = error; return true; } });
+      if (failure) { draw(); throw failure; }
+      return true;
+    }, onClose: () => { if (!saved && drafts.get(key) === draft) { drafts.delete(key); if (active) render(foundationState); } } })).catch(() => {});
+  }
+
+  function memoryLocationLabelsByFloor(state, floors) {
+    // Keep containment history on the loaded floor order and evidence floor IDs; display numbers may repeat across archived sources.
+    const sourceOrder = new Map(), floorTargets = new Map();
+    let nextOrder = 0;
+    for (let index = 0; index < floors.length; index += 1) {
+      const floor = floors[index];
+      const sourceIds = Array.isArray(floor.sourceFloorIds) && floor.sourceFloorIds.length
+        ? floor.sourceFloorIds : [floor.floorId];
+      for (const sourceFloorId of sourceIds) {
+        if (typeof sourceFloorId !== 'string' || !sourceFloorId) continue;
+        if (!sourceOrder.has(sourceFloorId)) sourceOrder.set(sourceFloorId, nextOrder++);
+      }
+      const targetId = sourceIds.at(-1);
+      floorTargets.set(floor.floorId, { order: sourceOrder.get(targetId) ?? index, index });
+    }
+
+    const relationChanges = new Map();
+    for (const floor of floors) {
+      const memory = floor.memory;
+      if (memory?.recordStatus !== 'active') continue;
+      const containments = memory.spatialFacts?.containments ?? [];
+      for (const relation of containments) {
+        const childId = relation?.placeEntityId, parentId = relation?.parentEntityId;
+        if (typeof childId !== 'string' || !childId || typeof parentId !== 'string' || !parentId) continue;
+        const sourceIds = new Set((relation.evidenceRefs ?? []).map(ref => ref?.floorId).filter(sourceFloorId => sourceOrder.has(sourceFloorId)));
+        for (const sourceFloorId of sourceIds) {
+          const order = sourceOrder.get(sourceFloorId);
+          let byChild = relationChanges.get(order);
+          if (!byChild) relationChanges.set(order, byChild = new Map());
+          let parents = byChild.get(childId);
+          if (!parents) byChild.set(childId, parents = new Set());
+          parents.add(parentId);
+        }
+      }
+    }
+
+    const placeNames = new Map((state.memoryPlaceEntities ?? [])
+      .filter(entity => typeof entity?.entityId === 'string' && entity.entityId && typeof entity.displayName === 'string' && entity.displayName.trim())
+      .map(entity => [entity.entityId, entity.displayName.trim()]));
+    const orderedTargets = [...floors].sort((left, right) => {
+      const leftTarget = floorTargets.get(left.floorId), rightTarget = floorTargets.get(right.floorId);
+      return leftTarget.order - rightTarget.order || leftTarget.index - rightTarget.index;
+    });
+    const orderedChanges = [...relationChanges].sort(([left], [right]) => left - right);
+    const currentParents = new Map(), labelsByFloor = new Map();
+    let changeIndex = 0;
+    for (const floor of orderedTargets) {
+      const targetOrder = floorTargets.get(floor.floorId).order;
+      while (changeIndex < orderedChanges.length && orderedChanges[changeIndex][0] <= targetOrder) {
+        const [, changes] = orderedChanges[changeIndex++];
+        for (const [childId, parents] of changes) {
+          if (parents.size === 1) currentParents.set(childId, parents.values().next().value);
+          else currentParents.delete(childId);
+        }
+      }
+      const labels = (floor.memory?.locations ?? []).map(location => {
+        const originalName = location?.name;
+        let entityId = location?.entityId;
+        if (typeof entityId !== 'string' || !entityId || !originalName) return originalName;
+        const path = [originalName], visited = new Set([entityId]);
+        while (currentParents.has(entityId)) {
+          const parentId = currentParents.get(entityId);
+          if (visited.has(parentId)) break;
+          const parentName = placeNames.get(parentId);
+          if (!parentName) break;
+          visited.add(parentId);
+          path.unshift(parentName);
+          entityId = parentId;
+        }
+        return path.join(' › ');
+      });
+      labelsByFloor.set(floor.floorId, labels);
+    }
+    return labelsByFloor;
+  }
+
+  function renderMemoryFloor(floor, state, locationLabelsByFloor) {
     const key = `${state.chatId ?? 'no-chat'}:${floor.floorId}`;
     const title = memoryFloorTitle(state, floor);
     const card = setDetailsState(element('details', `qqj-memory-card status-${floor.status}`), `memory:${key}`, false);
     card.setAttribute('data-qqj-floor-id', floor.floorId);
     const head = element('summary', `qqj-memory-card-head${floor.frozen ? ' is-archived' : ''}`);
     const memory = floor.memory;
-    const times = floorTimeDisplay(memory?.chronology, floor.timeFallback) || '时间未明确';
+    const times = floorTimeDisplay(memory, floor) || '时间未明确';
     const timeNode = element('span', 'qqj-floor-time', times); timeNode.setAttribute('title', times);
     const floorStatus = floor.frozen ? '来源归档 · 只读' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
     const statusNode = element('span', `v3-memory-status${floor.summarySource === 'user' && floor.status === 'ready' ? ' is-user' : ''}`, floorStatus);
@@ -736,89 +917,63 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     let body = null;
     const buildBody = () => {
       if (body) return;
-      const currentState = foundationState ?? state;
+      const currentState = syncingDisplayState(foundationState ?? state);
       body = element('div', 'qqj-memory-card-body');
       if (floor.frozen) {
         const sourceName = typeof floor.sourceOrigin?.sourceHostChatId === 'string' ? floor.sourceOrigin.sourceHostChatId : '';
-        body.append(element('p', 'settings-hint qqj-memory-source', `来源：${sourceName || '未记录'}`));
+        body.append(element('p', 'settings-hint qqj-memory-source', `来源：${sourceName || '未记录'}；来源聊天的已保存资料在此只读展示。`));
       }
-      const draft = drafts.get(key);
-      if (draft) {
-        const editBox = element('div', 'v3-memory-edit qqj-manual-editor');
-        const label = (copy, control) => { const node = element('label', 'qqj-memory-edit-field'); node.append(element('span', '', copy), control); trackMemoryRowSyncControl(control); return node; };
-        const timeInput = element('input', 'settings-input'); timeInput.value = draft.timeText; timeInput.placeholder = '日期、时间范围或相对时间'; timeInput.addEventListener('input', () => { draft.timeText = timeInput.value; });
-        editBox.append(label('时间', timeInput));
-        const collection = (title, items, fields, addLabel, addValue) => {
-          const block = element('div', 'qqj-memory-edit-group'); block.append(element('strong', '', title));
-          items.forEach((item, index) => {
-            const rowNode = element('div', 'qqj-memory-edit-row');
-            for (const [field, placeholder] of fields) { const control = element('input', 'settings-input'); control.value = item[field] ?? ''; control.placeholder = placeholder; control.addEventListener('input', () => { item[field] = control.value; }); trackMemoryRowSyncControl(control); rowNode.append(control); }
-            const remove = element('button', 'secondary-action', '删除'); remove.type = 'button'; trackMemoryRowSyncControl(remove); remove.addEventListener('click', () => { items.splice(index, 1); render(foundationState); }); rowNode.append(remove); block.append(rowNode);
-          });
-          const add = element('button', 'secondary-action', addLabel); add.type = 'button'; trackMemoryRowSyncControl(add); add.addEventListener('click', () => { items.push({ ...addValue }); render(foundationState); }); block.append(add); return block;
-        };
-        editBox.append(collection('地点', draft.locations, [['name', '地点名称']], '添加地点', { itemId: null, name: '' }));
-        const peopleInput = element('textarea', 'settings-input'); peopleInput.value = draft.peopleText; peopleInput.placeholder = '张三、李四、路人甲'; peopleInput.addEventListener('input', () => { draft.peopleText = peopleInput.value; });
-        editBox.append(label('人物', peopleInput));
-        const input = element('textarea', 'settings-input'); input.value = draft.summary; input.placeholder = '输入用户修订摘要'; input.addEventListener('input', () => { draft.summary = input.value; });
-        editBox.append(label('摘要', input));
-        const note = element('input', 'settings-input'); note.value = draft.note; note.placeholder = '修订说明（可选）'; note.addEventListener('input', () => { draft.note = note.value; });
-        const actions = element('div', 'v3-foundation-actions');
-        if (draft.saveError) editBox.append(element('p', 'v3-foundation-feedback error', draft.saveError));
-        const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存'); save.type = 'button'; save.disabled = draft.saving === true || workBusy(state);
-        const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving === true || workBusy(state);
-        draft.controls = [save, cancel];
-        trackMemoryRowWorkControl({ node: save, disabled: current => draft.saving === true || workBusy(current) }); trackMemoryRowWorkControl({ node: cancel, disabled: current => draft.saving === true || workBusy(current) });
-        save.addEventListener('click', () => {
-          const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations, participantNames: splitPeople(draft.peopleText), revisionNote: draft.note };
-          if (unchangedDraft(draft, payload)) { drafts.delete(key); feedback = '未修改内容。'; render(foundationState); scrollEditorToTop(`[data-qqj-floor-id="${floor.floorId}"]`); return; }
-          const saveIdentity = {}; draft.saveIdentity = saveIdentity; draft.saving = true; draft.saveError = '';
-          save.textContent = '保存中…'; save.disabled = true; cancel.disabled = true;
-          const currentDraft = () => {
-            return drafts.get(key) === draft && draft.saveIdentity === saveIdentity;
+      if (memory) {
+        const locations = (memory.locations ?? []).map((item, index) => locationLabelsByFloor.get(floor.floorId)?.[index] ?? item.name).filter(Boolean).join('、') || '未提取';
+        const names = new Map((currentState.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName]));
+        for (const [entityId, displayName] of Object.entries(floor.memoryEntityNames ?? {})) names.set(entityId, displayName);
+        const people = (memory.participants ?? []).map(item => names.get(item.entityId) ?? '未知人物').join('、') || '未提取';
+        body.append(element('p', 'qqj-memory-main', floor.summary || '暂无摘要。'));
+        const meta = element('div', 'qqj-memory-meta');
+        const metaItem = (label, value) => { const item = element('span', 'qqj-memory-meta-item'); item.append(element('strong', '', label), element('span', '', value)); return item; };
+        meta.append(metaItem('人物', people), metaItem('地点', locations)); body.append(meta);
+        const exactAnchors = (memory.exactAnchors ?? []).filter(anchor => typeof anchor?.exactText === 'string' && anchor.exactText.trim());
+        if (exactAnchors.length) {
+          const quoteLine = anchor => {
+            const line = element('p', 'qqj-memory-key-quote');
+            const speaker = names.get(anchor.speakerEntityId);
+            if (speaker) line.append(element('span', 'qqj-memory-key-quote-speaker', `${speaker}：`));
+            line.append(element('span', 'qqj-memory-key-quote-text', anchor.exactText));
+            return line;
           };
-          const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
-          let saved = false;
-          void run('保存本楼记忆', task, {
-            after: () => { if (!currentDraft()) return false; drafts.delete(key); saved = true; return true; },
-            failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '本楼记忆没有保存，请重试。' })}`; return true; },
-          }).then(() => { if (saved && active && container) scrollEditorToTop(`[data-qqj-floor-id="${floor.floorId}"]`); });
-        });
-        cancel.addEventListener('click', () => { drafts.delete(key); feedback = '已取消编辑。'; render(foundationState); });
-        actions.append(save, cancel); editBox.append(label('修订说明（可选）', note), actions); body.append(editBox); input.focus?.();
-      } else {
-        if (memory) {
-          const locations = (memory.locations ?? []).map(item => item.name).filter(Boolean).join('、') || '未提取';
-          const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName]));
-          for (const [entityId, displayName] of Object.entries(floor.memoryEntityNames ?? {})) names.set(entityId, displayName);
-          const people = (memory.participants ?? []).map(item => names.get(item.entityId) ?? '未知人物').join('、') || '未提取';
-          body.append(element('p', 'qqj-memory-main', floor.summary || '暂无摘要。'));
-          const meta = element('div', 'qqj-memory-meta');
-          const metaItem = (label, value) => { const item = element('span', 'qqj-memory-meta-item'); item.append(element('strong', '', label), element('span', '', value)); return item; };
-          meta.append(metaItem('人物', people), metaItem('地点', locations)); body.append(meta);
-        } else body.append(element('p', 'qqj-memory-main is-empty', floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。')));
-        const actions = operationMenus.register(element('details', 'qqj-memory-menu')); memoryRowMenus.push(actions);
-        const menuToggle = element('summary', 'qqj-memory-menu-toggle', '⋮');
-        menuToggle.setAttribute('aria-label', `${title}操作`); menuToggle.setAttribute('title', '本楼操作');
-        const menuBody = element('div', 'qqj-memory-menu-pop');
-        if (floor.frozen) {
-          menuBody.append(element('p', 'settings-hint', '来源聊天的已保存资料在此只读展示。'));
-        } else if (floor.memoryId) {
-          const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(currentState);
-          trackMemoryRowWorkControl({ node: edit, disabled: current => workBusy(current) });
-          edit.addEventListener('click', () => { const memory = floor.memory; const names = new Map((state.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = floorTimeDisplay(memory?.chronology, floor.timeFallback); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); drafts.set(key, { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }); render(foundationState); });
-          const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
-          trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
-          extract.addEventListener('click', async () => { const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: `${ranged ? `${floorCopy(state, floor)}将整体重新压缩。` : '将重新提取本楼摘要。'}已有的人物状态和其他楼不变；千事按字段保留人工修订，无法匹配时保留旧千事并提示。`, confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
-          menuBody.append(edit, extract);
-        } else {
-          const extract = element('button', 'qqj-memory-menu-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
-          trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
-          extract.addEventListener('click', () => { void run('提取摘要', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('提取摘要', floor.floorId) }); });
-          menuBody.append(extract);
+          if (exactAnchors.length === 1) {
+            const quote = element('div', 'qqj-memory-key-quotes');
+            quote.append(element('strong', 'qqj-memory-key-quotes-label', '关键原文'), quoteLine(exactAnchors[0]));
+            body.append(quote);
+          } else {
+            const quote = setDetailsState(element('details', 'qqj-memory-key-quotes is-collapsible'), `memory-key-quotes:${key}`, false);
+            quote.append(element('summary', 'qqj-memory-key-quotes-summary', `关键原文（${exactAnchors.length}）`));
+            exactAnchors.forEach(anchor => quote.append(quoteLine(anchor)));
+            body.append(quote);
+          }
         }
-        actions.append(menuToggle, menuBody); body.append(actions);
+      } else body.append(element('p', 'qqj-memory-main is-empty', floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。')));
+      const actions = operationMenus.register(element('details', 'qqj-memory-menu')); memoryRowMenus.push(actions);
+      const menuToggle = element('summary', 'qqj-memory-menu-toggle', '⋮');
+      menuToggle.setAttribute('aria-label', `${title}操作`); menuToggle.setAttribute('title', '本楼操作');
+      const menuBody = element('div', 'qqj-memory-menu-pop');
+      if (floor.frozen) {
+        menuBody.append(element('p', 'settings-hint', '来源聊天资料只读。'));
+      } else if (floor.memoryId) {
+        const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(currentState);
+        trackMemoryRowWorkControl({ node: edit, disabled: current => workBusy(current) });
+        edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const names = new Map((latest.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
+        const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
+        trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
+        extract.addEventListener('click', async () => { const latest = foundationState ?? currentState; const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: `${ranged ? `${floorCopy(latest, floor)}将整体重新压缩。` : '将重新提取本楼摘要。'}已有的人物状态和其他楼不变；千事按字段保留人工修订，无法匹配时保留旧千事并提示。`, confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
+        menuBody.append(edit, extract);
+      } else {
+        const extract = element('button', 'qqj-memory-menu-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
+        trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
+        extract.addEventListener('click', () => { void run('提取摘要', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('提取摘要', floor.floorId) }); });
+        menuBody.append(extract);
       }
+      actions.append(menuToggle, menuBody); body.append(actions);
       if (floor.error) body.append(element('p', 'v3-foundation-feedback error', floor.error));
       card.append(body);
     };
@@ -859,7 +1014,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     clockReminder.hidden = state?.clockContentChanged !== true;
     if (!recentItemsOpen) return;
     const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'partial' ? '部分完成' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
-    status.textContent = `${label}${Array.isArray(tracked) ? ` · 追踪中事项 ${tracked.length} 条` : ''}${state?.coverage ? ` · 正文完整已检查 ${state.coverage.checkedFloors}/${state.coverage.totalFloors} 楼` : ''}${state?.progress ? ` · 本次批次 ${state.progress.completed}/${state.progress.total}` : ''}${result?.message ? `。${result.message}` : ''}`;
+    status.textContent = [label, Array.isArray(tracked) ? `追踪中 ${tracked.length} 项` : '', state?.progress ? `本次进度 ${state.progress.completed}/${state.progress.total}` : ''].filter(Boolean).join(' · ');
     status.className = ['failed', 'partial'].includes(result?.status) ? 'settings-result error' : 'settings-result';
     organize.textContent = result?.currentReview && ['failed', 'interrupted', 'partial'].includes(result?.status) ? '重新更新当前事项' : ['failed', 'interrupted', 'partial'].includes(result?.status) ? '继续补查历史' : '补查历史';
     organize.disabled = state?.canOrganize !== true || result?.reason === 'read' || Boolean(recentItemsUi.pendingAction);
@@ -879,50 +1034,68 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     batchDelete.hidden = !showStoppedItems;
     batchDelete.textContent = state?.pendingDeletionCount ? '继续永久删除' : '批量永久删除';
     batchDelete.disabled = batchBusy || selectedRecentItems.size === 0 && !state?.pendingDeletionCount;
-    reason.textContent = state?.disabledReason || recentItemsUi.planFeedback || `${state?.coverage?.startAssistantSeq ? `从 AI 第 ${state.coverage.startAssistantSeq} 楼开始追踪；${state.coverage.earlierUnchecked > 0 ? `此前 ${state.coverage.earlierUnchecked} 楼正文未检查` : '此前正文已检查'}。` : '等待当前 AI 楼成为追踪起点。'}${state?.coverage?.pendingFloors ? `另有 ${state.coverage.pendingFloors} 楼等待稳定绑定，正文未检查。` : ''}直接读取正文，摘要和人物状态可为空。补查历史会先确认楼数、批次与摘要 API 调用量；成功批次保留，可停止后继续。`;
+    const failedResult = ['failed', 'partial', 'interrupted'].includes(result?.status) ? result.message || ({ failed: '本次整理失败。', partial: '本次整理未全部完成。', interrupted: '本次整理已停止。' })[result.status] : '';
+    const coverage = state?.coverage;
+    const coverageCopy = coverage ? [
+      `正文已检查 ${coverage.checkedFloors}/${coverage.totalFloors} 楼`,
+      coverage.earlierUnchecked > 0 ? `此前 ${coverage.earlierUnchecked} 楼未检查` : '',
+      coverage.pendingFloors > 0 ? `${coverage.pendingFloors} 楼等待稳定` : '',
+    ].filter(Boolean).join('；') : '';
+    reason.textContent = state?.disabledReason || recentItemsUi.planFeedback
+      || (result?.reason === 'read' ? result.message || '近期事项读取失败，请点击“重试读取”。' : '')
+      || failedResult
+      || (state?.status === 'waiting' ? '记忆同步后读取近期事项。' : coverageCopy);
     if (recentItemDraft) {
       for (const control of recentItemDraft.controls) control.disabled = recentItemDraft.saving || state?.canOrganize !== true;
-      recentItemDraft.cancel.disabled = recentItemDraft.saving;
-      recentItemDraft.feedback.textContent = recentItemDraft.error;
       organize.disabled = true;
       return;
     }
     const visibleItems = showStoppedItems ? stopped : tracked;
     const message = !Array.isArray(visibleItems) ? state?.status === 'disabled' ? '时间推演已关闭；已有记录保留。' : result?.reason === 'read' ? '时间清单读取失败，请点击“重试读取”。' : '等待当前聊天记忆同步与时间记录读取。' : showStoppedItems ? '当前没有停止的时间事项。' : '当前没有追踪中的时间事项。';
     const displayItems = (Array.isArray(visibleItems) ? visibleItems : []).map(item => {
-      const stopped = item.status && item.status !== 'active';
       const stoppedLabel = { completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status];
-      const formatTime = value => formatStoryTime(value);
-      const elapsed = item.elapsedHours !== null && item.elapsedHours >= 0 ? `发生后已过 ${Math.round(item.elapsedHours * 10) / 10} 小时`
-        : item.elapsedDays !== null && item.elapsedDays >= 0 ? `发生后已过 ${item.elapsedDays} 天`
-          : item.observationElapsedHours !== null && item.observationElapsedHours >= 0 ? `观察后已过 ${Math.round(item.observationElapsedHours * 10) / 10} 小时`
-            : item.observationElapsedDays !== null && item.observationElapsedDays >= 0 ? `观察后已过 ${item.observationElapsedDays} 天` : '经过时间未知';
-      return [`${item.person} · ${item.label}${item.status && item.status !== 'active' ? ` · ${item.mergedInto ? '已归并' : { completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status]}` : ''}`, `原观察：${item.observation}`,
-        ...(item.mergeDescription ? [`归并经历：${item.mergeDescription}`] : []),
-        `观察时间：${formatTime(item.observationTime)}${item.occurrenceTime?.date ? `；发生时间：${formatTime(item.occurrenceTime)}` : ''}；${elapsed}`,
-        stopped ? item.mergedInto ? '因归并退出独立追踪，原观察保留；恢复会解除归并。' : item.retirementReason ? `已暂停自动跟进：${item.retirementReason}；这不代表已痊愈，需要时可恢复。` : `${stoppedLabel}，已停止追踪；需要时可恢复。` : item.projection ? `当前推测：${item.projection}` : item.assessmentReason ? `当前依据不足：${item.assessmentReason}` : item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : item.reviewStatus === 'unanswered' ? '本次未返回有效当前评估，请手动更新。' : '当前估计待更新，原观察仍保留。',
-        ...(item.failureReason ? [`本次未更新：${item.failureReason} 原内容已保留，可编辑或移除。`] : []),
-        ...(!stopped && item.projection && item.reviewStatus ? [item.reviewStatus === 'omitted' ? '本次未纳入当前评估。' : '本次未返回有效当前评估，请手动更新。'] : []),
-        ...(!stopped && item.oldProjection ? [`截至 ${formatTime(item.oldProjection.applicableTime)} 的旧推测：${item.oldProjection.text}；当前待更新。`] : []),
-        ...(['cycle', 'deadline'].includes(item.type) ? [`${item.type === 'cycle' ? '预计周期日' : '约定期限'}：${formatTime(item.dueTime)}${item.periodDays ? `；明确周期 ${item.periodDays} 天` : ''}${stopped ? '' : '；尚未确认发生或完成。'}`] : [])];
+      const statusLabel = item.mergedInto ? '已归并' : stoppedLabel;
+      const times = [];
+      if (item.occurrenceTime?.date) times.push(`发生：${formatStoryTime(item.occurrenceTime)}`);
+      if (item.dueTime?.date) times.push(`${item.type === 'cycle' ? '预计周期日' : item.type === 'deadline' ? '约定时间' : '预计节点'}：${formatStoryTime(item.dueTime)}`);
+      const results = [];
+      if (item.status === 'active' && item.type !== 'deadline' && item.projection) results.push({ text: `当前推测：${item.projection}`, error: false });
+      else if (item.status === 'active' && item.type !== 'deadline' && item.assessmentReason) results.push({ text: `依据不足：${item.assessmentReason}`, error: true });
+      if (item.status === 'active' && item.type !== 'deadline' && item.projection && item.projectionTime?.date) times.push(`推算至：${formatStoryTime(item.projectionTime)}`);
+      if (item.failureReason) results.push({ text: `更新失败：${item.failureReason}`, error: true });
+      const keywords = Array.isArray(item.keywords) ? item.keywords.filter(keyword => typeof keyword === 'string' && keyword.trim()).slice(0, 4) : [];
+      return {
+        item,
+        title: `${item.person} · ${item.label}${statusLabel ? ` · ${statusLabel}` : ''}`,
+        description: item.mergeDescription || item.observation || '',
+        keywords,
+        results,
+        times,
+        readOnly: '',
+        issue: item.status === 'active' && Boolean(item.failureReason || item.type !== 'deadline' && item.assessmentReason),
+      };
     });
-    const titleIssues = (Array.isArray(visibleItems) ? visibleItems : []).map(item => item.status === 'active'
-      && Boolean(item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered'));
-    if (!showStoppedItems) for (const item of annual ?? []) displayItems.push([`${item.person} · ${item.label} · ${item.status}`, `原日期：${item.originalDate}`,
-      item.nextDate ? `本年日期：${item.nextDate}${Number.isInteger(item.distance) ? item.distance === 0 ? '；已到本日' : `；还有 ${item.distance} 天` : '；当前休眠'}`
-        : item.status === '本年日期已过' ? '本年日期已过；不推算下一年份。'
-          : item.status === '本年没有该日期' ? '本年没有对应日期；不推测替代日期。' : '日期或年份未明确：保留原设定，不补猜日期。',
-      `${item.note ? `年度含义：${item.note}；` : ''}只读事项，请在千人基础资料或用户人设中修改。`]), titleIssues.push(false);
-    const signature = JSON.stringify([displayItems.length ? displayItems : message, titleIssues, recentBatchMode, [...selectedRecentItems], state?.pendingDeletionCount ?? 0, (visibleItems ?? []).map(item => [item.id, item.observationKey]), (annual ?? []).map(item => [item.id, item.status, item.nextDate])]);
+    if (!showStoppedItems) for (const item of annual ?? []) displayItems.push({
+      item: null,
+      title: `${item.person} · ${item.label} · ${item.status}`,
+      description: item.note ?? '',
+      results: [],
+      times: [item.originalDate ? `原日期：${item.originalDate}` : '', item.nextDate ? `本年日期：${item.nextDate}` : ''].filter(Boolean),
+      readOnly: '只读事项，请在千人资料或用户人设中修改。',
+      issue: false,
+    });
+    const titleIssues = displayItems.map(item => item.issue);
+    const visibleProjection = displayItems.map(({ title, description, keywords, results, times, readOnly, issue }) => ({ title, description, keywords, results, times, readOnly, issue }));
+    const signature = JSON.stringify([displayItems.length ? visibleProjection : message, titleIssues, recentBatchMode, [...selectedRecentItems], state?.pendingDeletionCount ?? 0, (visibleItems ?? []).map(item => [item.id, item.observationKey]), (annual ?? []).map(item => [item.id, item.status, item.nextDate])]);
     if (recentItemsUi.listSignature === signature) { for (const control of recentItemsUi.itemControls) control.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction) || showStoppedItems && state?.pendingDeletionCount > 0; return; }
     recentItemsUi.listSignature = signature;
     list.replaceChildren();
     recentItemsUi.itemControls = [];
     if (!displayItems.length) list.append(element('p', 'settings-hint', message));
-    else for (const [index, [title, ...lines]] of displayItems.entries()) {
+    else for (const [index, display] of displayItems.entries()) {
       const entry = element('div', 'settings-field');
       const head = element('div', 'qqj-recent-item-head');
-      const item = visibleItems[index];
+      const item = display.item;
       if (recentBatchMode && item) {
         const select = element('input', 'qqj-recent-item-select'); select.type = 'checkbox'; select.checked = selectedRecentItems.get(item.id) === item.observationKey;
         select.setAttribute('aria-label', `选择${item.label}`); select.disabled = batchBusy;
@@ -930,8 +1103,18 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         select.disabled = batchBusy || showStoppedItems && state?.pendingDeletionCount > 0;
         head.append(select); recentItemsUi.itemControls.push(select);
       }
-      head.append(element('span', `qqj-recent-item-title${titleIssues[index] ? ' error' : ''}`, title));
-      entry.append(head, ...lines.map(line => element('p', 'settings-hint', line))); list.append(entry);
+      head.append(element('span', `qqj-recent-item-title${titleIssues[index] ? ' error' : ''}`, display.title));
+      entry.append(head);
+      if (display.description) entry.append(element('p', 'settings-hint qqj-recent-item-description', display.description));
+      if (display.keywords?.length) {
+        const tags = element('div', 'qqj-recent-item-keywords');
+        for (const keyword of display.keywords) tags.append(element('span', 'qqj-recent-item-keyword', keyword));
+        entry.append(tags);
+      }
+      for (const result of display.results) entry.append(element('p', `settings-hint qqj-recent-item-result${result.error ? ' error' : ''}`, result.text));
+      if (display.times.length) entry.append(element('p', 'settings-hint qqj-recent-item-times', display.times.join(' · ')));
+      if (display.readOnly) entry.append(element('p', 'settings-hint qqj-recent-item-readonly', display.readOnly));
+      list.append(entry);
       if (!item) continue;
       const actions = operationMenus.register(element('details', 'qqj-profile-menu'));
       const menuToggle = element('summary', 'qqj-profile-menu-toggle', '⋮'); menuToggle.setAttribute('aria-label', `${item.label}事项操作`); menuToggle.setAttribute('title', '事项操作'); menuToggle.setAttribute('aria-haspopup', 'menu');
@@ -939,7 +1122,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       const actionFeedback = element('p', 'settings-result error');
       const addAction = (label, callback) => { const button = element('button', `qqj-profile-menu-action${label === '移除' ? ' danger' : ''}`, label); button.type = 'button'; button.setAttribute('role', 'menuitem'); button.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction); button.addEventListener('click', () => { if (button.disabled) return; actions.open = false; return callback(); }); menuBody.append(button); recentItemsUi.itemControls.push(button); };
       if (typeof timeRuntime?.editItem === 'function' && !recentBatchMode) {
-        addAction('编辑事项', () => startRecentEdit(item, entry));
+        addAction('编辑事项', () => startRecentEdit(item));
         if (item.status === 'active') for (const [label, value] of [['完成', 'completed'], ['暂停', 'paused'], ['移除', 'cancelled']]) addAction(label, () => changeRecentStatus(item, value, actionFeedback));
         else addAction('恢复追踪', () => changeRecentStatus(item, 'active', actionFeedback));
         actions.append(menuToggle, menuBody); head.append(actions); entry.append(actionFeedback);
@@ -1003,36 +1186,48 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     } catch (error) { if (currentUi()) actionFeedback.textContent = `永久删除未完成：${publicErrorMessage(error, { fallback: '旧历史记录尚未清理完，可在同一入口继续。' })}`; }
     finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
   }
-  function startRecentEdit(item, entry) {
+  function startRecentEdit(item) {
+    if (typeof customImpl !== 'function') return;
     const timeValue = value => value?.raw || (value?.date ? `${value.date}${value.clock ? ` ${value.clock}` : ''}` : '');
-    const draft = { item, chatId, foundationState, ui: recentItemsUi, fields: { label: item.label, observation: item.observation, observationTime: timeValue(item.observationTime), occurrenceTime: timeValue(item.occurrenceTime), dueTime: timeValue(item.dueTime), periodDays: item.periodDays ?? '' }, controls: [], saving: false, error: '' };
+    const canEditProjection = item.status === 'active' && item.type !== 'deadline' && Boolean(item.projection && item.projectionTime?.date);
+    const draft = { item, chatId, foundationState, ui: recentItemsUi, fields: { label: item.label, observation: item.observation, observationTime: timeValue(item.observationTime), occurrenceTime: timeValue(item.occurrenceTime), dueTime: timeValue(item.dueTime), periodDays: item.periodDays ?? '', subjectEntityId: item.subjectEntityId ?? '', ...(canEditProjection ? { projectionText: item.projection } : {}) }, controls: [], saving: false, error: '' };
     const initialFields = { ...draft.fields };
     recentItemDraft = draft;
-    const editor = element('div', 'qqj-profile-form');
-    {
-      const field = (name, label, multiline = false) => { const row = element('label', 'settings-field'), input = element(multiline ? 'textarea' : 'input', 'settings-input'); input.value = draft.fields[name]; input.addEventListener('input', () => { draft.fields[name] = input.value; }); input.setAttribute('aria-label', label); row.append(element('span', '', label), input); editor.append(row); draft.controls.push(input); };
-      field('label', '事项名称'); field('observation', '观察描述', true); field('observationTime', '观察时间'); field('occurrenceTime', '发生时间（可空，优先用于计算经过时间）');
-      if (['cycle', 'deadline'].includes(item.type)) field('dueTime', item.type === 'cycle' ? '预计周期日' : '约定期限');
-      if (item.type === 'cycle') { field('periodDays', '周期天数（可空）'); editor.append(element('p', 'settings-hint', '已知发生时间与周期天数时，预计周期日由程序计算。模糊时间保留原词，不补现实年份。')); }
-    }
-    editor.append(element('p', 'settings-hint', '人工保存不调用模型，会清除旧推测。后续真实正文仍可更新事项，没有永久锁。'));
-    const actions = element('div', 'v3-foundation-actions'), save = element('button', 'secondary-action', '保存事项'), cancel = element('button', 'secondary-action', '取消事项编辑');
-    save.type = 'button'; cancel.type = 'button'; draft.controls.push(save); draft.cancel = cancel; draft.feedback = element('p', 'settings-result error');
-    actions.append(save, cancel); editor.append(actions, draft.feedback); entry.append(editor);
+    const editor = element('div', 'qqj-editor-dialog qqj-profile-form');
+    const groups = new Map();
+    const group = (name, title, collapsed = false) => { let node = groups.get(name); if (!node) { node = element(collapsed ? 'details' : 'section', 'qqj-editor-group'); node.append(collapsed ? element('summary', 'qqj-editor-group-summary', title) : element('h3', '', title)); groups.set(name, node); editor.append(node); } return node; };
+    const field = (name, labelText, multiline = false, section = '事项内容', groupKey = section, collapsed = false) => { const row = element('label', 'settings-field'), input = element(multiline ? 'textarea' : 'input', 'settings-input'); input.value = draft.fields[name]; input.addEventListener('input', () => { draft.fields[name] = input.value; }); input.setAttribute('aria-label', labelText); row.append(element('span', '', labelText), input); group(groupKey, section, collapsed).append(row); draft.controls.push(input); };
+    const people = new Map();
+    for (const person of foundationState?.memoryEntities ?? []) if (person.entityId && person.displayName) people.set(person.entityId, person.displayName);
+    const timeState = timeRuntime?.getState?.();
+    for (const known of [...(timeState?.trackedItems ?? []), ...(timeState?.stoppedItems ?? [])]) if (String(known.subjectEntityId ?? '').startsWith('time-person-') && known.person) people.set(known.subjectEntityId, known.person);
+    if (item.subjectEntityId && !people.has(item.subjectEntityId) && item.person) people.set(item.subjectEntityId, item.person);
+    const personRow = element('label', 'settings-field'), personSelect = element('select', 'settings-input'); personSelect.setAttribute('aria-label', '人物归属');
+    for (const [entityId, displayName] of people) { const option = element('option', '', displayName); option.value = entityId; personSelect.append(option); }
+    personSelect.value = draft.fields.subjectEntityId; personSelect.addEventListener('input', () => { draft.fields.subjectEntityId = personSelect.value; }); personSelect.addEventListener('change', () => { draft.fields.subjectEntityId = personSelect.value; });
+    personRow.append(element('span', '', '人物归属'), personSelect); draft.controls.push(personSelect);
+    if (item.hasMergedMembers === true) editor.append(element('p', 'settings-hint', '此项仍有归并成员；请先在“停止项”中恢复追踪所有成员，再修改人物归属。'));
+    else if (item.mergedInto && item.status !== 'active') editor.append(element('p', 'settings-hint', '此项仍归属于其他主项；请先恢复追踪并解除归并，再修改人物归属。'));
+    field('label', '事项名称'); field('observation', '观察描述', true);
+    field('observationTime', '观察时间', false, '时间信息', 'time', true); field('occurrenceTime', '发生时间（可空，优先用于计算经过时间）', false, '时间信息', 'time', true);
+    if (['cycle', 'deadline'].includes(item.type)) field('dueTime', item.type === 'cycle' ? '预计周期日' : '约定期限', false, '时间信息', 'time', true);
+    if (item.type === 'cycle') { field('periodDays', '周期天数（可空）', false, '时间信息', 'time', true); group('time', '时间信息', true).append(element('p', 'settings-hint', '已知发生时间与周期天数时，预计周期日由程序计算。模糊时间保留原词，不补现实年份。')); }
+    group('identity', '人物归属', true).append(personRow);
+    if (canEditProjection) { field('projectionText', '当前推测', true, '当前推测', 'projection', true); const projectionInput = draft.controls.at(-1); projectionInput.maxLength = 2000; }
+    editor.append(element('p', 'qqj-editor-intro', '保存不调用模型。只改人物或推测会保留原推算时间；修改其他内容会清除旧推测。'));
     const finish = () => { recentItemDraft = null; draft.ui.listSignature = null; if (active && container && page === 'memories' && draft.foundationState !== foundationState) render(foundationState); else updateRecentItems(); };
-    cancel.addEventListener('click', () => { if (!draft.saving) finish(); });
-    save.addEventListener('click', async () => {
-      if (save.disabled || draft.saving) return;
+    let saved = false;
+    void Promise.resolve(customImpl({ title: `编辑近期事项 · ${item.label}`, content: editor, confirmText: '保存事项', cancelText: '取消', submit: async () => {
+      if (draft.saving) return false;
       const fields = Object.fromEntries(Object.entries(draft.fields).filter(([name, value]) => value !== initialFields[name]));
-      if (!Object.keys(fields).length) { finish(); return; }
-      draft.saving = true; draft.error = ''; updateRecentItems();
+      if (!Object.keys(fields).length) { saved = true; finish(); return true; }
+      draft.saving = true; draft.error = '';
       try {
         await timeRuntime.editItem(item.id, fields, item.observationKey);
-        if (recentItemDraft !== draft || chatId !== draft.chatId) return;
-        finish();
-      } catch (error) { if (recentItemDraft === draft && chatId === draft.chatId) { draft.saving = false; draft.error = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; } }
-      updateRecentItems();
-    });
+        if (recentItemDraft !== draft || chatId !== draft.chatId) return false;
+        saved = true; finish(); return true;
+      } catch (error) { if (recentItemDraft === draft && chatId === draft.chatId) { draft.saving = false; draft.error = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; } throw error; }
+    }, onClose: () => { if (!saved && recentItemDraft === draft) finish(); } }));
     for (const control of recentItemsUi.itemControls) control.disabled = true;
     updateRecentItems();
   }
@@ -1092,23 +1287,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const pageNode = element('section', 'qqj-page qqj-memories-page');
     pageNode.append(pageStatus(state));
     const list = element('div', 'v3-memory-list');
-    const pageSize = 50;
-    const memoryRowsFor = currentState => {
-      const floors = [...(currentState.floors ?? [])];
-      const registeredMessageIndexes = new Set(floors.filter(floor => floor.frozen !== true).map(floor => floor.messageIndex).filter(validMessageIndex));
-      const waiting = (currentState.unregisteredCandidates ?? []).filter(candidate => validMessageIndex(candidate?.messageIndex) && !registeredMessageIndexes.has(candidate.messageIndex));
-      const rows = [...floors.map(value => ({ kind: 'registered', value })), ...waiting.map(value => ({ kind: 'waiting', value }))].sort((left, right) => {
-        if (left.kind === 'registered' && right.kind === 'registered') return (right.value.assistantSeq ?? right.value.messageIndex ?? 0) - (left.value.assistantSeq ?? left.value.messageIndex ?? 0);
-        if (left.kind === 'waiting' && right.kind === 'waiting') return (right.value.messageIndex ?? 0) - (left.value.messageIndex ?? 0);
-        const waitingRow = left.kind === 'waiting' ? left : right;
-        const floorRow = left.kind === 'registered' ? left : right;
-        const order = floorRow.value.frozen === true ? -1 : (floorRow.value.messageIndex ?? 0) - (waitingRow.value.messageIndex ?? 0);
-        return left.kind === 'waiting' ? order : -order;
-      });
-      return { floors, rows };
-    };
-    const initialFloors = state.floors ?? [];
-    const registeredMessageIndexes = new Set(initialFloors.filter(floor => floor.frozen !== true).map(floor => floor.messageIndex).filter(validMessageIndex));
+    const floors = [...(state.floors ?? [])];
+    const locationLabelsByFloor = memoryLocationLabelsByFloor(state, floors);
+    const registeredMessageIndexes = new Set(floors.filter(floor => floor.frozen !== true).map(floor => floor.messageIndex).filter(validMessageIndex));
     const waiting = (state.unregisteredCandidates ?? []).filter(candidate => validMessageIndex(candidate?.messageIndex) && !registeredMessageIndexes.has(candidate.messageIndex));
     const consecutive = waiting.filter(candidate => candidate.reason === 'consecutiveAssistant');
     const hasWaitingTail = waiting.some(candidate => candidate.reason === 'waitingNextUser');
@@ -1129,100 +1310,95 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       });
       action.append(confirm); pageNode.append(action);
     }
+    const rows = [
+      ...floors.map(value => ({ kind: 'registered', value })),
+      ...waiting.map(value => ({ kind: 'waiting', value })),
+    ].sort((left, right) => {
+      if (left.kind === 'registered' && right.kind === 'registered') return (right.value.assistantSeq ?? right.value.messageIndex ?? 0) - (left.value.assistantSeq ?? left.value.messageIndex ?? 0);
+      if (left.kind === 'waiting' && right.kind === 'waiting') return (right.value.messageIndex ?? 0) - (left.value.messageIndex ?? 0);
+      const waitingRow = left.kind === 'waiting' ? left : right;
+      const floorRow = left.kind === 'registered' ? left : right;
+      const order = floorRow.value.frozen === true ? -1 : (floorRow.value.messageIndex ?? 0) - (waitingRow.value.messageIndex ?? 0);
+      return left.kind === 'waiting' ? order : -order;
+    });
+    const pageSize = 50;
+    const appendPagination = (total, ariaLabel) => {
+      const pageCount = Math.ceil(total / pageSize);
+      memoryListPage = Math.min(memoryListPage, Math.max(0, pageCount - 1));
+      if (pageCount <= 1) return;
+      const nav = element('nav', 'qqj-memory-pagination'); nav.setAttribute('aria-label', ariaLabel);
+      const previous = element('button', 'secondary-action qqj-memory-page-button', '上一页'); previous.type = 'button'; previous.disabled = memoryListPage === 0;
+      previous.addEventListener('click', () => { if (memoryListPage > 0) { memoryListPage -= 1; fillList(); } });
+      const status = element('span', 'qqj-memory-page-status', `第 ${memoryListPage + 1} / ${pageCount} 页 · 共 ${total} 条`);
+      const input = element('input', 'settings-input qqj-memory-page-input'); input.type = 'number'; input.min = '1'; input.max = String(pageCount); input.step = '1'; input.value = String(memoryListPage + 1); input.setAttribute('aria-label', '跳转到摘要页');
+      const go = element('button', 'secondary-action qqj-memory-page-button', '跳转'); go.type = 'button';
+      const jump = () => { const requested = Number(input.value); if (!Number.isInteger(requested) || requested < 1 || requested > pageCount) { input.value = String(memoryListPage + 1); return; } memoryListPage = requested - 1; fillList(); };
+      go.addEventListener('click', jump); input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); jump(); } });
+      const next = element('button', 'secondary-action qqj-memory-page-button', '下一页'); next.type = 'button'; next.disabled = memoryListPage + 1 >= pageCount;
+      next.addEventListener('click', () => { if (memoryListPage + 1 < pageCount) { memoryListPage += 1; fillList(); } });
+      nav.append(previous, status, input, go, next); list.append(nav);
+    };
     const fillList = () => {
-      const currentState = foundationState ?? state;
-      const { floors, rows } = memoryRowsFor(currentState);
       forgetMemoryRows();
       list.replaceChildren();
       const query = memorySearchQuery.trim();
-      const appendPagination = total => {
-        const pageCount = Math.ceil(total / pageSize);
-        memoryListPage = Math.min(memoryListPage, Math.max(0, pageCount - 1));
-        if (pageCount <= 1) return;
-        const nav = element('nav', 'qqj-memory-pagination');
-        nav.setAttribute('aria-label', query ? '摘要搜索结果页码' : '摘要页码');
-        const previous = element('button', 'secondary-action qqj-memory-page-button', '上一页');
-        previous.type = 'button'; previous.disabled = memoryListPage === 0;
-        previous.addEventListener('click', () => { if (memoryListPage > 0) { memoryListPage -= 1; fillList(); } });
-        const status = element('span', 'qqj-memory-page-status', `第 ${memoryListPage + 1} / ${pageCount} 页 · 共 ${total} 条`);
-        const input = element('input', 'settings-input qqj-memory-page-input');
-        input.type = 'number'; input.min = '1'; input.max = String(pageCount); input.step = '1'; input.value = String(memoryListPage + 1);
-        input.setAttribute('aria-label', '跳转到摘要页');
-        const go = element('button', 'secondary-action qqj-memory-page-button', '跳转'); go.type = 'button';
-        const jump = () => {
-          const requested = Number(input.value);
-          if (!Number.isInteger(requested) || requested < 1 || requested > pageCount) { input.value = String(memoryListPage + 1); return; }
-          memoryListPage = requested - 1; fillList();
-        };
-        go.addEventListener('click', jump);
-        input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); jump(); } });
-        const next = element('button', 'secondary-action qqj-memory-page-button', '下一页');
-        next.type = 'button'; next.disabled = memoryListPage + 1 >= pageCount;
-        next.addEventListener('click', () => { if (memoryListPage + 1 < pageCount) { memoryListPage += 1; fillList(); } });
-        nav.append(previous, status, input, go, next); list.append(nav);
-      };
       if (query) {
         const matches = floors.filter(floor => floor.memoryId && plainSearchIncludes(floor.summary, query))
           .sort((left, right) => (right.assistantSeq ?? right.messageIndex ?? 0) - (left.assistantSeq ?? left.messageIndex ?? 0));
         list.append(element('p', 'qqj-search-count', `在全部摘要中找到 ${matches.length} 条结果`));
-        appendPagination(matches.length);
+        appendPagination(matches.length, '摘要搜索结果页码');
         for (const floor of matches.slice(memoryListPage * pageSize, (memoryListPage + 1) * pageSize)) {
           const result = element('article', 'qqj-history-search-result');
-          const titleCopy = memoryFloorTitle(currentState, floor), title = element('div', 'qqj-history-search-title qqj-memory-search-title');
-          const titleNode = element('strong', '', titleCopy); titleNode.setAttribute('title', titleCopy); title.append(titleNode);
-          if (floor.frozen) title.append(element('span', 'v3-memory-status', '来源归档 · 只读'));
-          result.append(title, element('p', 'qqj-history-search-snippet', searchSnippet(floor.summary, query)));
-          result.setAttribute('role', 'button'); result.setAttribute('tabindex', '0'); result.setAttribute('aria-label', `打开${titleCopy}${floor.frozen ? '（来源归档，只读）' : ''}完整摘要`);
-          const openResult = () => {
-            memorySearchQuery = ''; memorySearch.children[0].value = ''; memorySearch.children[1].hidden = true;
-            const rowIndex = rows.findIndex(row => row.kind === 'registered' && row.value.floorId === floor.floorId);
-            if (rowIndex >= 0) memoryListPage = Math.floor(rowIndex / pageSize);
-            openState.set(`memory:${currentState.chatId ?? 'no-chat'}:${floor.floorId}`, true);
-            fillList(); list.querySelector?.(`[data-qqj-floor-id="${floor.floorId}"]`)?.scrollIntoView?.({ block: 'nearest' });
-          };
+          const title = memoryFloorTitle(state, floor), titleNode = element('div', 'qqj-history-search-title qqj-memory-search-title');
+          titleNode.append(element('strong', '', title));
+          result.append(titleNode, element('p', 'qqj-history-search-snippet', searchSnippet(floor.summary, query)));
+          if (floor.frozen && floor.sourceOrigin?.sourceHostChatId) result.setAttribute('title', floor.sourceOrigin.sourceHostChatId);
+          result.setAttribute('role', 'button'); result.setAttribute('tabindex', '0'); result.setAttribute('aria-label', `打开${title}完整摘要`);
+          const openResult = () => { memorySearchQuery = ''; memoryListPage = Math.max(0, Math.floor(rows.findIndex(row => row.kind === 'registered' && row.value.floorId === floor.floorId) / pageSize)); memorySearch.children[0].value = ''; memorySearch.children[1].hidden = true; openState.set(`memory:${state.chatId ?? 'no-chat'}:${floor.floorId}`, true); fillList(); list.querySelector?.(`[data-qqj-floor-id="${floor.floorId}"]`)?.scrollIntoView?.({ block: 'nearest' }); };
           result.addEventListener('click', openResult); result.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openResult(); } });
           list.append(result);
         }
         if (!matches.length) list.append(element('div', 'qqj-inline-empty', '没有包含该文字的摘要。'));
         return;
       }
-      appendPagination(rows.length);
-      for (const row of rows.slice(memoryListPage * pageSize, (memoryListPage + 1) * pageSize)) list.append(row.kind === 'registered' ? renderMemoryFloor(row.value, currentState) : renderWaitingMemoryFloor(row.value, currentState));
+      appendPagination(rows.length, '摘要页码');
+      for (const item of rows.slice(memoryListPage * pageSize, (memoryListPage + 1) * pageSize)) list.append(item.kind === 'registered' ? renderMemoryFloor(item.value, state, locationLabelsByFloor) : renderWaitingMemoryFloor(item.value, state));
       if (!rows.length) list.append(element('div', 'qqj-inline-empty', '这里还没有已保存摘要。最新 AI 楼将在下一条用户消息发出后开始摘要。'));
-      updateMemoryFloorStatuses(currentState);
     };
-    const memorySearch = searchControl({ value: memorySearchQuery, placeholder: '搜索全部摘要', ariaLabel: '搜索当前聊天的全部摘要', onInput: value => { memorySearchQuery = value; memoryListPage = 0; fillList(); }, onClear: () => { memorySearchQuery = ''; memoryListPage = 0; fillList(); } });
-    memorySyncControls.push(memorySearch.children[0], memorySearch.children[1]);
+    const memorySearch = searchControl({ value: memorySearchQuery, placeholder: '搜索全部摘要', ariaLabel: '搜索当前聊天的全部摘要', onInput: value => { if (value !== memorySearchQuery) memoryListPage = 0; memorySearchQuery = value; fillList(); }, onClear: () => { memorySearchQuery = ''; memoryListPage = 0; fillList(); } });
     if (timeRuntime) pageNode.append(renderRecentItems(memorySearch));
     else { const toolbar = element('section', 'qqj-profile-toolbar'), actions = element('div', 'qqj-profile-toolbar-actions qqj-memory-toolbar'); actions.append(memorySearch); toolbar.append(actions); pageNode.append(toolbar); }
     fillList();
     pageNode.append(list); return pageNode;
   }
 
-  const appendSubjectGroups = (card, subject, state, { core = subject.core ?? [], adaptive = subject.adaptive ?? [], situational = subject.situational ?? [], empty = true, showMeta = true, groupAdaptiveByTarget = true } = {}) => {
-    const item = value => { const node = element('li', 'v3-cse-item'); node.append(element('span', 'v3-cse-item-text', cseReadingText(value.text))); if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; node.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return node; };
-    const addGroup = (label, values, groupByTarget = false) => {
+  const appendSubjectGroups = (card, subject, state, { core = subject.core ?? [], adaptive = subject.adaptive ?? [], situational = subject.situational ?? [], empty = true, showMeta = true, groupAdaptiveByTarget = true, showSituationalVisibility = false } = {}) => {
+    const item = (value, showVisibility = false) => { const node = element('li', 'v3-cse-item'); node.append(showVisibility ? currentSituationLine(value) : element('span', 'v3-cse-item-text', cseReadingText(value.text))); if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; node.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return node; };
+    const addGroup = (label, values, groupByTarget = false, showVisibility = false) => {
       const block = element('div', 'v3-cse-group'); block.append(element('h5', '', label));
       if (!values.length) { if (empty) { block.append(element('p', 'settings-hint', '暂无')); card.append(block); } return; }
       if (groupByTarget) {
         const grouped = new Map(); for (const value of values) { const key = value.towardEntityId || null; grouped.set(key, [...(grouped.get(key) ?? []), value]); }
-        for (const [target, targetItems] of grouped) { block.append(element('h6', '', target ? `对 ${targetItems[0].towardDisplayName || '未知人物'}` : '自身状态')); const ul = element('ul', 'v3-cse-items'); targetItems.forEach(value => ul.append(item(value))); block.append(ul); }
-      } else { const ul = element('ul', 'v3-cse-items'); values.forEach(value => ul.append(item(value))); block.append(ul); }
+        for (const [target, targetItems] of grouped) { block.append(element('h6', '', target ? `对 ${targetItems[0].towardDisplayName || '未知人物'}` : '自身状态')); const ul = element('ul', 'v3-cse-items'); targetItems.forEach(value => ul.append(item(value, showVisibility))); block.append(ul); }
+      } else { const ul = element('ul', 'v3-cse-items'); values.forEach(value => ul.append(item(value, showVisibility))); block.append(ul); }
       card.append(block);
     };
-    addGroup('核心特质', core); addGroup('长期倾向', adaptive, groupAdaptiveByTarget); addGroup('当前情境', situational);
+    addGroup('核心特质', core); addGroup('长期倾向', adaptive, groupAdaptiveByTarget); addGroup('当前情境', situational, false, showSituationalVisibility);
   };
-  function renderCseEditor(body, draft, state, key) {
-    const editor = element('div', 'qqj-cse-edit qqj-manual-editor');
+  function renderCseEditor(body, draft, state, redraw, expandedField = null) {
+    const editor = element('div', 'qqj-editor-dialog qqj-cse-edit');
     const controls = [], disabled = draft.saving === true || workBusy(state);
-    editor.append(element('p', 'settings-hint', '修改会保存到对应楼层的人物状态。其他楼层的重算不会改写本楼记录。'));
+    editor.append(element('p', 'qqj-editor-intro', '修改保存到对应楼层。其他楼层的重算不会改写本楼记录。'));
     const scopeHeading = element('div', 'qqj-cse-scope-heading');
-    const scopeHelp = element('button', 'qqj-cse-help', '?'); scopeHelp.type = 'button'; scopeHelp.disabled = disabled; scopeHelp.setAttribute('aria-label', '查看信息范围说明');
-    scopeHelp.addEventListener('click', () => { void Promise.resolve(infoImpl({ title: '信息范围', body: '说明剧情中谁能知道这项状态，与上传权限无关。', note: '私密：本人内心\n已表达：说出或表现，未必人人收到\n可观察：外表或动作，不能读心\n共享：相关人已知，不代表全员\n作者设定：塑造人物的参考，角色未必知道', confirmText: '知道了' })); });
-    scopeHeading.append(element('span', '', '信息范围'), scopeHelp); editor.append(scopeHeading); controls.push(scopeHelp);
+    const scopeHelp = element('button', 'secondary-action qqj-cse-help', '信息范围说明'); scopeHelp.type = 'button'; scopeHelp.disabled = disabled;
+    const scopeCopy = element('div', 'qqj-editor-intro qqj-cse-scope-copy'); scopeCopy.hidden = true;
+    scopeCopy.append(element('p', '', '说明剧情中谁能知道这项状态，与上传权限无关。'), element('p', '', '私密：本人内心；已表达：说出或表现，未必人人收到；可观察：外表或动作，不能读心；共享：相关人已知，不代表全员；作者设定：塑造人物的参考，角色未必知道。'));
+    scopeHelp.addEventListener('click', () => { scopeCopy.hidden = !scopeCopy.hidden; });
+    scopeHeading.append(scopeHelp, scopeCopy); editor.append(scopeHeading); controls.push(scopeHelp);
     const category = (field, label, { toward = false } = {}) => {
-      const group = element('section', 'qqj-cse-edit-group');
-      group.append(element('strong', '', label));
+      const group = element(toward ? 'details' : 'section', 'qqj-editor-group qqj-cse-edit-group');
+      if (toward) { group.qqjCategory = field; group.open = field === expandedField; group.append(element('summary', 'qqj-editor-group-summary', label)); }
+      else group.append(element('h3', '', label));
       draft[field].forEach((item, index) => {
         const rowNode = element('div', `qqj-cse-edit-row${toward ? ' has-toward' : ''}`);
         const input = element('textarea', 'settings-input'); input.value = item.text; input.placeholder = `${label}内容`; input.disabled = disabled; input.addEventListener('input', () => { item.text = input.value; }); controls.push(input);
@@ -1234,30 +1410,36 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
           const target = createInlineSelect({ documentRef, options: [{ value: '', label: '自身状态' }, ...(state.cseTowardCandidates ?? []).map(candidate => ({ value: candidate.entityId, label: candidate.displayName }))], value: item.towardEntityId ?? '', ariaLabel: `${label}对象`, onChange: value => { item.towardEntityId = value || null; } }).node;
           target.disabled = disabled; controls.push(target); meta.append(target);
         }
-        const remove = element('button', 'secondary-action', '删除'); remove.type = 'button'; remove.disabled = disabled; remove.addEventListener('click', () => { draft[field].splice(index, 1); render(foundationState); }); controls.push(remove); meta.append(remove); group.append(rowNode);
+        const remove = element('button', 'secondary-action', '删除'); remove.type = 'button'; remove.disabled = disabled; remove.addEventListener('click', () => { draft[field].splice(index, 1); redraw(field); }); controls.push(remove); meta.append(remove); group.append(rowNode);
       });
-      const add = element('button', 'secondary-action', `添加${label}`); add.type = 'button'; add.disabled = disabled; add.addEventListener('click', () => { draft[field].push({ itemId: null, text: '', visibility: field === 'core' ? 'authorial' : 'private', towardEntityId: null }); render(foundationState); }); controls.push(add); group.append(add); return group;
+      const add = element('button', 'secondary-action', `添加${label}`); add.type = 'button'; add.disabled = disabled; add.addEventListener('click', () => { draft[field].push({ itemId: null, text: '', visibility: field === 'core' ? 'authorial' : 'private', towardEntityId: null }); redraw(field); }); controls.push(add); group.append(add); return group;
     };
-    editor.append(category('core', '核心特质'), category('adaptive', '长期倾向', { toward: true }), category('situational', '当前情境', { toward: true }));
-    if (draft.saveError) editor.append(element('p', 'v3-foundation-feedback error', draft.saveError));
-    const actions = element('div', 'v3-foundation-actions qqj-manual-save-bar');
-    const save = element('button', 'primary-action', draft.saving ? '保存中…' : '保存'); save.type = 'button'; save.disabled = draft.saving === true || workBusy(state) || typeof runtime.correctSubjectState !== 'function';
-    const cancel = element('button', 'secondary-action', '取消'); cancel.type = 'button'; cancel.disabled = draft.saving === true || workBusy(state);
-    draft.controls = [...controls, save, cancel];
-    save.addEventListener('click', () => {
-      const saveIdentity = {}; draft.saveIdentity = saveIdentity; draft.saving = true; draft.saveError = ''; save.textContent = '保存中…';
-      for (const control of draft.controls) control.disabled = true;
-      const currentDraft = () => cseDrafts.get(key) === draft && draft.saveIdentity === saveIdentity && (runtime.getState?.() ?? foundationState)?.chatId === draft.chatId;
+    for (const [field,label,options] of [['core','核心特质',{}],['adaptive','长期倾向',{toward:true}],['situational','当前情境',{toward:true}]]) editor.append(category(field,label,options));
+    body.append(editor);
+    return controls;
+  }
+  function openCseEditor(key, draft, state, title) {
+    if (typeof customImpl !== 'function') return;
+    cseDrafts.set(key, draft);
+    const content = element('div');
+    const redraw = (expandedField = null) => { const previous = Array.from(content.children[0]?.children ?? []).find(node => (node.tag === 'details' || node.tagName?.toLowerCase() === 'details') && node.open); content.replaceChildren(); renderCseEditor(content, draft, foundationState ?? state, redraw, expandedField ?? previous?.qqjCategory ?? null); };
+    redraw();
+    let saved = false;
+    void Promise.resolve(customImpl({ title, content, confirmText: '保存', cancelText: '取消', submit: async () => {
+      if (draft.saving) return false;
+      if (workBusy(foundationState ?? state)) throw new Error('后台记忆仍在整理，请稍后再保存人物状态。');
       const cloneItems = items => items.map(item => ({ ...item }));
       const payload = { expectedCurrentStateId: draft.expectedCurrentStateId, expectedCurrentStateFingerprint: draft.expectedCurrentStateFingerprint, core: cloneItems(draft.core), adaptive: cloneItems(draft.adaptive), situational: cloneItems(draft.situational) };
-      let saved = false;
-      void run('保存人物状态', () => runtime.correctSubjectState(draft.subjectEntityId, payload), {
+      const currentDraft = () => cseDrafts.get(key) === draft && (runtime.getState?.() ?? foundationState)?.chatId === draft.chatId;
+      draft.saving = true; draft.saveError = ''; redraw();
+      let failure = null;
+      await run('保存人物状态', () => runtime.correctSubjectState(draft.subjectEntityId, payload), {
         after: () => { if (!currentDraft()) return false; cseDrafts.delete(key); openState.set(`subject:${draft.subjectEntityId}`, true); saved = true; return true; },
-        failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '人物状态没有保存，请重试。' })}`; return true; },
-      }).then(() => { if (saved && active && container) scrollEditorToTop(`[data-qqj-cse-entity-id="${draft.subjectEntityId}"]`); });
-    });
-    cancel.addEventListener('click', () => { cseDrafts.delete(key); feedback = '已取消编辑人物状态。'; render(foundationState); });
-    actions.append(save, cancel); editor.append(actions); body.append(editor);
+        failed: error => { if (!currentDraft()) return false; draft.saving = false; draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '人物状态没有保存，请重试。' })}`; failure = error; return true; },
+      });
+      if (failure) { redraw(); throw failure; }
+      return saved;
+    }, onClose: () => { if (!saved && cseDrafts.get(key) === draft) { cseDrafts.delete(key); render(foundationState); } } }));
   }
   function renderSubject(subject, state, { person = null, defaultOpen = false, ownOnly = false, title = null, relationNote = false, actionsContainer = null } = {}) {
     const entityId = subject?.subjectEntityId ?? person?.entityId;
@@ -1271,15 +1453,13 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const actions = actionsContainer ?? body;
     const draft = cseDrafts.get(key);
     if (draft) card.className += ' qqj-manual-editor-host';
-    if (subject && draft) renderCseEditor(body, draft, state, key);
-    else if (subject) appendSubjectGroups(body, subject, state, ownOnly ? { adaptive: (subject.adaptive ?? []).filter(item => !item.towardEntityId), situational: (subject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false, empty: !relationNote } : {});
+    if (subject) appendSubjectGroups(body, subject, state, ownOnly ? { adaptive: (subject.adaptive ?? []).filter(item => !item.towardEntityId), situational: (subject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: false, showSituationalVisibility: true, empty: !relationNote } : { showSituationalVisibility: true });
     else body.append(element('p', 'settings-hint', '这个重要人物还没有已保存的状态分析；后台摘要与 CSE 会继续正常处理。'));
     if (subject && !draft) {
       const edit = element('button', actionsContainer ? 'qqj-memory-menu-action' : 'secondary-action', '编辑状态'); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
       edit.addEventListener('click', () => {
         const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null }));
-        cseDrafts.set(key, { chatId: state.chatId, subjectEntityId: entityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(subject.core), adaptive: copyItems(subject.adaptive), situational: copyItems(subject.situational), saving: false, saveError: '' });
-        openState.set(`subject:${entityId}`, true); render(foundationState);
+        openCseEditor(key, { chatId: state.chatId, subjectEntityId: entityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(subject.core), adaptive: copyItems(subject.adaptive), situational: copyItems(subject.situational), saving: false, saveError: '' }, state, `编辑人物状态 · ${displayName}`);
       });
       actions.append(edit);
     }
@@ -1326,25 +1506,27 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       return { main, details };
     };
     const section = element('section', 'qqj-page qqj-cse-history-page');
-    section.append(pageStatus(state));
+    const pageStatusNode = pageStatus(state); section.append(pageStatusNode);
     const headingNode = element('header', 'qqj-cse-page-heading');
-    headingNode.append(element('strong', '', '分析记录'), element('span', 'v3-memory-status', `${state.csePendingCount ?? 0} 待分析 · ${state.cseFailedCount ?? 0} 失败`));
+    const countStatusNode = element('span', 'v3-memory-status', `${state.csePendingCount ?? 0} 待分析 · ${state.cseFailedCount ?? 0} 失败`);
+    headingNode.append(element('strong', '', '分析记录'), countStatusNode);
     let fillList = () => {};
     const cseSearch = searchControl({ value: cseSearchQuery, placeholder: '搜索全部分析记录', ariaLabel: '搜索当前聊天的全部人物状态历史', onInput: value => { cseSearchQuery = value; fillList(); }, onClear: () => { cseSearchQuery = ''; fillList(); } });
     const back = element('button', 'secondary-action qqj-cse-view-toggle', '返回当前状态'); back.type = 'button'; back.addEventListener('click', () => switchPeopleMode('current')); headingNode.append(cseSearch, back); section.append(headingNode);
     const list = element('div', 'qqj-cse-history-list');
-    const floors = [...(state.floors ?? [])].filter(floor => floor.memoryId).sort((left, right) => (right.messageIndex ?? 0) - (left.messageIndex ?? 0));
-    for (const floor of floors) {
-      const rowNode = setDetailsState(element('details', 'qqj-cse-history-row'), `cse-floor:${floor.floorId}`, false);
-      const rowSummary = element('summary', 'qqj-cse-floor-summary'); rowSummary.append(element('span', '', floorCopy(state, floor)), element('span', 'v3-memory-status', statusCopy(floor.cse?.status))); rowNode.append(rowSummary);
-      const body = element('div', 'qqj-cse-floor-body'), record = floor.cse?.record;
+    let currentState = state;
+    let floors = [...(currentState.floors ?? [])].filter(floor => floor.memoryId).sort((left, right) => (right.messageIndex ?? 0) - (left.messageIndex ?? 0));
+    const rowInfoByFloorId = new Map();
+    const buildBody = info => {
+      const { body } = info, floor = info.floor, record = floor.cse?.record;
+      body.replaceChildren();
       if (record) {
         if (record.fixedChangesAvailable === false) {
           const resultNode = element('section', 'qqj-cse-floor-result'); resultNode.append(element('strong', 'qqj-cse-floor-result-title', '本楼已保存状态'));
           const resultBody = element('div', 'qqj-cse-floor-state-body'), subjects = record.endStateSubjects ?? [];
           for (const subject of subjects) {
             const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
-            appendSubjectGroups(subjectNode, subject, state); resultBody.append(subjectNode);
+            appendSubjectGroups(subjectNode, subject, currentState); resultBody.append(subjectNode);
           }
           if (!subjects.length) resultBody.append(element('p', 'settings-hint', '本楼没有已保存的人物状态快照。'));
           resultBody.append(element('p', 'settings-hint', '旧记录未保存可核对的逐项变化；以上为本楼已保存状态快照。'));
@@ -1394,7 +1576,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
             const stateBody = element('div', 'qqj-cse-floor-state-body');
             for (const subject of record.endStateSubjects) {
               const subjectNode = element('section', 'qqj-cse-record-subject'); subjectNode.append(element('strong', '', subject.displayName));
-              appendSubjectGroups(subjectNode, subject, state); stateBody.append(subjectNode);
+              appendSubjectGroups(subjectNode, subject, currentState); stateBody.append(subjectNode);
             }
             if (!record.endStateSubjects.length) stateBody.append(element('p', 'settings-hint', '本楼结束时没有已保存状态。'));
             stateNode.append(stateBody); body.append(stateNode);
@@ -1402,45 +1584,64 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         }
       }
       if (!record && !floor.cse?.error) body.append(element('p', 'settings-hint', '本楼还没有已保存的状态分析记录。'));
-      if (floor.cse?.error) body.append(element('p', 'v3-foundation-feedback error', errorMessage(floor.cse.error))); const action = cseActionFor(floor, state); if (action) body.append(action); rowNode.append(body); list.append(rowNode);
+      if (floor.cse?.error) body.append(element('p', 'v3-foundation-feedback error', errorMessage(floor.cse.error))); const action = cseActionFor(floor, currentState); if (action) body.append(action);
+    };
+    const ensureBody = info => {
+      if (!info.body) { info.body = element('div', 'qqj-cse-floor-body'); info.rowNode.append(info.body); }
+      if (!info.hasRenderedBody || info.renderedRecord !== info.floor.cse?.record) {
+        buildBody(info); info.renderedRecord = info.floor.cse?.record; info.hasRenderedBody = true;
+      }
+      return info.body;
+    };
+    for (const floor of floors) {
+      const rowNode = setDetailsState(element('details', 'qqj-cse-history-row'), `cse-floor:${floor.floorId}`, false);
+      const rowSummary = element('summary', 'qqj-cse-floor-summary'), floorLabel = element('span', '', floorCopy(currentState, floor)), floorStatus = element('span', 'v3-memory-status', statusCopy(floor.cse?.status));
+      rowSummary.append(floorLabel, floorStatus); rowNode.append(rowSummary);
+      const info = { floor, rowNode, floorLabel, floorStatus, body: null, renderedRecord: null, hasRenderedBody: false };
+      rowInfoByFloorId.set(floor.floorId, info);
+      rowNode.addEventListener('toggle', () => { if (rowNode.open) ensureBody(info); });
+      if (rowNode.open) ensureBody(info);
+      list.append(rowNode);
     }
     if (!floors.length) list.append(element('p', 'settings-hint', '生成摘要后，这里会显示逐楼人物状态分析记录。'));
-    const defaultRows = [...list.children], rowsByFloorId = new Map(floors.map((floor, index) => [floor.floorId, defaultRows[index]]));
+    const defaultRows = [...list.children];
     fillList = () => {
       const query = cseSearchQuery.trim();
       if (!query) { list.replaceChildren(...defaultRows); return; }
       const results = [];
       for (const floor of floors) {
         const seen = new Set(), record = floor.cse?.record;
-        const add = (displayName, category, value) => {
+        const add = (subject, category, value) => {
           if (!value?.text) return;
+          const displayName = subject.displayName;
           const copy = [value.text, value.towardDisplayName ? `对象：${value.towardDisplayName}` : '', value.visibility ? `信息范围：${visibilityCopy(value.visibility)}` : '', value.reason ? `依据：${value.reason}` : '', value.origin ? `来源：${originCopy(value.origin)}` : ''].filter(Boolean).join(' · ');
           const searchable = `${displayName} ${category} ${copy}`;
           if (!plainSearchIncludes(searchable, query)) return;
-          const key = `${displayName}\u0000${category}\u0000${copy}`; if (seen.has(key)) return; seen.add(key);
+          const key = JSON.stringify([subject.subjectEntityId ?? null, value.towardEntityId ?? null, displayName, category, copy]); if (seen.has(key)) return; seen.add(key);
           results.push({ floor, displayName, category, copy });
         };
         for (const subject of record?.subjects ?? []) {
           for (const change of subject.changes ?? []) {
             const category = categoryCopy[change.category] ?? '人物状态';
-            add(subject.displayName, category, change.before?.text ? change.before : change.beforeText ? { ...change.before, text: change.beforeText } : null);
-            add(subject.displayName, category, change.after?.text ? change.after : change.afterText ? { ...change.after, text: change.afterText } : null);
+            add(subject, category, change.before?.text ? change.before : change.beforeText ? { ...change.before, text: change.beforeText } : null);
+            add(subject, category, change.after?.text ? change.after : change.afterText ? { ...change.after, text: change.afterText } : null);
           }
         }
         for (const subject of record?.endStateSubjects ?? []) {
-          for (const [key, category] of Object.entries(categoryCopy)) for (const value of subject[key] ?? []) add(subject.displayName, category, value);
+          for (const [key, category] of Object.entries(categoryCopy)) for (const value of subject[key] ?? []) add(subject, category, value);
         }
       }
       list.replaceChildren(element('p', 'qqj-search-count', `在全部人物状态历史中找到 ${results.length} 条结果`));
       for (const result of results) {
         const node = element('article', 'qqj-history-search-result'), title = element('div', 'qqj-history-search-title');
-        title.append(element('strong', '', result.displayName), element('span', '', floorCopy(state, result.floor)), element('span', 'v3-memory-status', result.category));
+        title.append(element('strong', '', result.displayName), element('span', '', floorCopy(currentState, result.floor)), element('span', 'v3-memory-status', result.category));
         node.append(title, element('p', 'qqj-history-search-snippet', searchSnippet(result.copy, query)));
-        node.setAttribute('role', 'button'); node.setAttribute('tabindex', '0'); node.setAttribute('aria-label', `打开${floorCopy(state, result.floor)}完整分析记录`);
+        node.setAttribute('role', 'button'); node.setAttribute('tabindex', '0'); node.setAttribute('aria-label', `打开${floorCopy(currentState, result.floor)}完整分析记录`);
         const openResult = () => {
           cseSearchQuery = ''; cseSearch.children[0].value = ''; cseSearch.children[1].hidden = true;
           for (const key of [`cse-floor:${result.floor.floorId}`, `cse-floor-changes:${result.floor.floorId}`, `cse-floor-state:${result.floor.floorId}`]) openState.set(key, true);
-          const rowNode = rowsByFloorId.get(result.floor.floorId);
+          const info = rowInfoByFloorId.get(result.floor.floorId), rowNode = info?.rowNode;
+          if (info) ensureBody(info);
           const openDetails = parent => { for (const child of parent?.children ?? []) { if (child.tag === 'details' || child.tagName === 'DETAILS') child.open = true; openDetails(child); } };
           if (rowNode) { rowNode.open = true; openDetails(rowNode); }
           fillList(); rowNode?.scrollIntoView?.({ block: 'nearest' });
@@ -1451,24 +1652,71 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       if (!results.length) list.append(element('div', 'qqj-inline-empty', '没有包含该文字的人物状态历史。'));
     };
     fillList();
-    section.append(list); if (state.cseReplayDiagnostic?.message) section.append(element('p', 'v3-foundation-feedback error', errorMessage(state.cseReplayDiagnostic))); return section;
+    section.append(list); let diagnosticNode = null;
+    if (currentState.cseReplayDiagnostic?.message) { diagnosticNode = element('p', 'v3-foundation-feedback error', errorMessage(currentState.cseReplayDiagnostic)); section.append(diagnosticNode); }
+    const historyStatusKey = value => {
+      const healthText = healthCopy(value), healthTone = healthClass(value);
+      const feedbackText = currentFeedback(value) || errorCopy(value) || '记忆状态已显示。';
+      const feedbackTone = `v3-foundation-feedback${feedbackText.includes('失败') || (!feedback && errorCopy(value)) ? ' error' : ''}`;
+      return [healthText, healthTone, feedbackText, feedbackTone].join('\u0000');
+    };
+    let lastStatusKey = historyStatusKey(currentState), lastWorkBusy = workBusy(currentState);
+    const update = nextState => {
+      const nextFloors = [...(nextState.floors ?? [])].filter(floor => floor.memoryId).sort((left, right) => (right.messageIndex ?? 0) - (left.messageIndex ?? 0));
+      if (nextFloors.length !== floors.length || nextFloors.some((floor, index) => floor.floorId !== floors[index]?.floorId || floor.memoryId !== floors[index]?.memoryId)) return false;
+      const statusKey = historyStatusKey(nextState), globalStatusChanged = statusKey !== lastStatusKey;
+      const busyChanged = workBusy(nextState) !== lastWorkBusy;
+      currentState = nextState;
+      let searchableContentChanged = false;
+      for (const floor of nextFloors) {
+        const info = rowInfoByFloorId.get(floor.floorId), previous = info.floor;
+        const recordChanged = previous.cse?.record !== floor.cse?.record;
+        const label = floorCopy(nextState, floor), status = statusCopy(floor.cse?.status);
+        const rowStatusChanged = label !== info.floorLabel.textContent || status !== info.floorStatus.textContent
+          || previous.cse?.error !== floor.cse?.error || previous.frozen !== floor.frozen;
+        if (recordChanged || label !== info.floorLabel.textContent) searchableContentChanged = true;
+        if (label !== info.floorLabel.textContent) info.floorLabel.textContent = label;
+        if (status !== info.floorStatus.textContent) info.floorStatus.textContent = status;
+        info.floor = floor;
+        if (info.body && (recordChanged || rowStatusChanged || busyChanged)) {
+          buildBody(info); info.renderedRecord = floor.cse?.record; info.hasRenderedBody = true;
+        }
+      }
+      floors = nextFloors;
+      if (globalStatusChanged) {
+        const updated = pageStatus(nextState);
+        pageStatusNode.className = updated.className;
+        pageStatusNode.replaceChildren(...updated.children);
+        lastStatusKey = statusKey;
+      }
+      const countCopy = `${nextState.csePendingCount ?? 0} 待分析 · ${nextState.cseFailedCount ?? 0} 失败`;
+      if (countStatusNode.textContent !== countCopy) countStatusNode.textContent = countCopy;
+      const diagnostic = nextState.cseReplayDiagnostic?.message ? errorMessage(nextState.cseReplayDiagnostic) : '';
+      if (!diagnosticNode && diagnostic) { diagnosticNode = element('p', 'v3-foundation-feedback error', diagnostic); section.append(diagnosticNode); }
+      else if (diagnosticNode) { diagnosticNode.textContent = diagnostic; diagnosticNode.hidden = !diagnostic; }
+      lastWorkBusy = workBusy(nextState);
+      if (cseSearchQuery.trim() && searchableContentChanged) fillList();
+      return true;
+    };
+    cseHistoryUi = { section, update };
+    return section;
   }
   function peopleScrollHost() { return container?.parentElement ?? container; }
   function switchPeopleMode(next) {
     if (!['current', 'history'].includes(next) || next === peopleMode) return;
     const scrollHost = peopleScrollHost(); peopleScroll.set(peopleMode, scrollHost?.scrollTop || 0); peopleMode = next; render(foundationState); if (scrollHost) scrollHost.scrollTop = peopleScroll.get(next) || 0;
   }
-  const relationItem = (value, state, { showMeta = false } = {}) => {
+  const relationItem = (value, state, { showMeta = false, showVisibility = false } = {}) => {
     const item = element('li', 'qqj-relation-item');
-    item.append(element('span', 'v3-cse-item-text', cseReadingText(value.text)));
+    item.append(showVisibility ? currentSituationLine(value) : element('span', 'v3-cse-item-text', cseReadingText(value.text)));
     if (showMeta) { const source = value.sourceFloorId || value.sourceAssistantSeq ? sourceFloorCopy(state, value) : value.origin === 'baseline' ? '来源：聊天基线' : '来源：本地重放'; item.append(element('small', 'v3-cse-item-meta', [...new Set([value.reason, originCopy(value.origin), source, visibilityCopy(value.visibility)])].join(' · '))); } return item;
   };
-  function appendRelationLayers(container, { situational = [], adaptive = [] }, state, { situationalLabel = '当前态度' } = {}) {
+  function appendRelationLayers(container, { situational = [], adaptive = [] }, state, { situationalLabel = '当前态度', showSituationalVisibility = true } = {}) {
     let count = 0;
     for (const [label, values] of [[situationalLabel, situational], ['长期相处方式', adaptive]]) {
       if (!values.length) continue;
       const group = element('div', 'qqj-relation-layer'); group.append(element('strong', 'qqj-relation-layer-title', label));
-      const list = element('ul', 'qqj-relation-items'); for (const value of values) list.append(relationItem(value, state)); group.append(list); container.append(group); count += values.length;
+      const list = element('ul', 'qqj-relation-items'); for (const value of values) list.append(relationItem(value, state, { showVisibility: label === situationalLabel && showSituationalVisibility })); group.append(list); container.append(group); count += values.length;
     }
     return count;
   }
@@ -1493,7 +1741,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (!appendRelationLayers(lane, values, state)) {
       if (historical) {
         lane.append(element('span', 'v3-memory-status', `最后关系记录 · ${floorCopy(state, historical.floor)}`));
-        appendRelationLayers(lane, historical.values, state, { situationalLabel: '当时态度' });
+        appendRelationLayers(lane, historical.values, state, { situationalLabel: '当时态度', showSituationalVisibility: false });
       } else lane.append(element('p', 'settings-hint', '暂无已保存的关系状态。'));
     }
     return lane;
@@ -1504,11 +1752,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (!userSubject) { anchor.append(element('p', 'settings-hint', '还没有已保存的用户状态。')); return anchor; }
     const key = `${state.chatId ?? 'no-chat'}:${userSubject.subjectEntityId}`, draft = cseDrafts.get(key);
     anchor.setAttribute('data-qqj-cse-entity-id', userSubject.subjectEntityId); if (draft) anchor.className += ' qqj-manual-editor-host';
-    if (draft) renderCseEditor(anchor, draft, state, key);
-    else {
-      appendSubjectGroups(anchor, userSubject, state, { situational: (userSubject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: true });
+    {
+      appendSubjectGroups(anchor, userSubject, state, { situational: (userSubject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: true, showSituationalVisibility: true });
       const edit = element('button', 'secondary-action qqj-cse-edit-action', '编辑我的状态'); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
-      edit.addEventListener('click', () => { const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })); cseDrafts.set(key, { chatId: state.chatId, subjectEntityId: userSubject.subjectEntityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(userSubject.core), adaptive: copyItems(userSubject.adaptive), situational: copyItems(userSubject.situational), saving: false, saveError: '' }); render(foundationState); });
+      edit.addEventListener('click', () => { const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })); openCseEditor(key, { chatId: state.chatId, subjectEntityId: userSubject.subjectEntityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(userSubject.core), adaptive: copyItems(userSubject.adaptive), situational: copyItems(userSubject.situational), saving: false, saveError: '' }, state, '编辑我的状态'); });
       anchor.append(edit);
     }
     return anchor;
@@ -1654,7 +1901,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     }
     const countCopy = values => values.length ? String(values.length) : '0';
     const materialLabel = record.restoredReceipt || record.legacyReadOnly ? '历史展示' : uncommitted ? '候选材料（本轮未注入）' : '本轮选入';
-    const selectedCountCopy = `${materialLabel}：旧楼 ${countCopy(record.selectedFloors ?? [])} · 当前状态 ${countCopy(record.selectedStates ?? [])} · 历史变化 ${countCopy(record.selectedCseChanges ?? [])}${[stages?.timeCorrectionCount, stages?.timeReminderCount].every(Number.isSafeInteger) ? ` · 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}`;
+    const selectedCountCopy = `${materialLabel}：旧楼 ${countCopy(record.selectedFloors ?? [])} · 当前状态 ${countCopy(record.selectedStates ?? [])} · 历史变化 ${countCopy(record.selectedCseChanges ?? [])}${Number.isSafeInteger(stages?.locationReferenceCount) ? ` · 地点参照 ${stages.locationReferenceCount}` : ''}${[stages?.timeCorrectionCount, stages?.timeReminderCount].every(Number.isSafeInteger) ? ` · 时间参考 ${stages.timeCorrectionCount + stages.timeReminderCount}` : ''}`;
     const tokenSummary = Number.isSafeInteger(stages?.estimatedTokenCount) && Number.isSafeInteger(stages?.estimatedTokenBudget)
       ? `${stages.estimatedTokenCount}/${stages.estimatedTokenBudget}（保守估算）` : '未记录';
     const totalWaitCopy = Number.isFinite(timings?.totalMs)
@@ -1712,6 +1959,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       if ((record.skipReasons ?? []).includes('memoryNotReady')) body.append(element('p', 'settings-hint', '当前仍有摘要或人物状态缺口；本轮已注入能确认归属的已保存部分，正文继续生成。'));
     }
     else if (record.status === 'empty' || record.status === 'completed-empty') body.append(element('p', 'settings-hint', '本轮没有需要注入的记忆。'));
+    else if ((record.skipReasons ?? []).includes('uninitialized')) body.append(element('p', 'settings-hint', '尚未开始记录，本轮不注入记忆，正文继续生成。'));
     else if ((record.skipReasons ?? []).includes('sourceStale')) body.append(element('p', 'settings-hint', '记忆来源正在更新，本轮已安全跳过召回注入。'));
     else if ((record.skipReasons ?? []).includes('sourceUnavailable')) body.append(element('p', 'settings-hint', '记忆来源暂不可用；本轮召回失败，正文生成已停止。'));
     else if ((record.skipReasons ?? []).includes('memoryPreparationTimeout')) body.append(element('p', 'settings-hint', '记忆在准备期限内未准备完成；本轮召回失败，正文生成已停止。'));
@@ -1731,31 +1979,32 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const summary = element('summary', 'qqj-section-summary'); summary.append(element('strong', '', '前情'), element('span', 'v3-memory-status', saved.text ? `当前 ${[...saved.text].length} 字符` : '尚未设置')); drawer.append(summary);
     const body = element('div', 'qqj-management-drawer-body qqj-manual-editor');
     body.append(element('p', 'settings-hint', '粘贴旧聊天的大摘要。原文随当前聊天保存，生成时按需选段；清空文本后保存即可移除。'));
-    const editor = element('textarea', 'v3-diagnostic-fallback qqj-prequel-editor'); editor.value = prequelDraft.text; editor.textContent = prequelDraft.text; editor.readOnly = false;
-    editor.addEventListener('input', () => { prequelDraft.text = editor.value; prequelDraft.dirty = true; });
-    const actions = element('div', 'v3-foundation-actions qqj-manual-save-bar');
-    const save = element('button', 'primary-action', prequelDraft.saving ? '保存中…' : '保存前情'); save.type = 'button'; save.disabled = prequelDraft.saving;
-    save.addEventListener('click', async () => {
-      if (prequelDraft.saving) return;
-      const submittedText = editor.value;
-      const submittedDraft = prequelDraft;
-      prequelDraft.text = submittedText; prequelDraft.dirty = true; prequelDraft.saving = true; save.disabled = true; prequelFeedback = '';
-      let savedCurrentDraft = false;
-      try {
-        const result = await recallRuntime.savePrequel(submittedText);
-        if (prequelDraft !== submittedDraft) return;
-        if (prequelDraft.text === submittedText) { prequelDraft = { hostChatId: result.hostChatId, text: result.text, dirty: false, saving: false }; savedCurrentDraft = true; }
-        else { prequelDraft.hostChatId = result.hostChatId; prequelDraft.saving = false; prequelDraft.dirty = true; }
-        prequelFeedback = result.text ? '前情已更新，并已交给酒馆保存。' : '前情已移除，并已交给酒馆保存。';
-      } catch (error) {
-        if (prequelDraft !== submittedDraft) return;
-        prequelDraft.saving = false;
-        prequelFeedback = errorMessage(error) || '前情保存失败。';
-      }
-      if (active && container && page === 'management') render(foundationState);
-      if (savedCurrentDraft && active && container && page === 'management') scrollEditorToTop('.qqj-prequel-drawer');
+    const preview = saved.text ? element('pre', 'qqj-prequel-preview', saved.text.slice(0, 420) + (saved.text.length > 420 ? '…' : '')) : element('p', 'settings-hint', '尚未设置前情。');
+    body.append(preview);
+    const edit = element('button', 'secondary-action', saved.text ? '编辑前情' : '添加前情'); edit.type = 'button';
+    edit.addEventListener('click', () => {
+      if (typeof customImpl !== 'function') return;
+      const draft = prequelDraft, editor = element('div', 'qqj-editor-dialog');
+      editor.append(element('p', 'qqj-editor-intro', '前情保存在当前聊天；清空并保存即可移除。取消不更改已保存内容。'));
+      const group = element('section', 'qqj-editor-group'); group.append(element('h3', '', '前情内容'));
+      const input = element('textarea', 'settings-input qqj-editor-textarea qqj-prequel-editor'); input.value = draft.text; input.rows = 16;
+      input.addEventListener('input', () => { draft.text = input.value; draft.dirty = true; }); group.append(input); editor.append(group);
+      let committed = false;
+      void Promise.resolve(customImpl({ title: '编辑前情', content: editor, confirmText: '保存前情', cancelText: '取消', submit: async () => {
+        if (draft.saving) return false;
+        draft.text = input.value; draft.dirty = true; draft.saving = true; prequelFeedback = '';
+        try {
+          const result = await recallRuntime.savePrequel(draft.text);
+          if (prequelDraft !== draft) return false;
+          prequelDraft = { hostChatId: result.hostChatId, text: result.text, dirty: false, saving: false };
+          prequelFeedback = result.text ? '前情已更新，并已交给酒馆保存。' : '前情已移除，并已交给酒馆保存。';
+          committed = true;
+          if (active && container && page === 'management') render(foundationState);
+          return true;
+        } catch (error) { if (prequelDraft === draft) { draft.saving = false; prequelFeedback = errorMessage(error) || '前情保存失败。'; } throw error; }
+      }, onClose: () => { if (!committed && prequelDraft === draft) prequelDraft = { hostChatId: saved.hostChatId, text: saved.text, dirty: false, saving: false }; } }));
     });
-    actions.append(save); body.append(editor, actions);
+    body.append(edit);
     if (prequelFeedback) body.append(element('p', `v3-foundation-feedback${/失败|不支持|请先/u.test(prequelFeedback) ? ' error' : ''}`, prequelFeedback));
     const selected = recallState?.lastPrequel ?? null;
     if (selected?.status === 'error') body.append(element('p', 'v3-foundation-feedback error', publicErrorMessage(selected.error, { fallback: '本次前情注入失败；正文已继续生成。' })));
@@ -1794,19 +2043,17 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       const floorList = element('div', 'qqj-floor-diagnostics-list');
       let floorListBuilt = false;
       const buildFloorList = () => {
-        if (floorListBuilt || !drawer.open || !floorDrawer.open) return;
+        if (!drawer.open || !floorDrawer.open) return;
+        if (floorListBuilt) return;
         floorListBuilt = true;
-        const floors = state.floors ?? [];
-        for (let index = floors.length - 1; index >= 0; index -= 1) {
-          const floor = floors[index];
-          const diagnostic = element('div', 'qqj-diagnostic-row'); diagnostic.append(element('span', '', floorCopy(state, floor, undefined, { knownFloor: true })));
+        for (const floor of [...(state.floors ?? [])].reverse()) {
+          const diagnostic = element('div', 'qqj-diagnostic-row'); diagnostic.append(element('span', '', floorCopy(state, floor, '楼号未提供', { knownFloor: true })));
           const safe = element('button', 'secondary-action', '复制安全诊断'); safe.type = 'button'; safe.addEventListener('click', () => { void run('复制安全诊断', async () => { feedback = await copy(runtime.copySafeDiagnostic(floor.floorId)); return runtime.getState(); }); });
           const full = element('button', 'secondary-action', '复制完整诊断'); full.type = 'button'; full.addEventListener('click', () => { void run('复制完整诊断', async () => { if (!await Promise.resolve(confirmImpl({ title: '复制完整诊断', body: '完整诊断包含本楼正文与证据原文。确认复制吗？', confirmText: '复制', cancelText: '取消' }))) { feedback = '已取消完整诊断复制。'; return runtime.getState(); } feedback = await copy(runtime.copyFullDiagnostic(floor.floorId)); return runtime.getState(); }); });
           diagnostic.append(safe, full); floorList.append(diagnostic);
         }
       };
-      drawer.addEventListener('toggle', buildFloorList);
-      floorDrawer.addEventListener('toggle', buildFloorList);
+      drawer.addEventListener('toggle', buildFloorList); floorDrawer.addEventListener('toggle', buildFloorList);
       buildFloorList();
       floorDrawer.append(floorSummary, floorList); body.append(floorDrawer);
     }
@@ -1887,7 +2134,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (previousCseError) progress.append(element('span', 'settings-hint error', `上次人物状态分析失败：${previousCseError}；可继续人物状态重构。`));
     managementFeedbackNode = element('p');
     updateManagementFeedback(state);
-    pageNode.append(actions, progress, managementFeedbackNode);
+    const statusRow = element('div', 'qqj-management-status-row');
+    statusRow.append(managementFeedbackNode, ...renderManagementVectorIndex(state));
+    pageNode.append(actions, progress, statusRow);
     const prequel = renderPrequelDetails(); if (prequel) pageNode.append(prequel);
     pageNode.append(renderRecallDetails(), renderDiagnostics(state));
     if (memoryManagement) pageNode.append(deleteActions);
@@ -1896,16 +2145,17 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
 
   function renderAdopted(state) {
     if (!container) return;
+    if (page === 'people' && peopleMode === 'history' && cseHistoryUi?.update(state)) return;
+    if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null;
     if (relationSwitcherNode) relationSwitcherScrollLeft = Number(relationSwitcherNode.scrollLeft) || 0;
     const previousSignature = relationSwitcherSignature, previousChatId = relationSwitcherChatId;
-    relationSwitcherNode = null;
+    relationSwitcherNode = null; vectorIndexLink = null; vectorIndexReadErrorNode = null;
     recentItemsUi = null;
-    forgetMemoryRows(); renderedMemoryInputs = null; memoryWorkControls = []; memorySyncControls = [];
+    forgetMemoryRows(); renderedMemoryInputs = null; memoryWorkControls = [];
     operationMenus.reset();
     recallState = recallRuntime?.getState?.() ?? recallState; peopleState = peopleRuntime?.getState?.() ?? peopleState; managementState = memoryManagement?.getState?.() ?? managementState; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null;
     container.replaceChildren(page === 'memories' ? renderMemories(state) : page === 'people' ? renderPeople(state) : renderManagement(state));
-    if (page === 'memories') renderedMemoryInputs = captureMemoryInputs(state);
-    if (page === 'memories') updateMemoryFloorStatuses(state);
+    if (page === 'memories') { renderedMemoryInputs = captureMemoryInputs(state); updateMemoryFloorStatuses(state); }
     if (relationSwitcherNode) {
       const userEntityId = (state.memoryEntities ?? []).find(entity => entity.specialRole === 'user')?.entityId ?? null;
       const nextSignature = JSON.stringify((peopleState?.people ?? []).filter(person => person.entityId !== userEntityId && person.selected).map(person => person.entityId).sort());
@@ -1920,7 +2170,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   const applySyncingPresentation = () => {
     if (page === 'memories') {
       const state = syncingDisplayState(foundationState);
-      updateHealth(state); updatePageFeedback(state); updateMemoryControls(state);
+      updateHealth(state); updatePageFeedback(state); updateMemoryControls(state); updateMemoryFloorStatuses(state);
+      for (const draft of drafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
       return;
     }
     const safeButtons = new Set(['取消', '分析记录', '返回当前状态', '复制安全诊断', '复制完整诊断', '复制界面诊断', '复制状态诊断', '复制调用示例']);
@@ -1952,23 +2203,23 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const finishedSyncing = Boolean(syncingChatId && syncingChatId === (snapshot?.chatId ?? null));
     syncingChatId = null;
     const { state, mustReplace } = adoptFoundationState(snapshot);
-    const hasVisibleMemoryDraft = [...drafts.values()].some(draft => memoryCardStatusViews.has(draft.floorId));
-    if (page === 'memories' && (hasVisibleMemoryDraft || recentItemDraft) && !mustReplace) {
+    for (const draft of drafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
+    if (page === 'memories' && recentItemDraft && !mustReplace) {
       const sameInputs = !finishedSyncing && sameMemoryInputs(renderedMemoryInputs, state);
       if (!sameInputs) renderedMemoryInputs = captureMemoryInputs(state);
-      for (const draft of drafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
       updateHealth(state); updatePageFeedback(state); updateMemoryControls(state); updateMemoryFloorStatuses(state);
       if (!sameInputs) { updateRecentItems(); if (recentItemsOpen) void timeRuntime?.refreshStatus?.(); }
       return;
     }
     if (page === 'people' && peopleMode === 'current' && cseDrafts.size && !mustReplace) {
       for (const draft of cseDrafts.values()) for (const control of draft.controls ?? []) control.disabled = draft.saving === true || workBusy(state);
-      updateHealth(state); return;
+      updateHealth(state); updatePageFeedback(state); return;
     }
     if (page === 'memories' && !mustReplace && !finishedSyncing && sameMemoryInputs(renderedMemoryInputs, state)) {
       updateHealth(state); updatePageFeedback(state); updateMemoryControls(syncingDisplayState(state)); updateMemoryFloorStatuses(state); return;
     }
     renderAdopted(state);
+    readVectorIndexForReadyState(state);
   }
   function subscribe() {
     if (!active || !container || unsubscribe) return;
@@ -1976,15 +2227,47 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (refreshFeedback !== null) { if (feedback !== refreshFeedback) refreshFeedback = null; else { feedback = refreshResult(snapshot); refreshFeedback = refreshSyncing(snapshot) ? feedback : null; } } if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
     if (typeof recallRuntime?.subscribe === 'function') { const release = recallRuntime.subscribe(snapshot => { recallState = snapshot; if (active && container && page === 'management') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof peopleRuntime?.subscribe === 'function') { const release = peopleRuntime.subscribe(snapshot => { peopleState = snapshot; if (active && container && page === 'people') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
-    if (typeof timeRuntime?.subscribe === 'function') { const release = timeRuntime.subscribe(snapshot => { if (active && container) { updateHealth(foundationState); updateRecentItems(snapshot); } }); if (typeof release === 'function') releases.push(release); }
+    if (typeof timeRuntime?.subscribe === 'function') { const release = timeRuntime.subscribe(snapshot => { if (active && container) { updateHealth(foundationState, snapshot); updateRecentItems(snapshot); } }); if (typeof release === 'function') releases.push(release); }
     if (typeof memoryManagement?.subscribe === 'function') { const release = memoryManagement.subscribe(snapshot => { managementState = snapshot; if (active && container && page === 'management') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
+    if (typeof vectorRuntime?.subscribe === 'function') {
+      let manualBuild = false;
+      const release = vectorRuntime.subscribe(snapshot => {
+        if (snapshot?.status === 'building' && snapshot.background !== true) { manualBuild = true; return; }
+        if (!manualBuild) return;
+        manualBuild = false;
+        if (snapshot?.status === 'ready' && vectorReadArmed && page === 'management') void readVectorIndexForReadyState(foundationState, { refresh: true });
+      });
+      if (typeof release === 'function') releases.push(release);
+    }
     unsubscribe = () => { for (const release of releases) { try { release(); } catch { /* listener cleanup isolation */ } } };
   }
   function stopSubscription() { const release = unsubscribe; unsubscribe = null; try { release?.(); } catch { /* runtime listener cleanup is isolated from view lifecycle */ } }
-  function mount(target) { stopSubscription(); operationMenus.deactivate(); container = target; active = true; recallState = recallRuntime?.getState?.() ?? null; render(runtime.getState()); operationMenus.activate(); subscribe(); }
+  function mount(target, { page: initialPage = page } = {}) {
+    if (!['memories', 'people', 'management'].includes(initialPage)) throw new TypeError('V3 view page 无效');
+    page = initialPage; stopSubscription(); operationMenus.deactivate(); cseHistoryUi = null; container = target; active = true;
+    recallState = recallRuntime?.getState?.() ?? null; render(runtime.getState()); operationMenus.activate(); subscribe();
+  }
   async function activate() {
     if (!container) throw new Error('V3 foundation view 尚未挂载');
-    active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取最新状态…'; receiptFeedback = ''; updateHealth(runtime.getState());
+    active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; vectorReadArmed = page === 'management';
+    if (vectorReadArmed) { vectorReadStarted = false; vectorReadPromise = Promise.resolve(); vectorIndexResult = null; updateManagementVectorIndex(foundationState); }
+    feedback = '正在读取最新状态…'; receiptFeedback = ''; updateHealth(runtime.getState());
+    const sessionState = readDiagnosticState(sessionStateProvider);
+    if (sessionState?.status === 'idle' && typeof prepareSession === 'function') {
+      let prepared;
+      try { prepared = await prepareSession(); }
+      catch (error) {
+        if (!active || mine !== epoch) return { status: 'stale' };
+        feedback = `聊天身份准备失败：${publicErrorMessage(error, { fallback: '请到“记忆管理”页点击“复制状态诊断”反馈。' })}`;
+        const result = runtime.getState(); render(result); return { status: 'error', error };
+      }
+      if (!active || mine !== epoch) return { status: 'stale' };
+      if (prepared?.status === 'idle') {
+        feedback = '当前聊天尚未开始记录，继续对话后可开始记录';
+        const result = runtime.getState(); render(result); return { status: 'uninitialized' };
+      }
+      if (prepared?.status && prepared.status !== 'ready') return prepared;
+    }
     if (readDiagnosticState(sessionStateProvider)?.status === 'preparing') {
       feedback = '正在读取当前聊天…';
       render(runtime.getState());
@@ -2006,17 +2289,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (receiptOutcome.status === 'rejected') receiptFeedback = `历史召回回执恢复失败：${publicErrorMessage(receiptOutcome.reason, { fallback: '回执读取失败。' })}；不影响记忆读取。`;
     const peopleFeedback = peopleOutcome.status === 'rejected' ? `重要人物选择读取失败：${publicErrorMessage(peopleOutcome.reason, { fallback: '人物选择暂时无法读取。' })}；人物状态仍可查看。` : '';
     if (foundationOutcome.status === 'rejected') { feedback = `记忆读取失败：${publicErrorMessage(foundationOutcome.reason, { fallback: '后端数据暂时无法读取。' })}；历史召回回执已独立处理。`; const result = runtime.getState(); render(result); return { status: 'error', error: foundationOutcome.reason }; }
-    const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status));
-    if (page === 'memories') receiveFoundation(result); else render(result);
-    return result;
+    const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); receiveFoundation(result); await readVectorIndexForReadyState(foundationState); return result;
   }
-  function deactivate() {
-    active = false; epoch += 1; operationMenus.deactivate(); stopSubscription();
-    renderedMemoryInputs = null; memoryWorkControls = []; memorySyncControls = [];
-    memoryRowWorkControls = []; memoryRowSyncControls = []; memoryRowMenus = []; memoryCardStatusViews.clear(); activeMemoryFloorId = null;
-    for (const draft of drafts.values()) draft.controls = [];
-    healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; relationSwitcherNode = null; recentItemsUi = null;
-  }
-  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (active && container) render(foundationState); }
+  function deactivate() { active = false; vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
+  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null; if (active && container) render(foundationState); }
   return Object.freeze({ mount, activate, deactivate, render, setPage, getPage: () => page });
 }
