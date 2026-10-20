@@ -812,6 +812,19 @@ export function createPeopleWorkspaceRuntime({
       profileMaterialProgressByEntityId: materialProgress,
       unprofiledSelectedCount: people.filter(person => person.selected && !person.profiled).length, lastError, lastGenerationReport });
   }
+  function getPeopleAvatars(entityIds = []) {
+    const requested = [...new Set((Array.isArray(entityIds) ? entityIds : [])
+      .filter(entityId => typeof entityId === 'string' && entityId.length > 0))];
+    const requestedIds = new Set(requested);
+    const avatarsByEntityId = Object.fromEntries(requested.map(entityId => [entityId, null]));
+    if (!enabled()) return Object.freeze({ status: 'disabled', chatId: chatId ?? null, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
+    if (!workspace || !chatId) return Object.freeze({ status: 'not-ready', chatId: null, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
+    for (const person of people) {
+      const entityId = person?.entityId;
+      if (requestedIds.has(entityId)) avatarsByEntityId[entityId] = typeof person.avatar === 'string' ? person.avatar : null;
+    }
+    return Object.freeze({ status: 'ready', chatId, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
+  }
   async function readArchivedProfileHistory(entityId) {
     if (typeof entityId !== 'string' || !entityId) throw errorWith('QQJ_PEOPLE_ENTITY_INVALID', '人物标识无效。');
     const reachable = foundationRuntime.getReachable?.();
@@ -1385,7 +1398,7 @@ export function createPeopleWorkspaceRuntime({
   const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
   return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, readArchivedProfileHistory, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
-    getState, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
+    getState, getPeopleAvatars, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
     wakeAutomaticMaintenance: scheduleAutomaticMaintenance,
     destroy() { destroyed = true; unsubscribeMemory?.(); unsubscribeFoundation?.(); invalidate(); },
   });

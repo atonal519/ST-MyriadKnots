@@ -244,7 +244,7 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, readAvatarBridge = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const eventRegistrations = new Map();
@@ -488,7 +488,17 @@ async function isolateBundle(hostGlobalName, { enabled = false, coreCacheEnabled
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
+  const publicBridgeAvatarType = typeof context.qqj_v3_public_bridge_v1?.getPeopleAvatars;
+  let publicBridgeAvatarResult = null;
+  if (!enabled || readAvatarBridge) {
+    const maxReads = readAvatarBridge ? 50 : 1;
+    for (let attempt = 0; attempt < maxReads; attempt += 1) {
+      publicBridgeAvatarResult = context.qqj_v3_public_bridge_v1?.getPeopleAvatars?.(['avatar-test-entity']) ?? null;
+      if (!readAvatarBridge || publicBridgeAvatarResult?.status === 'ready') break;
+      await new Promise(resolvePromise => setImmediate(resolvePromise));
+    }
+  }
+  return { status: entry.status, get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, publicBridgeAvatarType, publicBridgeAvatarResult, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
 }
 
 test('实际生产启动入口捕获首次 host event bind 异常并继续完成模块求值', async () => {
@@ -571,7 +581,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.8.0');
+  assert.equal(manifest.version, '0.8.1');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -1153,18 +1163,33 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.deepEqual(nativeJson(bootstrapOptions.backendDiagnosticProvider()).coreCache, { available: false, enabled: false });
 });
 
-test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时零后端请求', async () => {
-  const result = await isolateBundle('Luker');
-  assert.equal(result.status, 'evaluated');
-  assert.equal(result.publicBridgeType, 'object');
-  assert.equal(result.publicBridgeReadStatus, 'disabled');
-  assert.equal(result.publicBridgeSnapshotType, 'function');
-  assert.equal(result.publicBridgeSnapshotStatus, 'disabled');
-  assert.equal(result.publicBridgePromptSnapshotType, 'function');
-  assert.equal(result.publicBridgePromptSnapshotStatus, 'disabled');
-  assert.equal(result.backendCalls, 0);
-  assert.equal(result.backendHealthCalls, 0);
-  assert.equal(result.backendDataCalls, 0);
+test('生产 bundle 原生与 Luker 关闭时均挂载并可调用批量头像桥，且不访问后端', async () => {
+  for (const hostGlobalName of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(hostGlobalName);
+    assert.equal(result.status, 'evaluated');
+    assert.equal(result.publicBridgeType, 'object');
+    assert.equal(result.publicBridgeReadStatus, 'disabled');
+    assert.equal(result.publicBridgeSnapshotType, 'function');
+    assert.equal(result.publicBridgeSnapshotStatus, 'disabled');
+    assert.equal(result.publicBridgePromptSnapshotType, 'function');
+    assert.equal(result.publicBridgePromptSnapshotStatus, 'disabled');
+    assert.equal(result.publicBridgeAvatarType, 'function');
+    assert.equal(result.publicBridgeAvatarResult?.status, 'disabled');
+    assert.deepEqual(nativeJson(result.publicBridgeAvatarResult?.avatarsByEntityId), { 'avatar-test-entity': null });
+    assert.equal(result.backendCalls, 0);
+    assert.equal(result.backendHealthCalls, 0);
+    assert.equal(result.backendDataCalls, 0);
+  }
+});
+
+test('生产 bundle 原生与 Luker 人物资料就绪后，未知 entityId 返回 null 头像', async () => {
+  for (const hostGlobalName of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(hostGlobalName, { enabled: true, initializeWithoutSubtle: true, allowIdentityWrites: true, readAvatarBridge: true });
+    assert.equal(result.status, 'evaluated');
+    assert.equal(result.publicBridgeAvatarType, 'function');
+    assert.equal(result.publicBridgeAvatarResult?.status, 'ready');
+    assert.deepEqual(nativeJson(result.publicBridgeAvatarResult?.avatarsByEntityId), { 'avatar-test-entity': null });
+  }
 });
 
 test('生产 bundle 在 Luker-only 且插件启用时真实进入身份绑定与旧 V3 root 核对路径', async () => {

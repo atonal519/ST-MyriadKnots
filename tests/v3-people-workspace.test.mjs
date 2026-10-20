@@ -43,12 +43,12 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   let memoryState = { baselineId: 'baseline-a', currentStateId: 'state-a', currentStateFingerprint: 'fingerprint-a',
     cseSubjects: peopleEntities.map((person, index) => ({ subjectEntityId: person.id, displayName: person.displayName, core: index === 0 ? [{ text: '谨慎', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }] : [], adaptive: [], situational: [] })) };
   const listeners = new Set(), foundationListeners = new Set();
-  let memoryRefreshes = 0, memoryStateReads = 0;
+  let memoryRefreshes = 0, memoryStateReads = 0, foundationReads = 0;
   const memoryRuntime = { getState: () => { memoryStateReads += 1; return memoryState; }, refreshStatus: async () => { memoryRefreshes += 1; return memoryState; }, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
-    foundationRuntime: { getReachable: () => reachable, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
+    foundationRuntime: { getReachable: () => { foundationReads += 1; return reachable; }, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
     foundationStore: { async readRecord(type, id) { await foundationReadHook?.(type, id); const value = foundationRecords.get(`${type}/${id}`); return value ? { status: 'ready', data: structuredClone(value) } : { status: 'missing' }; } },
     hostAdapter: { snapshot: () => ({ context: { chatMetadata: { qianqianjie: { chatId: identity.chatId } } }, chat: hostChat }) },
     sourcePermissions: {
@@ -62,7 +62,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     now: () => new Date('2026-09-06T00:00:00.000Z'),
     logger: { warn() {} },
   });
-  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, memoryStateReads: () => memoryStateReads,
+  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, memoryStateReads: () => memoryStateReads, foundationReads: () => foundationReads,
     emitMemory(value) { memoryState = value; for (const listener of listeners) listener(value); },
     setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, setMainGenerationActive(value) { mainGenerationActive = value; if (!value) runtime.wakeAutomaticMaintenance(); }, async seedSelectedWithoutProgress(entityIds) {
       const timestamp = '2026-09-06T00:00:00.000Z';
@@ -1072,6 +1072,37 @@ test('头像独立保存于当前聊天，不把未建档人物误算为已整�
   assert.equal(h.runtime.getState().avatarsByEntityId[id], avatar);
   h.runtime.invalidate(); await h.runtime.refresh(); assert.equal(h.runtime.getState().avatarsByEntityId[id], avatar);
   await h.runtime.saveAvatar(id, null); assert.equal(h.runtime.getState().avatarsByEntityId[id], undefined);
+});
+
+test('已加载人物运行时按规范 entityId 批量读取头像，不读档、不查记忆投影', async () => {
+  const h = harness(); await h.runtime.refresh();
+  const [withAvatar, withoutAvatar] = h.peopleEntities;
+  const avatar = `data:image/png;base64,${'A'.repeat(64 * 1024)}`;
+  await h.runtime.saveAvatar(withAvatar.id, avatar);
+  const readsBefore = h.memoryStateReads(), graphReadsBefore = h.foundationReads(), callsBefore = h.db.calls.length;
+
+  assert.equal(typeof h.runtime.getPeopleAvatars, 'function', '人物运行时应提供窄头像 getter');
+  const result = h.runtime.getPeopleAvatars([withAvatar.id, withoutAvatar.id, 'unknown-entity', withAvatar.id]);
+  assert.deepEqual(result, { status: 'ready', chatId: CHAT_A, avatarsByEntityId: {
+    [withAvatar.id]: avatar, [withoutAvatar.id]: null, 'unknown-entity': null,
+  } });
+  assert.equal(h.memoryStateReads(), readsBefore, '头像读取不调用通用 getState');
+  assert.equal(h.foundationReads(), graphReadsBefore, '头像读取不查完整记忆图');
+  assert.equal(h.db.calls.length, callsBefore, '头像读取不读写人物工作区后端');
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.avatarsByEntityId), true);
+  assert.throws(() => { result.avatarsByEntityId[withAvatar.id] = 'tampered'; }, TypeError);
+  assert.equal(h.runtime.getPeopleAvatars([withAvatar.id]).avatarsByEntityId[withAvatar.id], avatar,
+    '只读返回不能改动已加载头像');
+
+  h.runtime.invalidate();
+  const unloadedGraphReads = h.foundationReads();
+  const unloaded = h.runtime.getPeopleAvatars([withAvatar.id]);
+  assert.equal(unloaded.status, 'not-ready');
+  assert.deepEqual(unloaded.avatarsByEntityId, { [withAvatar.id]: null });
+  assert.equal(h.memoryStateReads(), readsBefore, '未加载查询也不准备或读取记忆');
+  assert.equal(h.foundationReads(), unloadedGraphReads, '未加载查询也不查完整记忆图');
+  assert.equal(h.db.calls.length, callsBefore, '未加载查询不访问后端');
 });
 
 test('千人整理沿用现行来源边界，忽略退役逐条设置并守住宿主禁用与整本排除', async () => {
