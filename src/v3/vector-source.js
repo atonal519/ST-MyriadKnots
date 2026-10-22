@@ -68,9 +68,21 @@ export function summaryWitnessShape(value) {
 
 export const vectorWitnessShape = value => rawWitnessShape(value) || summaryWitnessShape(value);
 
-export async function rawWitnessValid(value, source) {
+// 摘要修订可更换 memory ID；原文来源仍由楼、锚点及正文指纹共同确定。
+export const rawSourceKey = value => JSON.stringify([value.floorId, value.assistantSeq, value.memoryFloorId, value.memoryAssistantSeq, value.fingerprint]);
+
+export function createRawSourceLookup(source) {
+  const lookup = new Map();
+  for (const raw of source?.rawSources ?? []) {
+    const key = rawSourceKey(raw);
+    if (!lookup.has(key)) lookup.set(key, raw);
+  }
+  return lookup;
+}
+
+export async function rawWitnessValid(value, source, lookup = null) {
   if (!rawWitnessShape(value)) return false;
-  const raw = (source?.rawSources ?? []).find(raw => raw.floorId === value.floorId && raw.assistantSeq === value.assistantSeq
+  const raw = lookup ? lookup.get(rawSourceKey(value)) : (source?.rawSources ?? []).find(raw => raw.floorId === value.floorId && raw.assistantSeq === value.assistantSeq
     && raw.memoryFloorId === value.memoryFloorId && raw.memoryAssistantSeq === value.memoryAssistantSeq && raw.fingerprint === value.fingerprint);
   // 摘要修订会替换归档记录 ID；同一源楼与原文指纹仍能验证旧冻结回执。
   if (!raw || value.offset + value.length > raw.canonicalContent.length) return false;

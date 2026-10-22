@@ -4,7 +4,6 @@ import { createFoundationStore } from './foundation-store.js';
 import {
   buildFoundationIndexes,
   projectFoundationPrefix,
-  validatePreparedFoundation,
 } from './foundation-runtime.js';
 import {
   createCheckpointInputFingerprints,
@@ -344,7 +343,6 @@ export function createChatBranchInitializer({
           }, { expectedChatId: targetChatId });
           const descriptor = descriptorId ? branchMigrationDescriptor({ source, targetChatId, descriptorId,
             retainedFloors: floors, projected, indexKeys, timeBatchIds: copiedTimeBatchIds, peopleCopy, partitioned, createdAt }) : null;
-          await validatePreparedFoundation({ checkpoint, run, floors, floorMemories: projected.floorMemories, entities: projected.entities, indexes, indexKeys });
           await validateCseGraph({ root, checkpoint, run, floors, floorMemories: projected.floorMemories, entities: projected.entities, indexes, indexKeys, baseline: projected.baseline, stateDeltas: projected.stateDeltas, currentStates: projected.currentState ? [projected.currentState] : [] });
           await saveRecords(targetStore, [run, ...floors, ...projected.floorMemories, ...projected.entities, ...(projected.baseline ? [projected.baseline] : []), ...projected.stateDeltas, ...(projected.currentState ? [projected.currentState] : []), ...indexes, ...(descriptor ? [descriptor] : [])], signal);
           const checkpointResult = await targetStore.putRecord(checkpoint, { signal });

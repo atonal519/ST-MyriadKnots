@@ -1,7 +1,7 @@
 import { sha256 } from '../identity.js';
 import { normalizeVector } from '../vector-api.js';
 import { rawWitnessShape, rawWitnessValid, vectorWitnessShape } from './vector-source.js';
-import { projectVectorSources } from './vector-source.js';
+import { createRawSourceLookup, projectVectorSources, rawSourceKey } from './vector-source.js';
 import { selectRecallMemories } from './recall-source.js';
 
 export const VECTOR_INDEX_ID = 'qqj-vector-index';
@@ -10,8 +10,6 @@ const SCHEMA = 1, BATCH = 16, COPY_BATCH = 4, INDEX_LOAD_TIMEOUT_MS = 15000, VEC
 const hash = async value => `sha256:${await sha256(value)}`;
 const configKey = config => JSON.stringify([config.url, config.model, config.dimensions]);
 const ownerKey = (source, modelKey) => JSON.stringify([source.chatId, source.narrativeGeneration, modelKey]);
-// 摘要修订会换 FloorMemory.id；缓存复用仅依赖真实原文楼、锚点与正文指纹。
-const rawSourceKey = value => JSON.stringify([value.floorId, value.assistantSeq, value.memoryFloorId, value.memoryAssistantSeq, value.fingerprint]);
 const rawChunkKey = value => JSON.stringify([rawSourceKey(value), value.offset, value.length]);
 const bindRawWitness = (raw, witness) => ({ floorId: raw.floorId, assistantSeq: raw.assistantSeq, floorMemoryId: raw.floorMemoryId,
   memoryFloorId: raw.memoryFloorId, memoryAssistantSeq: raw.memoryAssistantSeq, fingerprint: raw.fingerprint,
@@ -502,6 +500,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       ? { status: 'ready', chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, rawSources }
       : { ...source, chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration };
     const witnessSource = branchPrefix ? target : source;
+    const rawLookup = createRawSourceLookup(witnessSource);
     const rows = [], seen = new Set();
     for (let start = 0; start < sourceManifest.data.shardIds.length; start += COPY_BATCH) {
       const ids = sourceManifest.data.shardIds.slice(start, start + COPY_BATCH);
@@ -510,7 +509,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
         if (!shard || !vectorRecordOwned(shard) || shard.data.modelKey !== modelKey
           || ownerKey(shard.data, modelKey) !== ownerKey(source, modelKey)) return Object.freeze([]);
         for (const row of shard.data.rows) {
-          if (!rawWitnessShape(row.witness) || !await rawWitnessValid(row.witness, witnessSource)
+          if (!rawWitnessShape(row.witness) || !await rawWitnessValid(row.witness, witnessSource, rawLookup)
             || seen.has(rawChunkKey(row.witness))) continue;
           try { decodeVector(row.vector, sourceManifest.data.dimensions); } catch { continue; }
           seen.add(rawChunkKey(row.witness));

@@ -2,7 +2,7 @@
 
 `ST-MyriadKnots` 是 SillyTavern 的长期记忆扩展，界面中文名为“千千结”。项目仓库：[github.com/atonal519/ST-MyriadKnots](https://github.com/atonal519/ST-MyriadKnots)。
 
-当前版本 **0.9.0**，完整改动见[更新说明](CHANGELOG.md)。
+当前版本 **0.9.1**，完整改动见[更新说明](CHANGELOG.md)。
 
 ## 当前功能
 
@@ -34,7 +34,11 @@
 
 常见问题可先看应用内“设置 → 教程与配置文件 → 教程文档”；完整排查步骤见[排障手册](docs/troubleshooting.md)。
 
-本次版本的完整改动说明见[0.9.0更新说明](CHANGELOG.md)。
+本次版本的完整改动说明见[0.9.1更新说明](CHANGELOG.md)。
+
+## 0.9.1
+
+- 优化分支与检查点的首次记忆继承，减少大存档复制时的重复计算。
 
 ## 0.9.0
 
