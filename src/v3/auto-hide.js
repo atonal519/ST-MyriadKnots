@@ -29,10 +29,12 @@ export function planAutoHide({ chat = [], memoryState = null, keepAiCount = 3, r
   const source = Array.isArray(chat) ? chat : [];
   const assistants = source.map((message, messageIndex) => isAssistantMessage(message) ? { message, messageIndex } : null).filter(Boolean);
   const owned = source.map((message, messageIndex) => ownsMessage(message, stableChatId) ? messageIndex : null).filter(Number.isInteger);
+  // Reserve the current reply for a possible roll; recall body matching remains at the user-set N.
+  const retainedAiCount = normalizeAutoHideKeepAiCount(keepAiCount) + 1;
   let hideThrough = -1;
   let keepFrom = 0;
-  if (!restoreAll && assistants.length > normalizeAutoHideKeepAiCount(keepAiCount)) {
-    const earliestKeptPosition = assistants.length - normalizeAutoHideKeepAiCount(keepAiCount);
+  if (!restoreAll && assistants.length > retainedAiCount) {
+    const earliestKeptPosition = assistants.length - retainedAiCount;
     const previousAssistant = assistants[earliestKeptPosition - 1];
     keepFrom = previousAssistant ? previousAssistant.messageIndex + 1 : 0;
     const floors = [...(memoryState?.floors ?? [])].sort((left, right) => (left.assistantSeq ?? 0) - (right.assistantSeq ?? 0));
@@ -50,14 +52,23 @@ export function planAutoHide({ chat = [], memoryState = null, keepAiCount = 3, r
       }
     }
     const previousAssistantSeq = liveStartIndex ? floors[liveStartIndex - 1]?.assistantSeq : 0;
-    const expectedFirstSeq = Number.isSafeInteger(previousAssistantSeq) ? previousAssistantSeq + 1 : NaN;
+    let expectedSeq = Number.isSafeInteger(previousAssistantSeq) ? previousAssistantSeq + 1 : NaN;
     let reliableThrough = -1;
-    for (let index = liveStartIndex; index < floors.length; index += 1) {
+    coverage: for (let index = liveStartIndex; index < floors.length; index += 1) {
       const floor = floors[index];
-      const messageIndex = floor?.messageIndex;
-      if (floor?.assistantSeq !== expectedFirstSeq + index - liveStartIndex || !Number.isInteger(messageIndex) || !isAssistantMessage(source[messageIndex])) break;
-      if (!floor.memoryId || !READY_MEMORY.has(floor.status) || !READY_CSE.has(floor.cse?.status)) break;
-      reliableThrough = messageIndex;
+      if (floor.memoryExcluded !== true && (!floor.memoryId || !READY_MEMORY.has(floor.status) || !READY_CSE.has(floor.cse?.status))) break;
+      // Range cards share summary/CSE readiness, but each bound source floor must prove continuous body coverage.
+      const ids = floor.sourceFloorIds ?? [floor.floorId];
+      const seqs = floor.sourceAssistantSeqs ?? [floor.assistantSeq];
+      const indexes = floor.sourceMessageIndexes ?? [floor.messageIndex];
+      if (!Array.isArray(ids) || !ids.length || !Array.isArray(seqs) || !Array.isArray(indexes)
+        || ids.length !== seqs.length || ids.length !== indexes.length) break;
+      for (let member = 0; member < ids.length; member += 1) {
+        const messageIndex = indexes[member];
+        if (!ids[member] || seqs[member] !== expectedSeq || !Number.isInteger(messageIndex) || !isAssistantMessage(source[messageIndex])) break coverage;
+        reliableThrough = messageIndex;
+        expectedSeq += 1;
+      }
     }
     hideThrough = Math.min(keepFrom - 1, reliableThrough);
   }

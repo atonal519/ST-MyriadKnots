@@ -13,7 +13,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   const signature = JSON.stringify([projection, [...sources]]);
   if (card.recallSignature === signature) return;
   card.recallSignature = signature;
-  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map(), qianshiOpen:false, legacyReceiptOpen:false, currentOpen:false, historyOpen:false };
+  const state = uiStates.get(card.stateKey) ?? { tab:'events', event:null, person:null, floors:new Map(), currentOpen:false, historyOpen:false };
   uiStates.set(card.stateKey, state);
   const node = (tag, className, text) => {
     const value = doc.createElement(tag);
@@ -40,12 +40,6 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .event-caption{font-size:10px;color:var(--muted);margin:0 0 8px}
     .event-copy{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
     .event-copy+.event-copy{margin-top:10px}
-    .time-reference{margin-top:14px;border-top:1px solid var(--qqj-inline-line);padding-top:10px}
-    .time-reference>summary{cursor:pointer;font-size:11px;font-weight:600;list-style-position:inside}
-    .time-reference:not([open])>.time-reference-list{display:none}
-    .time-reference-list{display:grid;gap:10px;margin-top:9px}
-    .time-reference-item{padding:9px 10px;border-radius:6px;background:var(--soft)}
-    .time-reference-copy{margin:0;font-size:11px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
     .people-current>summary,.people-history>summary{cursor:pointer;list-style:none}
     .people-current>summary::-webkit-details-marker,.people-history>summary::-webkit-details-marker{display:none}
     .people-current:not([open])>.section-heading,.people-history:not([open])>.section-heading{margin-bottom:0}
@@ -147,55 +141,6 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     pills.append(pill);
   }
   showEvent(); events.append(pills, display);
-  let qianshi = null;
-  if (projection.qianshiProgressText) {
-    qianshi = node('details', 'time-reference qianshi-progress');
-    qianshi.open = state.qianshiOpen === true;
-    qianshi.addEventListener('toggle', () => { state.qianshiOpen = qianshi.open === true; });
-    qianshi.append(node('summary', '', '本轮千事进度'));
-    const list = node('div', 'time-reference-list');
-    list.append(node('p', 'time-reference-copy', projection.qianshiProgressText));
-    qianshi.append(list); events.append(qianshi);
-  }
-  if (projection.timeReferenceItems?.length) {
-    const reference = node('details', 'time-reference');
-    reference.append(node('summary', '', `本轮时间参考（${projection.timeReferenceItems.length}条）`));
-    const list = node('div', 'time-reference-list');
-    for (const [index, text] of projection.timeReferenceItems.entries()) {
-      const entry = node('article', 'time-reference-item');
-      const display = projection.timeReferenceDisplayItems?.[index];
-      if (display?.source && display?.projection) entry.append(node('p', 'time-reference-copy', `源状态：${display.source}`), node('p', 'time-reference-copy', `推算状态：${display.projection}`));
-      else entry.append(node('p', 'time-reference-copy', display?.text ?? text));
-      list.append(entry);
-    }
-    reference.append(list); events.append(reference);
-  }
-  if (projection.locationReferenceItems?.length) {
-    const reference = node('details', 'time-reference');
-    reference.append(node('summary', '', `本轮原消息地点参照（${projection.locationReferenceItems.length}条）`));
-    const list = node('div', 'time-reference-list');
-    for (const text of projection.locationReferenceItems) list.append(node('article', 'time-reference-item', text));
-    reference.append(list); events.append(reference);
-  }
-  if (projection.rawReceiptAvailable) {
-    const reference = node('details', 'time-reference legacy-receipt');
-    reference.open = state.legacyReceiptOpen === true;
-    const summary = node('summary', '', '查看回执原文');
-    reference.append(summary);
-    const appendBody = () => {
-      if (reference.querySelector('.legacy-receipt-copy')) return;
-      const list = node('div', 'time-reference-list');
-      list.append(node('p', 'time-reference-copy legacy-receipt-copy', projection.injectionText));
-      reference.append(list);
-    };
-    if (reference.open) appendBody();
-    reference.addEventListener('toggle', () => {
-      state.legacyReceiptOpen = reference.open === true;
-      if (reference.open) appendBody();
-    });
-    events.append(reference);
-  }
-
   const identity = value => value.subjectEntityId || `name:${value.subject}`;
   const statesByPerson = new Map();
   for (const state of projection.stateItems ?? []) {
@@ -273,5 +218,5 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   else timelines.append(node('p', 'recall-empty', '本轮未召回人物变化。'));
   history.append(picker, timelines); people.append(current, history);
   card.body.replaceChildren(root);
-  card.recallUi = { root, eventTab, peopleTab, events, people, pills, display, qianshi, current, history, picker, timelines };
+  card.recallUi = { root, eventTab, peopleTab, events, people, pills, display, current, history, picker, timelines };
 }

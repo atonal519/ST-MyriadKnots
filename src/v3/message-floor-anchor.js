@@ -1,10 +1,11 @@
 import { isUuid } from '../identity.js';
+import { MESSAGE_MEMORY_EXCLUSION_KEY, isMemoryExcludedMessage } from './memory-exclusion.js';
 
 export const MESSAGE_FLOOR_ANCHOR_KEY = 'qianqianjie_floor';
 export const MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION = 1;
 const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 const AUTO_HIDE_MARKER_KEY = 'qianqianjieAutoHide';
-const BRANCH_QQJ_MESSAGE_KEYS = Object.freeze([MESSAGE_FLOOR_ANCHOR_KEY, RECALL_RECEIPT_KEY, AUTO_HIDE_MARKER_KEY]);
+const BRANCH_QQJ_MESSAGE_KEYS = Object.freeze([MESSAGE_FLOOR_ANCHOR_KEY, MESSAGE_MEMORY_EXCLUSION_KEY, RECALL_RECEIPT_KEY, AUTO_HIDE_MARKER_KEY]);
 
 const chatIdFrom = snapshot => String(snapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -62,6 +63,7 @@ export function branchMessageBusinessProjection(message) {
     core: branchMessageCoreProjection(message),
     ownership: Object.freeze({
       outer: ownValue(message?.extra, MESSAGE_FLOOR_ANCHOR_KEY),
+      memoryExcluded: ownValue(message?.extra, MESSAGE_MEMORY_EXCLUSION_KEY),
       swipes: Array.isArray(message?.swipe_info)
         ? message.swipe_info.map(swipe => ownValue(swipe?.extra, MESSAGE_FLOOR_ANCHOR_KEY)) : [],
     }),
@@ -114,6 +116,7 @@ export function assertCapturedBranchTargetMatches(snapshot, targetFile, sourceCh
     const coreMatches = stableJson(captured.core) === stableJson(persisted.core);
     const swipeCount = Math.max(captured.ownership.swipes.length, persisted.ownership.swipes.length);
     const ownershipMatches = sameAnchor(captured.ownership.outer, persisted.ownership.outer, index)
+      && stableJson(captured.ownership.memoryExcluded) === stableJson(persisted.ownership.memoryExcluded)
       && Array.from({ length: swipeCount }, (_, swipeIndex) => sameAnchor(
         captured.ownership.swipes[swipeIndex], persisted.ownership.swipes[swipeIndex], index,
       )).every(Boolean);
@@ -155,6 +158,7 @@ export function messageFloorAnchorCandidateSnapshot(value) {
   return JSON.stringify({
     is_user: value?.is_user, is_system: value?.is_system, mes: value?.mes, swipes: value?.swipes,
     swipe_id: value?.swipe_id, send_date: value?.send_date, type: value?.extra?.type,
+    ...(isMemoryExcludedMessage(value) ? { memoryExcluded: true } : {}),
   });
 }
 
@@ -342,6 +346,43 @@ export async function persistMessageFloorAnchors({ hostAdapter, chatId, bindings
     return Object.freeze({ status: 'persisted', persisted: prepared.length });
   } catch (error) {
     rollback();
+    throw error;
+  }
+}
+
+export async function persistMessageMemoryExclusion({ hostAdapter, chatId, messageIndex, excluded } = {}) {
+  if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 message exclusion HostAdapter 无效');
+  if (!isUuid(chatId) || !Number.isSafeInteger(messageIndex) || messageIndex < 0 || typeof excluded !== 'boolean') {
+    throw fail('V3_MESSAGE_EXCLUSION_SCOPE_INVALID', '待标记的消息范围无效。');
+  }
+  const before = hostAdapter.snapshot();
+  if (chatIdFrom(before) !== chatId || !Array.isArray(before.chat)) throw fail('V3_MESSAGE_EXCLUSION_TARGET_MISSING', '当前聊天消息无法核对。');
+  const message = before.chat[messageIndex];
+  if (!assistantMessage(message)) throw fail('V3_MESSAGE_EXCLUSION_TARGET_MISSING', '只有 AI 正文楼可以标记。');
+  const previous = message.extra?.[MESSAGE_MEMORY_EXCLUSION_KEY];
+  if ((previous === true) === excluded) return Object.freeze({ status: 'unchanged', persisted: 0 });
+  const apply = (extra, value) => {
+    const next = extra && typeof extra === 'object' && !Array.isArray(extra) ? { ...extra } : {};
+    if (value === true) next[MESSAGE_MEMORY_EXCLUSION_KEY] = true;
+    else delete next[MESSAGE_MEMORY_EXCLUSION_KEY];
+    return next;
+  };
+  message.extra = apply(message.extra, excluded);
+  const appliedExtra = message.extra;
+  const rollback = () => {
+    if (message.extra?.[MESSAGE_MEMORY_EXCLUSION_KEY] !== (excluded ? true : undefined)) return;
+    message.extra = apply(message.extra, previous === true);
+  };
+  try {
+    if (typeof before.context?.saveChat !== 'function') throw fail('V3_MESSAGE_EXCLUSION_SAVE_UNAVAILABLE', '宿主不支持保存当前聊天。');
+    const saved = await before.context.saveChat();
+    if (saved === false) throw fail('V3_MESSAGE_EXCLUSION_SAVE_FAILED', '宿主未确认该标记已保存。');
+    if (message.extra?.[MESSAGE_MEMORY_EXCLUSION_KEY] !== (excluded ? true : undefined)) {
+      throw fail('V3_MESSAGE_EXCLUSION_SAVE_FAILED', '宿主保存前未保留该消息标记。');
+    }
+    return Object.freeze({ status: 'persisted', persisted: 1 });
+  } catch (error) {
+    if (message.extra === appliedExtra || message.extra?.[MESSAGE_MEMORY_EXCLUSION_KEY] === (excluded ? true : undefined)) rollback();
     throw error;
   }
 }

@@ -210,9 +210,11 @@ export function validateFoundationCheckpoint(input, { expectedChatId } = {}) {
   if (floorIds.length !== value.floorRange.toAssistantSeq || (floorIds.length && value.floorRange.fromAssistantSeq !== 1)) fail('V3_CHECKPOINT_INVALID');
   array(value.inputFingerprints, 'V3_CHECKPOINT_INVALID').forEach(item => {
     const hasStabilityFingerprint = Object.hasOwn(item, 'stabilityFingerprint');
-    exact(item, hasStabilityFingerprint ? ['floorId', 'canonicalFingerprint', 'stabilityFingerprint'] : ['floorId', 'canonicalFingerprint'], 'V3_CHECKPOINT_INVALID');
+    const hasMemoryExcluded = Object.hasOwn(item, 'memoryExcluded');
+    exact(item, ['floorId', 'canonicalFingerprint', ...(hasStabilityFingerprint ? ['stabilityFingerprint'] : []), ...(hasMemoryExcluded ? ['memoryExcluded'] : [])], 'V3_CHECKPOINT_INVALID');
     uuid(item.floorId, 'V3_CHECKPOINT_INVALID'); fingerprint(item.canonicalFingerprint, 'V3_CHECKPOINT_INVALID');
     if (hasStabilityFingerprint) fingerprint(item.stabilityFingerprint, 'V3_CHECKPOINT_INVALID');
+    if (hasMemoryExcluded && item.memoryExcluded !== true) fail('V3_CHECKPOINT_INVALID');
   });
   exact(value.producedRefs, ['floors', 'floorMemories', 'entities', 'events', 'claims', 'knowledge', 'stateDeltas', 'currentStates', 'stateProjections', 'episodes', 'threads', 'indexes'], 'V3_CHECKPOINT_INVALID');
   for (const refs of Object.values(value.producedRefs)) array(refs, 'V3_CHECKPOINT_INVALID').forEach(ref => text(ref, 'V3_CHECKPOINT_INVALID'));

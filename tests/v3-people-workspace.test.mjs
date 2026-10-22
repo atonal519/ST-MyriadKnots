@@ -6,11 +6,13 @@ import { PEOPLE_PROFILE_DEFINITIONS, PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_LABEL
 import { filterSourcesByPermission, filterWorldInfoSourcesByPermission } from '../src/source-permission.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
+import { buildEntityIdentityDirectory, normalizeIdentityProjection, reuseIdentityProjection } from '../src/v3/entity-identity.js';
+import { projectMemoryPersonEntities } from '../src/v3/memory-runtime.js';
 import { scanWorldInfo } from '../src/world-info-scanner.js';
 
 const CHAT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-const ids = Array.from({ length: 16 }, (_, index) => `${String(index + 1).padStart(8, '0')}-1111-4111-8111-${String(index + 1).padStart(12, '0')}`);
+const ids = Array.from({ length: 32 }, (_, index) => `${String(index + 1).padStart(8, '0')}-1111-4111-8111-${String(index + 1).padStart(12, '0')}`);
 const USER = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const SYNTHETIC_CHAR = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
@@ -43,12 +45,12 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   let memoryState = { baselineId: 'baseline-a', currentStateId: 'state-a', currentStateFingerprint: 'fingerprint-a',
     cseSubjects: peopleEntities.map((person, index) => ({ subjectEntityId: person.id, displayName: person.displayName, core: index === 0 ? [{ text: '谨慎', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }] : [], adaptive: [], situational: [] })) };
   const listeners = new Set(), foundationListeners = new Set();
-  let memoryRefreshes = 0, memoryStateReads = 0;
+  let memoryRefreshes = 0, memoryStateReads = 0, foundationReads = 0;
   const memoryRuntime = { getState: () => { memoryStateReads += 1; return memoryState; }, refreshStatus: async () => { memoryRefreshes += 1; return memoryState; }, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
-    foundationRuntime: { getReachable: () => reachable, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
+    foundationRuntime: { getReachable: () => { foundationReads += 1; return reachable; }, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
     foundationStore: { async readRecord(type, id) { await foundationReadHook?.(type, id); const value = foundationRecords.get(`${type}/${id}`); return value ? { status: 'ready', data: structuredClone(value) } : { status: 'missing' }; } },
     hostAdapter: { snapshot: () => ({ context: { chatMetadata: { qianqianjie: { chatId: identity.chatId } } }, chat: hostChat }) },
     sourcePermissions: {
@@ -62,7 +64,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     now: () => new Date('2026-09-06T00:00:00.000Z'),
     logger: { warn() {} },
   });
-  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, memoryStateReads: () => memoryStateReads,
+  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, memoryStateReads: () => memoryStateReads, foundationReads: () => foundationReads,
     emitMemory(value) { memoryState = value; for (const listener of listeners) listener(value); },
     setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, setMainGenerationActive(value) { mainGenerationActive = value; if (!value) runtime.wakeAutomaticMaintenance(); }, async seedSelectedWithoutProgress(entityIds) {
       const timestamp = '2026-09-06T00:00:00.000Z';
@@ -554,7 +556,7 @@ test('人工合并以目标身份汇集历史，整档头像二选一并支持�
   assert.equal(state.profilesByEntityId[b.id].name, '乙档姓名', '采用来源档案时仍保持用户选择的目标人物名');
   assert.equal(state.profilesByEntityId[b.id].notes, '采用甲档'); assert.equal(state.avatarsByEntityId[b.id], 'data:image/png;base64,AAAA');
   assert.deepEqual(state.selectedEntityIds, [b.id]); assert.equal(state.identityRedirectsByEntityId[a.id], b.id);
-  assert.ok(state.people.find(person => person.entityId === b.id).aliases.includes('人物1'));
+  assert.deepEqual(state.people.find(person => person.entityId === b.id).aliases, ['旧称甲'], '采用的人工别名全集不自动拼回被合并旧主名');
   await h.runtime.regenerateProfile(b.id);
   assert.equal(generatedRequest.people[0].sourceFragments.filter(item => item.kind === 'history').length, 2, '来源与目标的不同历史楼均归目标且不丢失');
   assert.ok(h.runtime.getState().profileMaterialProgressByEntityId[b.id], '整理成功后目标人物保存材料进度');
@@ -1074,6 +1076,37 @@ test('头像独立保存于当前聊天，不把未建档人物误算为已整�
   await h.runtime.saveAvatar(id, null); assert.equal(h.runtime.getState().avatarsByEntityId[id], undefined);
 });
 
+test('已加载人物运行时按规范 entityId 批量读取头像，不读档、不查记忆投影', async () => {
+  const h = harness(); await h.runtime.refresh();
+  const [withAvatar, withoutAvatar] = h.peopleEntities;
+  const avatar = `data:image/png;base64,${'A'.repeat(64 * 1024)}`;
+  await h.runtime.saveAvatar(withAvatar.id, avatar);
+  const readsBefore = h.memoryStateReads(), graphReadsBefore = h.foundationReads(), callsBefore = h.db.calls.length;
+
+  assert.equal(typeof h.runtime.getPeopleAvatars, 'function', '人物运行时应提供窄头像 getter');
+  const result = h.runtime.getPeopleAvatars([withAvatar.id, withoutAvatar.id, 'unknown-entity', withAvatar.id]);
+  assert.deepEqual(result, { status: 'ready', chatId: CHAT_A, avatarsByEntityId: {
+    [withAvatar.id]: avatar, [withoutAvatar.id]: null, 'unknown-entity': null,
+  } });
+  assert.equal(h.memoryStateReads(), readsBefore, '头像读取不调用通用 getState');
+  assert.equal(h.foundationReads(), graphReadsBefore, '头像读取不查完整记忆图');
+  assert.equal(h.db.calls.length, callsBefore, '头像读取不读写人物工作区后端');
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.avatarsByEntityId), true);
+  assert.throws(() => { result.avatarsByEntityId[withAvatar.id] = 'tampered'; }, TypeError);
+  assert.equal(h.runtime.getPeopleAvatars([withAvatar.id]).avatarsByEntityId[withAvatar.id], avatar,
+    '只读返回不能改动已加载头像');
+
+  h.runtime.invalidate();
+  const unloadedGraphReads = h.foundationReads();
+  const unloaded = h.runtime.getPeopleAvatars([withAvatar.id]);
+  assert.equal(unloaded.status, 'not-ready');
+  assert.deepEqual(unloaded.avatarsByEntityId, { [withAvatar.id]: null });
+  assert.equal(h.memoryStateReads(), readsBefore, '未加载查询也不准备或读取记忆');
+  assert.equal(h.foundationReads(), unloadedGraphReads, '未加载查询也不查完整记忆图');
+  assert.equal(h.db.calls.length, callsBefore, '未加载查询不访问后端');
+});
+
 test('千人整理沿用现行来源边界，忽略退役逐条设置并守住宿主禁用与整本排除', async () => {
   let request;
   const worldbook = (id, world, content, hostEnabled = true) => ({
@@ -1226,17 +1259,19 @@ test('每十个稳定AI楼触发一次共享原文粗扫，摘要不参与筛楼
   await h.runtime.setSelectedEntityIds([first.id, second.id]);
   await h.markProfileInitialized([first.id, second.id]); h.setMainGenerationActive(false);
   for (const target of [first, second]) await h.runtime.saveProfile(target.id, { name: target.displayName, aliases: '', background: '既有基础资料', appearance: '', personality: '', notes: '' });
-  const floors = Array.from({ length: 9 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `第${index + 1}楼正文外貌` } }));
-  h.setReachable({ ...h.reachable, floors, floorMemories: [] });
+  const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `第${index + 1}楼正文外貌` } }));
+  const checkpoint = { inputFingerprints: floors.map((floor, index) => ({ floorId: floor.id, ...(index === 0 ? { memoryExcluded: true } : {}) })) };
+  h.setReachable({ ...h.reachable, floors, checkpoint, floorMemories: [] });
   h.notifyFoundation(); await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(requests.length, 0, '前九个稳定楼不请求');
-  h.setReachable({ ...h.reachable, floors: [...floors, { id: ids[9], assistantSeq: 10, content: { canonicalContent: '第十楼正文，摘要失败也有外貌' } }], floorMemories: [] });
+  assert.equal(requests.length, 0, '九个有效楼加一个排除楼仍不到十楼');
+  h.setReachable({ ...h.reachable, floors: [...floors, { id: ids[10], assistantSeq: 11, content: { canonicalContent: '第十一楼正文，摘要失败也有外貌' } }], checkpoint: { inputFingerprints: [...checkpoint.inputFingerprints, { floorId: ids[10] }] }, floorMemories: [] });
   h.notifyFoundation(); h.notifyFoundation();
   await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
   assert.equal(requests.length, 1); assert.equal(requests[0].people.length, 2, '多个选中人物共用一次请求');
   assert.equal(requests[0].recentFloors.length, 10);
-  assert.match(JSON.stringify(requests[0].recentFloors), /第十楼正文，摘要失败也有外貌/);
-  assert.match(JSON.stringify(requests[0].recentFloors), /第1楼正文外貌/);
+  assert.match(JSON.stringify(requests[0].recentFloors), /第十一楼正文，摘要失败也有外貌/);
+  assert.equal(JSON.stringify(requests[0].recentFloors).includes('第1楼正文外貌'), false, '排除楼不进入身份资料输入');
+  assert.match(JSON.stringify(requests[0].recentFloors), /第2楼正文外貌/);
   assert.equal(Object.hasOwn(requests[0], 'summaryUpdates'), false);
   assert.equal(Object.hasOwn(requests[0], 'allowedWorldInfo'), false);
   assert.equal(Object.hasOwn(requests[0], 'characterCard'), false, '十楼粗扫不附加完整角色卡');
@@ -1875,4 +1910,62 @@ test('真实首次建档队列把多人卡公共设定送达目标并保存对�
   assert.ok(request.people.every(person => !Object.hasOwn(person, 'characterCard')));
   assert.equal(JSON.stringify(request).split('人物2负责信使工作').length - 1, 1);
   assert.equal(h.runtime.getState().profilesByEntityId[target.id].nsfw, '明确归属人物1的成人向资料');
+});
+
+
+test('有效别名：删回旧档案同值仍确认人工全集，空值与重读不回灌', async () => {
+  const h = harness(), id = ids[0], initial = ['简称一', '简称二', '简称三'];
+  h.peopleEntities[0].aliases = Array.from({ length: 50 }, (_, i) => ({ name: `累计别名${i + 1}` }));
+  await h.runtime.refresh();
+  await h.runtime.saveProfile(id, { name: '人物1', aliases: initial.join('、'), notes: '自动资料' }, { manualFields: [] });
+  assert.equal(h.runtime.getState().people.find(p => p.entityId === id).aliases.length, 50);
+  await h.runtime.saveProfile(id, { notes: '仅改说明' }, { manualFields: ['notes'] });
+  assert.ok(!h.runtime.getState().profilesByEntityId[id].manualFields.includes('aliases'));
+  await h.runtime.saveProfile(id, { aliases: initial.join('、') }, { manualFields: ['aliases'] });
+  assert.ok(h.runtime.getState().profilesByEntityId[id].manualFields.includes('aliases'));
+  assert.deepEqual(h.runtime.getState().people.find(p => p.entityId === id).aliases, initial);
+  await h.runtime.saveProfile(id, { aliases: '' }, { manualFields: ['aliases'] });
+  await h.runtime.refresh();
+  assert.deepEqual(h.runtime.getState().people.find(p => p.entityId === id).aliases, []);
+  assert.equal(h.peopleEntities[0].aliases.length, 50, '旧自动记录与原实体不改写');
+  await h.runtime.saveProfile(id, { aliases: '新称' }, { manualFields: ['aliases'] });
+  assert.deepEqual(h.runtime.getState().people.find(p => p.entityId === id).aliases, ['新称']);
+});
+
+
+test('有效别名：目录和记忆人物保主名、允许删合并旧名，投影只随有效变化替换', async () => {
+  let request;
+  const h = harness({ generate: async options => { request = JSON.parse(options.taskMessages[0].content); return { jsonData: { profiles: [{ personKey: 'person-1', aliases: ['模型回灌'], notes: '整理说明' }] } }; } }); await h.runtime.refresh();
+  const [a, b] = h.peopleEntities;
+  await h.runtime.saveProfile(a.id, { aliases: '人工旧称', notes: '源资料' }, { manualFields: ['aliases'] });
+  await h.runtime.saveProfile(b.id, { aliases: '自动资料别名', notes: '目标资料' }, { manualFields: [] });
+  await h.runtime.mergePeople(a.id, b.id, 'source');
+  let projection = h.runtime.getIdentityProjection();
+  let entry = buildEntityIdentityDirectory({ entities: h.peopleEntities, identityProjection: projection }).find(e => e.entityId === b.id);
+  assert.deepEqual(entry.labels, [b.displayName, '人工旧称']);
+  assert.ok(!entry.labels.includes(a.displayName), '被合并旧主名可删');
+  assert.deepEqual(projectMemoryPersonEntities(h.peopleEntities, projection).find(e => e.entityId === b.id), {
+    entityId: b.id, memberEntityIds: [a.id, b.id].sort(), displayName: b.displayName, aliases: ['人工旧称'], specialRole: 'none',
+  });
+  assert.equal(reuseIdentityProjection(projection, h.runtime.getState()), projection);
+  assert.deepEqual(Object.keys(projection).sort(), ['deletedEntityIds', 'identityRedirectsByEntityId', 'manualAliasesByEntityId']);
+  assert.deepEqual(projection.manualAliasesByEntityId, { [b.id]: ['人工旧称'] });
+  await h.runtime.setSelectedEntityIds([b.id]);
+  await h.runtime.regenerateProfile(b.id);
+  assert.deepEqual(request.people[0].aliases, ['人工旧称']);
+  assert.equal(h.runtime.getState().profilesByEntityId[b.id].aliases, '人工旧称');
+  await h.runtime.saveProfile(b.id, { aliases: '' }, { manualFields: ['aliases'] });
+  await h.runtime.regenerateProfile(b.id);
+  assert.deepEqual(request.people[0].aliases, []);
+  assert.equal(h.runtime.getState().profilesByEntityId[b.id].aliases, '');
+  const empty = normalizeIdentityProjection({ ...projection, manualAliasesByEntityId: { [b.id]: [] } });
+  assert.notEqual(reuseIdentityProjection(projection, empty), projection);
+  assert.deepEqual(buildEntityIdentityDirectory({ entities: h.peopleEntities, identityProjection: empty }).find(e => e.entityId === b.id).labels, [b.displayName]);
+  const target = harness(); await target.runtime.refresh();
+  await target.runtime.saveProfile(a.id, { aliases: '人工不采用' }, { manualFields: ['aliases'] });
+  await target.runtime.saveProfile(b.id, { aliases: '自动目标' }, { manualFields: [] });
+  await target.runtime.mergePeople(a.id, b.id, 'target');
+  entry = buildEntityIdentityDirectory({ entities: target.peopleEntities, identityProjection: target.runtime.getIdentityProjection() }).find(e => e.entityId === b.id);
+  assert.ok(entry.labels.includes(a.displayName) && entry.labels.includes(a.aliases[0].name));
+  assert.ok(!entry.labels.includes('人工不采用'));
 });

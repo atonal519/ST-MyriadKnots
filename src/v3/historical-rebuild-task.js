@@ -1,6 +1,7 @@
 import { createChatIdentityCoordinator } from '../chat-identity.js';
 import { createChatSession } from '../chat-session.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY, readTargetChat, sameChatCoreAndQqjDataSnapshot, sameMessageCoreAndQqjData, sameQqjChatMetadata, snapshotChatCoreAndQqjData } from './message-floor-anchor.js';
+import { MESSAGE_MEMORY_EXCLUSION_KEY } from './memory-exclusion.js';
 import { createHostAdapter } from './host-adapter.js';
 import { createFoundationStore } from './foundation-store.js';
 import { createFoundationRuntime } from './foundation-runtime.js';
@@ -16,6 +17,9 @@ function withTaskAnchors(latest, taskMessage) {
     const anchor = sourceExtra?.[MESSAGE_FLOOR_ANCHOR_KEY];
     if (anchor === undefined) delete targetExtra?.[MESSAGE_FLOOR_ANCHOR_KEY];
     else targetExtra[MESSAGE_FLOOR_ANCHOR_KEY] = clone(anchor);
+    const excluded = sourceExtra?.[MESSAGE_MEMORY_EXCLUSION_KEY];
+    if (excluded === undefined) delete targetExtra?.[MESSAGE_MEMORY_EXCLUSION_KEY];
+    else targetExtra[MESSAGE_MEMORY_EXCLUSION_KEY] = clone(excluded);
   };
   if (taskMessage?.extra && typeof taskMessage.extra === 'object') {
     const anchor = taskMessage.extra[MESSAGE_FLOOR_ANCHOR_KEY];

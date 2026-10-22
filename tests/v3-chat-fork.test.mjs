@@ -1023,6 +1023,109 @@ test('已保存摘要但CSE未齐的携带AI成为B真实活动楼并复用摘�
   assert.equal(cseCalls, 1, '后续B楼到达后只完成一次缺失CSE');
 });
 
+test('携父身份的同名新分支不复用历史ready目标，继承37楼并保留旧38楼档案', async () => {
+  const backend = backendHarness();
+  const sourceChat = [user('开始')];
+  for (let index = 1; index <= 38; index += 1) sourceChat.push(assistant(`公共第${index}楼`), user(`继续第${index}楼`));
+  const sourceContext = context('原聊天', SOURCE, sourceChat);
+  const sourceAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => sourceContext } } });
+  await createChatSession({ contextProvider: () => sourceContext,
+    identityCoordinator: createChatIdentityCoordinator({ client: backend.client, now: () => new Date(NOW) }),
+  }).prepare();
+  const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => identity('原聊天', SOURCE) });
+  const sourceFoundation = createFoundationRuntime({ hostAdapter: sourceAdapter, store: sourceStore,
+    contextProvider: () => sourceContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  let utilityCalls = 0;
+  let stateCalls = 0;
+  const generateUtilityTask = async options => {
+    utilityCalls += 1;
+    if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) {
+      const { canonicalContent } = JSON.parse(options.taskMessages[0].content).payload;
+      return { jsonData: { summary: `摘要-${canonicalContent}`, people: [{ name: sourceContext.name2, presence: 'present' }] } };
+    }
+    stateCalls += 1;
+    const { trackedSubjects } = JSON.parse(options.taskMessages[0].content).payload;
+    return { jsonData: { subjects: trackedSubjects.map(({ name }) => ({ subject: name,
+      situational: [{ text: `状态-${stateCalls}`, visibility: 'observable', reason: `第${stateCalls}楼正文` }],
+    })) } };
+  };
+  const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore,
+    hostAdapter: sourceAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  await sourceMemory.start();
+  await sourceMemory.startHistoricalRebuild();
+  await waitFor(() => ['caughtUp', 'waitingRealtime'].includes(sourceMemory.getState().rebuildStatus)
+    && !sourceMemory.getState().activeAutoMemory, '38楼源记忆未追平');
+  const source = await sourceStore.readReachable();
+  assert.equal(source.floors.length, 38);
+  assert.equal(source.floorMemories.length, 38);
+  assert.equal(source.stateDeltas.length, 38);
+
+  const targetHostChatId = '同名分支';
+  const freshTarget = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const makeBranch = chat => {
+    const raw = context(targetHostChatId, SOURCE, chat);
+    const api = targetChatApi(raw);
+    const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } });
+    const initializeBranch = createChatBranchInitializer({ client: backend.client, hostAdapter: adapter,
+      now: () => new Date(NOW), fetchImpl: api.fetch });
+    const session = createChatSession({ contextProvider: () => raw,
+      identityCoordinator: createChatIdentityCoordinator({ client: backend.client,
+        listHostChats: async () => ['原聊天', targetHostChatId], initializeBranch,
+        freshUuid: () => freshTarget, now: () => new Date(NOW) }),
+    });
+    return { raw, api, session, initializeBranch };
+  };
+  const oldBranch = makeBranch(structuredClone(sourceContext.chat));
+  const oldTarget = (await oldBranch.session.prepare()).identity.chatId;
+  assert.notEqual(oldTarget, SOURCE);
+  assert.notEqual(oldTarget, freshTarget);
+  const oldStore = createFoundationStore({ client: backend.client, contextProvider: () => identity(targetHostChatId, oldTarget) });
+  assert.equal((await oldStore.readReachable()).floors.length, 38);
+  assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${oldTarget}`).data.state, 'ready');
+  const originalRecords = new Map([...backend.records].map(([key, value]) => [key, structuredClone(value)]));
+  const originalUtilityCalls = utilityCalls;
+  const newBranch = makeBranch(structuredClone(sourceContext.chat.slice(0, 75)));
+  assert.equal(newBranch.raw.chat.at(-1).is_user, true, '新分支截止在第37个AI之后的用户楼');
+  assert.equal(newBranch.raw.chatMetadata.qianqianjie.chatId, SOURCE);
+  const callsBefore = backend.calls.length;
+
+  const prepared = await newBranch.session.prepare();
+  assert.equal(prepared.status, 'ready');
+  assert.equal(prepared.identity.chatId, freshTarget);
+  assert.equal(backend.calls.slice(callsBefore).some(([action, collection]) => action === 'get' && collection === `chat-${oldTarget}`), false,
+    '新身份分配不读取已占用旧ready目标的记忆图');
+  for (const [key, value] of originalRecords) assert.deepEqual(backend.records.get(key), value, `保留已有记录：${key}`);
+  assert.equal(utilityCalls, originalUtilityCalls, '分支继承不重新提取摘要/CSE');
+  const inherited = await createFoundationStore({ client: backend.client,
+    contextProvider: () => identity(targetHostChatId, freshTarget) }).readReachable();
+  assert.equal(inherited.status, 'ready');
+  assert.equal(inherited.floors.length, 37);
+  assert.equal(inherited.floorMemories.length, 37);
+  assert.equal(inherited.stateDeltas.length, 37);
+  assert.deepEqual(inherited.floors.map(floor => floor.id), source.floors.slice(0, 37).map(floor => floor.id));
+  assert.deepEqual(inherited.floorMemories.map(memory => memory.summary), source.floorMemories.slice(0, 37).map(memory => memory.summary));
+  const characterId = inherited.baseline.characterCard.entityId;
+  assert.equal(inherited.currentStates[0].subjects.find(subject => subject.subjectEntityId === characterId).situational[0].text, '状态-37');
+  assert.equal(newBranch.api.persistedHeader.chat_metadata.qianqianjie.chatId, freshTarget);
+  assert.equal(newBranch.raw.chatMetadata.qianqianjie.chatId, freshTarget);
+  assert.deepEqual(newBranch.raw.chat.filter(message => message.is_user === false).map(message => message.extra.qianqianjie_floor),
+    inherited.floors.map(floor => ({ schemaVersion: 1, chatId: freshTarget, floorId: floor.id })));
+
+  for (const [raw, expected] of [[oldBranch.raw, oldTarget], [newBranch.raw, freshTarget]]) {
+    const callsBeforeOpen = backend.calls.length;
+    const reopened = createChatSession({ contextProvider: () => raw,
+      identityCoordinator: createChatIdentityCoordinator({ client: backend.client,
+        listHostChats: async () => { throw new Error('自有ready分支无需重新判断来源'); },
+        initializeBranch: async () => { throw new Error('自有ready分支无需重新继承'); },
+        freshUuid: () => { throw new Error('自有ready分支不得重新分配身份'); },
+      }),
+    });
+    assert.equal((await reopened.prepare()).identity.chatId, expected);
+    assert.equal(backend.calls.slice(callsBeforeOpen).some(([action]) => action === 'put'), false);
+  }
+});
+
 test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘要/CSE/最新版人物且后续新楼可续写', async () => {
   const backend = backendHarness();
   let activeContext = context('原聊天', SOURCE, [
@@ -1415,7 +1518,7 @@ test('直接打开 preparing 分支也沿原 source 换新目标，root存在或
   ], '新目标必须继续从原source继承，不能把半成品旧target当source');
   assert.equal(recovered.activeContext.chatMetadata.qianqianjie.chatId, freshTarget);
 
-  for (const options of [{ root: true }, { rootReadFailure: 503 }, { errorCode: 'V3_BRANCH_FLOOR_MATCH_INVALID' }, { abort: true }]) {
+  for (const options of [{ root: true }, { rootReadFailure: 503 }, { errorCode: 'V3_BRANCH_FLOOR_MATCH_INVALID' }, { errorCode: 'V3_BRANCH_TARGET_MISMATCH' }, { abort: true }]) {
     const rejected = await run(options);
     await assert.rejects(rejected.session.prepare(), error => options.abort ? error?.name === 'AbortError'
       : error?.code === options.errorCode || error?.code === 'V3_BRANCH_RECORD_CONFLICT');

@@ -1,6 +1,6 @@
 import { selectRecallMemories } from './recall-source.js';
 import { rankRecallDocuments } from './recall-ranking.js';
-import { buildEntityIdentityDirectory, resolveIdentityEntityId } from './entity-identity.js';
+import { buildEntityIdentityDirectory, normalizeIdentityProjection, resolveIdentityEntityId } from './entity-identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
 import { PEOPLE_PROFILE_FIELDS } from './people-profile-fields.js';
 
@@ -55,7 +55,7 @@ export function buildPublicContext({ reachable, peopleState, currentStates, iden
     return { status: 'not-ready', identity, anchor: null, routerText: '', actors: [], coverage: { partial: false, cseStatus: 'not-ready', selectedCharacters: 0, maxCharacters: 0 } };
   }
   const limit = Number.isFinite(Number(maxCharacters)) ? Math.max(0, Math.min(40000, Math.floor(Number(maxCharacters)))) : 12000;
-  const projection = { identityRedirectsByEntityId: peopleState?.identityRedirectsByEntityId ?? {}, deletedEntityIds: peopleState?.deletedEntityIds ?? [] };
+  const projection = normalizeIdentityProjection(peopleState ?? {});
   const directory = buildEntityIdentityDirectory({ entities: reachable.entities ?? [], identityProjection: projection });
   const peopleById = new Map(directory.filter(entry => entry.entityType === 'person').map(entry => [entry.entityId, entry]));
   const selected = [...new Set((entityIds ?? []).map(id => resolveIdentityEntityId(id, projection)).filter(id => peopleById.has(id)))];
@@ -86,7 +86,8 @@ export function buildPublicContext({ reachable, peopleState, currentStates, iden
     const profile = person?.profile;
     const manualFields = new Set(profile?.manualFields ?? []);
     const fields = [...PEOPLE_PROFILE_FIELDS].sort((a, b) => Number(manualFields.has(b)) - Number(manualFields.has(a)));
-    const profileLines = fields.map(field => clean(profile?.[field]) ? `- ${field}：${clean(profile[field])}` : '').filter(Boolean);
+    const effectiveFields = { ...profile, aliases: peopleById.get(entityId).aliases.join('、') };
+    const profileLines = fields.map(field => clean(effectiveFields[field]) ? `- ${field}：${clean(effectiveFields[field])}` : '').filter(Boolean);
     const profileFit = fitLines(profileLines, Math.floor(actorBudget * 0.4));
     const state = stateSubjects.get(entityId), stateLines = [];
     for (const [label, items] of [['核心', state?.core], ['经历变化', state?.adaptive], ['当前情境', state?.situational]]) for (const item of items ?? []) {

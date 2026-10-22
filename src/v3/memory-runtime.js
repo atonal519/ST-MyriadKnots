@@ -1,9 +1,11 @@
+import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
+import { describePrefixDifference, safePrefixDifference } from './memory-prefix-diagnostic.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid, scanAssistantCandidates } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun, V3_INDEX_LAYOUT_FLOOR_ORDER } from './foundation-schema.js';
 import { validateQianshiDelta } from './qianshi-schema.js';
-import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION, QIANSHI_OUTPUT_CAPACITY_GUIDANCE } from './extractor.js';
+import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, runExtractorRequest, createExtractorEnvelope, inferCanonicalCurrentTime, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_VERSION, QIANSHI_LIFECYCLE_GUIDANCE, QIANSHI_OUTPUT_CAPACITY_GUIDANCE } from './extractor.js';
 import { collectFloorMemoryEntityIds, collectStateDeltaEntityIds, memorySourceFloorIds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { createCseRuntime } from './cse-runtime.js';
@@ -20,11 +22,12 @@ import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
 import { readLocationReference } from './location-reference.js';
 import { publicErrorMessage } from '../public-error.js';
-import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, normalizeQianshiEventLinks, pendingQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, publicQianshiSnapshot, qianshiDeletedEvents, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
+import { compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, normalizeQianshiEventLinks, pendingQianshiDelta, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, publicQianshiSnapshot, qianshiDeletedEvents, QIANSHI_CANDIDATE_CHARACTER_BUDGET, QIANSHI_HISTORY_INPUT_TOKENS, QIANSHI_HISTORY_OUTPUT_TOKENS, qianshiRecallPendingHeader, QIANSHI_RECALL_PENDING_HEADER, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
 import { estimateRecallTokens } from './recall-selector.js';
 import { markPreparationFailure, preparationFailureDiagnostic, preparationStepFor, storedPreparationDiagnostic } from './preparation-diagnostic.js';
 import { floorProvenanceForReachable, migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
 import { mainlineTimeText } from './time-engine.js';
+import { isMemoryExcludedFloor } from './memory-exclusion.js';
 
 const EVENTS = Object.freeze(['CHAT_CHANGED', 'CHAT_RENAMED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
 const HISTORY_MUTATION_EVENTS = new Set(['MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_SWIPE_DELETED']);
@@ -38,7 +41,7 @@ const QIANSHI_REJUDGE_SYSTEM_PROMPT = `你是“千千结”的已存千事重�
 order 必须使用对象数组，例如 [{"before":"record-1","after":"event-1","certainty":"explicit"}]；引用只用本次 record-N/event-N 或明确指向单一旧事件的 candidate-N。certainty 只用 explicit（材料明示）或 strong（可靠时间锚支持）；先后未知、同日不明或不可比较时不输出。不生成因果等其他关系。
 人工修订是权威材料，保留人工保护；不得输出或创建人工覆盖标记。不要输出摘要、CSE、人物资料或非千事字段。`;
 // 历史补齐和已存重判都明确要求规范状态；共用编译器另行兼容模型的等价表达。
-const QIANSHI_STATUS_GUIDANCE = `status 和 actionStatus 只能返回这些规范值：planned（计划/待办）、inProgress（进行中）、completed（已完成）、cancelled（已取消）、occurred（已发生的一次性事件）、unknown（未知）。千事状态分两层：优先用 status 表示本条进展后的整线状态、actionStatus 表示局部动作状态；局部动作完成不必然结束事项，整线可以仍为进行中。人工修订过的状态是权威材料，不被旧状态覆盖。${QIANSHI_OUTPUT_CAPACITY_GUIDANCE}`;
+const QIANSHI_STATUS_GUIDANCE = `status 和 actionStatus 只能返回这些规范值：planned（计划/待办）、inProgress（进行中）、completed（已完成）、cancelled（已取消）、occurred（已发生的一次性事件）、unknown（未知）。${QIANSHI_LIFECYCLE_GUIDANCE}${QIANSHI_OUTPUT_CAPACITY_GUIDANCE}`;
 const qianshiHistoryInputTokens = request => estimateRecallTokens(`${QIANSHI_HISTORY_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}${JSON.stringify(request)}`);
 const qianshiHistoryBudgetRequest = inputs => ({ task: 'extractQianshiHistoryV1',
   qianshiCandidates: inputs.map((_, index) => ({ key: `candidate-budget-${index + 1}`, candidateType: 'matter',
@@ -156,7 +159,7 @@ function previousPlaceIdentityContext(source, beforeIndex, prefixFloorIds, memor
   return Object.freeze({ placeNames: Object.freeze(placeNames.slice(0, 8)), placeBindings: Object.freeze(placeBindings),
     priorityPlaceEntityIds: Object.freeze(priorityPlaceEntityIds), parentEntityIdsByPlaceId: parentSets });
 }
-function previousFloorContext(source, floorIndex, memoryMap, placeIdentity = null, locationPrefixStartIndex = floorIndex) {
+function previousFloorContext(source, floorIndex, memoryMap, placeIdentity = null, locationPrefixStartIndex = floorIndex, hostChat = null, isFrozenFloorRef = () => false) {
   const timeProvenance = floorProvenanceForReachable(source);
   const locationSourceFloor = source.floors[locationPrefixStartIndex - 1];
   const locationMemory = locationSourceFloor ? memoryMap.get(locationSourceFloor.id) : null;
@@ -164,6 +167,7 @@ function previousFloorContext(source, floorIndex, memoryMap, placeIdentity = nul
   const locationReference = locationSnapshot ? locationSnapshot.locationReference : locationMemory?.sourceLocationReference;
   let memory = null;
   for (let index = floorIndex - 1; index >= 0; index -= 1) {
+    if (isMemoryExcludedFloor(source.floors[index], hostChat, source.checkpoint, { frozen: isFrozenFloorRef(source.floors[index].id, source) })) continue;
     memory = memoryMap.get(source.floors[index].id);
     if (memory?.recordStatus !== 'active') continue;
     const edited = timeProvenance[source.floors[index].id]?.timeEdited === true;
@@ -182,10 +186,21 @@ function previousFloorContext(source, floorIndex, memoryMap, placeIdentity = nul
       priorityPlaceEntityIds: placeIdentity.priorityPlaceEntityIds, parentEntityIdsByPlaceId: placeIdentity.parentEntityIdsByPlaceId })
     : null;
 }
-export function projectMemoryPersonEntities(entities = []) {
-  return Object.freeze(entities
-    .filter(entity => entity?.entityType === 'person' && entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated')
-    .map(entity => Object.freeze({ entityId: entity.id, displayName: entity.displayName, specialRole: entity.specialRole })));
+export function projectMemoryPersonEntities(entities = [], identityProjection = null) {
+  const groups = new Map(), people = [];
+  for (const entity of entities) {
+    if (entity?.entityType === 'person') people.push(entity);
+    if (entity?.entityType !== 'person' || entity.recordStatus !== 'active' || entity.status === 'invalidated') continue;
+    const entityId = resolveIdentityEntityId(entity.id, identityProjection);
+    if (!entityId || identityProjection?.deletedEntityIds?.includes(entityId)) continue;
+    const group = groups.get(entityId) ?? [];
+    group.push(entity); groups.set(entityId, group);
+  }
+  return Object.freeze(buildEntityIdentityDirectory({ entities: people, identityProjection }).flatMap(entry => {
+    const members = groups.get(entry.entityId);
+    if (entry.entity.recordStatus !== 'active' || !members?.length) return [];
+    return [Object.freeze({ entityId: entry.entityId, memberEntityIds: Object.freeze(members.map(entity => entity.id).sort()), displayName: entry.displayName, aliases: entry.aliases, specialRole: entry.specialRole })];
+  }));
 }
 function projectMemorySpatialEntities(entities = [], identityProjection = null) {
   const directory = buildEntityIdentityDirectory({ entities, identityProjection });
@@ -579,7 +594,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (failureScope?.chatId === targetChatId) failureScope = { ...failureScope, failures: {}, cseFailures: {}, automationFailure: null };
     try { browserFailureStorage?.removeItem?.(floorFailureStorageKey(targetChatId)); } catch { /* optional browser failure hints */ }
   };
-  const liveFloorsFor = value => migrationPartition(value).liveFloors;
+  const liveFloorsFor = (value, partition = migrationPartition(value)) => {
+    return partition.liveFloors.filter(floor => !isMemoryExcludedFloor(floor, null, value?.checkpoint, {
+      frozen: partition.isFrozenFloor(floor.id),
+    }));
+  };
   const isFrozenFloor = (floorId, value = reachable) => migrationPartition(value).isFrozenFloor(floorId);
   async function ensureSavedAnchors(value, expectedEpoch = epoch) {
     if (!value?.root || typeof persistAnchors !== 'function' || expectedEpoch !== epoch) return true;
@@ -757,6 +776,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   };
 
   function floorState(floor, memoryMap, provenance, floorById, inheritedSourcesByFloorId, partition) {
+    const frozen = partition.isFrozenFloor(floor.id), origin = frozen ? partition.originForFloor(floor.id) : null;
+    const inheritedSource = inheritedSourcesByFloorId.get(floor.id);
+    if (isMemoryExcludedFloor(floor, null, reachable?.checkpoint, { frozen })) {
+      return Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator.messageIndex,
+        ...(frozen ? { frozen: true, sourceOrigin: origin } : {}), ...(inheritedSource ? { inherited: true } : {}),
+        memoryExcluded: true, sourceFloorIds: Object.freeze([floor.id]), sourceAssistantSeqs: Object.freeze([floor.assistantSeq]),
+        sourceMessageIndexes: Object.freeze([floor.hostLocator.messageIndex]), status: 'excluded', statusText: '该楼无需计入千千结',
+        summary: '', error: null, canExtract: false, memory: null });
+    }
     const memory = memoryMap.get(floor.id) ?? null;
     const meta = provenance[floor.id] ?? null;
     const running = active?.floorId === floor.id && active.phase !== 'analyzingCse';
@@ -771,8 +799,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const failureError = transientFailure && transientFailure.phase !== 'retryableError' ? transientFailure.message : savedError ?? transientFailure?.message;
     const sourceFloorIds = memory ? memorySourceFloorIds(memory) : [floor.id];
     const sourceFloors = sourceFloorIds.map(id => floorById.get(id)).filter(Boolean);
-    const frozen = partition.isFrozenFloor(floor.id), origin = frozen ? partition.originForFloor(floor.id) : null;
-    const inheritedSource = inheritedSourcesByFloorId.get(floor.id);
     return Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator.messageIndex,
       ...(frozen ? { frozen: true, sourceOrigin: origin } : {}),
       ...(inheritedSource ? { inherited: true } : {}),
@@ -822,7 +848,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const coverageMap = coveredMemoryMap(reachable);
     const provenance = floorProvenance(reachable);
     const floorById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
-    const partition = migrationPartition(reachable), liveFloors = partition.liveFloors;
+    const partition = migrationPartition(reachable), liveFloors = liveFloorsFor(reachable, partition);
     const inheritedSourcesByFloorId = new Map((reachable?.migrationDescriptor?.summarySources ?? [])
       .filter(item => partition.isFrozenFloor(item.sourceFloorId)).map(item => [item.targetFloorId, item]));
     const migrationAliases = reachable?.migrationDescriptor
@@ -835,7 +861,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const rememberedCount = liveFloors.filter(floor => coverageMap.has(floor.id)).length;
     const rawCse = cseSnapshot ?? cseRuntime.getState();
     const savedCseFailures = failureScopeMatches(reachable?.root) ? failureScope.cseFailures : {};
-    const visibleFloorIds = new Set(floors.map(item => item.floorId));
+    const visibleFloorIds = new Set(floors.filter(item => item.memoryExcluded !== true).map(item => item.floorId));
     const liveFloorIds = new Set(liveFloors.map(floor => floor.id));
     const cseFloors = (rawCse.cseFloors ?? []).filter(item => visibleFloorIds.has(item.floorId)).map(item => {
       const savedFailure = savedCseFailures[item.floorId] ?? null;
@@ -847,7 +873,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const cse = Object.freeze({ ...rawCse, cseFloors: Object.freeze(cseFloors), csePendingCount: cseFloors.filter(item => item.status === 'pending').length, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, lastCseError: rawCse.lastCseError ?? savedCseError });
     const cseByFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
-    const memoryEntities = projectMemoryPersonEntities(reachable?.entities ?? []);
+    const memoryEntities = projectMemoryPersonEntities(reachable?.entities ?? [], identityProjection);
     const hasSpatialFacts = (reachable?.floorMemories ?? []).some(memory => memory.recordStatus === 'active' && memory.spatialFacts);
     let memoryPlaceEntities = Object.freeze([]), memoryGroupEntities = Object.freeze([]);
     if (hasSpatialFacts && Array.isArray(reachable?.entities)) {
@@ -905,7 +931,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   function getActivityState() {
     const foundation = foundationRuntime.getState();
     const cse = cseRuntime.getActivityState();
-    return projectActivityState(foundation, cse, migrationPartition(reachable).liveFloors.length);
+    return projectActivityState(foundation, cse, coverage.total);
   }
 
   async function refreshCoverage(expectedEpoch = epoch) {
@@ -1183,6 +1209,25 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return Object.freeze({ status, reachable: null, memorySyncStatus });
   }
   async function confirmLatest() { await foundationRuntime.confirmLatest(); return load(); }
+  const setMemoryExcluded = async (messageIndex, excluded) => {
+    const result = await runManualWork('excluding', async () => {
+      if (mainGenerationActive()) return Object.freeze({ status: 'busy', message: '主模型正在生成，请等待完成后再更改这楼的记忆状态。' });
+      if (typeof foundationRuntime.setMemoryExcluded !== 'function') return Object.freeze({ status: 'unavailable', message: '当前版本暂不支持排除消息楼。' });
+      const result = await foundationRuntime.setMemoryExcluded(messageIndex, excluded);
+      if (result?.status === 'persisted') {
+        const current = foundationRuntime.getReachable?.() ?? null;
+        await load(epoch, current, { skipSavedAnchors: true });
+        const settlement = backgroundSync;
+        if (settlement) await settlement;
+        notify();
+      }
+      return result;
+    });
+    if (result?.status === 'persisted' && automation().enabled && lastAutoRun?.status !== 'paused') {
+      void scheduleAutomation('stableAssistant');
+    }
+    return result;
+  };
   async function confirmConsecutiveAssistants(scope) {
     const requestedEpoch = epoch;
     const requestedChatId = currentHostChatId();
@@ -1226,10 +1271,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     ? hostAdapter.getUserIdentity()
     : hostAdapter?.snapshot?.().userIdentity ?? null;
   async function extractorDependencySnapshot(value, floorId, { userIdentity, promptGuidance, identityProjectionSnapshot = null,
-    referenceTags = currentReferenceTags(), hostSnapshot = null } = {}) {
+    referenceTags = currentReferenceTags(), hostSnapshot = null, onUnavailable = null } = {}) {
     const frozenReferenceTags = normalizeStoryClockReferenceTags(referenceTags);
     const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
-    if (targetIndex < 0 || !value?.root || !value?.checkpoint) return null;
+    if (targetIndex < 0 || !value?.root || !value?.checkpoint) { onUnavailable?.({ kind: 'snapshotUnavailable' }); return null; }
     const partition = migrationPartition(value);
     const prefix = value.floors.slice(0, targetIndex + 1);
     const floorDependencies = [];
@@ -1238,7 +1283,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const frozen = partition.isFrozenFloor(floor.id);
       if (frozen && !frozenProvenance) frozenProvenance = floorProvenance(value);
       const selected = frozen ? null : hostSnapshot ? rawSelectionFromSnapshot(hostSnapshot, floor) : currentRawSelection(hostAdapter, floor);
-      if (!frozen && !selected) return null;
+      if (!frozen && !selected) { onUnavailable?.({ kind: 'sourceUnavailable', assistantSeq: floor.assistantSeq }); return null; }
       floorDependencies.push({
         id: floor.id,
         chatId: floor.chatId,
@@ -1313,14 +1358,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   async function latestCompatibleReachable(operation, preparedReachable = null) {
     const current = await latestReachableForCommit(operation, preparedReachable);
     if (operation.pinnedTarget || operation.qianshiHistory || operation.qianshiTextEdit || operation.qianshiRejudge) return current;
+    let unavailable = null;
     const dependency = await extractorDependencySnapshot(current, operation.floorId, {
       userIdentity: currentUserIdentity(),
       promptGuidance: operation.dependencySnapshot?.promptGuidance,
       identityProjectionSnapshot: await readIdentityProjection(),
       referenceTags: operation.dependencySnapshot?.storyClockReferenceTags,
+      onUnavailable: value => { unavailable = value; },
     });
     if (!sameExtractorDependency(operation.dependencySnapshot, dependency)) {
-      throw errorWith('V3_MEMORY_PREFIX_CHANGED', '目标楼或其依赖前文已经变化，迟到摘要不会写入。');
+      throw Object.assign(errorWith('V3_MEMORY_PREFIX_CHANGED', '目标楼或其依赖前文已经变化，迟到摘要不会写入。'), {
+        prefixDifference: describePrefixDifference(operation.dependencySnapshot, dependency, unavailable),
+      });
     }
     return current;
   }
@@ -1548,6 +1597,45 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     const memoryByFloor = currentMemoryMap(current);
     const oldTarget = memoryByFloor.get(revisionReplacement.floorId);
+    if (!operation.qianshiRejudge && ['extract', 'reextract'].includes(action) && oldTarget) {
+      const suppressed = new Set(oldTarget.suppressedExactAnchorIds ?? []);
+      const manualAnchors = oldTarget.exactAnchors.filter(anchor => anchor.manual === true);
+      const manualIds = new Set(manualAnchors.map(anchor => anchor.anchorId));
+      const automaticAnchors = revisionReplacement.exactAnchors.filter(anchor => !suppressed.has(anchor.anchorId) && !manualIds.has(anchor.anchorId));
+      const exactAnchors = [...automaticAnchors.slice(0, Math.max(0, 60 - manualAnchors.length)), ...manualAnchors];
+      const activeAnchorIds = new Set(exactAnchors.map(anchor => anchor.anchorId));
+      const manualAnchorById = new Map(manualAnchors.map(anchor => [anchor.anchorId, anchor]));
+      const replacedAutomaticById = new Map(revisionReplacement.exactAnchors
+        .filter(anchor => manualAnchorById.has(anchor.anchorId)).map(anchor => [anchor.anchorId, anchor]));
+      const manualTextCandidatesByOldTextAndSpeaker = new Map();
+      for (const [anchorId, manualAnchor] of manualAnchorById) {
+        const oldAnchor = replacedAutomaticById.get(anchorId);
+        if (!oldAnchor?.speakerEntityId) continue;
+        const key = JSON.stringify([oldAnchor.exactText, oldAnchor.speakerEntityId]);
+        const candidates = manualTextCandidatesByOldTextAndSpeaker.get(key) ?? new Set();
+        candidates.add(manualAnchor.exactText); manualTextCandidatesByOldTextAndSpeaker.set(key, candidates);
+      }
+      const manualTextByReplacedExactTextAndSpeaker = new Map([...manualTextCandidatesByOldTextAndSpeaker]
+        .flatMap(([key, candidates]) => candidates.size === 1 ? [[key, [...candidates][0]]] : []));
+      const mergedData = { ...revisionReplacement, exactAnchors,
+        commitments: revisionReplacement.commitments.map(value => {
+          const manualAnchor = value.exactAnchorId ? manualAnchorById.get(value.exactAnchorId) : null;
+          const replacedAutomatic = value.exactAnchorId ? replacedAutomaticById.get(value.exactAnchorId) : null;
+          const exactReplacement = value.speakerEntityId ? manualTextByReplacedExactTextAndSpeaker.get(JSON.stringify([value.content, value.speakerEntityId])) : null;
+          return manualAnchor && replacedAutomatic && value.content === replacedAutomatic.exactText ? { ...value, content: manualAnchor.exactText }
+            : exactReplacement ? { ...value, content: exactReplacement }
+            : value.exactAnchorId && !activeAnchorIds.has(value.exactAnchorId) ? { ...value, exactAnchorId: null } : value;
+        }), informationTransfers: revisionReplacement.informationTransfers.map(value => {
+          const exactReplacement = value.fromEntityId ? manualTextByReplacedExactTextAndSpeaker.get(JSON.stringify([value.claimText, value.fromEntityId])) : null;
+          return exactReplacement ? { ...value, claimText: exactReplacement } : value;
+        }), privateCognition: revisionReplacement.privateCognition.map(value => {
+          const exactReplacement = value.ownerEntityId ? manualTextByReplacedExactTextAndSpeaker.get(JSON.stringify([value.content, value.ownerEntityId])) : null;
+          return exactReplacement ? { ...value, content: exactReplacement } : value;
+        }) };
+      if (suppressed.size) mergedData.suppressedExactAnchorIds = [...suppressed];
+      else delete mergedData.suppressedExactAnchorIds;
+      revisionReplacement = validateFloorMemory(mergedData, { expectedChatId: revisionReplacement.chatId });
+    }
     if (!operation.qianshiRejudge && ['extract', 'reextract'].includes(action) && revisionReplacement.qianshiDelta && oldTarget?.qianshiDelta) {
       const priorDelta = oldTarget.qianshiDelta;
       if (priorDelta.deletedEventIds?.length) {
@@ -1848,14 +1936,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const hostSnapshot = hostAdapter.snapshot();
       prepareStep = 'sourceSelection';
       const memoryMap = currentMemoryMap(source);
+      const liveFloors = liveFloorsFor(source);
+      const eligibleFloorIds = new Set(liveFloors.map(item => item.id));
       const requestedFloors = Array.isArray(floorIds) && floorIds.length
         ? floorIds.map(id => source?.floors?.find(item => item.id === id))
         : null;
-      if (requestedFloors?.some(item => !item) || requestedFloors?.length > 10) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '高楼压缩只接受当前连续范围内最多 10 个稳定 AI 楼。');
+      if (requestedFloors?.some(item => !item || !eligibleFloorIds.has(item.id)) || requestedFloors?.length > 10) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '高楼压缩只接受当前连续范围内最多 10 个稳定 AI 楼。');
       if (requestedFloors?.some((item, index) => index > 0 && source.floors.indexOf(item) !== source.floors.indexOf(requestedFloors[index - 1]) + 1)) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '高楼压缩范围必须是连续的稳定 AI 楼。');
       const floor = requestedFloors?.at(-1) ?? (selectNext
-        ? liveFloorsFor(source).find(item => memoryMap.get(item.id)?.recordStatus !== 'active')
-        : source?.floors?.find(item => item.id === floorId));
+        ? liveFloors.find(item => memoryMap.get(item.id)?.recordStatus !== 'active')
+        : source?.floors?.find(item => item.id === floorId && eligibleFloorIds.has(item.id)));
       if (!floor) return selectNext ? null : (() => { throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '只允许提取当前后端快照中可用的稳定 AI 楼。'); })();
       const aggregateFloors = requestedFloors ?? [floor];
       const selectedSources = aggregateFloors.map(item => ({ floor: item, selected: rawSelectionFromSnapshot(hostSnapshot, item) }));
@@ -1905,13 +1995,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       prepareStep = 'timeSources';
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) {
         if (isFrozenFloor(source.floors[index].id, source)) continue;
+        if (isMemoryExcludedFloor(source.floors[index], hostSnapshot.chat, source.checkpoint)) continue;
         previousStoryClock = clockEvidence(rawSelectionFromSnapshot(hostSnapshot, source.floors[index]), referenceTagsSnapshot).clock;
       }
       prepareStep = 'sourceSelection';
       const firstFloorIndex = source.floors.findIndex(item => item.id === aggregateFloors[0].id);
       const qianshiPrefixFloorIds = new Set(source.floors.slice(0, firstFloorIndex).map(item => item.id));
       const previousPlaceIdentity = previousPlaceIdentityContext(source, firstFloorIndex, qianshiPrefixFloorIds, memoryMap, source.entities, identityProjectionSnapshot);
-      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, previousPlaceIdentity, firstFloorIndex);
+      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, previousPlaceIdentity, firstFloorIndex, hostSnapshot.chat, isFrozenFloor);
       prepareStep = 'qianshiCandidates';
       const candidateSource = { ...source, calendar: storyCalendarProvider(source.root?.chatId), floors: source.floors.slice(0, firstFloorIndex),
         floorMemories: source.floorMemories.filter(memory => qianshiPrefixFloorIds.has(memory.floorId)), entities: scopedEntities };
@@ -2022,7 +2113,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         rememberPendingResult(floor.id, { chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, sourceRawFingerprint, processingPrompt: String(processingPromptSnapshot ?? ''), dependencySnapshot, runId: operation.runId, startedAt: operation.startedAt, commitTimestamp: operation.commitTimestamp, commitTimestampVersionKey: operation.commitTimestampVersionKey, preflightTiming: operation.preflightTiming, semanticInputFingerprint: operation.semanticInputFingerprint, result });
       } else if (error?.name === 'AbortError' || STALE_MEMORY_CODES.has(error?.code)) pendingResults.delete(floor.id);
       if (error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) await persistFailure(operation, error, source);
-      else lastFailure = Object.freeze({ floorId: operation.floorId, runId: operation.runId, phase: 'stale', code: error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? 'V3_MEMORY_PREFIX_CHANGED' : 'V3_MEMORY_STALE', attempts: 0, validationErrors: [], api: null, message: safeErrorMessage(error?.message ?? '聊天、插件状态或正文分支已变化，迟到结果没有写入。') });
+      else {
+        const prefixDifference = error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? safePrefixDifference(error.prefixDifference) : null;
+        lastFailure = Object.freeze({ floorId: operation.floorId, runId: operation.runId, phase: 'stale', code: error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? 'V3_MEMORY_PREFIX_CHANGED' : 'V3_MEMORY_STALE', attempts: 0, validationErrors: [], api: null, ...(prefixDifference ? { prefixDifference } : {}), message: safeErrorMessage(error?.message ?? '聊天、插件状态或正文分支已变化，迟到结果没有写入。') });
+      }
       logger?.warn?.('[qianqianjie] V3 extractor failed', { code: error?.code ?? error?.name ?? 'V3_EXTRACTOR_FAILED' });
     } finally {
       releaseConfirmation?.();
@@ -2108,6 +2202,66 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const revisionRunId = await deterministicUuid(['v3-memory-revision-run', old.id, action, nowValue, newUuid()]);
     const requestedSummary = String(metadata?.summary ?? userText ?? '').trim();
     const requestedRevisionNote = String(revisionNote ?? metadata?.revisionNote ?? '').trim();
+    let exactAnchors = old.exactAnchors;
+    let suppressedExactAnchorIds = [...(old.suppressedExactAnchorIds ?? [])];
+    let exactAnchorsChanged = false;
+    const manualRevisionByAnchorId = new Map();
+    const manualRevisionByOldTextAndSpeaker = new Map();
+    if (Object.hasOwn(metadata ?? {}, 'exactAnchors')) {
+      if (!Array.isArray(metadata.exactAnchors) || metadata.exactAnchors.length > 60) {
+        throw errorWith('V3_MEMORY_EXACT_ANCHORS_LIMIT', '每楼关键原文最多保存 60 条，请删除多余条目后再保存。');
+      }
+      const oldAnchors = new Map(old.exactAnchors.map(anchor => [anchor.anchorId, anchor]));
+      const usedIds = new Set();
+      const peopleById = new Map(source.entities.filter(entity => entity.entityType === 'person' && entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated').map(entity => [entity.id, entity]));
+      exactAnchors = [];
+      for (const [index, item] of metadata.exactAnchors.entries()) {
+        const carrier = typeof item?.carrier === 'string' ? item.carrier : '';
+        const exactText = typeof item?.exactText === 'string' ? item.exactText : '';
+        const selectedKnownEntityIds = Array.isArray(item?.knownEntityIds) ? [...new Set(item.knownEntityIds)] : [];
+        const knownEntityIds = [...new Set(selectedKnownEntityIds.map(id => typeof id === 'string' ? resolveIdentityEntityId(id, identityProjection) : id))].sort();
+        const prior = item.anchorId == null ? null : oldAnchors.get(item.anchorId);
+        if (item.anchorId != null && (!prior || usedIds.has(item.anchorId))) {
+          throw errorWith('V3_MEMORY_EXACT_ANCHOR_STALE', `第 ${index + 1} 条关键原文已变化，请刷新后重新编辑。`);
+        }
+        if (knownEntityIds.length > 80) throw errorWith('V3_MEMORY_EXACT_ANCHOR_KNOWLEDGE_LIMIT', `第 ${index + 1} 条原文最多选择 80 位知情人物。`);
+        if (knownEntityIds.some(id => typeof id !== 'string')) throw errorWith('V3_MEMORY_EXACT_ANCHOR_KNOWLEDGE_INVALID', `第 ${index + 1} 条原文的知情人物选择无效，请重新选择人物。`);
+        if (knownEntityIds.some(id => !peopleById.has(id))) throw errorWith('V3_MEMORY_EXACT_ANCHOR_KNOWLEDGE_INVALID', `第 ${index + 1} 条原文所选人物已不存在或已变化，请刷新后重新选择。`);
+        const priorKnownEntityIds = prior?.manual === true ? [...new Set((prior.knownEntityIds ?? []).map(id => resolveIdentityEntityId(id, identityProjection)))].sort() : [];
+        if (prior && exactText === prior.exactText && carrier === (prior.carrier ?? '') && prior.manual === true
+          && JSON.stringify(knownEntityIds) === JSON.stringify(priorKnownEntityIds)) {
+          exactAnchors.push(prior); usedIds.add(prior.anchorId); continue;
+        }
+        if (prior && exactText === prior.exactText && carrier === '' && prior.manual !== true && knownEntityIds.length === 0) {
+          exactAnchors.push(prior); usedIds.add(prior.anchorId); continue;
+        }
+        if (carrier.length > 500) throw errorWith('V3_MEMORY_EXACT_ANCHOR_CARRIER_LIMIT', `第 ${index + 1} 条原文的载体名称超过 500 字，请缩短后保存。`);
+        if (exactText.length > 2000) throw errorWith('V3_MEMORY_EXACT_ANCHOR_TEXT_LIMIT', `第 ${index + 1} 条原文内容超过 2000 字，请缩短后保存。`);
+        if (!carrier.trim() || !exactText.trim()) throw errorWith('V3_MEMORY_EXACT_ANCHOR_INVALID', `第 ${index + 1} 条关键原文需要填写载体名称和原文全文。`);
+        const anchorId = prior?.anchorId ?? await newUuid();
+        if (prior && prior.manual !== true) suppressedExactAnchorIds = [...new Set([...suppressedExactAnchorIds, prior.anchorId])];
+        if (prior) {
+          manualRevisionByAnchorId.set(prior.anchorId, { oldText: prior.exactText, exactText });
+          if (prior.speakerEntityId) {
+            const key = JSON.stringify([prior.exactText, prior.speakerEntityId]);
+            const replacements = manualRevisionByOldTextAndSpeaker.get(key) ?? new Set();
+            replacements.add(exactText); manualRevisionByOldTextAndSpeaker.set(key, replacements);
+          }
+        }
+        usedIds.add(anchorId);
+        const { sourceType: _sourceType, sourceSnapshotIndex: _sourceSnapshotIndex, ...sourceFields } = prior ?? {};
+        exactAnchors.push({ ...sourceFields, anchorId, kind: prior?.kind ?? 'other', exactText, occurrence: 1,
+          speakerEntityId: prior?.speakerEntityId ?? null, whyPreserve: prior?.whyPreserve || '用户手动保存的载体原文',
+          manual: true, carrier, knownEntityIds, sourceFloorId: prior?.sourceFloorId ?? old.floorId });
+      }
+      const removedAutomatic = old.exactAnchors.filter(anchor => anchor.manual !== true && !usedIds.has(anchor.anchorId)).map(anchor => anchor.anchorId);
+      if (removedAutomatic.length) {
+        suppressedExactAnchorIds = [...new Set([...suppressedExactAnchorIds, ...removedAutomatic])];
+      }
+      if (suppressedExactAnchorIds.length > 10000) throw errorWith('V3_MEMORY_EXACT_ANCHORS_LIMIT', '已删除的关键原文记录过多，暂时无法继续保存。');
+      exactAnchorsChanged = JSON.stringify(exactAnchors) !== JSON.stringify(old.exactAnchors)
+        || JSON.stringify(suppressedExactAnchorIds) !== JSON.stringify(old.suppressedExactAnchorIds ?? []);
+    }
     const summaryChanged = action === 'editMetadata' && requestedSummary !== String(effectiveSummary(old) ?? '').trim();
     let summary = action === 'edit' || summaryChanged ? { ...old.summary, userText: requestedSummary, effectiveSource: 'user', revisionNote: requestedRevisionNote || null }
       : action === 'restoreAi' ? { ...old.summary, userText: null, effectiveSource: 'ai', revisionNote: requestedRevisionNote || '恢复 AI 原摘要' }
@@ -2163,15 +2317,39 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       clearLocationReference = summaryChanged || JSON.stringify(locations) !== JSON.stringify(old.locations);
       if (summaryChanged || locationOrParticipantChanged) spatialFacts = undefined;
       const noteChanged = Boolean(requestedRevisionNote) && requestedRevisionNote !== String(old.summary.revisionNote ?? '').trim();
-      const metadataChanged = summaryChanged || effectiveTimeChanged || newEntities.length > 0 || noteChanged || locationOrParticipantChanged;
+      const metadataChanged = summaryChanged || effectiveTimeChanged || newEntities.length > 0 || noteChanged || locationOrParticipantChanged || exactAnchorsChanged;
       if (!metadataChanged) return notify();
       if (!summaryChanged) summary = { ...old.summary, revisionNote: requestedRevisionNote || old.summary.revisionNote || '用户修订时间、地点或人物' };
     }
     if (effectiveSummaryChanged) spatialFacts = undefined;
     if (effectiveSummaryChanged) clearLocationReference = true;
-    const id = await deterministicUuid(['v3-memory-revision', old.id, action, summary, chronology, locations, participants, spatialFacts ?? null, nowValue]);
+    const id = await deterministicUuid(['v3-memory-revision', old.id, action, summary, chronology, locations, participants, spatialFacts ?? null, exactAnchors, suppressedExactAnchorIds, nowValue]);
     const replacementData = { ...old, id, summary, chronology, locations, participants, createdAt: nowValue, updatedAt: nowValue,
       recordStatus: ['markError', 'migrationRebuild'].includes(action) ? 'invalidated' : 'active', supersedes: old.id };
+    if (exactAnchorsChanged) {
+      replacementData.exactAnchors = exactAnchors;
+      const anchorIds = new Set(exactAnchors.map(anchor => anchor.anchorId));
+      const unambiguousTextRevisions = new Map([...manualRevisionByOldTextAndSpeaker].flatMap(([key, replacements]) => replacements.size === 1 ? [[key, [...replacements][0]]] : []));
+      const applyManualRevision = value => {
+        const linkedRevision = manualRevisionByAnchorId.get(value.exactAnchorId);
+        const contentField = Object.hasOwn(value, 'content') ? 'content' : Object.hasOwn(value, 'claimText') ? 'claimText' : null;
+        const speakerField = Object.hasOwn(value, 'speakerEntityId') ? 'speakerEntityId'
+          : Object.hasOwn(value, 'fromEntityId') ? 'fromEntityId' : Object.hasOwn(value, 'ownerEntityId') ? 'ownerEntityId' : null;
+        const exactTextRevision = contentField && speakerField && value[speakerField]
+          ? unambiguousTextRevisions.get(JSON.stringify([value[contentField], value[speakerField]])) : null;
+        const linkedText = linkedRevision && contentField && value[contentField] === linkedRevision.oldText ? linkedRevision.exactText : null;
+        return {
+          ...value,
+          ...(value.exactAnchorId && !anchorIds.has(value.exactAnchorId) ? { exactAnchorId: null } : {}),
+          ...(linkedText && contentField ? { [contentField]: linkedText } : !value.exactAnchorId && exactTextRevision ? { [contentField]: exactTextRevision } : {}),
+        };
+      };
+      replacementData.commitments = old.commitments.map(applyManualRevision);
+      replacementData.informationTransfers = old.informationTransfers.map(applyManualRevision);
+      replacementData.privateCognition = old.privateCognition.map(applyManualRevision);
+      if (suppressedExactAnchorIds.length) replacementData.suppressedExactAnchorIds = suppressedExactAnchorIds;
+      else delete replacementData.suppressedExactAnchorIds;
+    }
     if (clearLocationReference) {
       if (Array.isArray(old.sourceFloorSnapshots)) replacementData.sourceFloorSnapshots = old.sourceFloorSnapshots.map(snapshot => ({ ...snapshot, locationReference: null }));
       else replacementData.sourceLocationReference = null;
@@ -2462,7 +2640,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               if (!allowed()) return getState();
               const currentFloor = getState().floors.find(item => item.floorId === anchorFloor.id);
               if (!currentFloor?.memoryId || currentFloor.status !== 'ready') {
-                const failure = Object.freeze({ floorId: anchorFloor.id, floorIds: Object.freeze(targets.map(item => item.id)), assistantSeq: anchorFloor.assistantSeq, messageIndex: anchorFloor.hostLocator?.messageIndex ?? null, floorLabel: `${floorCopy(targets[0])}至${floorCopy(anchorFloor)}`, message: getState().lastExtractorError?.message ?? '高楼压缩记忆提取失败，可重新选择高楼压缩后从本批重试。' });
+                const failure = Object.freeze({ floorId: anchorFloor.id, floorIds: Object.freeze(targets.map(item => item.id)), assistantSeq: anchorFloor.assistantSeq, messageIndex: anchorFloor.hostLocator?.messageIndex ?? null, floorLabel: `${floorCopy(targets[0])}至${floorCopy(anchorFloor)}`, message: publicErrorMessage(getState().lastExtractorError, { fallback: '高楼压缩记忆提取失败，可重新选择高楼压缩后从本批重试。' }) });
                 for (const item of targets) failedSummaryFloorIds.add(item.id);
                 summaryFailures.push(failure);
                 historicalAuthorization = null;
@@ -2488,7 +2666,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               if (!allowed()) return getState();
               const currentFloor = getState().floors.find(item => item.floorId === floor.id);
               if (!currentFloor?.memoryId || currentFloor.status !== 'ready') {
-                const failure = Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator?.messageIndex ?? null, floorLabel: floorCopy(floor), message: getState().lastExtractorError?.message ?? 'FloorMemory 提取失败，可点击继续重建后从本楼重试。' });
+                const failure = Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator?.messageIndex ?? null, floorLabel: floorCopy(floor), message: publicErrorMessage(getState().lastExtractorError, { fallback: '摘要提取失败，可点击继续重建后从本楼重试。' }) });
                 failedSummaryFloorIds.add(floor.id);
                 summaryFailures.push(failure);
                 const unfinished = missingSummaryCount(capturedFloorSet);
@@ -2619,11 +2797,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           lastAutomaticInputKey = capturedInputKey ?? currentInputKey();
           const didCommit = processed > 0 || cseProcessed > 0;
           const diagnostic = preparationFailureDiagnostic(error);
-          lastAutoRun = Object.freeze({ status: didCommit ? 'partial' : 'failed', reason, phase: operation.phase, batchSize: config.batchSize, floorId: operation.floorIds[0] ?? null, assistantSeq: null, processed, cseProcessed, failedItems: Object.freeze([...summaryFailures]), message: safeErrorMessage(error?.message ?? '自动记忆失败，将在下一次稳定回复后重试。') });
-          rememberAutomationFailure(reachable, { message: lastAutoRun.message, code: diagnostic.code ?? 'V3_AUTO_MEMORY_FAILED', name: diagnostic.name, phase: operation.phase, prepareStep: diagnostic.prepareStep, detail: diagnostic.detail, location: diagnostic.location });
+          lastAutoRun = Object.freeze({ status: didCommit ? 'partial' : 'failed', reason, phase: operation.phase, batchSize: config.batchSize, floorId: operation.floorIds[0] ?? null, assistantSeq: null, processed, cseProcessed, failedItems: Object.freeze([...summaryFailures]), message: safeErrorMessage(publicErrorMessage(error, { fallback: '自动记忆失败，将在下一次稳定回复后重试。' })) });
+          rememberAutomationFailure(reachable, { message: safeErrorMessage(error?.message ?? lastAutoRun.message), code: diagnostic.code ?? 'V3_AUTO_MEMORY_FAILED', name: diagnostic.name, phase: operation.phase, prepareStep: diagnostic.prepareStep, detail: diagnostic.detail, location: diagnostic.location });
           const diagnosticCode = diagnostic.code ?? diagnostic.name ?? 'V3_AUTO_MEMORY_FAILED';
           logger?.warn?.('[qianqianjie] V3 automatic memory failed', { code: diagnosticCode });
-          notifyOnce(`outer:${reason}:${capturedInputKey ?? currentInputKey()}:${operation.phase}:${diagnosticCode}`, { kind: didCommit ? 'warning' : 'error', text: `千千结自动记忆${didCommit ? '部分完成' : '未完成'}：已新增摘要 ${processed} 楼、补齐人物状态 ${cseProcessed} 楼；${lastAutoRun.message} 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。` });
+          notifyOnce(`outer:${reason}:${capturedInputKey ?? currentInputKey()}:${operation.phase}:${diagnosticCode}`, { kind: didCommit ? 'warning' : 'error', text: `千千结自动记忆${didCommit ? '部分完成' : '未完成'}：已新增摘要 ${processed} 楼、补齐人物状态 ${cseProcessed} 楼；${lastAutoRun.message}${error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? '' : ' 当前未完成摘要楼数无法可靠确认；相同内容不会自动重试，请在记忆管理中点击继续。'}` });
           notify();
         }
         return getState();
@@ -3329,7 +3507,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (!['ready', 'noChange'].includes(after?.status) || !after.deltaId || after.deltaId === beforeDeltaId) {
           const message = cseRuntime.getState().lastCseError?.message ?? `${floorCopy(reachable.floors.find(floor => floor.id === target.floorId))}人物状态分析失败。`;
           cseRebuildPlan = Object.freeze({ ...plan, status: 'failed', error: safeErrorMessage(message) });
-          try { notifyUser?.({ kind: 'error', text: `CSE 重构在${floorCopy(reachable.floors.find(floor => floor.id === target.floorId))}暂停：${cseRebuildPlan.error} 可点击“继续 CSE 重构”重试。` }); } catch { /* notification must not affect saved progress */ }
+          try { notifyUser?.({ kind: 'error', text: `CSE 重构在${floorCopy(reachable.floors.find(floor => floor.id === target.floorId))}暂停：${cseRebuildPlan.error} 可点击“继续人物状态重构”重试。` }); } catch { /* notification must not affect saved progress */ }
           return notify();
         }
         await load(requestedEpoch, reachable);
@@ -3346,7 +3524,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     })().catch(error => {
       if (workRun === operation && operation.token === autoEpoch) {
         cseRebuildPlan = cseRebuildPlan ? Object.freeze({ ...cseRebuildPlan, status: 'failed', error: safeErrorMessage(error?.message) }) : null;
-        try { notifyUser?.({ kind: 'error', text: `CSE 重构未完成：${safeErrorMessage(error?.message)}${cseRebuildPlan ? ' 可点击“继续 CSE 重构”重试。' : ''}` }); } catch { /* notification must not affect saved progress */ }
+        try { notifyUser?.({ kind: 'error', text: `CSE 重构未完成：${safeErrorMessage(error?.message)}${cseRebuildPlan ? ' 可点击“继续人物状态重构”重试。' : ''}` }); } catch { /* notification must not affect saved progress */ }
       }
       return notify();
     }).finally(() => {
@@ -3363,7 +3541,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     cseRebuildPlan = cseRebuildPlan ? Object.freeze({ ...cseRebuildPlan, status: 'paused', error: null }) : null;
     autoEpoch += 1;
     cseRuntime.cancelActive?.();
-    try { notifyUser?.({ kind: 'info', text: 'CSE 重构已暂停，可在记忆管理中继续。' }); } catch { /* notification is advisory */ }
+    try { notifyUser?.({ kind: 'info', text: '人物状态重构已暂停，可点击“继续人物状态重构”。' }); } catch { /* notification is advisory */ }
     return notify();
   }
   const retryAutomation = async () => {
@@ -3767,6 +3945,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   async function startQianshiHistory(planId = qianshiHistoryPlan?.planId) {
     if (qianshiHistoryRun) return structuredClone(qianshiHistoryState);
     if (!qianshiHistoryPlan || planId !== qianshiHistoryPlan.planId) throw errorWith('QIANSHI_HISTORY_PLAN_STALE', '请重新准备千事历史补齐计划。');
+    const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
     const plan = qianshiHistoryPlan, controller = new AbortController(), jobId = await deterministicUuid(['qianshi-history-job-v1', plan.planId, newUuid()]);
     const operation = { jobId, controller, store: plan.store, targetIdentity: plan.targetIdentity, pinnedTarget: true };
     let processedFloors = 0, calls = 0;
@@ -3874,7 +4053,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
         }
         const request = buildHistoryRequest();
-        const systemPrompt = `${QIANSHI_HISTORY_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`;
+        const systemPrompt = withBaseProcessingPrompt(`${QIANSHI_HISTORY_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`, processingPromptSnapshot);
         const requestTokens = qianshiHistoryInputTokens(request);
         if (requestTokens > plan.maxInputTokens) {
           failures += prepared.length;
@@ -4150,6 +4329,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (qianshiHistoryRun) return structuredClone(qianshiHistoryState);
     const plan = qianshiRejudgePlan;
     if (!plan || planId !== plan.planId) throw errorWith('QIANSHI_REJUDGE_PLAN_STALE', '请重新准备已存千事重判计划。');
+    const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
     const controller = new AbortController(), jobId = await deterministicUuid(['qianshi-rejudge-job-v1', plan.planId, newUuid()]);
     const rejudgeValidation = { qianshiRejudge: plan, qianshiRejudgeRawWitnesses: new Map() };
     const operation = { jobId, controller, store: plan.store, targetIdentity: plan.targetIdentity, pinnedTarget: true }, epochAtStart = epoch;
@@ -4206,7 +4386,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const originEventIds = new Set(originalProjection.matters.map(matter => matter.origin.eventId));
           const recordBindings = storedEvents.map((event, recordIndex) => ({ key: `record-${recordIndex + 1}`, event: clone(event),
             preserveMatterIdOnNewLine: Boolean(event.matterId && originEventIds.has(event.id)) }));
-          const systemPrompt = `${QIANSHI_REJUDGE_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`;
+          const systemPrompt = withBaseProcessingPrompt(`${QIANSHI_REJUDGE_SYSTEM_PROMPT}\n\n${QIANSHI_STATUS_GUIDANCE}`, processingPromptSnapshot);
           const request = { task: 'rejudgeStoredQianshiV1', floor: item.input.floorKey,
             source: item.input.sourceCanonicalContent, summary: item.input.effectiveSummary,
             precedingUserInput: item.input.sourceUserInputSnapshot, records: item.input.records,
@@ -4379,7 +4559,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return task;
   }
 
-  return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
+  return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, setMemoryExcluded, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
     getCurrentSubjectStates: entityIds => cseRuntime.getCurrentSubjectStates(entityIds),
     getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), getQianshiStatus: qianshiStatus,
     getQianshiSnapshotVersion: qianshiSnapshotVersion, getQianshiEditPeople, canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,
@@ -4389,12 +4569,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (prepared.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '当前千事删除状态尚未准备好，请刷新状态后重试。');
       return { chatId: prepared.reachable.root.chatId, events: qianshiDeletedEvents(prepared.reachable) };
     },
-    setQianshiMatterFollowing, setQianshiMatterStatus, getQianshiRecall: ({ queryContext = null, currentTime = null, selectedEventIds = null, selectedMatterIds = null } = {}) => {
+    setQianshiMatterFollowing, setQianshiMatterStatus, getQianshiRecall: ({ queryContext = null, currentTime = null, selectedEventIds = null, selectedMatterIds = null,
+      pendingHeader = QIANSHI_RECALL_PENDING_HEADER, scopeLine = null } = {}) => {
       if (!reachable?.root) return { projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, text: '', eventIds: [], matterIds: [], anchor: null };
       const calendarReachable = { ...reachable, calendar: storyCalendarProvider() };
       const anchor = { narrativeGeneration: reachable.root.narrativeGeneration, headCheckpointId: reachable.root.headCheckpointId, rootRevision: reachable.rootRevision };
       if (Array.isArray(selectedEventIds) || Array.isArray(selectedMatterIds)) {
-        const recall = projectQianshiRecall(calendarReachable, { identityProjection, selectedEventIds: selectedEventIds ?? [], selectedMatterIds: selectedMatterIds ?? [] });
+        const recall = projectQianshiRecall(calendarReachable, { identityProjection, selectedEventIds: selectedEventIds ?? [], selectedMatterIds: selectedMatterIds ?? [],
+          pendingHeader: qianshiRecallPendingHeader(pendingHeader),
+          scopeLine });
         return structuredClone({ ...recall, deletedEvents: qianshiDeletedEvents(reachable), anchor });
       }
       const prepared = prepareQianshiRecallCandidates(calendarReachable, { queryContext, identityProjection });

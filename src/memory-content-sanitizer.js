@@ -1,3 +1,5 @@
+export { normalizeWrapperRules as normalizeMemoryTagList, sanitizeStoryBody as sanitizeMemoryContent } from './shared-body-wrappers.js';
+
 const TAG_NAME_PATTERN = /^[\p{L}][\p{L}\p{N}_-]*~?$/u;
 const LITERAL_WRAPPER_SEPARATOR = '...';
 
@@ -7,7 +9,7 @@ function literalWrapperRule(value) {
   return Object.freeze({ start: value.slice(0, separator), end: value.slice(separator + LITERAL_WRAPPER_SEPARATOR.length) });
 }
 
-export function normalizeMemoryTagList(value) {
+function normalizeTagBlockNames(value) {
   return String(value || '').split(/[,，\n]/).map(item => String(item).trim()).map(item => {
     if (literalWrapperRule(item)) return item;
     const tagName = item.toLowerCase();
@@ -63,59 +65,9 @@ function parseSanitizerTree(content, tokens) {
   return root;
 }
 
-function renderSanitizerChildren(children, keep, rescueOnly = false) {
-  let output = '';
-  for (const child of children) {
-    if (typeof child === 'string') {
-      if (!rescueOnly) output += child;
-      continue;
-    }
-    // Explicit keep blocks survive even inside discarded ancestors; unmatched wrappers only rescue visible text.
-    if (child.closed && keep.has(child.name)) {
-      output += renderSanitizerChildren(child.children, keep);
-    } else if (!child.closed) {
-      output += renderSanitizerChildren(child.children, keep, rescueOnly);
-    } else {
-      output += renderSanitizerChildren(child.children, keep, true);
-    }
-  }
-  return output;
-}
-
-function dropLiteralWrappedContent(content, rules) {
-  let result = content;
-  for (const { start, end } of rules) {
-    let cursor = 0;
-    let output = '';
-    while (cursor < result.length) {
-      const opening = result.indexOf(start, cursor);
-      if (opening < 0) { output += result.slice(cursor); break; }
-      const closing = result.indexOf(end, opening + start.length);
-      if (closing < 0) { output += result.slice(cursor); break; }
-      output += result.slice(cursor, opening);
-      cursor = closing + end.length;
-    }
-    result = output;
-  }
-  return result;
-}
-
-export function sanitizeMemoryContent(raw, options = {}) {
-  if (!raw) return '';
-  const keep = normalizeMemoryTagList(options.keepTags ?? 'content').filter(item => TAG_NAME_PATTERN.test(item));
-  const extra = normalizeMemoryTagList(options.extraTags ?? '');
-  const literalDropRules = extra.map(literalWrapperRule).filter(Boolean);
-  let content = String(raw);
-  content = dropLiteralWrappedContent(content, literalDropRules);
-  content = content.replace(/<!--[\s\S]*?-->/g, '');
-  const tokens = tagTokens(content);
-  const output = renderSanitizerChildren(parseSanitizerTree(content, tokens).children, new Set(keep));
-  return output.replace(/\n{3,}/g, '\n\n').trim();
-}
-
 export function stripMemoryTagBlocks(raw, tagNames) {
   const source = String(raw ?? '');
-  const names = new Set(normalizeMemoryTagList(tagNames).map(name => name.toLocaleLowerCase('en-US')));
+  const names = new Set(normalizeTagBlockNames(tagNames).map(name => name.toLocaleLowerCase('en-US')));
   if (!names.size || !source) return source;
   const content = source.replace(/<!--[\s\S]*?-->/gu, ' ');
   const ranges = [];

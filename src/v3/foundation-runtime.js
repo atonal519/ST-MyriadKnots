@@ -27,7 +27,7 @@ import { filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import { matchFloorCandidates } from './floor-binding.js';
-import { clearExactMessageFloorAnchor, inspectMessageFloorAnchor, messageFloorAnchorCandidateSnapshot, MESSAGE_FLOOR_ANCHOR_KEY, readTargetChat } from './message-floor-anchor.js';
+import { clearExactMessageFloorAnchor, inspectMessageFloorAnchor, messageFloorAnchorCandidateSnapshot, MESSAGE_FLOOR_ANCHOR_KEY, persistMessageMemoryExclusion, readTargetChat } from './message-floor-anchor.js';
 import { captureTargetChatDescriptor } from './host-adapter.js';
 import { migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
 
@@ -145,15 +145,16 @@ function commonRecord({ recordType, id, chatId, narrativeGeneration, now, record
   return { schemaVersion: 3, recordType, id, chatId, narrativeGeneration, createdAt: now, updatedAt: now, recordStatus, supersedes };
 }
 
-export async function projectFoundationPrefix({ source, floors, chatId, narrativeGeneration, now, currentStateId, previousCurrentStateId = null }) {
+export async function projectFoundationPrefix({ source, floors, excludedFloorIds = new Set(), chatId, narrativeGeneration, now, currentStateId, previousCurrentStateId = null }) {
   const floorIdSet = new Set(floors.map(floor => floor.id));
   const sourceFloorOrder = new Map((source.floors ?? []).map((floor, index) => [floor.id, index]));
   const brokenAggregateOrder = (source.floorMemories ?? [])
-    .filter(memory => memorySourceFloorIds(memory).length > 1 && !memorySourceFloorIds(memory).every(floorId => floorIdSet.has(floorId)))
+    .filter(memory => memorySourceFloorIds(memory).length > 1 && (!memorySourceFloorIds(memory).every(floorId => floorIdSet.has(floorId))
+      || memorySourceFloorIds(memory).some(floorId => excludedFloorIds.has(floorId))))
     .reduce((earliest, memory) => Math.min(earliest, sourceFloorOrder.get(memory.floorId) ?? Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY);
-  const floorMemories = (source.floorMemories ?? []).filter(memory => memorySourceFloorIds(memory).every(floorId => floorIdSet.has(floorId))
+  const floorMemories = (source.floorMemories ?? []).filter(memory => memorySourceFloorIds(memory).every(floorId => floorIdSet.has(floorId) && !excludedFloorIds.has(floorId))
     && (memorySourceFloorIds(memory).length === 1 || (sourceFloorOrder.get(memory.floorId) ?? Number.POSITIVE_INFINITY) < brokenAggregateOrder));
-  const survivingDeltas = (source.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId)
+  const survivingDeltas = (source.stateDeltas ?? []).filter(delta => floorIdSet.has(delta.floorId) && !excludedFloorIds.has(delta.floorId)
     && (sourceFloorOrder.get(delta.floorId) ?? Number.POSITIVE_INFINITY) < brokenAggregateOrder);
   let stateDeltas = filterReachableDeltas({ floors, floorMemories, stateDeltas: survivingDeltas });
   const referencedEntityIds = new Set();
@@ -161,7 +162,7 @@ export async function projectFoundationPrefix({ source, floors, chatId, narrativ
   stateDeltas.forEach(delta => collectStateDeltaEntityIds(delta).forEach(id => referencedEntityIds.add(id)));
   if (source.baseline) { referencedEntityIds.add(source.baseline.userPersona.entityId); referencedEntityIds.add(source.baseline.characterCard.entityId); }
   const entities = projectEntityFloorBounds((source.entities ?? []).filter(entity => referencedEntityIds.has(entity.id)
-    || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId))), floors, floorMemories, stateDeltas);
+    || (entity.firstSeenFloorId && floorIdSet.has(entity.firstSeenFloorId) && !excludedFloorIds.has(entity.firstSeenFloorId))), floors, floorMemories, stateDeltas);
   const entityIds = new Set(entities.map(entity => entity.id));
   const baseline = source.baseline && entityIds.has(source.baseline.userPersona.entityId) && entityIds.has(source.baseline.characterCard.entityId) ? source.baseline : null;
   if (!baseline) stateDeltas = [];
@@ -471,7 +472,7 @@ export function createFoundationRuntime({
     const last = candidates.at(-1);
     const end = last?.stabilityProof?.kind === 'nextUser' ? candidates.length : candidates.length - 1;
     if (end <= stableCount) return null;
-    const selected = candidates.slice(stableCount, end);
+    const selected = candidates.slice(stableCount, end).filter(candidate => candidate?.memoryExcluded !== true);
     if (selected.some(candidate => candidate?.messageAnchor?.status !== 'none')) return null;
     const items = selected.map(candidate => confirmationEvidence(candidate, candidate.stabilityProof?.kind !== 'nextUser'));
     if (!items.some(item => item.confirmationRequired)) return null;
@@ -503,17 +504,24 @@ export function createFoundationRuntime({
       const marker = candidates[count].messageAnchor;
       const match = bindings.candidateMatches.get(count);
       const matchedFloor = match?.floor ?? null;
+      const unconfirmedManualTail = count === candidates.length - 1 && !candidates[count]?.stabilityProof;
       const manuallySaved = matchedFloor?.stability?.stabilizedBy === 'manual'
+        && !unconfirmedManualTail
         && match.rawFingerprintMatches && match.canonicalFingerprintMatches && match.sanitizerFingerprintMatches;
       const permanentlySaved = Boolean(matchedFloor && (candidates[count].archiveCandidate === true || marker?.status === 'valid' || savedFloorIds.has(matchedFloor.id) || manuallySaved));
       const requestConfirmed = marker?.status === 'none' && matchedFloor
         && requestConfirmations.has(matchedFloor.id);
       const manuallyConfirmed = Array.isArray(manualConfirmation)
         && manualConfirmation.some(evidence => evidence.confirmationRequired === true && manualConfirmationMatches(candidates[count], evidence));
+      if (candidates[count].memoryExcluded === true) {
+        count += 1;
+        continue;
+      }
       if (candidates[count].stabilityProof?.kind !== 'nextUser' && !permanentlySaved && !requestConfirmed && !manuallyConfirmed) break;
       count += 1;
       if (Array.isArray(manualConfirmation) && manualConfirmation.length
-        && manualConfirmationMatches(candidates[count - 1], manualConfirmation.at(-1))) break;
+        && manualConfirmationMatches(candidates[count - 1], manualConfirmation.at(-1))
+        && candidates[count]?.memoryExcluded !== true) break;
     }
     return count;
   }
@@ -538,6 +546,12 @@ export function createFoundationRuntime({
     if (!value?.root) return reason('missingRoot');
     const bindings = matchFloorCandidates(value.floors ?? [], candidates);
     if (bindings.issue) return reason('markerMismatch', bindings.issue.assistantSeq, bindings.issue.messageIndex, value.floors.length, candidates.length, { markerStatus: bindings.issue.markerStatus, bindingIssue: bindings.issue.code });
+    const inputFingerprints = value.checkpoint?.inputFingerprints ?? [];
+    for (let index = 0; index < candidates.length; index += 1) {
+      if ((inputFingerprints[index]?.memoryExcluded === true) !== (candidates[index]?.memoryExcluded === true)) {
+        return reason('memoryExclusionChanged', candidates[index]?.assistantSeq ?? null, candidates[index]?.hostLocator?.messageIndex ?? null, value.floors.length, candidates.length);
+      }
+    }
     const stableCount = stableCountFor(candidates, value.floors ?? []);
     if (stableCount !== (value.floors?.length ?? 0)) {
       const differenceIndex = Math.min(stableCount, value.floors?.length ?? 0);
@@ -577,6 +591,7 @@ export function createFoundationRuntime({
     const bindings = matchFloorCandidates(floors ?? [], candidates);
     unregisteredCandidates = Object.freeze(bindings.unmatchedCandidateIndexes.map(index => {
       const candidate = candidates[index];
+      if (candidate?.memoryExcluded === true) return null;
       const markerStatus = candidate?.messageAnchor?.status ?? 'none';
       const reason = markerStatus !== 'none'
         ? 'registrationNeedsReview'
@@ -588,7 +603,7 @@ export function createFoundationRuntime({
         messageIndex: candidate.hostLocator.messageIndex,
         reason,
       });
-    }));
+    }).filter(Boolean));
     consecutiveAssistantConfirmation = confirmationScopeFor(candidates, floors, pendingIndex);
   }
 
@@ -1081,6 +1096,11 @@ export function createFoundationRuntime({
     if (bindings.issue) throw statusError('needsReview', '聊天中有内容相同的消息，无法确定原有记忆对应哪一条。请到“记忆管理”页点击“复制状态诊断”反馈。');
     const aligned = stableCandidates.map((_, index) => bindings.candidateMatches.get(index)?.floor ?? null);
     const usedFloorIds = new Set(bindings.matches.map(match => match.floor.id));
+    for (let index = 0; index < stableCandidates.length; index += 1) {
+      if (stableCandidates[index]?.memoryExcluded === true && aligned[index] && memoryFloorIds.has(aligned[index].id)) {
+        throw statusError('needsReview', '已有摘要的楼不能标为不计入记忆；如需移除，请在酒馆删除这条消息。');
+      }
+    }
     const unmatchedCandidates = bindings.unmatchedCandidateIndexes.map(index => stableCandidates[index]);
     for (const floor of existing) {
       const unresolvedReplacement = unmatchedCandidates.some(candidate => candidate?.messageAnchor?.status === 'none'
@@ -1090,7 +1110,23 @@ export function createFoundationRuntime({
       }
     }
     const removedFloorIds = existing.filter(floor => !usedFloorIds.has(floor.id)).map(floor => floor.id);
-    const destructiveRemoval = stableCandidates.length < existing.length || removedFloorIds.some(floorId => memoryFloorIds.has(floorId));
+    const dropsOnlyUnreferencedManualTail = stableCandidates.length < existing.length
+      && removedFloorIds.length === 1
+      && removedFloorIds[0] === existing.at(-1)?.id
+      && stableCandidates.length === existing.length - 1
+      && candidates.length === stableCandidates.length + 1
+      && existing.at(-1)?.stability?.stabilizedBy === 'manual'
+      && !existing.at(-1)?.stability?.proof
+      && !candidates.at(-1)?.stabilityProof
+      && sameLocator(existing.at(-1).hostLocator, candidates.at(-1)?.hostLocator)
+      && existing.at(-1).content.rawFingerprint === candidates.at(-1)?.rawFingerprint
+      && existing.at(-1).content.canonicalFingerprint === candidates.at(-1)?.canonicalFingerprint
+      && existing.at(-1).content.sanitizerFingerprint === candidates.at(-1)?.sanitizerFingerprint
+      && !(cache.floorMemories ?? []).some(memory => memorySourceFloorIds(memory).includes(existing.at(-1).id))
+      && !(cache.stateDeltas ?? []).some(delta => delta.floorId === existing.at(-1).id);
+    // An unrecorded manual tail without user confirmation returns to waiting; it has no saved facts to remove.
+    const destructiveRemoval = !dropsOnlyUnreferencedManualTail
+      && (stableCandidates.length < existing.length || removedFloorIds.some(floorId => memoryFloorIds.has(floorId)));
     if (destructiveRemoval && operation.chatComplete !== true && !(operation.chatComplete == null && tailDeletionMatches(operation.tailDeletion, candidates, existing, stableCount))) throw statusError('needsReview', '当前聊天没有完整加载证明，未把暂时不可见的消息当作已删除。');
     const locatorChanged = existing.length === stableCandidates.length && existing.some((floor, index) => !sameLocator(floor.hostLocator, stableCandidates[index]?.hostLocator));
     const identityChanged = existing.length !== aligned.length || existing.some((floor, index) => aligned[index]?.id !== floor.id);
@@ -1122,7 +1158,7 @@ export function createFoundationRuntime({
         const created = createFloorRecord({
         id: await deterministicUuid(['floor', operation.chatId, narrativeGeneration, runId, index + 1, stableCandidates[index].rawFingerprint, stableCandidates[index].canonicalFingerprint]),
         chatId: operation.chatId, narrativeGeneration, candidate: stableCandidates[index], predecessorFloorId: floors.at(-1)?.id ?? null,
-        stabilizedBy: stableCandidates[index].stabilityProof ? 'nextUser' : 'manual', runId, checkpointId, now: nowValue,
+        stabilizedBy: stableCandidates[index].memoryExcluded === true ? 'manual' : stableCandidates[index].stabilityProof ? 'nextUser' : 'manual', runId, checkpointId, now: nowValue,
         });
         floors.push(created); newFloors.push(created); continue;
       }
@@ -1131,9 +1167,11 @@ export function createFoundationRuntime({
         predecessorFloorId: floors.at(-1)?.id ?? null, hostLocator: { ...stableCandidates[index].hostLocator }, updatedAt: nowValue }, { expectedChatId: operation.chatId });
       floors.push(rebound);
     }
+    const excludedFloorIds = new Set(stableCandidates.flatMap((candidate, index) => candidate?.memoryExcluded === true && floors[index] ? [floors[index].id] : []));
     const { floorMemories, stateDeltas, entities, baseline, currentState, capabilities } = await projectFoundationPrefix({
       source: cache,
       floors,
+      excludedFloorIds,
       chatId: operation.chatId,
       narrativeGeneration,
       now: nowValue,
@@ -1144,7 +1182,7 @@ export function createFoundationRuntime({
     const indexKeys = indexes.map(index => store.recordKey(index));
     const floorIds = floors.map(floor => floor.id);
     const priorRealtimeOrigin = realtimeOriginFromReachable(cache);
-    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted'].includes(operation.reason)
+    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted', 'memoryExclusionChanged'].includes(operation.reason)
       && (emptyRealtimeObservation?.chatId === operation.chatId || priorRealtimeOrigin !== null);
     const realtimeOrigin = carriesRealtimeOrigin ? {
       chatId: operation.chatId,
@@ -1529,6 +1567,50 @@ export function createFoundationRuntime({
     }
     return reconcile('manualConfirmConsecutive', { manualConfirmation: currentScope.candidates });
   }
+  async function setMemoryExcluded(messageIndex, excluded) {
+    if (typeof excluded !== 'boolean' || !Number.isSafeInteger(messageIndex) || messageIndex < 0) {
+      throw statusError('conflict', '待标记的消息范围无效。');
+    }
+    if (activeOperation) return Object.freeze({ status: 'busy', message: '记忆正在处理，请稍后再试。' });
+    const captured = capture();
+    if (!cache || cache.status === 'needsReview' || reviewReason) {
+      return Object.freeze({ status: 'unavailable', message: '当前记忆状态尚未核对，暂时不能更改。' });
+    }
+    const candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
+    const candidateIndex = candidates.findIndex(item => item?.hostLocator?.messageIndex === messageIndex);
+    const candidate = candidates[candidateIndex];
+    if (!candidate) return Object.freeze({ status: 'unavailable', message: '当前 AI 楼尚未进入可处理范围。' });
+    if (excluded && candidate.archiveCandidate === true) {
+      return Object.freeze({ status: 'rejected', message: '这楼已有记忆，不能标为不记忆；如需移除，请在酒馆删除这条消息。' });
+    }
+    if (excluded && cache.root) {
+      const bindings = matchFloorCandidates(cache.floors ?? [], candidates);
+      if (bindings.issue) return Object.freeze({ status: 'unavailable', message: '当前消息与已有记忆的对应关系需要先核对。' });
+      const matched = bindings.candidateMatches.get(candidateIndex)?.floor;
+      if (matched) {
+        const floorId = matched.id;
+        const partition = migrationPartition(cache);
+        if (partition.isFrozenFloor(floorId)) return Object.freeze({ status: 'unavailable', message: '归档来源楼不能在当前聊天中更改。' });
+        const hasSavedMemory = (cache.floorMemories ?? []).some(memory => memorySourceFloorIds(memory).includes(floorId));
+        const hasSavedState = (cache.stateDeltas ?? []).some(delta => delta.floorId === floorId);
+        if (hasSavedMemory || hasSavedState) {
+          return Object.freeze({ status: 'rejected', message: '这楼已有记忆，不能标为不记忆；如需移除，请在酒馆删除这条消息。' });
+        }
+        let hasSavedTime = false;
+        if (typeof hasTimeFloorReference === 'function') {
+          try { hasSavedTime = await hasTimeFloorReference(captured.identity.chatId, floorId); }
+          catch { return Object.freeze({ status: 'unavailable', message: '当前楼的时间资料尚未核对，暂时不能更改。' }); }
+        }
+        if (hasSavedTime) {
+          return Object.freeze({ status: 'rejected', message: '这楼已有记忆，不能标为不记忆；如需移除，请在酒馆删除这条消息。' });
+        }
+      }
+    }
+    const result = await persistMessageMemoryExclusion({ hostAdapter, chatId: captured.identity.chatId, messageIndex, excluded });
+    if (result.status !== 'persisted') return result;
+    const state = await reconcile('memoryExclusionChanged');
+    return Object.freeze({ status: 'persisted', state });
+  }
   return Object.freeze({
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
@@ -1542,6 +1624,7 @@ export function createFoundationRuntime({
     cancelEarlyStabilization,
     confirmLatest: () => pending ? reconcile('manualConfirm', { confirmLatest: true }) : Promise.resolve(publish('ready')),
     confirmConsecutiveAssistants,
+    setMemoryExcluded,
     invalidate, setEnabled, adoptReachable, holdExtractionConfirmation, authorizeRealtimeOrigin, getState: () => publicState,
     getPendingCandidate: () => pending,
     getReachable: () => cache,

@@ -60,6 +60,18 @@ const rankedItem = (id,{type='deadline',label=id,observation=label,dueTime='',st
 const rankedSeed = (source,changes,{id='rank-seed',cutoff=source.bodyFloors[0]}={}) => ({schemaVersion:1,chatId:CHAT,id,signature:id,currentTime:cutoff.observationTime,
   cutoffFloorId:cutoff.floorId,cutoffAssistantSeq:cutoff.assistantSeq,sourceKeys:[],dependencies:[],bodyReads:[],changes});
 
+test('正文时间读取跳过排除楼且不让它成为后楼时间参照', async () => {
+  const h = await harness({ count: 2 });
+  const before = await h.body();
+  h.chat[0].extra = { qianqianjie_memory_excluded: true };
+  const after = await h.body();
+  assert.deepEqual(after.bodyFloors.map(body => body.floorId), ['floor-2']);
+  assert.equal(after.bodyFloors.some(body => body.rawContent.includes('2026-05-01')), false);
+  assert.notEqual(after.bodySignature, before.bodySignature);
+  const recent = await readRecentBodyStoryTimes(h.hostAdapter.snapshot(), { reachable: h.source, limit: 32 });
+  assert.equal(recent.some(item => item.floorId === 'floor-1'), false);
+});
+
 test('刻度关联只接受本次千事候选，省略与坏key保留旧关联，null解链且人工操作不改剧情语义', async () => {
   const observation = { sourceKey:'S1', floorId:'floor-1', assistantSeq:1, canonicalFingerprint:'body-1', timeSourceFingerprint:'time-1',
     subjectEntityId:PERSON, description:'阿岚答应明日归还旧书。', observationTime:projectTime('2026-05-01') };
@@ -1308,6 +1320,7 @@ test('每次getState只读取一次记忆状态且下一次调用刷新快照', 
   memoryState = { memorySyncStatus: 'idle', status: 'error' };
   const errorState = h.runtime.getState(); assert.equal(errorState.status, 'waiting'); assert.equal(errorState.canOrganize, false); assert.equal(reads, 3);
   h.setEnabled(false); const beforeDisabled = reads; assert.equal(h.runtime.getState().status, 'disabled'); assert.equal(reads, beforeDisabled, '关闭时保留原零读取快路径');
+  assert.equal(h.runtime.getActivityState().status, 'disabled'); assert.equal(reads, beforeDisabled, '关闭时activity同样不读取记忆');
 });
 
 test('近期事项编辑按名称与描述分别校验长度，拒绝不写入且保留150/1200字边界', async () => {
@@ -1521,12 +1534,13 @@ test('真实时间runtime DTO把归并主项状态传到编辑指引', async () 
   const foundationState = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false, memoryEntities: [], floors: [] };
   const foundationRuntime = { getState: () => foundationState, refreshStatus: async () => foundationState, confirmLatest: async () => foundationState };
   const container = new UiNode('main'), documentRef = uiDocument();
-  const view = createV3FoundationView({ runtime: foundationRuntime, timeRuntime: h.runtime, documentRef });
+  let editor;
+  const view = createV3FoundationView({ runtime: foundationRuntime, timeRuntime: h.runtime, documentRef, customImpl: async options => { editor = options.content; return null; } });
   view.setPage('memories'); view.mount(container);
   await uiFlatten(container).find(node => node.textContent === `近期事项（${state.trackedItems.length}）`).click();
   const menu = uiFlatten(container).find(node => node.className === 'qqj-profile-menu'); menu.open = true;
   await uiFlatten(container).find(node => node.textContent === '编辑事项').click();
-  assert.ok(uiFlatten(container).some(node => node.textContent === '此项仍有归并成员；请先在“停止项”中恢复追踪所有成员，再修改人物归属。'), '表单消费实际 runtime DTO 并显示解除归并指引');
+  assert.ok(uiFlatten(editor).some(node => node.textContent === '此项仍有归并成员；请先在“停止项”中恢复追踪所有成员，再修改人物归属。'), '表单消费实际 runtime DTO 并显示解除归并指引');
   view.deactivate();
 });
 

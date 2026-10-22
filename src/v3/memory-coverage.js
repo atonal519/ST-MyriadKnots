@@ -4,6 +4,7 @@ import { isHostNarratorMessage, scanAssistantCandidates, selectAssistantMessage 
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
+import { isMemoryExcludedFloor, isMemoryExcludedMessage } from './memory-exclusion.js';
 
 export const RECENT_VISIBLE_AI_FLOORS = 3;
 const HOST_GUARD = Symbol('qqjCoverageHostGuard');
@@ -55,6 +56,7 @@ function captureHostGuard(snapshot, hostCandidates, hostProof = null) {
       floorId: candidate.messageAnchor?.status === 'valid' ? candidate.messageAnchor.anchor.floorId : null,
       expectedFloorId: expectedFloorByCandidate.get(candidate) ?? null,
       anchorStatus: candidate.messageAnchor?.status ?? 'invalid',
+      memoryExcluded: candidate.memoryExcluded === true,
       visible: visibleAssistant(snapshot.chat?.[candidate.hostLocator.messageIndex]),
     }))),
   });
@@ -69,7 +71,8 @@ export function coverageHostGuardCurrent(readiness, snapshot) {
     const selected = selectAssistantMessage(current);
     const anchor = inspectMessageFloorAnchor(current, guard.chatId);
     if (!selected || selected.swipeId !== expected.swipeId || selected.selectedSwipeIndex !== expected.selectedSwipeIndex
-      || visibleAssistant(current) !== expected.visible || !['none', 'valid'].includes(anchor.status)) return false;
+      || visibleAssistant(current) !== expected.visible || isMemoryExcludedMessage(current) !== expected.memoryExcluded
+      || !['none', 'valid'].includes(anchor.status)) return false;
     if (anchor.status === 'valid') {
       if (currentFloorIds.has(anchor.anchor.floorId)) return false;
       currentFloorIds.add(anchor.anchor.floorId);
@@ -91,14 +94,6 @@ function activeMemoriesByFloor(reachable) {
   return new Map([...groups].filter(([, values]) => values.length === 1).map(([floorId, values]) => [floorId, values[0]]));
 }
 
-function recentVisibleIndexes(chat) {
-  const indexes = new Set();
-  for (let index = chat.length - 1; index >= 0 && indexes.size < RECENT_VISIBLE_AI_FLOORS; index -= 1) {
-    if (visibleAssistant(chat[index])) indexes.add(index);
-  }
-  return indexes;
-}
-
 function hostCoverageProof(reachable, snapshot, hostCandidates) {
   if (!reachable?.root?.chatId || currentChatId(snapshot) !== reachable.root.chatId || !Array.isArray(hostCandidates)) return null;
   const bindings = matchFloorCandidates(reachable.floors ?? [], hostCandidates);
@@ -107,7 +102,7 @@ function hostCoverageProof(reachable, snapshot, hostCandidates) {
   const candidateByFloorId = new Map();
   for (const match of bindings.matches) candidateByFloorId.set(match.floor.id, match.candidate);
   const liveCandidates = hostCandidates.filter(candidate => candidate.archiveCandidate !== true);
-  const unregistered = liveCandidates.filter(candidate => !matchedCandidates.has(candidate));
+  const unregistered = liveCandidates.filter(candidate => !matchedCandidates.has(candidate) && candidate.memoryExcluded !== true);
   if (unregistered.some(candidate => candidate.messageAnchor?.status !== 'none')) return null;
   const lastMatchedIndex = Math.max(-1, ...[...matchedCandidates].filter(candidate => candidate.archiveCandidate !== true).map(candidate => candidate.hostLocator.messageIndex));
   if (unregistered.some(candidate => candidate.hostLocator.messageIndex <= lastMatchedIndex)) return null;
@@ -116,7 +111,10 @@ function hostCoverageProof(reachable, snapshot, hostCandidates) {
 
 export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, realtimeOrigin = false } = {}) {
   const hostProof = reachable?.root && Array.isArray(reachable.floors) ? hostCoverageProof(reachable, snapshot, hostCandidates) : null;
-  const floors = migrationPartition(reachable).liveFloors;
+  const partition = migrationPartition(reachable);
+  const floors = partition.liveFloors.filter(floor => !isMemoryExcludedFloor(floor, snapshot?.chat, reachable?.checkpoint, {
+    frozen: partition.isFrozenFloor(floor.id),
+  }));
   if (!hostProof) {
     return Object.freeze({ status: 'unknown', completed: 0, total: floors.length, nextAssistantSeq: null, pendingFloorIds: Object.freeze([]), realtimeProtected: false, hasPartialWork: false, summaryStatus: 'unknown', summaryCompleted: 0, summaryNextAssistantSeq: null, summaryPendingFloorIds: Object.freeze([]), summaryMissingFloorIds: Object.freeze([]), visibleSummaryFloorIds: Object.freeze([]), summaryRealtimeProtected: false, summaryHasPartialWork: false });
   }
@@ -124,7 +122,7 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
   const unregisteredSummaryRefs = Object.freeze(hostProof.unregistered.map((candidate, offset) => Object.freeze({
     floorId: `host-tail:${candidate.hostLocator.messageIndex}:${candidate.rawFingerprint}`,
     floorMemoryId: null,
-    assistantSeq: nextAssistantSeq + offset,
+    assistantSeq: candidate.assistantSeq ?? nextAssistantSeq + offset,
     hostLocator: Object.freeze({ ...candidate.hostLocator }),
     rawFingerprint: candidate.rawFingerprint,
     canonicalFingerprint: candidate.canonicalFingerprint,
@@ -144,7 +142,9 @@ export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, real
     ...floors.filter(floor => visibleAssistant(snapshot.chat[hostProof.candidateByFloorId.get(floor.id)?.hostLocator.messageIndex])).map(floor => floor.id),
     ...unregisteredSummaryRefs.filter(ref => visibleAssistant(snapshot.chat[ref.hostLocator.messageIndex])).map(ref => ref.floorId),
   ]);
-  const recent = recentVisibleIndexes(snapshot.chat);
+  const eligibleRecent = hostCandidates.filter(candidate => candidate.archiveCandidate !== true && candidate.memoryExcluded !== true
+    && visibleAssistant(snapshot.chat[candidate.hostLocator.messageIndex])).slice(-RECENT_VISIBLE_AI_FLOORS);
+  const recent = new Set(eligibleRecent.map(candidate => candidate.hostLocator.messageIndex));
   // A contiguous missing suffix may be protected as live work; a gap followed by saved floors remains historical debt.
   const summaryRealtimeProtected = summaryPending.length > 0 && (realtimeOrigin === true
     || summaryCompleted > 0

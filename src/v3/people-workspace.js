@@ -12,6 +12,8 @@ import {
 } from './entity-identity.js';
 import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
+import { isMemoryExcludedFloor } from './memory-exclusion.js';
+import { migrationPartition } from './migration-prefix.js';
 
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
@@ -743,7 +745,7 @@ export function createPeopleWorkspaceRuntime({
     try { identity = capture(); } catch { return; }
     const reachable = foundationRuntime.getReachable?.();
     if (!reachable || identity.chatId !== chatId || reachable.root?.chatId && reachable.root.chatId !== chatId) return;
-    const count = (reachable.floors ?? []).length;
+    const count = eligibleAutomaticFloorCount(reachable);
     if (automaticChatId !== chatId || automaticFloorCount === null) {
       automaticChatId = chatId;
       automaticFloorCount = count;
@@ -812,6 +814,19 @@ export function createPeopleWorkspaceRuntime({
       profileMaterialProgressByEntityId: materialProgress,
       unprofiledSelectedCount: people.filter(person => person.selected && !person.profiled).length, lastError, lastGenerationReport });
   }
+  function getPeopleAvatars(entityIds = []) {
+    const requested = [...new Set((Array.isArray(entityIds) ? entityIds : [])
+      .filter(entityId => typeof entityId === 'string' && entityId.length > 0))];
+    const requestedIds = new Set(requested);
+    const avatarsByEntityId = Object.fromEntries(requested.map(entityId => [entityId, null]));
+    if (!enabled()) return Object.freeze({ status: 'disabled', chatId: chatId ?? null, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
+    if (!workspace || !chatId) return Object.freeze({ status: 'not-ready', chatId: null, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
+    for (const person of people) {
+      const entityId = person?.entityId;
+      if (requestedIds.has(entityId)) avatarsByEntityId[entityId] = typeof person.avatar === 'string' ? person.avatar : null;
+    }
+    return Object.freeze({ status: 'ready', chatId, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
+  }
   async function readArchivedProfileHistory(entityId) {
     if (typeof entityId !== 'string' || !entityId) throw errorWith('QQJ_PEOPLE_ENTITY_INVALID', '人物标识无效。');
     const reachable = foundationRuntime.getReachable?.();
@@ -875,7 +890,7 @@ export function createPeopleWorkspaceRuntime({
       await pruneUnreachableSelections(operation);
       if (automaticChatId !== chatId || automaticFloorCount === null) {
         automaticChatId = chatId;
-        automaticFloorCount = (foundationRuntime.getReachable?.()?.floors ?? []).length;
+        automaticFloorCount = eligibleAutomaticFloorCount(foundationRuntime.getReachable?.());
       }
       lastError = null; return notify();
     });
@@ -941,9 +956,10 @@ export function createPeopleWorkspaceRuntime({
         if (JSON.stringify(existing ?? null) !== JSON.stringify(startingProfile)) throw errorWith('QQJ_PEOPLE_PROFILE_CONFLICT', '这个人物资料已在其他页面更新，本次没有覆盖新内容，请重试。');
         const declaredInput = requestedManualFields === null ? null : [...new Set(requestedManualFields)].filter(field => PEOPLE_PROFILE_FIELD_SET.has(field));
         const desired = existing && declaredInput ? { ...profileFields(existing), ...Object.fromEntries(declaredInput.map(field => [field, requested[field]])) } : requested;
-        if (existing && sameFields(existing, desired)) return null;
+        const confirmingAliases = declaredInput?.includes('aliases') && !existing?.manualFields?.includes('aliases');
+        if (existing && sameFields(existing, desired) && !confirmingAliases) return null;
         const changedFields = PEOPLE_PROFILE_FIELDS.filter(field => String(existing?.[field] ?? '') !== String(desired[field] ?? ''));
-        const declared = requestedManualFields === null ? changedFields : [...new Set(requestedManualFields)].filter(field => PEOPLE_PROFILE_FIELD_SET.has(field) && changedFields.includes(field));
+        const declared = requestedManualFields === null ? changedFields : [...new Set(requestedManualFields)].filter(field => PEOPLE_PROFILE_FIELD_SET.has(field) && (changedFields.includes(field) || field === 'aliases'));
         const manual = [...new Set([...(existing?.manualFields ?? []), ...declared])];
         const timestamp = nowIso(now);
         return { ...clone(current), profilesByEntityId: { ...clone(current.profilesByEntityId), [entityId]: {
@@ -1121,7 +1137,10 @@ export function createPeopleWorkspaceRuntime({
     return { request, keys: new Map(peopleRequest.map((person, index) => [person.personKey, targets[index].entityId])), worldInfoReport };
   }
   function automaticRecentFloors(reachable) {
-    const floors = [...(reachable?.floors ?? [])].slice(-10);
+    const partition = migrationPartition(reachable);
+    const floors = [...(reachable?.floors ?? [])].filter(floor => !isMemoryExcludedFloor(floor, null, reachable?.checkpoint, {
+      frozen: partition.isFrozenFloor(floor.id),
+    })).slice(-10);
     let remaining = 19000;
     const recentFloors = [];
     for (const floor of [...floors].reverse()) {
@@ -1137,6 +1156,12 @@ export function createPeopleWorkspaceRuntime({
       }
     }
     return Object.freeze(recentFloors);
+  }
+  function eligibleAutomaticFloorCount(reachable) {
+    const partition = migrationPartition(reachable);
+    return (reachable?.floors ?? []).filter(floor => !isMemoryExcludedFloor(floor, null, reachable?.checkpoint, {
+      frozen: partition.isFrozenFloor(floor.id),
+    })).length;
   }
   function automaticGenerationEnvelope(operation, targets) {
     const reachable = foundationRuntime.getReachable?.();
@@ -1385,7 +1410,7 @@ export function createPeopleWorkspaceRuntime({
   const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
   return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, readArchivedProfileHistory, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
-    getState, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
+    getState, getPeopleAvatars, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
     wakeAutomaticMaintenance: scheduleAutomaticMaintenance,
     destroy() { destroyed = true; unsubscribeMemory?.(); unsubscribeFoundation?.(); invalidate(); },
   });

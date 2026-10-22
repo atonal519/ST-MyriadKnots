@@ -162,13 +162,8 @@ export function createChatIdentityCoordinator({
       if (!inherit) return claimReady(raw, owner, chatId, sourceChatId, taskInputs, signal);
       const claimed = await create(bindingRecord({ chatId, owner, state: 'preparing', sourceChatId, createdAt: nowIso() }));
       if (!sameExactOwner(claimed.data.owner, owner) || claimed.data.sourceChatId !== sourceChatId) return null;
-      if (claimed.data.state === 'ready') {
-        if (!initializeBranch || !isUuid(sourceChatId)) { await persist(raw, chatId, taskInputs, signal); return chatId; }
-        const initialized = await initializeBranch({ raw, host, sourceChatId, targetChatId: chatId, createdAt: claimed.data.createdAt, signal, taskInputs });
-        assertCurrent(signal);
-        if (initialized?.persistedIdentity !== chatId) await persist(raw, chatId, taskInputs, signal);
-        return chatId;
-      }
+      // A file still carrying its parent's ID is a new branch; a ready candidate belongs to an earlier completed branch.
+      if (claimed.data.state === 'ready') return null;
       return completePreparingBranch(raw, host, claimed, signal, taskInputs);
     };
     const tryClaim = async chatId => {

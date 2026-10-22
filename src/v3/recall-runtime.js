@@ -13,13 +13,15 @@ import { normalizeAutoHideKeepAiCount } from '../settings.js';
 import { createRecallRequestDiagnostic } from './recall-request-diagnostic.js';
 import { MIGRATION_ALIAS_KEY, migrationPartition } from './migration-prefix.js';
 import { readLocationReference } from './location-reference.js';
+import { isMemoryExcludedMessage } from './memory-exclusion.js';
+import { qianshiRecallPendingHeader, QIANSHI_RECALL_PENDING_HEADER } from './qianshi-domain.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 export const RECALL_RECEIPT_SCHEMA_VERSION = 18;
-export const RECALL_STRATEGY_VERSION = 'continuity-v18';
+export const RECALL_STRATEGY_VERSION = 'continuity-v23';
 const RECALL_PROMPT_DEPTH = 2;
-const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
+const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18', 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAX_STOPPED_GENERATION_CHAINS = 16;
@@ -33,6 +35,19 @@ const LEGACY_MAX_RECEIPT_CSE_CHANGES = 24;
 const LEGACY_MAX_RECEIPT_STORYLINES = 4;
 const MAX_RECEIPT_STATE_PROGRESSIONS = 8;
 const MAX_RECEIPT_SKIP_REASONS = 32;
+const EXPANDED_RECALL_SELECTION_STRATEGIES = new Set([
+  RECALL_STRATEGY_VERSION, 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18',
+  'continuity-v17', 'continuity-v16', 'continuity-v15',
+]);
+const EXPANDED_RECALL_RECEIPT_LIMITS = Object.freeze({ expanded: true, floors: MAX_RECEIPT_FLOORS,
+  states: MAX_RECEIPT_STATES, cseChanges: MAX_RECEIPT_CSE_CHANGES, combinedStatesAndChanges: MAX_RECEIPT_CSE_CHANGES,
+  storylines: MAX_RECEIPT_STORYLINES });
+const LEGACY_RECALL_RECEIPT_LIMITS = Object.freeze({ expanded: false, floors: LEGACY_MAX_RECEIPT_FLOORS,
+  states: LEGACY_MAX_RECEIPT_STATES, cseChanges: LEGACY_MAX_RECEIPT_CSE_CHANGES,
+  combinedStatesAndChanges: LEGACY_MAX_RECEIPT_CSE_CHANGES, storylines: LEGACY_MAX_RECEIPT_STORYLINES });
+export function recallReceiptSelectionLimits(strategyVersion) {
+  return EXPANDED_RECALL_SELECTION_STRATEGIES.has(strategyVersion) ? EXPANDED_RECALL_RECEIPT_LIMITS : LEGACY_RECALL_RECEIPT_LIMITS;
+}
 // 单次来源准备共用一个期限覆盖身份、root、读取与投影；期限内结束仍须完成后续来源版本核验。
 const DEFAULT_PREPARATION_TIMEOUT_MS = 8000;
 const RECALL_PRIORITY_STATUSES = new Set(['missing', 'empty', 'invalid', 'applied', 'timeGuard']);
@@ -61,20 +76,30 @@ function latestUser(snapshot) {
 }
 
 const liveRecallFrameKey = snapshot => JSON.stringify(buildRecallQueryFrame({ coreChat: snapshot?.chat, assistantTurns: 1 }).messages.map(message => [message.role, message.text]));
-function captureLatestLocationReference(snapshot, sanitizerOptions, maximumFloors) {
+function captureLatestLocationReference(snapshot, sanitizerOptions, maximumFloors, beforeIndex = Infinity) {
   const chat = Array.isArray(snapshot?.chat) ? snapshot.chat : [];
   let visible = 0;
-  for (let index = chat.length - 1; index >= 0 && visible < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
+  for (let index = Math.min(chat.length - 1, beforeIndex - 1); index >= 0 && visible < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
     const message = chat[index];
     if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true) continue;
+    if (message.is_user === false && isMemoryExcludedMessage(message)) continue;
     const selected = selectAssistantMessage(message);
     if (!selected?.rawContent?.trim() || !sanitizeMemoryContent(selected.rawContent, sanitizerOptions)) continue;
     visible += 1;
     const values = readLocationReference(selected.rawContent) ?? [];
+    if (!values.length) return null;
     return Object.freeze({ values, hostLocator: Object.freeze({ messageIndex: index,
       swipeId: selected.swipeId ?? null, selectedSwipeIndex: selected.selectedSwipeIndex ?? null }) });
   }
   return null;
+}
+
+function locationReferenceDependencyMatches(saved, current) {
+  if (saved === JSON.stringify(current)) return true;
+  if (current !== null) return false;
+  // 已验签的旧空占位只代表无地点，不因当时消息定位不同而重选。
+  try { const value = JSON.parse(saved); return Array.isArray(value?.values) && value.values.length === 0; }
+  catch { return false; }
 }
 
 async function sourceRefsValid(receipt, source, onInvalid = () => {}, selectedFloorsForValidation = null) {
@@ -118,6 +143,7 @@ async function sourceRefsValid(receipt, source, onInvalid = () => {}, selectedFl
     const subject = value && typeof value === 'object' ? subjects.get(value.subjectEntityId) : null;
     valid = valid && Array.isArray(subject?.[value.layer]) && subject[value.layer].some(item => (
       item.text === value.text && item.visibility === value.visibility && item.reason === value.reason
+      && (value.origin === undefined || item.origin === value.origin)
       && item.towardEntityId === (value.towardEntityId ?? null) && item.sourceAssistantSeq === (value.sourceAssistantSeq ?? null)
       && (!value.stateId || (item.stateId === value.stateId && (item.sourceFloorId ?? null) === (value.sourceFloorId ?? null) && (item.sourceDeltaId ?? null) === (value.sourceDeltaId ?? null)))
     ));
@@ -308,21 +334,25 @@ function timeDependenciesCurrent(value, projection) {
     && value.reminders.every(item => (projection?.reminders ?? []).some(current => sameItem(item, current)));
 }
 
+const qianshiProgressScopeLine = value => value?.text?.match(/(?:^|\n\n)(本轮千事资料来源截至：AI #\d+。)(?=\n\n|$)/u)?.[1] ?? '';
+const qianshiHasMaterialSection = sections => sections.some(section => section.startsWith('[相关时间线]')
+  || qianshiRecallPendingHeader(section, null) !== null);
 export function renderedQianshiProgressText(value, timeDependencies = null) {
   const source = typeof value?.text === 'string' ? value.text : '';
   const suppressed = new Set((timeDependencies?.reminders ?? []).map(item => item.qianshiRef?.matterId).filter(Boolean));
   if (!source || !suppressed.size || !Array.isArray(value?.matterIds) || !value.matterIds.length) return source;
   let matterIndex = 0;
-  return source.split(/\n\n/u).map(section => {
+  const sections = source.split(/\n\n/u).map(section => {
     const lines = section.split('\n');
-    if (lines[0] !== '[当前待接续]') return section;
+    if (qianshiRecallPendingHeader(lines[0], null) === null) return section;
     const kept = lines.slice(1).filter(line => {
       if (!line.startsWith('- ')) return true;
       const matterId = value.matterIds[matterIndex++];
       return !suppressed.has(matterId);
     });
     return kept.some(line => line.startsWith('- ')) ? [lines[0], ...kept].join('\n') : '';
-  }).filter(Boolean).join('\n\n');
+  }).filter(Boolean);
+  return (qianshiHasMaterialSection(sections) ? sections : sections.filter(section => !/^本轮千事资料来源截至：AI #\d+。$/u.test(section))).join('\n\n');
 }
 const qianshiBlock = (value, timeDependencies = null) => {
   const content = renderedQianshiProgressText(value, timeDependencies);
@@ -498,11 +528,12 @@ const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => va
   && boundedString(value.reason, 4000, { empty: true }) && ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin)
   && optionalBoundedString(value.towardEntityId, 500) && optionalPositiveInteger(value.sourceAssistantSeq));
 function receiptShapeValid(receipt, { historical = false } = {}) {
-  const expandedSelection = [RECALL_STRATEGY_VERSION, 'continuity-v17', 'continuity-v16', 'continuity-v15'].includes(receipt?.strategyVersion);
-  const receiptFloorLimit = expandedSelection ? MAX_RECEIPT_FLOORS : LEGACY_MAX_RECEIPT_FLOORS;
-  const receiptStateLimit = expandedSelection ? MAX_RECEIPT_STATES : LEGACY_MAX_RECEIPT_STATES;
-  const receiptChangeLimit = expandedSelection ? MAX_RECEIPT_CSE_CHANGES : LEGACY_MAX_RECEIPT_CSE_CHANGES;
-  const receiptStorylineLimit = expandedSelection ? MAX_RECEIPT_STORYLINES : LEGACY_MAX_RECEIPT_STORYLINES;
+  const selectionLimits = recallReceiptSelectionLimits(receipt?.strategyVersion);
+  const expandedSelection = selectionLimits.expanded;
+  const receiptFloorLimit = selectionLimits.floors;
+  const receiptStateLimit = selectionLimits.states;
+  const receiptChangeLimit = selectionLimits.cseChanges;
+  const receiptStorylineLimit = selectionLimits.storylines;
   if (receipt?.qianshiDeletionWitness !== undefined && (!Array.isArray(receipt.qianshiDeletionWitness)
     || receipt.qianshiDeletionWitness.length > 160 + receiptStateLimit
     || !receipt.qianshiDeletionWitness.every(value => value && boundedString(value.matterId, 500) && boundedString(value.fingerprint, 200)))) return false;
@@ -528,7 +559,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || (receipt.schemaVersion >= 18 && !boundedString(receipt.locationReferenceDependency, 4000, { empty: true }))
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18', 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > receiptFloorLimit
@@ -573,10 +604,11 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     && optionalBoundedString(value.towardEntityId, 500) && optionalBoundedString(value.toward, 500)
     && boundedString(value.text, 4000) && boundedString(value.reason, 4000, { empty: true })
     && ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility)
+    && (value.origin === undefined || ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin))
     && optionalPositiveInteger(value.sourceAssistantSeq))) return false;
   if (receipt.schemaVersion >= 10) {
     if (!Array.isArray(receipt.selectedCseChanges) || receipt.selectedCseChanges.length > receiptChangeLimit
-      || receipt.selectedStates.length + receipt.selectedCseChanges.length > receiptChangeLimit
+      || receipt.selectedStates.length + receipt.selectedCseChanges.length > selectionLimits.combinedStatesAndChanges
       || !receipt.selectedCseChanges.every(value => value && typeof value === 'object' && !Array.isArray(value)
         && boundedString(value.deltaId, 500) && boundedString(value.floorId, 500) && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
         && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
@@ -768,6 +800,7 @@ export async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerp
   for (let index = chat.length - 1; index >= 0 && selected.length < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
     const message = chat[index];
     if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true) continue;
+    if (message.is_user === false && isMemoryExcludedMessage(message)) continue;
     if (message.is_user !== false || typeof message.mes !== 'string') continue;
     const rawContent = message.mes.replace(/\r\n?/g, '\n');
     if (!rawContent.trim()) continue;
@@ -786,15 +819,14 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
   // Recent-body overlap is trusted only when message position, selected swipe, and raw/canonical fingerprints agree.
   const visibleFloorIds = [...new Set(source.readiness?.visibleSummaryFloorIds ?? [])].sort();
   const recentVisibleMessageIndexes = new Set();
-  let latestVisibleMessage = null;
   let recentVisibleCount = 0;
   for (let index = (snapshot?.chat?.length ?? 0) - 1; index >= 0 && recentVisibleCount < normalizeAutoHideKeepAiCount(maximumFloors); index -= 1) {
     const message = snapshot.chat[index];
     if (!message || message.is_system === true || message.is_hidden === true || message.hidden === true) continue;
+    if (message.is_user === false && isMemoryExcludedMessage(message)) continue;
     const selected = selectAssistantMessage(message);
     if (!selected?.rawContent?.trim() || !sanitizeMemoryContent(selected.rawContent, sanitizerOptions)) continue;
     recentVisibleMessageIndexes.add(index);
-    latestVisibleMessage ??= { index, message, selected };
     recentVisibleCount += 1;
   }
   const partition = migrationPartition(source);
@@ -828,6 +860,7 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
   if (cloneSearchNeeded) for (let liveIndex = 0; liveIndex < (snapshot?.chat?.length ?? 0); liveIndex += 1) {
     const liveMessage = snapshot.chat[liveIndex];
     if (!liveMessage || liveMessage.is_system === true || liveMessage.is_hidden === true || liveMessage.hidden === true) continue;
+    if (liveMessage.is_user === false && isMemoryExcludedMessage(liveMessage)) continue;
     const selected = selectAssistantMessage(liveMessage);
     if (!selected?.rawContent?.trim() || !witnessRawContents.has(selected.rawContent)) continue;
     const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
@@ -850,7 +883,8 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
   const fingerprintsByRawContent = new Map();
   for (const { ref, alias, liveIndex, liveMessage, selected } of eligibleRefs) {
     const identityWitness = witness.some(item => item.message === liveMessage && item.rawContent === selected.rawContent);
-    if (!recentVisibleMessageIndexes.has(liveIndex) && !identityWitness && !cloneLiveIndexes.has(liveIndex)) continue;
+    const capturedLocationSource = liveIndex === capturedLocationReference?.hostLocator?.messageIndex;
+    if (!recentVisibleMessageIndexes.has(liveIndex) && !identityWitness && !cloneLiveIndexes.has(liveIndex) && !capturedLocationSource) continue;
     const canonical = liveCandidateByIndex.get(liveIndex)?.canonicalContent
       ?? sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
     if (!canonical) continue;
@@ -866,9 +900,13 @@ async function attachCoreBodyMatch(source, witness, snapshot, sanitizerOptions, 
   }
   const recentVisibleFloorIds = [...new Set(verified.filter(ref => recentVisibleMessageIndexes.has(ref.liveIndex)).map(ref => ref.floorId))].sort();
   let locationReferences = [];
-  if (latestVisibleMessage && capturedLocationReference?.hostLocator?.messageIndex === latestVisibleMessage.index) {
-    const sourceMatches = verified.filter(ref => ref.liveIndex === latestVisibleMessage.index
-      && ref.liveMessage === latestVisibleMessage.message && ref.rawContent === latestVisibleMessage.selected.rawContent);
+  if (capturedLocationReference?.hostLocator) {
+    const capturedMessage = snapshot?.chat?.[capturedLocationReference.hostLocator.messageIndex];
+    const capturedSelected = selectAssistantMessage(capturedMessage);
+    const sourceMatches = verified.filter(ref => ref.liveIndex === capturedLocationReference.hostLocator.messageIndex
+      && ref.liveMessage === capturedMessage && ref.rawContent === capturedSelected?.rawContent
+      && capturedSelected?.swipeId === capturedLocationReference.hostLocator.swipeId
+      && capturedSelected?.selectedSwipeIndex === capturedLocationReference.hostLocator.selectedSwipeIndex);
     const sourceRef = sourceMatches.length === 1 ? sourceMatches[0] : null;
     const sourceMemory = sourceRef ? (source.floorMemories ?? []).find(memory => memory.floorMemoryId === sourceRef.floorMemoryId) : null;
     const frozenReference = sourceMemory?.locationReferenceSources?.find(value => value.sourceFloorId === sourceRef.floorId);
@@ -980,7 +1018,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, processingPrompt = () => '', isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -994,7 +1032,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
   const hasRealtimeOrigin = () => { try { return (typeof realtimeOrigin === 'function' ? realtimeOrigin() : realtimeOrigin) === true; } catch { return false; } };
   const selectionRunner = typeof selector === 'function'
     ? selector
-    : input => selectRecallWithLlm({ ...input, generateUtilityTask, semanticProvider, signal: input.signal });
+    : input => selectRecallWithLlm({ ...input, generateUtilityTask, processingPrompt, semanticProvider, signal: input.signal });
   const readinessReasons = source => {
     if (!source?.readiness || source.readiness.status === 'caughtUp') return [];
     if (source.readiness.status === 'unknown' && source.readiness.hostConfirmed !== true) return ['memoryNotReady', 'coverageUnconfirmed'];
@@ -1133,7 +1171,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     let qianshiProgress = null;
     if (typeof qianshiProgressProvider === 'function') try {
       const value = await qianshiProgressProvider(source, { queryContext, hostSnapshot,
-        ...(selection ? { selectedEventIds: selection.eventIds ?? [], selectedMatterIds: selection.matterIds ?? [] } : {}) });
+        ...(selection ? { selectedEventIds: selection.eventIds ?? [], selectedMatterIds: selection.matterIds ?? [],
+          pendingHeader: selection.pendingHeader ?? QIANSHI_RECALL_PENDING_HEADER, scopeLine: selection.scopeLine ?? null } : {}) });
       const anchorMatches = value?.anchor?.headCheckpointId === source.headCheckpointId && value?.anchor?.narrativeGeneration === source.narrativeGeneration;
       if (anchorMatches) qianshiProgress = await sealQianshiProgress(value);
       const qianshiCandidates = anchorMatches && !selection && Array.isArray(value?.candidates) ? Object.freeze(clone(value.candidates)) : Object.freeze([]);
@@ -1452,14 +1491,18 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     // 只撤回明确删除涉及的行，不加入新材料、不重跑模型；普通摘要/CSE 与其余冻结材料逐字保留。
     let qianshi = null;
     if (oldQianshi) {
-      const retainedText = oldQianshi.text.split(/\n\n/u).map(section => {
+      const scopeLine = qianshiProgressScopeLine(oldQianshi);
+      const scopedPrefix = scopeLine ? `${scopeLine}\n\n` : '';
+      const bodyText = scopedPrefix && oldQianshi.text.startsWith(scopedPrefix) ? oldQianshi.text.slice(scopedPrefix.length) : oldQianshi.text;
+      const qianshiBody = bodyText.split(/\n\n/u).map(section => {
         const lines = section.split('\n'), ids = lines[0] === '[相关时间线]' ? oldQianshi.eventIds
-          : lines[0] === '[当前待接续]' ? oldQianshi.matterIds : null;
+          : qianshiRecallPendingHeader(lines[0], null) !== null ? oldQianshi.matterIds : null;
         if (!ids) return '';
         const kept = new Set(lines[0] === '[相关时间线]' ? eventIds : matterIds);
         const rows = lines.slice(1).filter((line, index) => kept.has(ids[index]));
         return rows.length ? [lines[0], ...rows].join('\n') : '';
       }).filter(Boolean).join('\n\n');
+      const retainedText = qianshiBody ? [scopeLine, qianshiBody].filter(Boolean).join('\n\n') : '';
       qianshi = await sealQianshiProgress({ ...oldQianshi, text: retainedText, eventIds, matterIds });
     }
     let ordinaryText = removeQianshiProgress(receipt.injectionText, oldQianshi, savedTime);
@@ -1569,7 +1612,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     }
     advanceOperation(operation, 'qianshiProgress');
     currentSource = await attachQianshiProgress(Object.freeze({ ...currentSource, timeProjection: liveTime ?? currentSource.timeProjection }), operation.queryContext, before,
-      { eventIds: finalReceipt.qianshiProgress?.eventIds ?? [], matterIds: finalReceipt.qianshiProgress?.matterIds ?? [] });
+      { eventIds: finalReceipt.qianshiProgress?.eventIds ?? [], matterIds: finalReceipt.qianshiProgress?.matterIds ?? [],
+        pendingHeader: qianshiRecallPendingHeader(finalReceipt.qianshiProgress?.text),
+        scopeLine: qianshiProgressScopeLine(finalReceipt.qianshiProgress) });
     if (!qianshiProgressCurrent(finalReceipt.qianshiProgress, currentSource.qianshiProgress)) {
       injectionText = removeQianshiProgress(injectionText, finalReceipt.qianshiProgress, finalReceipt.timeDependencies);
       finalReceipt = { ...finalReceipt, qianshiProgress: null, injectionText,
@@ -1690,7 +1735,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.userText = user.message.mes;
       operation.liveFrameKey = liveRecallFrameKey(before);
       operation.sanitizerOptions = currentSanitizerOptions();
-      operation.locationReferenceSnapshot = captureLatestLocationReference(before, operation.sanitizerOptions, recentBodyFloorLimit());
+      operation.locationReferenceSnapshot = captureLatestLocationReference(before, operation.sanitizerOptions, recentBodyFloorLimit(),
+        ['swipe', 'regenerate'].includes(type) ? user.index : undefined);
       notify();
       advanceOperation(operation, 'queryContext');
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1 });
@@ -1708,9 +1754,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       for (const value of receiptCandidates(user)) {
         const owner = value === sessionReceipt?.receipt ? sessionReceipt.owner : null;
         const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint, pluginVersion }, fingerprint);
-        const dependency = JSON.stringify(operation.locationReferenceSnapshot);
         const locationDependencyMatches = snapshot?.schemaVersion >= 18
-          ? snapshot.locationReferenceDependency === dependency
+          ? locationReferenceDependencyMatches(snapshot.locationReferenceDependency, operation.locationReferenceSnapshot)
           : !operation.locationReferenceSnapshot?.values?.length;
         if (snapshot && locationDependencyMatches) { candidate = snapshot; candidateOwner = owner; break; }
       }
@@ -1889,7 +1934,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           stateId: value.stateId, sourceFloorId: value.sourceFloorId, sourceDeltaId: value.sourceDeltaId,
           subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer,
           towardEntityId: value.towardEntityId, toward: value.toward, text: value.text, reason: value.reason,
-          visibility: value.visibility, sourceAssistantSeq: value.sourceAssistantSeq, storylineId: value.storylineId,
+          visibility: value.visibility, ...(value.origin !== undefined ? { origin: value.origin } : {}),
+          sourceAssistantSeq: value.sourceAssistantSeq, storylineId: value.storylineId,
         })),
         selectedLocationReferences: (selection.locationReferences ?? []).map(value => ({
           text: value.text, sourceFloorId: value.sourceFloorId ?? null, assistantSeq: value.assistantSeq ?? null,

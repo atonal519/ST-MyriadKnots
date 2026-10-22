@@ -196,6 +196,7 @@ export function partitionScannedCandidates(reachable, chat, chatId, scanned) {
   if (!partition.descriptor || !partition.frozenFloors.length) return Object.freeze({ all: scanned, live: scanned, aliasIndexes: new Set(), descriptorId: null, aliasWitnesses: Object.freeze([]) });
   const frozenById = new Map(partition.frozenFloors.map(floor => [floor.id, floor]));
   const aliasesById = new Map(partition.descriptor.carriedAliases.map(alias => [alias.aliasId, alias]));
+  const exclusionByFloorId = new Map((reachable?.checkpoint?.inputFingerprints ?? []).map(item => [item?.floorId, item?.memoryExcluded === true]));
   const aliasLocations = new Map();
   for (const [index, message] of (Array.isArray(chat) ? chat : []).entries()) {
     const aliasId = message?.extra?.[MIGRATION_ALIAS_KEY];
@@ -231,6 +232,7 @@ export function partitionScannedCandidates(reachable, chat, chatId, scanned) {
     sanitizerFingerprint: floor.content.sanitizerFingerprint,
     canonicalContent: floor.content.canonicalContent,
     stabilityProof: floor.stability?.proof ? Object.freeze({ ...floor.stability.proof }) : null,
+    ...(exclusionByFloorId.get(floor.id) === true ? { memoryExcluded: true } : {}),
   }));
   return Object.freeze({ all: Object.freeze([...historical, ...live]), live: Object.freeze(live), aliasIndexes, aliasWitnesses: Object.freeze(aliasWitnesses), descriptorId: partition.descriptor.id });
 }

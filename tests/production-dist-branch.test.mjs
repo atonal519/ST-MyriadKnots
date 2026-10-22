@@ -190,10 +190,10 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
     let module;
     if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'persona.png' });
     else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
-    else if (hostPath === '/lib.js') module = synthetic(identifier, { localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
+    else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: { Converter: class { makeHtml(value) { return value; } } }, DOMPurify: { sanitize: value => value }, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '调查员' } });
-    else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: true }, 'schedule-planner': {} }, extensionNames: [] });
-    else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {} });
+    else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: true }, 'schedule-planner': {} }, extensionNames: [], extensionTypes: { 'third-party/ST-QianQianJie': 'local' } });
+    else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {}, getRequestHeaders: () => ({}) });
     else if (hostPath === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
     else if (hostPath === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
     else module = new SourceTextModule(await readFile(path, 'utf8'), { context, identifier });

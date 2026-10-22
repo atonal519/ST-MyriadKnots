@@ -113,7 +113,7 @@ export function createTaskRouter({ resolver, compactClient, isEnabled = () => tr
   return { generateAnalysisTask, generateUtilityTask, generateRecallTask, abortAll, getActiveCount: () => active.size };
 }
 
-export function createApiTools({ resolver, compactClient, isEnabled = () => true } = {}) {
+export function createApiTools({ resolver, compactClient, processingPrompt = () => '', isEnabled = () => true } = {}) {
   const active = new Set(); let epoch = 0;
   const abortAll = () => { epoch += 1; for (const controller of active) controller.abort(); active.clear(); };
   const independent = (selection = null) => {
@@ -133,7 +133,7 @@ export function createApiTools({ resolver, compactClient, isEnabled = () => true
     if (!isEnabled() || mine !== epoch) throw abortError();
     const controller = new AbortController(); active.add(controller);
     try {
-      const result = await compactClient[method]({ config, signal: controller.signal });
+      const result = await compactClient[method]({ config, signal: controller.signal, ...(method === 'testConnection' ? { processingPrompt: typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt } : {}) });
       if (!isEnabled() || mine !== epoch) throw abortError();
       return result;
     } finally { active.delete(controller); }

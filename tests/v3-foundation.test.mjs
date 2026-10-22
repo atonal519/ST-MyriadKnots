@@ -5,7 +5,7 @@ import { createBackendClient } from '../src/backend-client.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore, reverseRefCandidateKeys } from '../src/v3/foundation-store.js';
 import { buildFoundationIndexes, createFoundationRuntime, validatePreparedFoundation } from '../src/v3/foundation-runtime.js';
-import { deterministicUuid, foundationInputSnapshot, reverseRefShardPrefix, scanAssistantCandidates } from '../src/v3/foundation-domain.js';
+import { createCheckpointInputFingerprints, deterministicUuid, foundationInputSnapshot, reverseRefShardPrefix, scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { sha256 } from '../src/identity.js';
 import { entityIndexKey } from '../src/v3/memory-schema.js';
 import { createChatSession } from '../src/chat-session.js';
@@ -484,6 +484,87 @@ test('生产 scanner 与 foundation runtime 跳过空/假 system narrator，并�
   state = await waiting.runtime.start();
   assert.equal(state.stableCount, 0);
   assert.equal(state.pending?.messageIndex, 1, 'narrator 后的 AI 无 user 时仍保持 pending');
+});
+
+test('排除标记保留原 assistantSeq，并进入稳定输入指纹', async () => {
+  const chat = [assistant('连续 AI 1', { qianqianjie_memory_excluded: true }), assistant('连续 AI 2'), user('稳定锚')];
+  const candidates = await scanAssistantCandidates(chat, { chatId: CHAT });
+  assert.deepEqual(candidates.map(item => [item.assistantSeq, item.hostLocator.messageIndex, item.memoryExcluded]), [
+    [1, 0, true], [2, 1, false],
+  ]);
+  const excludedSnapshot = await foundationInputSnapshot(candidates, 2);
+  chat[0].extra.qianqianjie_memory_excluded = false;
+  const restoredCandidates = await scanAssistantCandidates(chat, { chatId: CHAT });
+  const restoredSnapshot = await foundationInputSnapshot(restoredCandidates, 2);
+  assert.notEqual(restoredSnapshot.fingerprint, excludedSnapshot.fingerprint, '恢复标记必须让已加载的基础投影失效');
+});
+
+test('排除见证随普通后续checkpoint保存保留，恢复候选显式清除旧见证', () => {
+  const floors = [
+    { id: '11111111-1111-4111-8111-111111111111', content: { canonicalFingerprint: 'sha256:a' }, stability: {} },
+    { id: '22222222-2222-4222-8222-222222222222', content: { canonicalFingerprint: 'sha256:b' }, stability: {} },
+  ];
+  const previous = createCheckpointInputFingerprints(floors, { candidates: [{ memoryExcluded: true }, {}] });
+  const next = createCheckpointInputFingerprints(floors, { previous });
+  assert.equal(next[0].memoryExcluded, true, '后续摘要/CSE checkpoint 未重新提供候选时沿同楼 ID 保存排除见证');
+  const restored = createCheckpointInputFingerprints(floors, { candidates: [{ memoryExcluded: false }, {}], previous: next });
+  assert.equal(Object.hasOwn(restored[0], 'memoryExcluded'), false, '恢复候选明确覆盖旧 true');
+});
+
+test('连续 AI 可越过明确排除楼；恢复时保留序号并回到正常待补投影', async () => {
+  const excluded = assistant('标记楼', { qianqianjie_memory_excluded: true });
+  const next = assistant('应继续处理的楼');
+  const h = harness([excluded, next, user('稳定锚')], { modernAnchors: true });
+  let state = await h.runtime.start();
+  assert.equal(state.stableCount, 2);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => [floor.assistantSeq, floor.hostLocator.messageIndex]), [[1, 0], [2, 1]]);
+  assert.deepEqual(h.runtime.getReachable().floorMemories, [], '排除楼不能形成空摘要或其他伪记忆');
+  delete excluded.extra.qianqianjie_memory_excluded;
+  state = await h.runtime.refreshStatus();
+  assert.equal(state.stableCount, 2);
+  assert.equal(state.lastRun.result, 'committed');
+});
+
+test('正式foundation入口允许无已保存记忆的楼排除与恢复，保留完整结构楼序', async () => {
+  const h = harness([user('提问'), assistant('先前未登记的 AI'), assistant('后续 AI'), user('继续')], { modernAnchors: true });
+  let saves = 0;
+  h.context.saveChat = async () => { saves += 1; return true; };
+  await h.runtime.start();
+  assert.equal(h.runtime.getReachable().root, null, '首个AI待下一条用户消息，仍未登记');
+  const result = await h.runtime.setMemoryExcluded(1, true);
+  assert.equal(result.status, 'persisted');
+  assert.equal(saves, 1, '点击只沿宿主保存入口写一次，不调用模型或额外存储');
+  let reachable = h.runtime.getReachable();
+  assert.deepEqual(reachable.floors.map(floor => [floor.assistantSeq, floor.hostLocator.messageIndex]), [[1, 1], [2, 2]]);
+  assert.deepEqual(reachable.floorMemories, [], '排除楼保留结构序号但不伪造摘要记录');
+  const laterMarked = await h.runtime.setMemoryExcluded(2, true);
+  assert.equal(laterMarked.status, 'persisted', '已建floor但尚无摘要仍属于未记录楼');
+  assert.equal(saves, 2);
+  const restored = await h.runtime.setMemoryExcluded(1, false);
+  assert.equal(restored.status, 'persisted');
+  assert.equal(saves, 3);
+  reachable = h.runtime.getReachable();
+  assert.deepEqual(reachable.floors.map(floor => [floor.assistantSeq, floor.hostLocator.messageIndex]), [[1, 1], [2, 2]]);
+  assert.equal((await h.runtime.setMemoryExcluded(2, false)).status, 'persisted');
+  assert.equal(saves, 4);
+});
+
+test('已有foundation楼但尚无记忆时允许排除与恢复', async () => {
+  const h = harness([assistant('已经登记的 AI'), user('后续用户')], { modernAnchors: true });
+  let saves = 0;
+  h.context.saveChat = async () => { saves += 1; return true; };
+  await h.runtime.start();
+  assert.equal(h.runtime.getReachable().floors.length, 1);
+  assert.deepEqual(h.runtime.getReachable().floorMemories, []);
+  const result = await h.runtime.setMemoryExcluded(0, true);
+  assert.equal(result.status, 'persisted');
+  assert.equal(saves, 1);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.assistantSeq), [1]);
+  assert.deepEqual(h.runtime.getReachable().floorMemories, []);
+  const restored = await h.runtime.setMemoryExcluded(0, false);
+  assert.equal(restored.status, 'persisted');
+  assert.equal(saves, 2);
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.assistantSeq), [1]);
 });
 
 test('初始化时 /hide AI 与普通 AI 共用相同 stable／pending 规则', async () => {

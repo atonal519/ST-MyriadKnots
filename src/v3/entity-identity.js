@@ -18,12 +18,30 @@ export function entitiesThroughFloorIds(entities = [], floorIds = null) {
   return entities.filter(entity => inFloorPrefix(entity, allowed));
 }
 
+function manualAliasProjection(value) {
+  // 人工别名是既有档案的全集决定；空清单也必须覆盖自动累计。
+  const source = Object.hasOwn(value ?? {}, 'profilesByEntityId')
+    ? Object.fromEntries(Object.entries(value.profilesByEntityId ?? {}).filter(([, profile]) => profile?.manualFields?.includes('aliases')).map(([id, profile]) => [id, profile.aliases]))
+    : value?.manualAliasesByEntityId ?? {};
+  return Object.fromEntries(Object.entries(source).filter(([id]) => id).map(([id, aliases]) => {
+    const seen = new Set();
+    const names = (Array.isArray(aliases) ? aliases : typeof aliases === 'string' ? aliases.split(/[、，,\r\n]+/) : []).flatMap(value => {
+      const name = typeof value === 'string' ? value.trim() : '', key = labelKey(name);
+      if (!key || seen.has(key)) return [];
+      seen.add(key); return [name];
+    });
+    return [id, Object.freeze(names)];
+  }));
+}
+
 export function normalizeIdentityProjection(value = {}) {
   const redirects = value?.identityRedirectsByEntityId && typeof value.identityRedirectsByEntityId === 'object' && !Array.isArray(value.identityRedirectsByEntityId)
     ? Object.fromEntries(Object.entries(value.identityRedirectsByEntityId).filter(([source, target]) => typeof source === 'string' && typeof target === 'string' && source && target && source !== target))
     : {};
   const deleted = [...new Set(Array.isArray(value?.deletedEntityIds) ? value.deletedEntityIds.filter(id => typeof id === 'string' && id) : [])];
-  return Object.freeze({ identityRedirectsByEntityId: Object.freeze(redirects), deletedEntityIds: Object.freeze(deleted) });
+  const manualAliases = manualAliasProjection(value);
+  return Object.freeze({ identityRedirectsByEntityId: Object.freeze(redirects), deletedEntityIds: Object.freeze(deleted),
+    ...(Object.keys(manualAliases).length ? { manualAliasesByEntityId: Object.freeze(manualAliases) } : {}) });
 }
 
 export function reuseIdentityProjection(previous, value) {
@@ -36,7 +54,15 @@ export function reuseIdentityProjection(previous, value) {
   const previousDeleted = previous.deletedEntityIds ?? [], nextDeleted = normalized.deletedEntityIds;
   if (previousDeleted.length !== nextDeleted.length) return normalized;
   const previousDeletedSet = new Set(previousDeleted);
-  return nextDeleted.every(id => previousDeletedSet.has(id)) ? previous : normalized;
+  if (!nextDeleted.every(id => previousDeletedSet.has(id))) return normalized;
+  const before = previous.manualAliasesByEntityId ?? {}, after = normalized.manualAliasesByEntityId ?? {};
+  if (Object.keys(before).length !== Object.keys(after).length) return normalized;
+  for (const [id, names] of Object.entries(after)) {
+    if (!Object.hasOwn(before, id) || before[id].length !== names.length) return normalized;
+    const oldNames = new Set(before[id]);
+    if (!names.every(name => oldNames.has(name))) return normalized;
+  }
+  return previous;
 }
 
 export function resolveIdentityEntityId(entityId, projection = {}) {
@@ -144,7 +170,10 @@ export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
     privateCognition: Object.freeze((memory?.privateCognition ?? []).map(item => Object.freeze({ ...item, ownerEntityId: resolve(item.ownerEntityId) }))),
     commitments: Object.freeze((memory?.commitments ?? []).map(item => Object.freeze({ ...item, speakerEntityId: resolve(item.speakerEntityId), targetEntityIds: resolvedIds(item.targetEntityIds, projection) }))),
     openLoops: Object.freeze((memory?.openLoops ?? []).map(item => Object.freeze({ ...item, ownerEntityIds: resolvedIds(item.ownerEntityIds, projection) }))),
-    exactAnchors: Object.freeze((memory?.exactAnchors ?? []).map(item => Object.freeze({ ...item, speakerEntityId: item.speakerEntityId ? resolve(item.speakerEntityId) : null }))),
+    exactAnchors: Object.freeze((memory?.exactAnchors ?? []).map(item => Object.freeze({ ...item,
+      speakerEntityId: item.speakerEntityId ? resolve(item.speakerEntityId) : null,
+      ...(item.manual === true ? { knownEntityIds: Object.freeze(resolvedIds(item.knownEntityIds, projection).filter(id => !isIdentityDeleted(id, projection))) } : {}),
+    }))),
     cseSignals: Object.freeze((memory?.cseSignals ?? []).map(item => Object.freeze({ ...item, subjectEntityId: resolve(item.subjectEntityId), objectEntityId: item.objectEntityId ? resolve(item.objectEntityId) : null }))),
     ...(spatialFacts ? { spatialFacts } : {}),
   });
@@ -179,22 +208,33 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, i
   const combinedProjection = normalizeIdentityProjection({
     identityRedirectsByEntityId: { ...foundationRedirects, ...projection.identityRedirectsByEntityId },
     deletedEntityIds: projection.deletedEntityIds,
+    manualAliasesByEntityId: projection.manualAliasesByEntityId,
   });
   const canonical = scoped.filter(entity => isActive(entity) && entity.status !== 'merged' && entity.status !== 'invalidated'
     && resolveIdentityEntityId(entity.id, combinedProjection) === entity.id && !isIdentityDeleted(entity.id, combinedProjection));
   const canonicalById = new Map(canonical.map(entity => [entity.id, entity]));
   const learned = new Map(canonical.map(entity => [entity.id, []]));
+  const identityBriefRecords = new Map(canonical.filter(entity => typeof entity.identityBrief === 'string').map(entity => [entity.id, entity]));
   for (const aliasEntity of scoped) {
     if (!isActive(aliasEntity) || aliasEntity.status === 'invalidated') continue;
     const target = canonicalById.get(resolveIdentityEntityId(aliasEntity.id, combinedProjection));
     if (!target || target.id === aliasEntity.id || target.entityType !== aliasEntity.entityType
       || target.chatId !== aliasEntity.chatId || target.narrativeGeneration !== aliasEntity.narrativeGeneration) continue;
     learned.get(target.id).push(...aliasNames(aliasEntity));
+    if (typeof aliasEntity.identityBrief === 'string' && aliasEntity.identityBrief.trim()) {
+      const prior = identityBriefRecords.get(target.id);
+      const priorTime = Date.parse(prior?.updatedAt ?? prior?.createdAt ?? '') || 0;
+      const nextTime = Date.parse(aliasEntity.updatedAt ?? aliasEntity.createdAt ?? '') || 0;
+      if (!prior || nextTime > priorTime || nextTime === priorTime && aliasEntity.id.localeCompare(prior.id) > 0) identityBriefRecords.set(target.id, aliasEntity);
+    }
   }
   return Object.freeze(canonical.map(entity => {
     const seen = new Set();
     const labels = [];
-    for (const label of [...aliasNames(entity), ...(learned.get(entity.id) ?? [])]) {
+    const manual = combinedProjection.manualAliasesByEntityId;
+    const names = entity.entityType === 'person' && Object.hasOwn(manual ?? {}, entity.id)
+      ? [entity.displayName, ...manual[entity.id]] : [...aliasNames(entity), ...(learned.get(entity.id) ?? [])];
+    for (const label of names) {
       const key = labelKey(label);
       if (!key || seen.has(key)) continue;
       seen.add(key); labels.push(label.trim());
@@ -207,6 +247,7 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, i
       displayName: entity.displayName,
       aliases: Object.freeze(labels.filter(label => labelKey(label) !== labelKey(entity.displayName))),
       labels: Object.freeze(labels),
+      ...(identityBriefRecords.has(entity.id) ? { identityBrief: identityBriefRecords.get(entity.id).identityBrief } : {}),
     });
   }));
 }

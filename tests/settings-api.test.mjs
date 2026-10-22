@@ -84,10 +84,11 @@ test('记忆提取周期固定为 1，旧配置与更新请求都不能继续生
   assert.equal(normalizeAutoMemoryBatchSize(1), 1);
   assert.equal(normalizeAutoMemoryBatchSize(20), 1);
   for (const invalid of [undefined, null, 0, 21, 1.5, 'abc']) assert.equal(normalizeAutoMemoryBatchSize(invalid), 1);
+  assert.equal(saves(), 0, '读取与规范化默认值不触发保存');
   settings.update({ autoMemoryEnabled: true, autoMemoryBatchSize: 20 });
   assert.equal('autoMemoryEnabled' in extensionSettings.qianqianjie, false);
   assert.equal(extensionSettings.qianqianjie.autoMemoryBatchSize, 1);
-  assert.equal(saves(), 2);
+  assert.equal(saves(), 1, '一次设置更新只保存一次');
 
   settings.update({ autoMemoryBatchSize: 2 });
   assert.equal(settings.get().autoMemoryBatchSize, 1);
@@ -199,7 +200,7 @@ test('剔除包裹符设置保留标签名与字面起止符混合配置', () =>
   const extensionSettings = {};
   const { settings } = setup(extensionSettings);
   settings.update({ sourceExtraTags: ' THINK，[[...]]\nreasoning ' });
-  assert.equal(settings.get().sourceExtraTags, 'think,[[...]],reasoning');
+  assert.equal(settings.wrappers().extraTags, 'think,[[...]],reasoning');
 });
 
 test('总开关 change 立即持久化并调用运行时；运行时失败时恢复原真值', async () => {
@@ -318,6 +319,7 @@ test('只双向共享 schedule-planner 预设池；千千结主配置与两边�
   const source = await readFile(new URL('../../ST-SevenDaysCal/runtime/settings.js', import.meta.url), 'utf8');
   globalThis.__QQJ_SEVEN_TEST_SETTINGS__ = extensionSettings; globalThis.__QQJ_SEVEN_TEST_SAVES__ = 0;
   const executable = source
+    .replace("'../utils/shared-body-wrappers.js'", JSON.stringify(new URL('../../ST-SevenDaysCal/utils/shared-body-wrappers.js', import.meta.url).href))
     .replace("import { extension_settings } from '../../../../extensions.js';", 'const extension_settings = globalThis.__QQJ_SEVEN_TEST_SETTINGS__;')
     .replace("import { saveSettingsDebounced } from '../../../../../script.js';", 'const saveSettingsDebounced = () => { globalThis.__QQJ_SEVEN_TEST_SAVES__ += 1; };');
   const seven = await import(`data:text/javascript;base64,${Buffer.from(executable).toString('base64')}`);

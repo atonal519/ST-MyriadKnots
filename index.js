@@ -1,19 +1,21 @@
+import { normalizeIdentityProjection } from './src/v3/entity-identity.js';
 import { createVectorApiClient, resolveVectorConfig } from './src/vector-api.js';
 import { createVectorIndex } from './src/v3/vector-index.js';
 import { createVectorAutoUpdater } from './src/v3/vector-auto-update.js';
 import { readVectorSource } from './src/v3/vector-source-reader.js';
 import { user_avatar } from '/scripts/personas.js';
 import { power_user } from '/scripts/power-user.js';
-import { extension_settings, extensionNames } from '/scripts/extensions.js';
-import { is_send_press, saveSettingsDebounced } from '/script.js';
+import { extension_settings, extensionNames, extensionTypes } from '/scripts/extensions.js';
+import { is_send_press, saveSettingsDebounced, getRequestHeaders } from '/script.js';
 import { is_group_generating } from '/scripts/group-chats.js';
 import { loadWorldInfo, selected_world_info, world_info, world_info_case_sensitive, world_info_match_whole_words, world_names } from '/scripts/world-info.js';
-import { localforage } from '/lib.js';
+import { localforage, showdown, DOMPurify } from '/lib.js';
 import { getCurrentUserHandle } from '/scripts/user.js';
-import { version as pluginVersion } from './manifest.json';
+import { version as pluginVersion, update_notice as updateNoticePath } from './manifest.json';
 import { createBackendClient } from './src/backend-client.js';
 import { isTauriTavern } from './src/tauri-backend.js';
 import { createPrivateRecallDiagnostics } from './src/private-recall-diagnostics.js';
+import { createPluginUpdates } from './src/plugin-updates.js';
 import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
 import { createApiResolver, createApiTools, createTaskRouter } from './src/api-routing.js';
@@ -96,7 +98,7 @@ const refreshStoryClock = ({ readOnly = false, announce = false } = {}) => {
   return result;
 };
 globalThis.addEventListener?.(STORY_CLOCK_COORDINATION_EVENT, event => { if (event?.detail?.owner !== 'myknots') refreshStoryClock(); });
-const sanitizerOptions = () => ({ keepTags: settings.get().sourceKeepTags, extraTags: settings.get().sourceExtraTags });
+const sanitizerOptions = () => ({ ...settings.wrappers() });
 
 const backendClient = createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 let ui;
@@ -111,6 +113,7 @@ const clearPluginLifecycleFailure = () => { pluginLifecycleFailureRevision += 1;
 const clearPluginLifecycleFailureIfUnchanged = revision => {
   if (pluginLifecycleFailureRevision === revision) clearPluginLifecycleFailure();
 };
+const processingPrompt = () => settings.get().processingPrompt;
 const compactClient = createCompactApiClient({
   headers: () => hostContext()?.getRequestHeaders?.() ?? {},
   onBusyChange: busy => ui?.fab?.setBusy?.(busy),
@@ -121,7 +124,7 @@ const taskRouter = createTaskRouter({
   compactClient,
   isEnabled: settings.isEnabled,
 });
-const apiTools = createApiTools({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
+const apiTools = createApiTools({ resolver: apiResolver, compactClient, processingPrompt, isEnabled: settings.isEnabled });
 const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, vectorRuntimeProvider: () => vectorIndex, sanitizerOptions });
 const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch,
@@ -161,7 +164,6 @@ const sourcePermissions = createSourcePermissionController({ settings, contextPr
 const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
 const profilePrompt = () => settings.get().profilePrompt;
-const processingPrompt = () => settings.get().processingPrompt;
 const coreRecordCache = isTauriTavern() || settings.get().coreCacheEnabled === false
   ? null : createIndexedDbCoreRecordCache({ localForage: localforage, accountHandleProvider: getCurrentUserHandle });
 const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled, coreRecordCache });
@@ -184,7 +186,7 @@ const identityProjectionProvider = async identityValue => {
   const identity = identityValue ?? session.identity();
   const state = peopleWorkspaceRuntime?.getState?.();
   if (state?.chatId === identity.chatId) return peopleWorkspaceRuntime.getIdentityProjection();
-  return (await peopleWorkspaceStore.read(identity)).data ?? {};
+  return normalizeIdentityProjection((await peopleWorkspaceStore.read(identity)).data ?? {});
 };
 const vectorApi = createVectorApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const vectorIndex = createVectorIndex({
@@ -205,6 +207,7 @@ const timeRuntime = createTimeRuntime({
   getMemoryState: () => v3MemoryRuntime.getState(),
   getMemoryActivityState: () => v3MemoryRuntime.getActivityState(),
   generateTimeTask: taskRouter.generateUtilityTask,
+  processingPrompt,
   annualSettingsProvider: () => {
     const reachable = foundationRuntime.getReachable(), state = peopleWorkspaceRuntime?.getState?.();
     if (!reachable?.baseline?.userPersona?.entityId || state?.status !== 'ready' || state.chatId !== session.identity().chatId) return { ready: false };
@@ -285,6 +288,7 @@ v3RecallRuntime = createV3RecallRuntime({
   store: foundationStore,
   hostAdapter,
   generateUtilityTask: taskRouter.generateRecallTask,
+  processingPrompt,
   semanticProvider: options => vectorIndex.query(options),
   isEnabled: settings.isEnabled,
   memoryStatus: () => v3MemoryRuntime.getState(),
@@ -481,7 +485,10 @@ const setAllEnabled = async enabled => {
   clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
   return lifecycleResult;
 };
+const pluginUpdates = createPluginUpdates({ moduleUrl: import.meta.url, extensionTypes: () => extensionTypes, noticePath: updateNoticePath, headers: getRequestHeaders });
 ui = bootstrap({
+  pluginUpdates,
+  renderUpdateMarkdown: text => DOMPurify.sanitize(new showdown.Converter().makeHtml(text), { FORBID_TAGS: ['img', 'iframe', 'object', 'embed', 'style', 'form'], FORBID_ATTR: ['style'] }),
   settings,
   apiTools,
   vectorApi,
@@ -507,6 +514,12 @@ ui = bootstrap({
     await timeRuntime.refreshStatus({ force: true });
   },
   timeRuntime,
+  subscribeSettingsChange: handler => {
+    const currentHost = hostContext(), eventName = currentHost?.eventTypes?.SETTINGS_UPDATED;
+    if (!eventName || !currentHost?.eventSource?.on) return () => {};
+    currentHost.eventSource.on(eventName, handler);
+    return () => currentHost.eventSource.removeListener?.(eventName, handler);
+  },
   subscribeDialogContextChange: handler => {
     const currentHost = hostContext();
     const eventName = currentHost?.eventTypes?.CHAT_CHANGED;

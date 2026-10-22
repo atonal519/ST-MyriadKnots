@@ -8,6 +8,7 @@ import { createTauriBackendFetch, isTauriTavern } from '../src/tauri-backend.js'
 import { createBackendClient } from '../src/backend-client.js';
 import { createStorageManagement } from '../src/storage-management.js';
 import { API_BASE } from '../src/constants.js';
+import { validateFoundationGraph } from '../src/v3/foundation-schema.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
@@ -113,6 +114,14 @@ async function seedLegacy(f, slot) {
     key: nativeKey(slot.recordId), value: slot });
 }
 
+async function validateLegacyGraph(client, slots) {
+  const records = await Promise.all(slots.map(async slot => (await client.get(slot.collection, slot.recordId)).data));
+  const checkpoint = records.find(record => record.recordType === 'checkpoint');
+  return validateFoundationGraph({ root: null, checkpoint, run: records.find(record => record.recordType === 'run'),
+    floors: records.filter(record => record.recordType === 'floor'), indexes: records.filter(record => record.recordType === 'index'),
+    indexKeys: checkpoint.producedRefs.indexes });
+}
+
 test('TT first foundation initialization and cold graph read survive actual native key ordering', async t => {
   const f = await fixture(t);
   const { context } = await failedInitFixture();
@@ -138,23 +147,28 @@ test('TT retries the genuine tt.2 failed initialization without deleting records
   assert.equal(state.stableCount, 1);
   const read = await foundationFor(f.client, context).store.readReachable();
   assert.equal(read.status, 'ready');
-  assert.equal(read.indexes[0].id, oldIndex.id);
-  assert.equal(read.indexes[0].contentFingerprint, oldIndex.contentFingerprint);
+  const indexSlot = slots.find(slot => slot.current?.data?.recordType === 'index');
+  const restoredOld = (await f.client.get(indexSlot.collection, indexSlot.recordId)).data;
+  assert.equal(restoredOld.id, oldIndex.id);
+  assert.equal(restoredOld.contentFingerprint, oldIndex.contentFingerprint);
+  assert.deepEqual(restoredOld, oldIndex);
+  await validateLegacyGraph(f.client, slots);
   const records = await f.client.list(slots[0].collection);
   for (const slot of slots) assert.ok(records.some(record => record.recordId === slot.recordId));
   assert.deepEqual(await (await f.request('trash/qianqianjie')).json(), []);
 });
 
 test('TT legacy index recovery cannot hide modified data or checksum mismatches', async t => {
-  const f = await fixture(t);
-  const { context, slots } = await failedInitFixture();
-  const indexSlot = slots.find(slot => slot.current?.data?.recordType === 'index');
-  indexSlot.current.data.entries[0].refs[0].itemId = 'tampered';
-  for (const slot of slots) await seedLegacy(f, slot);
-  const state = await foundationFor(f.client, context).runtime.start();
-  assert.equal(state.status, 'error');
-  await assert.rejects(f.client.get(indexSlot.collection, 'v3-root'), e => e.status === 404);
-  assert.deepEqual((await f.client.get(indexSlot.collection, indexSlot.recordId)).data, indexSlot.current.data);
+  for (const tamper of ['reference', 'checksum']) {
+    const f = await fixture(t);
+    const { slots } = await failedInitFixture();
+    const indexSlot = slots.find(slot => slot.current?.data?.recordType === 'index');
+    if (tamper === 'reference') indexSlot.current.data.entries[0].refs[0].itemId = 'tampered';
+    else indexSlot.current.data.contentFingerprint = `sha256:${'0'.repeat(64)}`;
+    for (const slot of slots) await seedLegacy(f, slot);
+    assert.deepEqual((await f.client.get(indexSlot.collection, indexSlot.recordId)).data, indexSlot.current.data);
+    await assert.rejects(validateLegacyGraph(f.client, slots), error => ['V3_GRAPH_INDEX_ROUTE_INVALID', 'V3_GRAPH_INDEX_FINGERPRINT_INVALID'].includes(error.code));
+  }
 });
 
 test('TT 到期回收分批最多读取32个原生slot并保留当前记录', async t => {
@@ -194,7 +208,8 @@ test('TT 回收legacy index前先恢复字段顺序，过期删除后冷读指�
   const f = await fixture(t);
   const { context, slots } = await failedInitFixture();
   for (const slot of slots) await seedLegacy(f, slot);
-  const { runtime, store } = foundationFor(f.client, context);
+  const oldIndexSlot = slots.find(slot => slot.current?.data?.recordType === 'index');
+  const { runtime } = foundationFor(f.client, context);
   assert.equal((await runtime.start()).status, 'ready');
   let indexSlot = null;
   for (const table of await f.store.listTables({ namespace: 'qqj-bainiao-v1' })) {
@@ -202,7 +217,7 @@ test('TT 回收legacy index前先恢复字段顺序，过期删除后冷读指�
       const found = await f.store.tryGetJson({ namespace: 'qqj-bainiao-v1', table, key });
       if (found.found !== true) continue;
       const candidate = found.value?.format === 'qqj-tt-json-v2' ? JSON.parse(found.value.serialized) : found.value;
-      if (candidate.namespace === 'qianqianjie' && candidate.current?.data?.recordType === 'index') {
+      if (candidate.namespace === 'qianqianjie' && candidate.recordId === oldIndexSlot.recordId) {
         indexSlot = { table, key, value: candidate };
       }
     }
@@ -219,9 +234,13 @@ test('TT 回收legacy index前先恢复字段顺序，过期删除后冷读指�
   assert.equal(stored.value.format, 'qqj-tt-json-v2');
   const current = JSON.parse(stored.value.serialized).current;
   assert.equal(current.data.contentFingerprint, expectedFingerprint);
-  const reachable = await foundationFor(f.client, context).store.readReachable();
+  const coldClient = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef: { ...f.globalRef } }) });
+  const restoredOld = (await coldClient.get(oldIndexSlot.collection, oldIndexSlot.recordId)).data;
+  assert.equal(restoredOld.id, oldIndexSlot.current.data.id);
+  assert.equal(restoredOld.contentFingerprint, expectedFingerprint);
+  await validateLegacyGraph(coldClient, slots);
+  const reachable = await foundationFor(coldClient, context).store.readReachable();
   assert.equal(reachable.status, 'ready');
-  assert.equal(reachable.indexes[0].contentFingerprint, expectedFingerprint);
 });
 
 test('TT 单个slot读取失败保留前项清理计数并继续返回部分结果', async t => {

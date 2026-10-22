@@ -124,7 +124,7 @@ function projectSavedBranchMetadata(raw, hostAdapter, hostChatId, capturedChat, 
     const current = live.chat[index], captured = capturedChat[index], saved = savedFile.chat[index];
     if (!current || !captured || !saved || !sameBranchMessageCore(current, captured)) continue;
     const extra = current.extra && typeof current.extra === 'object' && !Array.isArray(current.extra) ? { ...current.extra } : {};
-    for (const key of ['qianqianjie_floor', 'qqj_v3_recall_receipt', 'qianqianjieAutoHide']) {
+    for (const key of ['qianqianjie_floor', 'qianqianjie_memory_excluded', 'qqj_v3_recall_receipt', 'qianqianjieAutoHide']) {
       if (Object.hasOwn(saved.extra ?? {}, key)) extra[key] = structuredClone(saved.extra[key]);
       else delete extra[key];
     }
@@ -133,7 +133,7 @@ function projectSavedBranchMetadata(raw, hostAdapter, hostChatId, capturedChat, 
       const savedSwipe = saved.swipe_info[swipeIndex];
       if (!savedSwipe) return swipe;
       const swipeExtra = swipe?.extra && typeof swipe.extra === 'object' && !Array.isArray(swipe.extra) ? { ...swipe.extra } : {};
-      for (const key of ['qianqianjie_floor', 'qqj_v3_recall_receipt', 'qianqianjieAutoHide']) {
+      for (const key of ['qianqianjie_floor', 'qianqianjie_memory_excluded', 'qqj_v3_recall_receipt', 'qianqianjieAutoHide']) {
         if (Object.hasOwn(savedSwipe.extra ?? {}, key)) swipeExtra[key] = structuredClone(savedSwipe.extra[key]);
         else delete swipeExtra[key];
       }

@@ -81,7 +81,7 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
   };
   const state = { memoryWorkBusy: busy };
   const runtime = name => ({ getState: () => state, getReachable: () => migrationPrefix ? { root: { chatId: CHAT_ID }, migrationDescriptor: { id: 'archive-prefix' } } : null, invalidate() { invalidated.push(name); } });
-  const memoryRuntime = { async startHistoricalRebuild() { const chatId = context.chatMetadata.qianqianjie.chatId; calls.push(['history', chatId]); records.set(`chat-${chatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId } }); return { status: 'ready', chatId }; }, getState: () => ({ ...state, chatId: CHAT_ID }), invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
+  const memoryRuntime = { async startHistoricalRebuild() { const chatId = context.chatMetadata.qianqianjie.chatId; calls.push(['history', chatId]); records.set(`chat-${chatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId } }); return { status: 'ready', chatId }; }, getState: () => ({ ...state, chatId: CHAT_ID }), getActivityState: () => state, invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
   const recallRuntime = { getState: () => ({}), invalidate() { invalidated.push('recall'); }, clearCurrent() { invalidated.push('recall-clear'); } };
   const peopleRuntime = { getState: () => ({}), invalidate() { invalidated.push('people'); } };
   const timeRuntime = { async stop() { calls.push(['stopTime']); }, async authorizeHistory() { calls.push(['timeHistory', context.chatMetadata.qianqianjie.chatId]); } };

@@ -173,6 +173,9 @@ const emptyMemorySnapshot = (status = 'not-ready', syncStatus = 'idle') => ({
 
 const emptyCseSnapshot = () => ({ ready: false, currentSubjects: [], floors: [] });
 const emptyPeopleSnapshot = (status = 'not-ready') => ({ status, revision: null, items: [] });
+const requestedAvatarIds = value => [...new Set((Array.isArray(value) ? value : [])
+  .filter(entityId => typeof entityId === 'string' && entityId.length > 0))];
+const emptyAvatarMap = ids => frozen(Object.fromEntries(ids.map(entityId => [entityId, null])));
 
 function publicMemorySnapshot(value, chatId) {
   if (!value || value.chatId !== chatId) return emptyMemorySnapshot();
@@ -238,7 +241,7 @@ function publicPeopleSnapshot(value, chatId) {
       selected: person.selected === true,
       profiled: person.profiled === true,
       profile: person.profile ? {
-        ...Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, person.profile[field] ?? ''])),
+        ...Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, field === 'aliases' ? (person.aliases ?? []).join('、') : person.profile[field] ?? ''])),
         manualFields: person.profile.manualFields ?? [],
         source: person.profile.source ?? null,
         createdAt: person.profile.createdAt ?? null,
@@ -358,6 +361,28 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
       return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结人物资料读取失败。' }), identity: status.identity, people: emptyPeopleSnapshot('error') });
     }
   }
+  function getPeopleAvatars(entityIds = []) {
+    const ids = requestedAvatarIds(entityIds);
+    const empty = emptyAvatarMap(ids);
+    const status = localStatus();
+    if (status.status !== 'ready') return frozen({ ...status, avatarsByEntityId: empty });
+    try {
+      const value = typeof peopleRuntime?.getPeopleAvatars === 'function'
+        ? peopleRuntime.getPeopleAvatars(ids)
+        : null;
+      if (value?.status !== 'ready' || value.chatId !== status.identity.qqjChatId) {
+        const runtimeStatus = ['disabled', 'not-ready'].includes(value?.status) ? value.status : 'not-ready';
+        return frozen({ status: runtimeStatus, message: '当前人物头像尚未加载。', identity: status.identity, avatarsByEntityId: empty });
+      }
+      const avatarsByEntityId = frozen(Object.fromEntries(ids.map(entityId => {
+        const avatar = value.avatarsByEntityId?.[entityId];
+        return [entityId, typeof avatar === 'string' ? avatar : null];
+      })));
+      return frozen({ status: 'ready', identity: status.identity, avatarsByEntityId });
+    } catch (error) {
+      return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结人物头像读取失败。' }), identity: status.identity, avatarsByEntityId: empty });
+    }
+  }
   async function readWorldInfo() {
     const status = localStatus();
     if (status.status !== 'ready') return status;
@@ -390,7 +415,7 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
       return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结人物记忆读取失败。' }), identity: status.identity, anchor: null, routerText: '', actors: [], coverage: { partial: false, selectedCharacters: 0, maxCharacters: 0 } });
     }
   }
-  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory, getPromptSnapshot, getSnapshot, getPeopleSnapshot, readWorldInfo, readContext });
+  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory, getPromptSnapshot, getSnapshot, getPeopleSnapshot, getPeopleAvatars, readWorldInfo, readContext });
 }
 
 export function installPublicMemoryBridge({ globalRef = globalThis, ...options } = {}) {

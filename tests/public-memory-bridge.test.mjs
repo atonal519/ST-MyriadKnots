@@ -368,12 +368,62 @@ test('getSnapshot getter 异常只返回现有桥边界错误，不读取后续�
   assert.equal(peopleReads, 0);
 });
 
+test('getPeopleAvatars 批量读取已加载人物头像，不调用通用快照或其他读取入口', () => {
+  const avatar = 'data:image/png;base64,PRIVATE';
+  const calls = [];
+  const requested = [PERSON, 'missing-person', PERSON];
+  const peopleRuntime = {
+    getPeopleAvatars: ids => {
+      calls.push(ids);
+      return { status: 'ready', chatId: QQJ_CHAT, avatarsByEntityId: { [PERSON]: avatar, 'missing-person': null } };
+    },
+    getState: () => assert.fail('头像桥不得复制通用人物档案状态'),
+    refresh: () => assert.fail('头像桥不得刷新人物档案'),
+  };
+  const bridge = createPublicMemoryBridge({
+    session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+    store: { readReachable: () => assert.fail('头像桥不得读取记忆图') },
+    hostAdapter: { snapshot: () => assert.fail('头像桥不得读取宿主聊天') },
+    peopleRuntime,
+  });
+
+  assert.equal(typeof bridge.getPeopleAvatars, 'function', '版本化公开桥应提供批量头像入口');
+  const result = bridge.getPeopleAvatars(requested);
+  assert.equal(result instanceof Promise, false);
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(result.identity, { hostChatId: 'host-chat', qqjChatId: QQJ_CHAT, characterLocator: 'char.png', personaLocator: 'me.png' });
+  assert.deepEqual(result.avatarsByEntityId, { [PERSON]: avatar, 'missing-person': null });
+  assert.deepEqual(calls, [[PERSON, 'missing-person']], '重复请求 ID 合并后只交给运行时一次');
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.avatarsByEntityId), true);
+  assert.throws(() => { result.avatarsByEntityId[PERSON] = 'tampered'; }, TypeError);
+  assert.equal(bridge.getPeopleAvatars([PERSON]).avatarsByEntityId[PERSON], avatar);
+});
+
 test('安装器只清理自己挂载的版本化桥', () => {
   const globalRef = {};
   const mount = installPublicMemoryBridge({ globalRef, session: { getState: () => ({ status: 'ready', identity: identity() }), identity }, store: { readReachable: async () => source() }, hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) } });
   assert.equal(globalRef[QQJ_PUBLIC_MEMORY_BRIDGE_KEY], mount.bridge);
   assert.equal(typeof mount.bridge.getSnapshot, 'function');
   assert.equal(typeof mount.bridge.getPromptSnapshot, 'function');
+  assert.equal(typeof mount.bridge.getPeopleAvatars, 'function');
   mount.cleanup();
   assert.equal(Object.hasOwn(globalRef, QQJ_PUBLIC_MEMORY_BRIDGE_KEY), false);
+});
+
+
+test('有效别名：公开人物DTO及人物上下文读取同一有效目录，不改原资料', async () => {
+  const value = reachable(), profile = { aliases: '旧档案三项', manualFields: [], notes: '已存资料' };
+  const peopleState = { chatId: QQJ_CHAT, status: 'ready', profilesByEntityId: { [PERSON]: profile }, people: [{ entityId: PERSON, displayName: '裴晚生', entityDisplayName: '裴晚生', aliases: ['阿裴', '新称'], profile, profiled: true }] };
+  value.entities[0].aliases.push({ name: '新称' });
+  const bridge = createPublicMemoryBridge({ session: { getState: () => ({ status: 'ready', identity: identity() }), identity }, store: { readReachable: async () => value }, foundationRuntime: readyFoundation(value), hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) }, peopleRuntime: { getState: () => peopleState } });
+  assert.equal(bridge.getPeopleSnapshot().people.items[0].profile.aliases, '阿裴、新称');
+  const context = await bridge.readContext({ entityIds: [PERSON] });
+  assert.match(context.actors[0].profileText, /aliases：阿裴、新称/);
+  assert.equal(profile.aliases, '旧档案三项');
+  profile.manualFields = ['aliases']; profile.aliases = '';
+  peopleState.people[0].aliases = [];
+  const cleared = await bridge.readContext({ entityIds: [PERSON] });
+  assert.doesNotMatch(cleared.actors[0].profileText, /aliases：/);
+  assert.equal(bridge.getPeopleSnapshot().people.items[0].profile.aliases, '');
 });

@@ -10,7 +10,7 @@ const bridge = globalThis.qqj_v3_public_bridge_v1;
 
 界面中的调用说明和复制示例位于“设置 → 教程与配置文件 → API 接口”。
 
-## 七个方法
+## 八个方法
 
 ### `getStatus()`
 
@@ -85,6 +85,19 @@ if (result.status === 'ready' && result.people.status === 'ready') {
 ```
 
 顶层返回 `status`、`identity` 和 `people`。`people` 沿用 `getSnapshot().people` 的结构和人物合并结果。人物工作区尚未加载时，其分区为 `not-ready`；读取失败时顶层为 `error`。
+
+### `getPeopleAvatars(entityIds)`
+
+按稳定 `entityId` 批量读取当前已加载人物工作区里的头像，不读取完整记忆图、不刷新人物资料，也不调用后端或模型。此方法只返回请求的人物 ID，不会把头像加入 `getPeopleSnapshot()` 或 `getSnapshot()`。
+
+```js
+const result = bridge.getPeopleAvatars(['entity-id-1', 'entity-id-2']);
+if (result.status === 'ready') {
+  const avatar = result.avatarsByEntityId['entity-id-1']; // data URL 或 null
+}
+```
+
+结果包含 `status`、`identity`（身份已准备时）和 `avatarsByEntityId`。已加载人物有头像时返回原 data URL；没有头像、未匹配的 ID 返回 `null`。重复 ID 会合并，空数组返回空映射；非字符串和空字符串 ID 会忽略。若人物工作区尚未加载，返回 `not-ready` 和请求 ID 对应的空值映射；插件关闭时返回 `disabled`。调用方应先检查 `status`，不要把尚未加载时的 `null` 当作人物没有头像。
 
 ### `readWorldInfo()`
 

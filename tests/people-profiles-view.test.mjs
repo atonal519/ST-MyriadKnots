@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPeopleProfilesView as createPeopleProfilesViewImpl } from '../src/ui/people-profiles-view.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, PEOPLE_WORKSPACE_RECORD_ID } from '../src/v3/people-workspace.js';
@@ -64,7 +65,8 @@ const editorField = (view, label) => fieldControl(editorContent(view), label);
 const saveEditor = view => view.testDialogs.submit();
 const cancelEditor = view => view.testDialogs.dialog.cancelTop();
 function person(entityId, name, selected, profile = null, appearanceCount = 1) {
-  return { entityId, displayName: profile?.name || name, entityDisplayName: name, aliases: [`${name}别名`], selected, profiled: Boolean(profile), profile, appearanceCount };
+  const aliases = buildEntityIdentityDirectory({ entities: [{ id: entityId, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }] }], identityProjection: { profilesByEntityId: profile ? { [entityId]: profile } : {} } })[0].aliases;
+  return { entityId, displayName: profile?.name || name, entityDisplayName: name, aliases, selected, profiled: Boolean(profile), profile, appearanceCount };
 }
 function runtimeHarness({ profile = null, profiles = null, selected = [A], failSave = false, generatedProfile = null, generateGate = null, generationReport = null, archivedProfileHistory = [] } = {}) {
   const initialProfiles = profiles ?? (profile ? { [A]: profile } : {});
@@ -81,8 +83,8 @@ function runtimeHarness({ profile = null, profiles = null, selected = [A], failS
     async setPersonOrderEntityIds(ids) { calls.order.push([...ids]); const rank = new Map(ids.map((id, index) => [id, index])); state = { ...state, personOrderEntityIds: [...ids], people: [...state.people].sort((left, right) => (rank.get(left.entityId) ?? ids.length) - (rank.get(right.entityId) ?? ids.length)) }; return emit(); },
     async saveProfile(entityId, fields, options = {}) {
       calls.save.push([entityId, structuredClone(fields), structuredClone(options)]); if (failSave) throw new Error('CAS失败');
-      const saved = { entityId, ...fields, manualFields: options.manualFields ?? [], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
-      state = { ...state, profilesByEntityId: { ...state.profilesByEntityId, [entityId]: saved }, people: state.people.map(item => item.entityId === entityId ? { ...item, displayName: saved.name || item.entityDisplayName, profiled: true, profile: saved } : item), unprofiledSelectedCount: state.people.filter(item => item.selected && item.entityId !== entityId && !item.profiled).length }; return emit();
+      const saved = { ...state.profilesByEntityId[entityId], entityId, ...fields, manualFields: [...new Set([...(state.profilesByEntityId[entityId]?.manualFields ?? []), ...(options.manualFields ?? [])])], source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+      state = { ...state, profilesByEntityId: { ...state.profilesByEntityId, [entityId]: saved }, people: state.people.map(item => item.entityId === entityId ? { ...item, ...person(entityId, item.entityDisplayName, item.selected, saved, item.appearanceCount) } : item), unprofiledSelectedCount: state.people.filter(item => item.selected && item.entityId !== entityId && !item.profiled).length }; return emit();
     },
     async generateMissingProfiles() {
       calls.generate += 1; if (generateGate) await generateGate;
@@ -233,7 +235,7 @@ function trueRuntimeHarness() {
     sourcePermissions: { filterCandidates: ({ candidates }) => candidates }, contextProvider: () => ({ chat: [] }), now: () => new Date('2026-09-06T00:00:00.000Z'),
   });
   return {
-    runtime, records, calls,
+    runtime, records, calls, entities,
     blockNextPut() { let release; control.gate = new Promise(resolve => { release = resolve; }); return release; },
     failNextPut() { control.failNextPut = true; },
     switchChat(chatId) { identity = { ...identity, chatId, hostChatId: `host-${chatId}` }; runtime.invalidate(); },
@@ -508,7 +510,8 @@ test('长人物资料只在阅读视图按句分行，编辑与保存仍保留�
   const age = editorField(view, '年龄'); age.value = '31'; age.fire('input');
   await saveEditor(view);
   await waitFor(() => h.calls.save.length === 1 && visible(container).includes('已保存'));
-  assert.equal(h.calls.save[0][1].notes, rawNotes, '保存 payload 不包含展示用换行');
+  assert.ok(!Object.hasOwn(h.calls.save[0][1], 'notes'), '未改的长正文不重复提交');
+  assert.equal(h.state.profilesByEntityId[A].notes, rawNotes, '保存后仍保留原文而非展示换行');
   assert.equal(readRow('notes').children[1].textContent, '候选甲；\n候选乙;\n候选丙。\n丁”接续\n已有换行，网址 https://example.test/a.b、小数 1.25 不拆、顿号不拆；\n他说“可以。”\n下一句；\n他说“可以。”');
 });
 
@@ -530,7 +533,7 @@ test('人物资料弹窗保存失败保留内容，成功后回到当前人物�
 });
 
 test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁剪独立保存并保留文字草稿', async () => {
-  const profile = { entityId: A, name: '无别名人物', aliases: '', gender: '女', age: '28', birthday: '3月8日', species: '人类', background: '旧背景', appearance: '', personality: '', notes: '旧补充', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+  const profile = { entityId: A, name: '无别名人物', aliases: '', manualFields: ['aliases'], gender: '女', age: '28', birthday: '3月8日', species: '人类', background: '旧背景', appearance: '', personality: '', notes: '旧补充', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const h = runtimeHarness({ profile }), canvasDraws = [];
   const avatarDocument = {
     activeElement: null,
@@ -639,4 +642,26 @@ test('搬家后人物详情按需只读显示冻结旧资料，不提供编辑�
   assert.match(visible(container), /搬家前资料 1 · 甲旧名/);
   const archive = flatten(container).find(node => node.className === 'qqj-profile-archive-entry');
   assert.ok(archive); assert.doesNotMatch(visible(archive), /编辑|保存资料|删除人物|整理当前资料/);
+});
+
+
+test('有效别名：真实编辑框展示累计全集并保存删回旧三项', async () => {
+  const h = trueRuntimeHarness();
+  h.entities[0].aliases = Array.from({ length: 50 }, (_, i) => ({ name: `累计别名${i + 1}` }));
+  await h.runtime.refresh();
+  await h.runtime.saveProfile(A, { name: '甲', aliases: '简称一、简称二、简称三', notes: '已有资料' }, { manualFields: [] });
+  await h.runtime.setSelectedEntityIds([A]);
+  const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  assert.equal(editorField(view, '别名').value.split('、').length, 50);
+  const notes = editorField(view, '补充资料'); notes.value = '仅改说明'; notes.fire('input');
+  await saveEditor(view);
+  assert.ok(!h.runtime.getState().profilesByEntityId[A].manualFields.includes('aliases'));
+  assert.equal(h.runtime.getState().profilesByEntityId[A].aliases, '简称一、简称二、简称三');
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  const aliases = editorField(view, '别名'); aliases.value = '简称一、简称二、简称三'; aliases.fire('input');
+  await saveEditor(view);
+  assert.deepEqual(h.runtime.getState().people.find(p => p.entityId === A).aliases, ['简称一', '简称二', '简称三']);
+  assert.ok(h.runtime.getState().profilesByEntityId[A].manualFields.includes('aliases'));
+  view.deactivate();
 });

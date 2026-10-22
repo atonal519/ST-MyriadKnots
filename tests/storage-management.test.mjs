@@ -385,15 +385,15 @@ test('仅复用完整暖地基且root一致；仍list，冷图或root变化回�
   const warm = fixture({ warmCache: true });
   const snapshot = await warm.manager.scan();
   assert.equal(snapshot.status, 'ready');
-  assert.deepEqual(warm.counts(), { listCalls: 1, rootReads: 1, fullReads: 0 });
+  assert.deepEqual(warm.counts(), { listCalls: 1, rootReads: 1, fullReads: 0, streamedRecords: 0 });
 
   const cold = fixture();
   await cold.manager.scan();
-  assert.deepEqual(cold.counts(), { listCalls: 1, rootReads: 0, fullReads: 1 });
+  assert.deepEqual(cold.counts(), { listCalls: 1, rootReads: 0, fullReads: 1, streamedRecords: 0 });
 
   const stale = fixture({ warmCache: true, cacheRootChanged: true });
   await stale.manager.scan();
-  assert.deepEqual(stale.counts(), { listCalls: 1, rootReads: 1, fullReads: 1 });
+  assert.deepEqual(stale.counts(), { listCalls: 1, rootReads: 1, fullReads: 1, streamedRecords: 0 });
 });
 
 test('root 二次核验后到删除结束之间 session 保持暂停，新 foundation 写入无法取得身份', async () => {

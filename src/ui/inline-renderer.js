@@ -1,7 +1,9 @@
 import { projectHistoricalRecallReceipt, RECALL_RECEIPT_KEY } from '../v3/recall-runtime.js';
 import { inspectMessageFloorAnchor } from '../v3/message-floor-anchor.js';
 import { MIGRATION_ALIAS_KEY } from '../v3/migration-prefix.js';
+import { isMemoryExcludedMessage } from '../v3/memory-exclusion.js';
 import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallReceipt } from './inline-projection.js';
+import { publicErrorMessage } from '../public-error.js';
 
 import { patchRecallTabs } from './recall-tabs.js';
 import { scaleCssFontSizes } from './font-scale.js';
@@ -13,11 +15,11 @@ const INLINE_STYLE = `
 :host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none;--qqj-inline-knot:#a8322f;--qqj-inline-line:color-mix(in srgb,currentColor 18%,transparent)}
 *,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid var(--qqj-inline-line);border-left:2px solid var(--qqj-inline-knot);border-radius:8px}
 .head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
-.toggle,.extract{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}
-.extract{width:32px;height:32px;padding:0;display:grid;place-items:center;font-family:"Font Awesome 6 Free","Font Awesome 5 Free",sans-serif;font-size:12px;font-weight:900;line-height:1}.extract[hidden]{display:none}.extract:disabled{cursor:default;opacity:.42}.toggle:focus-visible,.extract:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
-.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
-@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}
-@media(prefers-reduced-motion:reduce){.toggle,.extract{scroll-behavior:auto}}
+.toggle,.extract,.exclude{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:7px;min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.actions{display:flex;align-items:center;gap:1px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}
+.extract,.exclude{width:32px;height:32px;padding:0;display:grid;place-items:center}.extract[hidden],.exclude[hidden]{display:none}.extract:disabled,.exclude:disabled{cursor:default;opacity:.42}.exclude[aria-pressed="true"]{background:color-mix(in srgb,var(--qqj-inline-knot) 14%,transparent);color:var(--qqj-inline-knot)}.icon{display:block;width:16px;height:16px;flex:none}.toggle:focus-visible,.extract:focus-visible,.exclude:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
+.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden],.facts[hidden],.summary[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
+@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.actions{gap:0}.extract,.exclude{width:28px;height:30px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.toggle,.extract,.exclude{scroll-behavior:auto}}
 `;
 
 const validIndex = value => Number.isSafeInteger(value) && value >= 0;
@@ -56,7 +58,26 @@ function elementPriority(element, role) {
 
 function append(parent, ...children) { parent?.append?.(...children); return parent; }
 
-function createCard(documentRef, host, kind, expanded, onToggle, onExtract) {
+function createIcon(documentRef, kind) {
+  const svg = documentRef.createElementNS?.('http://www.w3.org/2000/svg', 'svg') ?? documentRef.createElement('svg');
+  svg.setAttribute?.('viewBox', '0 0 24 24'); svg.setAttribute?.('width', '16'); svg.setAttribute?.('height', '16');
+  svg.setAttribute?.('class', 'icon'); svg.setAttribute?.('aria-hidden', 'true');
+  const group = documentRef.createElementNS?.('http://www.w3.org/2000/svg', 'g') ?? documentRef.createElement('g');
+  group.setAttribute?.('fill', 'none'); group.setAttribute?.('stroke', 'currentColor'); group.setAttribute?.('stroke-linecap', 'round'); group.setAttribute?.('stroke-width', '1.5');
+  const shapes = kind === 'ghost'
+    ? [['path', 'M22 12.3006C22 6.61173 17.5228 2 12 2C6.47715 2 2 6.61173 2 12.3006V19.723C2 21.0453 3.35098 21.9054 4.4992 21.314C5.42726 20.836 6.5328 20.9069 7.39614 21.4998C8.36736 22.1667 9.63264 22.1667 10.6039 21.4998L10.9565 21.2576C11.5884 20.8237 12.4116 20.8237 13.0435 21.2576L13.3961 21.4998C14.3674 22.1667 15.6326 22.1667 16.6039 21.4998C17.4672 20.9069 18.5727 20.836 19.5008 21.314C20.649 21.9054 22 21.0453 22 19.723V16.0118'], ['path', 'M15.5 10.5C15.5 11.0523 15.2761 11.5 15 11.5C14.7239 11.5 14.5 11.0523 14.5 10.5C14.5 9.94772 14.7239 9.5 15 9.5C15.2761 9.5 15.5 9.94772 15.5 10.5Z'], ['ellipse', null, { cx: '9', cy: '10.5', rx: '.5', ry: '1' }]]
+    : [['path', 'M15 12L12 12M12 12L9 12M12 12L12 9M12 12L12 15'], ['path', 'M7 3.33782C8.47087 2.48697 10.1786 2 12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 10.1786 2.48697 8.47087 3.33782 7']];
+  for (const [tag, data, attributes = {}] of shapes) {
+    const node = documentRef.createElementNS?.('http://www.w3.org/2000/svg', tag) ?? documentRef.createElement(tag);
+    if (data) node.setAttribute?.('d', data);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute?.(name, value);
+    group.append?.(node);
+  }
+  svg.append?.(group);
+  return svg;
+}
+
+function createCard(documentRef, host, kind, expanded, onToggle, onExtract, onExclude) {
   const root = host.attachShadow({ mode: 'open' });
   const style = documentRef.createElement('style'); style.textContent = scaleCssFontSizes(INLINE_STYLE, '--qqj-inline-fixed-scale');
   const card = documentRef.createElement('article'); card.className = `card ${kind}`;
@@ -67,7 +88,10 @@ function createCard(documentRef, host, kind, expanded, onToggle, onExtract) {
   const title = documentRef.createElement('span'); title.className = 'title';
   const status = documentRef.createElement('span'); status.className = 'status';
   append(toggle, title, status);
-  const extract = documentRef.createElement('button'); extract.type = 'button'; extract.className = 'extract'; extract.textContent = '\uf2f1'; extract.title = '重新提取本楼摘要；已人工处理的千事记录保留'; extract.setAttribute?.('aria-label', '重新提取本楼摘要；已人工处理的千事记录保留');
+  const actions = documentRef.createElement('div'); actions.className = 'actions';
+  const extract = documentRef.createElement('button'); extract.type = 'button'; extract.className = 'extract'; extract.title = '重新提取本楼摘要；已人工处理的千事记录保留'; extract.setAttribute?.('aria-label', '重新提取本楼摘要；已人工处理的千事记录保留'); append(extract, createIcon(documentRef, 'extract'));
+  const exclude = documentRef.createElement('button'); exclude.type = 'button'; exclude.className = 'exclude'; append(exclude, createIcon(documentRef, 'ghost'));
+  append(actions, extract, exclude);
   const body = documentRef.createElement('div'); body.className = 'body';
   const facts = documentRef.createElement('div'); facts.className = 'facts';
   const time = documentRef.createElement('div'), locations = documentRef.createElement('div'), people = documentRef.createElement('div');
@@ -75,10 +99,11 @@ function createCard(documentRef, host, kind, expanded, onToggle, onExtract) {
   const fields = { time, locations, people };
   const summary = documentRef.createElement('p'); summary.className = 'summary';
   const error = documentRef.createElement('p'); error.className = 'error';
-  append(body, facts, summary, error); append(head, toggle, extract); append(card, mark, head, body); append(root, style, card);
-  const view = { host, root, card, mark, knot, toggle, title, status, extract, body, facts, fields, summary, error, kind, expanded, signature: '', projection: null, extracting: false };
+  append(body, facts, summary, error); append(head, toggle, actions); append(card, mark, head, body); append(root, style, card);
+  const view = { host, root, card, mark, knot, toggle, title, status, extract, exclude, actions, body, facts, fields, summary, error, kind, expanded, signature: '', projection: null, extracting: false, excluding: false };
   toggle.addEventListener('click', () => onToggle(view));
   extract.addEventListener('click', () => onExtract(view));
+  exclude.addEventListener('click', () => onExclude(view));
   host.__qqjInlineCard = view;
   return view;
 }
@@ -148,13 +173,20 @@ function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
     setText(view.status, projection.statusText); view.status.className = 'status';
     view.status.title = projection.statusDetail ?? '';
     view.status.setAttribute?.('aria-label', projection.statusDetail ? `${projection.statusText}：${projection.statusDetail}` : projection.statusText);
-    view.extract.hidden = true; view.extract.disabled = true;
+    view.extract.hidden = true; view.extract.disabled = true; view.exclude.hidden = true; view.exclude.disabled = true;
     patchRecallTabs(view, projection, documentRef, sourceIndex, groupExpanded);
     patchExpanded(view); return;
   }
   const signature = JSON.stringify(projection);
   if (view.signature === signature) {
     view.extract.hidden = projection.readOnly === true; view.extract.disabled = view.extracting || !projection.canExtract;
+    view.facts.hidden = projection.memoryExcluded === true;
+    view.summary.hidden = projection.memoryExcluded === true;
+    view.exclude.hidden = projection.readOnly === true;
+    view.exclude.disabled = view.excluding || projection.busy === true;
+    view.exclude.setAttribute?.('aria-pressed', String(projection.memoryExcluded === true));
+    view.exclude.title = projection.memoryExcluded === true ? '恢复记录，需补记本楼' : '本楼不计入记忆';
+    view.exclude.setAttribute?.('aria-label', view.exclude.title);
     patchExpanded(view); return;
   }
   view.signature = signature; view.projection = projection;
@@ -162,11 +194,17 @@ function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
   view.labelTitle = title; setText(view.title, title); view.title.title = title;
   setText(view.status, projection.statusText); view.status.className = `status${statusTone(projection) ? ` ${statusTone(projection)}` : ''}`;
   if (projection.kind === 'assistant') {
-    view.facts.hidden = false;
+    view.facts.hidden = projection.memoryExcluded === true;
+    view.summary.hidden = projection.memoryExcluded === true;
     setText(view.fields.time, `时间 ${projection.time}`); setText(view.fields.locations, `地点 ${projection.locations}`); setText(view.fields.people, `人物 ${projection.people}`);
-    setText(view.summary, projection.summary); setText(view.error, projection.error); view.error.hidden = !projection.error;
+    setText(view.summary, projection.summary); const errorText = projection.error || view.exclusionFeedback || ''; setText(view.error, errorText); view.error.hidden = !errorText;
     const extractLabel = `重新提取${title}摘要；已人工处理的千事记录保留`; view.extract.title = extractLabel; view.extract.setAttribute?.('aria-label', extractLabel);
     view.extract.hidden = projection.readOnly === true; view.extract.disabled = view.extracting || !projection.canExtract;
+    view.exclude.hidden = projection.readOnly === true;
+    view.exclude.disabled = view.excluding || projection.busy === true;
+    view.exclude.setAttribute?.('aria-pressed', String(projection.memoryExcluded === true));
+    view.exclude.title = projection.memoryExcluded === true ? '恢复记录，需补记本楼' : '本楼不计入记忆';
+    view.exclude.setAttribute?.('aria-label', view.exclude.title);
   }
   patchExpanded(view);
 }
@@ -217,6 +255,26 @@ export function createInlineRenderer({
       logger?.warn?.('[qianqianjie] 楼内重新提取失败', { code: String(error?.code ?? error?.name ?? 'V3_INLINE_EXTRACT_FAILED').slice(0, 120) });
     }).finally(() => { view.extracting = false; schedule(); });
   };
+  const onExclude = view => {
+    const projection = view.projection;
+    if (!active || view.excluding || projection?.kind !== 'assistant' || projection.readOnly === true || projection.busy === true) return;
+    view.excluding = true; view.exclude.disabled = true; view.exclusionFeedback = '';
+    Promise.resolve(memoryRuntime.setMemoryExcluded?.(view.messageIndex, projection.memoryExcluded !== true)).then(result => {
+      if (!['persisted', 'unchanged'].includes(result?.status)) {
+        view.exclusionFeedback = String(result?.message ?? '当前不能更改这楼的记忆状态。').slice(0, 240);
+        view.expanded = true; expanded.set(view.stateKey, true);
+        setText(view.error, view.exclusionFeedback); view.error.hidden = false; patchExpanded(view);
+        return;
+      }
+      view.exclusionFeedback = '';
+      setText(view.error, ''); view.error.hidden = true;
+      if (result.status === 'persisted') schedule();
+    }).catch(error => {
+      view.exclusionFeedback = publicErrorMessage(error, { fallback: '消息标记保存失败，请稍后重试。' });
+      view.expanded = true; expanded.set(view.stateKey, true);
+      setText(view.error, view.exclusionFeedback); view.error.hidden = false; patchExpanded(view);
+    }).finally(() => { view.excluding = false; schedule(); });
+  };
 
   const ensureView = (messageElement, messageIndex, kind, chatKey) => {
     const anchor = resolveInlineAnchor(messageElement);
@@ -237,9 +295,10 @@ export function createInlineRenderer({
       host.__qqjInlineOwner = owner;
       applyPalette(host);
       const stateKey = cardKey(chatKey, messageIndex, kind);
-      view = host.__qqjInlineCard ?? createCard(documentRef, host, kind, expanded.get(stateKey) === true, onToggle, onExtract);
+      view = host.__qqjInlineCard ?? createCard(documentRef, host, kind, expanded.get(stateKey) === true, onToggle, onExtract, onExclude);
       view.stateKey = stateKey; view.kind = kind; cards.set(messageIndex, view);
     }
+    view.messageIndex = messageIndex;
     return view;
   };
 
@@ -382,6 +441,7 @@ export function createInlineRenderer({
       if (!view) { complete = false; continue; }
       if (candidate.role === 'assistant') patchView(view, projectInlineMemoryFloor(memoryState, messageIndex, assistantSequence.get(messageIndex), {
         migrationAliasId: chat[messageIndex]?.extra?.[MIGRATION_ALIAS_KEY] ?? null,
+        memoryExcluded: isMemoryExcludedMessage(chat[messageIndex]),
       }), documentRef, sourceIndex, groupExpanded);
       else updateUser(view, chat[messageIndex], messageIndex, chatId, sourceIndex, recallState, chat);
     }

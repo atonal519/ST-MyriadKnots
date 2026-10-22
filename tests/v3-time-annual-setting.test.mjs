@@ -1,3 +1,4 @@
+import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from '../src/v3/time-annual-setting.js';
@@ -188,19 +189,25 @@ test('本轮明确询问已过生日时保留准确原文，其他在场人物�
     const payload = JSON.parse(options.taskMessages[0].content);
     assert.equal(payload.annualCandidates.length, 2);
     const wanted = payload.annualCandidates.find(candidate => candidate.fact.startsWith('阿岚 /'));
-    return { jsonData: { annual_retain_keys: [wanted.key, wanted.key] } };
+    return { jsonData: { annual_retain_keys: ['T999', 'R1', 'C1', 'Q1', 7, null, wanted.key, wanted.key] } };
   } });
   assert.equal(result.timeDependencies.reminders.length, 1);
   assert.match(result.injectionText, /阿岚 \/ 生日.*原日期 9月20日.*本年日期已过/u);
   assert.doesNotMatch(result.injectionText, /阿裴 \/ 生日|日期关系不明确/u);
 });
 
-test('年度候选为空时不因生日增加请求；未知保留键和坏类型仍拒绝', async () => {
+test('年度候选为空不增加请求；全非法正选不注入生日，坏类型和漏答仍拒绝', async () => {
   const source = annualRecallSource([annualRecord('one', PERSON, '阿岚')]);
   const empty = await selectRecallWithLlm({ source, queryContext: annualQuery('独自检修发电机'), generateUtilityTask: async () => { throw new Error('无相关候选不应请求'); } });
   assert.equal(empty.selectorDiagnostic.mode, 'local');
   assert.equal(empty.timeDependencies.reminders.length, 0);
-  for (const answer of [{ annual_retain_keys: ['T999'] }, { annual_retain_keys: 'T1' }, { history_exclude_keys: [], state_exclude_keys: [] }]) {
+  let calls = 0;
+  const allInvalid = await selectRecallWithLlm({ source, queryContext: annualQuery('阿岚的生日'), generateUtilityTask: async () => {
+    calls += 1; return { jsonData: { annual_retain_keys: ['T999', 'R1', 'C1', 'Q1', 7, null] } };
+  } });
+  assert.equal(calls, 1);
+  assert.equal(allInvalid.timeDependencies.reminders.length, 0);
+  for (const answer of [{ annual_retain_keys: 'T1' }, { annual_retain_keys: null }, { annual_retain_keys: {} }, { history_exclude_keys: [], state_exclude_keys: [] }]) {
     await assert.rejects(selectRecallWithLlm({ source, queryContext: annualQuery('阿岚的生日'), generateUtilityTask: async () => ({ jsonData: answer }) }),
       error => ['V3_RECALL_LLM_KEYS_INVALID', 'V3_RECALL_LLM_SCHEMA_INVALID', 'V3_RECALL_LLM_FIELDS_MISSING'].includes(error.code));
   }
@@ -296,4 +303,30 @@ test('旧档无正文可补读；相同和无关变化不调用，相关变化�
   hold = null; await runtime.runBatch(); assert.equal(calls, 6, '来源变化后的旧响应不提交，新来源可继续处理');
   profile.birthday = ''; profile.notes = ''; await runtime.runBatch(); assert.equal(calls, 6); assert.deepEqual((await store.read(CHAT)).head.settingAnnualSources, {});
   enabled = false; profile.birthday = '9月21日'; await runtime.runBatch(); assert.equal(calls, 6);
+});
+
+
+test('全局破限时间与年度同一运行只取一次快照，后续新任务取改值或默认', async () => {
+  for (const value of ['时间共用第一版', '时间共用第二版', '  \n ']) {
+    let processing = value, reads = 0, id = 0;
+    const sent = [], chat = [{ is_user: false, mes: '<!-- QQJ-start | date=2026-09-19 | time=08:00 -->阿岚答应明日回信。<!-- QQJ-end | date=2026-09-19 | time=09:00 -->' }, { is_user: true, mes: '继续' }];
+    const candidates = await scanAssistantCandidates(chat, { chatId: CHAT });
+    const root = { chatId: CHAT, narrativeGeneration: 'generation', headCheckpointId: 'head' };
+    const source = { status: 'ready', root, rootRevision: 1, floors: candidates.filter(row => row.stabilityProof).map((candidate, index) => createFloorRecord({ candidate, id: `floor-${index+1}`, chatId: CHAT, narrativeGeneration: root.narrativeGeneration })), floorMemories: [], stateDeltas: [], entities: [], baseline: { userPersona: { entityId: USER, name: '用户' } } };
+    const store = createTimeStore({ client: backend().client });
+    const runtime = createTimeRuntime({ store, foundationStore: { readRoot: async () => ({ data: root }) }, hostAdapter: { snapshot: () => ({ chat, chatId: 'host', context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) },
+      session: { identity: () => ({ chatId: CHAT, hostChatId: 'host' }) }, getReachable: () => source, getMemoryState: () => ({ memorySyncStatus: 'idle' }), isEnabled: () => true,
+      processingPrompt: () => { reads++; return processing; }, annualSettingsProvider: () => ({ ready: true, people: [{ entityId: PERSON, displayName: '阿岚', profile: { birthday: '9月20日' } }] }),
+      generateTimeTask: async task => {
+        sent.push(task); processing = '运行途中修改'; const request = JSON.parse(task.taskMessages[0].content);
+        if (request.task === 'annual-settings') return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: [{ category: 'birthday', label: '生日', originalDate: '9月20日', note: '' }] })) } };
+        if (request.currentReview) return { jsonData: { changes: request.trackedItems.map(item => ({ itemId: item.id, progression: '尚未确认回信。', assessmentReason: '' })) } };
+        return { jsonData: { changes: [{ itemId: null, subjectEntityId: null, subjectName: '阿岚', type: 'deadline', label: '回信期限', observation: '阿岚答应明日回信', occurrenceTime: '2026-09-19', dueTime: '2026-09-20', periodDays: null, status: 'active', stateRefs: [], progression: '尚未确认回信。', sourceKeys: [request.observations[0].sourceKey] }] } };
+      }, newUuid: () => `pool-time-${++id}` });
+    await runtime.organize(await runtime.prepareHistoryPlan());
+    assert.equal(sent.length, 3); assert.equal(reads, 1);
+    const prefix = value.trim() ? value : BASE_PROCESSING_PROMPT;
+    for (const task of sent) { assert.ok(task.systemPrompt.startsWith(prefix+'\n\n')); assert.equal(task.systemPrompt.split(prefix).length-1, 1); }
+    assert.equal(runtime.getState().annualItems.length, 1); assert.equal(runtime.getState().trackedItems.length, 1);
+  }
 });

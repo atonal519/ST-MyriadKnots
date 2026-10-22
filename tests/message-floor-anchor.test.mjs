@@ -118,6 +118,33 @@ test('孤儿锚清理等待期间 swipe 前插和重排时按对象恢复，不�
   assert.deepEqual(message.swipe_info[2].extra, { targetKept: true, qianqianjie_floor: target });
 });
 
+test('未登记AI楼的不计入标记沿宿主saveChat保存并可恢复，只改QQJ extra', async () => {
+  const { persistMessageMemoryExclusion } = await import('../src/v3/message-floor-anchor.js');
+  const message = assistant({ otherPlugin: { preserved: true } });
+  const context = { chatMetadata: { qianqianjie: { chatId: CHAT } }, chatId: 'host-chat', chat: [message],
+    saveChat: async () => { saved = structuredClone(context.chat); return true; } };
+  let saved = structuredClone(context.chat);
+  const hostAdapter = { snapshot: () => ({ context, chat: context.chat, chatId: context.chatId, characterAvatar: 'a.png' }) };
+  const marked = await persistMessageMemoryExclusion({ hostAdapter, chatId: CHAT, messageIndex: 0, excluded: true });
+  assert.equal(marked.status, 'persisted');
+  assert.deepEqual(message.extra, { otherPlugin: { preserved: true }, qianqianjie_memory_excluded: true });
+  assert.deepEqual(saved[0].extra, message.extra);
+  const restored = await persistMessageMemoryExclusion({ hostAdapter, chatId: CHAT, messageIndex: 0, excluded: false });
+  assert.equal(restored.status, 'persisted');
+  assert.deepEqual(message.extra, { otherPlugin: { preserved: true } });
+  assert.deepEqual(saved[0].extra, message.extra);
+});
+
+test('宿主明确拒绝保存时撤销本次标记且保留已有extra', async () => {
+  const { persistMessageMemoryExclusion } = await import('../src/v3/message-floor-anchor.js');
+  const message = assistant({ otherPlugin: { preserved: true } });
+  const context = { chatMetadata: { qianqianjie: { chatId: CHAT } }, chatId: 'host-chat', chat: [message], saveChat: async () => false };
+  const hostAdapter = { snapshot: () => ({ context, chat: context.chat, chatId: context.chatId }) };
+  await assert.rejects(persistMessageMemoryExclusion({ hostAdapter, chatId: CHAT, messageIndex: 0, excluded: true }),
+    { code: 'V3_MESSAGE_EXCLUSION_SAVE_FAILED' });
+  assert.deepEqual(message.extra, { otherPlugin: { preserved: true } });
+});
+
 test('原候选清理期间正文与outer extra被真实编辑时不向新候选注入旧锚', async () => {
   const target = { schemaVersion: 1, chatId: CHAT, floorId: DANGLING };
   const message = assistant({ originalKept: true, qianqianjie_floor: target });

@@ -7,6 +7,7 @@ import { inferCanonicalCurrentTime } from './extractor.js';
 import { estimateRecallTokens } from './recall-selector.js';
 import { normalizeStoryClockReferenceTags } from '../story-clock.js';
 import { stripMemoryTagBlocks } from '../memory-content-sanitizer.js';
+import { isMemoryExcludedMessage } from './memory-exclusion.js';
 
 export async function clockContentFingerprint(rawContent, referenceTags = '') {
   const raw = String(rawContent ?? '');
@@ -61,7 +62,8 @@ export async function readRecentBodyStoryTimes(host, { reachable = null, sanitiz
   const visibleCandidates = candidates.map((candidate, index) => ({ candidate, match: binding.candidateMatches.get(index) }))
     .filter(({ candidate }) => {
       const message = chat[candidate.hostLocator.messageIndex];
-      return message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
+      return candidate.memoryExcluded !== true && !isMemoryExcludedMessage(message)
+        && message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
     });
   const selected = visibleCandidates.slice(-limit);
   const reliable = [];
@@ -109,6 +111,7 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
   for (const [index, candidate] of candidates.entries()) {
     const match = binding.candidateMatches.get(index);
     const message = host.chat?.[candidate.hostLocator?.messageIndex];
+    if (candidate.memoryExcluded === true || isMemoryExcludedMessage(message)) continue;
     const visible = message && message.is_system !== true && message.is_hidden !== true && message.hidden !== true;
     const previous = visible ? previousVisible : previousHistory;
     const previousSource = visible ? previousVisibleSource : previousHistorySource;
@@ -120,17 +123,18 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
     const ambiguous = !manual && clock?.status === 'ambiguous';
     const summaryRaw = !manual && !ambiguous && !clock?.text ? mainlineTimeText(memoryByFloor.get(match?.floor.id)) : '';
     const raw = clock?.text ?? summaryRaw;
+    const sourceTimeRaw = sourceRaw || summaryRaw;
     const time = manual ? manualTimes.get(match?.floor.id) ?? projectTime('')
       : ambiguous ? projectTime('')
         : raw ? projectTime(raw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previous, { calendar }) : projectTime('');
     const sourceTime = manual ? manualSourceTimes.get(match?.floor.id) ?? projectTimeSource('')
       : sourceClock?.status === 'ambiguous' ? projectTimeSource('')
-        : sourceRaw || summaryRaw ? projectTimeSource((sourceRaw || summaryRaw).split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : projectTimeSource('');
+        : sourceTimeRaw ? projectTimeSource(sourceTimeRaw.split(/\s*(?:→|->|⟶)\s*/u).at(-1), previousSource) : projectTimeSource('');
     previousHistory = time; previousHistorySource = sourceTime;
     if (visible) { previousVisible = time; previousVisibleSource = sourceTime; }
     const timeSourceFingerprint = await timeFingerprint(manual ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : sourceTime.raw]
       : sourceClock?.status === 'ambiguous' ? ['ambiguous-body-time', sourceClock.signature]
-        : raw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : raw] : ['no-body-time']);
+        : sourceTimeRaw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : sourceTimeRaw] : ['no-body-time']);
     const clockFingerprint = await clockContentFingerprint(candidate.rawContent, storyClockReferenceTags);
     const body = { stable: Boolean(candidate.stabilityProof), timeSourceKind: manual ? 'manual' : summaryRaw ? 'summary' : raw || ambiguous ? 'body' : 'unknown', timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
       rawFingerprint: candidate.rawFingerprint, clockContentFingerprint: clockFingerprint, rawContent: candidate.rawContent, hostLocator: candidate.hostLocator, content: candidate.canonicalContent, observationTime: time };

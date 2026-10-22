@@ -1,6 +1,7 @@
 import { sha256 } from '../identity.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
+import { isMemoryExcludedMessage } from './memory-exclusion.js';
 
 export const FOUNDATION_CAPABILITIES = Object.freeze({
   foundationReady: true,
@@ -10,7 +11,7 @@ export const FOUNDATION_CAPABILITIES = Object.freeze({
 });
 
 export const FOUNDATION_FORMAT_VERSION = 1;
-const SANITIZER_VERSION = 'memory-content-sanitizer-v1';
+const SANITIZER_VERSION = 'shared-body-wrappers-v1';
 const INPUT_SNAPSHOT_VERSION = 2;
 
 const prefixedHash = async value => `sha256:${await sha256(value)}`;
@@ -40,6 +41,7 @@ export async function foundationInputSnapshot(candidates, stableCount) {
       swipeId: candidate.hostLocator?.swipeId ?? null,
       selectedSwipeIndex: candidate.hostLocator?.selectedSwipeIndex ?? null,
       stabilityFingerprint: candidate.stabilityProof?.fingerprint ?? null,
+      ...(candidate.memoryExcluded === true ? { memoryExcluded: true } : {}),
     })),
   };
   const stablePrefix = {
@@ -53,14 +55,20 @@ export async function foundationInputSnapshot(candidates, stableCount) {
 export function createCheckpointInputFingerprints(floors, { candidates = [], previous = [] } = {}) {
   const priorByFloorId = new Map((Array.isArray(previous) ? previous : []).map(item => [item?.floorId, item]));
   return (Array.isArray(floors) ? floors : []).map((floor, index) => {
-    const stabilityFingerprint = priorByFloorId.get(floor.id)?.stabilityFingerprint
-      ?? candidates[index]?.stabilityProof?.fingerprint
+    const candidate = candidates[index];
+    const prior = priorByFloorId.get(floor.id);
+    const stabilityFingerprint = prior?.stabilityFingerprint
+      ?? candidate?.stabilityProof?.fingerprint
       ?? floor.stability?.proof?.fingerprint
       ?? null;
+    const memoryExcluded = candidate
+      ? candidate.memoryExcluded === true
+      : prior?.memoryExcluded === true;
     return {
       floorId: floor.id,
       canonicalFingerprint: floor.content.canonicalFingerprint,
       ...(stabilityFingerprint ? { stabilityFingerprint } : {}),
+      ...(memoryExcluded ? { memoryExcluded: true } : {}),
     };
   });
 }
@@ -148,6 +156,7 @@ export async function scanAssistantCandidates(chat, {
       canonicalFingerprint,
       sanitizerFingerprint: sanitizerHash,
       canonicalContent,
+      memoryExcluded: isMemoryExcludedMessage(source[messageIndex]),
       stabilityProof,
     }));
     if (assistantSeq % Math.max(1, yieldEvery) === 0) {
@@ -218,5 +227,6 @@ export function candidateSummary(candidate) {
     messageIndex: candidate.hostLocator.messageIndex,
     canonicalFingerprint: candidate.canonicalFingerprint,
     stabilityProof: candidate.stabilityProof ? Object.freeze({ ...candidate.stabilityProof }) : null,
+    ...(candidate.memoryExcluded === true ? { memoryExcluded: true } : {}),
   });
 }

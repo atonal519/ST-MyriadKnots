@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCompactApiClient, normalizeApiUrl, parseJsonOutput } from '../src/compact-api-client.js';
 import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from '../src/json-symbol-repair.js';
-import { createTaskRouter } from '../src/api-routing.js';
+import { createApiTools, createTaskRouter } from '../src/api-routing.js';
 import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
 import { BASE_PROCESSING_PROMPT, resolveProcessingPrompt, withBaseProcessingPrompt } from '../src/internal-processing-prompt.js';
 
@@ -430,7 +430,7 @@ test('模型列表与测试连接走安全代理；短测试不含聊天、人�
   assert.equal(requests[0].path, '/api/backends/chat-completions/status'); const testBody = requests[1].body; assert.equal(testBody.max_tokens, 12000); assert.equal(testBody.temperature, 0); assert.equal(testBody.stream, false);
   assert.doesNotMatch(JSON.stringify(testBody.messages), /人物甲|档案|worldbook|greeting|聊天正文/i); assert.equal(testBody.messages.length, 2); assert.equal(Object.hasOwn(testBody, 'json_schema'), false);
   assert.match(testBody.messages[0].content, /plain-text connection check/); assert.equal(testBody.messages[1].content, 'Reply with OK.');
-  assert.equal(testBody.messages[0].content.includes(BASE_PROCESSING_PROMPT), false, '连接测试不得携带内容处理层');
+  assert.equal(testBody.messages[0].content.split(BASE_PROCESSING_PROMPT).length - 1, 1, '连接测试同样使用全局默认处理层一次');
   await client.testConnection({ config: config({ excludeParams: ['temperature'] }) });
   assert.equal(Object.hasOwn(requests[2].body, 'temperature'), false, '连接测试仍须沿用现有排除参数合同');
   await client.testConnection({ config: config({ qqjTemperature: 0.63 }) });
@@ -475,4 +475,27 @@ test('测试连接沿用流式配置并拼接纯文本，空回、截断和认�
   await assert.rejects(truncated.testConnection({ config: config() }), error => error.code === 'QQJ_OUTPUT_TRUNCATED' && error.finishReason === 'length');
   const unauthorized = createCompactApiClient({ fetchImpl: async () => jsonResponse({}, 401) });
   await assert.rejects(unauthorized.testConnection({ config: config() }), error => error.code === 'QQJ_AUTH');
+});
+
+
+test('全局破限文本连接测试取最新值且保留纯文本确认，不影响模型列表', async () => {
+  let processing = '连接共用第一版';
+  const sent = [];
+  const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+    const body = JSON.parse(options.body); sent.push(body);
+    return _path.endsWith('/status') ? jsonResponse({ data: [{ id: 'test-model' }] }) : jsonResponse({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] });
+  } });
+  const tools = createApiTools({ resolver: { resolve: () => ({ kind: 'independent', config: config() }) }, compactClient: client, processingPrompt: () => processing });
+  for (const value of ['连接共用第一版', '连接共用第二版', '  \n ']) {
+    processing = value;
+    assert.equal((await tools.testConnection()).ok, true);
+    const messages = sent.at(-1).messages;
+    const prefix = resolveProcessingPrompt(value).trim();
+    assert.equal(messages[0].content.split(prefix).length - 1, 1);
+    assert.ok(messages[0].content.startsWith(prefix));
+    assert.match(messages[0].content, /plain-text connection check/);
+    assert.deepEqual(messages.slice(1), [{ role: 'user', content: 'Reply with OK.' }]);
+  }
+  assert.deepEqual(await tools.fetchModels(), ['test-model']);
+  assert.equal(Object.hasOwn(sent.at(-1), 'messages'), false);
 });

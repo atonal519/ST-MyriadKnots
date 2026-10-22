@@ -5,7 +5,7 @@ import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundatio
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
 import {
-  CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, buildCseSystemPrompt, captureCseBaseline, createBaselineRoleEntities,
+  CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, buildCseSystemPrompt, captureCseBaseline, createBaselineRoleEntities, cseReferencedEntityIds,
   createCseEnvelope, createManualCseCorrection, deriveCseTimeline, filterReachableDeltas, replayCurrentState, runCseRequest, selectTrackedSubjects, verifyCseBaselineFingerprint,
 } from './cse-engine.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
@@ -15,7 +15,7 @@ import {
 } from './entity-identity.js';
 import { captureCseRequestSources } from '../cse-source-selection.js';
 import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
-import { memorySourceFloorIds } from './memory-schema.js';
+import { memorySourceFloorIds, validateEntityRecord } from './memory-schema.js';
 import { floorProvenanceForReachable, migrationPartition } from './migration-prefix.js';
 
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
@@ -80,7 +80,7 @@ function currentUserInputFromMemory(memory) {
   return Object.freeze({ messages: Object.freeze(messages.map((message, sourceSnapshotIndex) => Object.freeze({ sourceSnapshotIndex, messageIndex: message.messageIndex, content: message.content }))) });
 }
 
-async function dependencySnapshot(value, floorId, entities, previousState, coreUserEditedSubjectEntityIds = [], identityProjection = {}) {
+async function dependencySnapshot(value, floorId, entities, previousState, coreUserEditedSubjectEntityIds = [], identityProjection = {}, identityBriefTargetIds = []) {
   const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
   if (targetIndex < 0 || !value?.baseline) return null;
   const floors = value.floors.slice(0, targetIndex + 1);
@@ -104,11 +104,13 @@ async function dependencySnapshot(value, floorId, entities, previousState, coreU
   };
   const deltas = filterReachableDeltas({ floors: value.floors, floorMemories: value.floorMemories ?? [], stateDeltas: value.stateDeltas ?? [] });
   const deltaByFloor = new Map(deltas.map(delta => [delta.floorId, delta.id]));
+  const identityBriefTargets = new Set(identityBriefTargetIds);
   const identityDirectory = buildEntityIdentityDirectory({ entities, floorIds, identityProjection }).map(entry => ({
     entityId: entry.entityId,
     entityType: entry.entityType,
     specialRole: entry.specialRole,
     displayName: entry.displayName,
+    identityBrief: identityBriefTargets.has(entry.entityId) ? entry.identityBrief ?? null : null,
     labels: [...entry.labels].map(label => [identityLabelKey(label), label]).sort((left, right) => left[0].localeCompare(right[0]) || left[1].localeCompare(right[1])),
   })).sort((left, right) => left.entityId.localeCompare(right.entityId));
   return {
@@ -557,7 +559,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       ? await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline?.id, floors: dependencyPrecedingFloors, floorMemories: dependencyPrecedingMemories, stateDeltas: dependencyPrecedingDeltas, now: nowIso(now) })
       : null;
     const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas, targetStore, operation.coreUserEditedSubjectReadCache);
-    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, coreUserEditedSubjectEntityIds, operation.identityProjection);
+    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, coreUserEditedSubjectEntityIds, operation.identityProjection, operation.identityBriefTargetIds);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '此前楼层、摘要或人物资料已变化，请刷新后重新分析。');
 
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
@@ -567,6 +569,18 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     deltas.sort((left, right) => floorOrder.get(left.floorId) - floorOrder.get(right.floorId));
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of roleEntities) if (!entitiesById.has(entity.id) && [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId].includes(entity.id)) entitiesById.set(entity.id, entity);
+    for (const update of result.identityBriefUpdates ?? []) {
+      const target = entitiesById.get(update.entityId);
+      if (!target || target.entityType !== 'person' || target.specialRole !== 'none' || typeof update.identityBrief !== 'string' || !update.identityBrief.trim()) continue;
+      const entityId = await deterministicUuid(['v3-cse-entity-identity-update', target.id, floor.id, result.delta.id, update.identityBrief]);
+      const identityBriefUpdatedAt = nowIso(now);
+      const revision = validateEntityRecord({ schemaVersion: 3, recordType: 'entity', id: entityId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration,
+        entityType: target.entityType, displayName: target.displayName, aliases: [], specialRole: target.specialRole,
+        firstSeenFloorId: floor.id, lastSeenFloorId: floor.id, identityBrief: update.identityBrief,
+        status: 'merged', mergedIntoEntityId: target.id, mergeEvidenceRefs: [], baselineClaimIds: [],
+        createdAt: identityBriefUpdatedAt, updatedAt: identityBriefUpdatedAt, recordStatus: 'active', supersedes: null }, { expectedChatId: floor.chatId });
+      if (!entitiesById.has(revision.id)) entitiesById.set(revision.id, revision);
+    }
     const entities = [...entitiesById.values()];
     return commitDeltaGraph({ operation, current, floor, memory, delta: result.delta, deltas, entities, diagnostics: { kind: 'cse', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, promptGuidanceFingerprint: operation.promptGuidanceFingerprint ?? null, systemPromptFingerprint: operation.systemPromptFingerprint ?? null, api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, isolated: result.isolated.slice(-40), sourceSelection: operation.sourceDiagnostics ?? null, cseRebuild: operation.cseRebuild } });
   }
@@ -628,6 +642,12 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const projectedBaseline = { ...value.baseline,
         userPersona: { ...value.baseline.userPersona, entityId: resolveIdentityEntityId(value.baseline.userPersona.entityId, identityProjection) },
         characterCard: { ...value.baseline.characterCard, entityId: resolveIdentityEntityId(value.baseline.characterCard.entityId, identityProjection) } };
+      const baselineEntityIds = new Set([projectedBaseline.userPersona.entityId, projectedBaseline.characterCard.entityId].filter(Boolean));
+      const referencedEntityIds = cseReferencedEntityIds(projectedMemory);
+      for (const participant of projectedMemory.participants ?? []) referencedEntityIds.add(participant.entityId);
+      const identityBriefTargets = scopedDirectory.filter(entry => entry.entityType === 'person' && entry.specialRole === 'none' && !baselineEntityIds.has(entry.entityId) && referencedEntityIds.has(entry.entityId))
+        .map(entry => ({ entityId: entry.entityId, name: entry.displayName, labels: entry.labels, identityBrief: entry.identityBrief ?? null }));
+      operation.identityBriefTargetIds = identityBriefTargets.map(target => target.entityId);
       const tracked = selectTrackedSubjects({ baseline: projectedBaseline, entities: scopedEntities, floorMemories: trackedMemories, floorMemory: projectedMemory });
       const trackedIds = new Set(tracked.map(entity => entity.id));
       const previousIds = new Set((projectedPreviousCurrentState?.subjects ?? []).map(subject => subject.subjectEntityId));
@@ -692,7 +712,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         ? { userEntityId, personaLocator, descriptionFingerprint, hasDescription: hasPersonaDescription }
         : null;
       operation.userCoreExtraction = userCoreExtraction;
-      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, coreUserEditedSubjectEntityIds, operation.identityProjection);
+      operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, coreUserEditedSubjectEntityIds, operation.identityProjection, operation.identityBriefTargetIds);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '此前楼层的人物状态资料不可用，请刷新状态后重试。');
       const identityMemberEntityIdsBySubject = Object.fromEntries(tracked.map(entity => [entity.id, (previousCurrentState?.subjects ?? [])
         .filter(subject => resolveIdentityEntityId(subject.subjectEntityId, identityProjection) === entity.id)
@@ -703,7 +723,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const userAdaptiveReviewEligible = userBindings.length === 1 && !(previousUserForReview?.adaptive?.length);
       const userAdaptiveHistory = userAdaptiveReviewEligible
         ? selectUserAdaptiveHistory({ floors: value.floors, floorMemories: value.floorMemories, targetIndex, userEntityId, identityProjection: operation.identityProjection }) : [];
-      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectedPreviousCurrentState, trackedSubjects: tracked, entities: scopedEntities, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, operation.identityProjection)), identityMemberEntityIdsBySubject, relevantPriorContext, userCoreExtraction, userAdaptiveHistory });
+      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectedPreviousCurrentState, trackedSubjects: tracked, entities: scopedEntities, identityDirectory: scopedDirectory, identityBriefTargets, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, operation.identityProjection)), identityMemberEntityIdsBySubject, relevantPriorContext, userCoreExtraction, userAdaptiveHistory });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
       const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;

@@ -15,6 +15,7 @@ import { estimateRecallTokens } from '../src/v3/recall-selector.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { projectCseStateIdentityReferences } from '../src/v3/entity-identity.js';
+import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
 import { createCseRuntime, selectUserAdaptiveHistory } from '../src/v3/cse-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 
@@ -75,10 +76,10 @@ function backendHarness({ conflictRootPut = null, beforeGet = null, beforePut = 
   } };
 }
 
-function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sharedBackend = null, clock = () => new Date(NOW), chat = null, chatWorldInfo = null, filterWorldInfoSources = sources => sources, failureStorage = undefined, personaIdentifierProvider = null, testPersonaIdentifierOverride = null } = {}) {
+function runtimeHarness({ cse, extractor, host = 'official', backendOptions, sharedBackend = null, clock = () => new Date(NOW), chat = null, chatWorldInfo = null, npcWorldInfoContent = '启用作者设定', filterWorldInfoSources = sources => sources, failureStorage = undefined, personaIdentifierProvider = null, testPersonaIdentifierOverride = null } = {}) {
   const handlers = new Map(), calls = [], backend = sharedBackend ?? backendHarness(backendOptions);
   let enabled = true;
-  const books = new Map([['当前书', { entries: { 1: { uid: 1, constant: true, content: '<content>启用作者设定</content>' }, 2: { uid: 2, constant: true, content: '禁用支线', disable: true } } }], ['聊天书', { entries: { 4: { uid: 4, constant: true, content: '聊天书作者设定' } } }], ['未链接书', { entries: { 3: { uid: 3, constant: true, content: '不得进入基线' } } }]]);
+  const books = new Map([['当前书', { entries: { 1: { uid: 1, constant: true, content: `<content>${npcWorldInfoContent}</content>` }, 2: { uid: 2, constant: true, content: '禁用支线', disable: true } } }], ['聊天书', { entries: { 4: { uid: 4, constant: true, content: '聊天书作者设定' } } }], ['未链接书', { entries: { 3: { uid: 3, constant: true, content: '不得进入基线' } } }]]);
   const context = {
     name1: '林岚', name2: '裴晚生', personaId: 'persona-linlan', characterId: 0, groupId: null, chatId: 'host-chat',
     characters: [{ avatar: 'character.png', name: '裴晚生', data: { description: '角色描述', personality: '冷静克制', scenario: '雨夜', extensions: { world: '当前书' } } }],
@@ -300,6 +301,78 @@ test('自动 CSE 输入同时含正文、FloorMemory、previousState、baseline�
   assert.deepEqual(committed.reachable.floors.map(item => item.hostLocator), independentlyRead.floors.map(item => item.hostLocator));
   assert.deepEqual(committed.reachable.floors.map(item => item.content.rawFingerprint), independentlyRead.floors.map(item => item.content.rawFingerprint));
   assert.deepEqual(committed.reachable, independentlyRead, 'CAS 返回快照必须与同一后端独立 full readReachable 完全同义');
+});
+
+test('本楼CSE可在无状态变化时为未追踪NPC保存有来源依据的身份简介', async () => {
+  const worldbookQuote = '阿青是北城图书馆的管理员。';
+  const contaminatedBrief = '北城图书馆助理；清晨为林岚送来蔬菜。';
+  for (const priorBrief of [null, contaminatedBrief]) {
+    const contaminatedCase = Boolean(priorBrief);
+    const oldFloorText = '旧记录称阿青是北城图书馆助理，清晨为林岚送来蔬菜。';
+    const currentFloorText = '本楼再次明确阿青是北城图书馆管理员。';
+    let cseCalls = 0, nowOffset = 0;
+    const h = runtimeHarness({
+      clock: () => new Date(Date.parse(NOW) + nowOffset),
+      npcWorldInfoContent: worldbookQuote,
+      chat: contaminatedCase
+        ? [user('请看一下。'), assistant(oldFloorText), user('继续核对。'), assistant(currentFloorText), user('确认这一楼。')]
+        : [user('请看一下。'), assistant(`${currentFloorText} 清晨为林岚送来蔬菜；裴晚生也在记录中。`), assistant('用于确认上一楼稳定。')],
+      extractor: options => {
+        const payload = JSON.parse(options.taskMessages[0].content).payload;
+        const oldIdentityEvidence = payload.canonicalContent === oldFloorText;
+        return { jsonData: { summary: payload.canonicalContent, people: [
+          { name: '阿青', presence: 'mentioned', ...(oldIdentityEvidence ? { identityBrief: contaminatedBrief } : {}) },
+          { name: '裴晚生', presence: 'mentioned' },
+        ] } };
+      },
+      cse: options => {
+        cseCalls += 1;
+        const request = JSON.parse(options.taskMessages[0].content);
+        const target = request.payload.identityBriefTargets?.find(item => item.name === '阿青');
+        const hasCurrentIdentityEvidence = request.payload.canonicalContent !== oldFloorText;
+        return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [], ...(target && hasCurrentIdentityEvidence ? { identityBriefUpdates: [{ targetKey: target.key,
+          identityBrief: '北城图书馆管理员。', evidence: [{ source: 'worldbook:1', quote: worldbookQuote }] }] } : {}) } };
+      },
+    });
+
+    await h.runtime.start();
+    let result = await h.runtime.extractNext();
+    if (contaminatedCase) {
+      const beforeCurrentEvidence = await h.store.readReachable({ mode: 'runtime' });
+      const beforeBrief = buildEntityIdentityDirectory({ entities: beforeCurrentEvidence.entities }).find(entry => entry.displayName === '阿青')?.identityBrief;
+      assert.equal(beforeBrief, contaminatedBrief, '先由更早一楼保存污染简介，避免同楼新建与修订时间相同');
+      nowOffset += 1000;
+      result = await h.runtime.extractNext();
+    }
+    const cseRequests = h.calls.filter(call => call.testRoute === 'analysis');
+    assert.equal(cseCalls, contaminatedCase ? 2 : 1, '每楼简介检查与该楼原CSE共用一次请求');
+    assert.equal(cseRequests.length, contaminatedCase ? 2 : 1);
+    const finalCseRequest = cseRequests.at(-1);
+    const request = JSON.parse(finalCseRequest.taskMessages[0].content);
+    const npcTargets = request.payload.identityBriefTargets;
+    assert.ok(Array.isArray(npcTargets), 'CSE 应提供本楼身份简介目标，即使 NPC 不在 trackedSubjects');
+    const npcTarget = npcTargets.find(item => item.name === '阿青');
+    assert.ok(npcTarget, '本楼已识别NPC应进入单独简介目标');
+    assert.equal(npcTarget.identityBrief, contaminatedCase ? contaminatedBrief : undefined, '请求只把已有简介作为对照，不把临时活动当作新证据');
+    assert.match(finalCseRequest.systemPrompt, /简介只写人物是谁.*不得包含、替换或追加本楼临时行为/su, '固定utility请求应实际收到禁止追加临时行为的规则');
+    assert.ok(!npcTargets.some(item => item.name === '裴晚生'), 'baseline 主角色即使以普通人物参与者出现，也不应进入 NPC 简介目标');
+    assert.ok(!request.payload.trackedSubjects.some(item => item.name === '阿青'), '首次普通提及不会被提升为状态追踪对象');
+    assert.ok(request.payload.evidenceSourceCatalog.some(item => item.source === 'worldbook:1'));
+    assert.equal(result.cseFloors.find(item => item.floorId === result.floors.at(-1).floorId)?.status, 'noChange', '无状态变化仍正常完成CSE');
+
+    const saved = await h.store.readReachable({ mode: 'runtime' });
+    const npc = saved.entities.find(entity => entity.displayName === '阿青' && entity.status !== 'merged');
+    const npcDirectoryEntry = buildEntityIdentityDirectory({ entities: saved.entities }).find(entry => entry.entityId === npc?.id);
+    assert.equal(npcDirectoryEntry?.identityBrief, '北城图书馆管理员。', `身份简介通过现有实体修订冷读可见（priorBrief=${priorBrief ?? 'null'}）`);
+    assert.ok(saved.stateDeltas.some(delta => delta.floorId === result.floors.at(-1).floorId), '无状态变化的CSE增量仍照常保存');
+    assert.equal(h.calls.filter(call => call.testRoute === 'analysis').length, contaminatedCase ? 2 : 1, '每楼简介与状态结果均由同一次CSE请求保存');
+
+    await h.runtime.retryStateAnalysis(result.floors.at(-1).floorId);
+    const retriedRequest = JSON.parse(h.calls.filter(call => call.testRoute === 'analysis').at(-1).taskMessages[0].content);
+    assert.equal(retriedRequest.payload.identityBriefTargets.find(item => item.name === '阿青')?.identityBrief, '北城图书馆管理员。', '后续本楼分析会携带已合并简介');
+    const retried = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(retried.entities.filter(entity => entity.status === 'merged' && entity.mergedIntoEntityId === npc?.id && entity.identityBrief).length, 1, '相同简介不会重复新增修订');
+  }
 });
 
 test('CSE mixed tracked 首次预算优先缺记录人物，并能用合并旧名命中前情', async () => {
@@ -859,6 +932,74 @@ test('人工纠正可追加末 delta 未携带主体，并识别情境对象的�
   const redirectedCurrent = { ...replayed, subjects: replayed.subjects.map(subject => subject.subjectEntityId === B ? redirectedB : subject) };
   const cleared = await createManualCseCorrection({ anchorDelta: redirected.delta, currentState: redirectedCurrent, subjectEntityId: B, edits: { ...sameEdits, situational: [{ itemId: redirectedB.situational[0].id, text: '等待甲的决定', visibility: 'private', towardEntityId: null }] }, allowedTowardEntityIds: [A, B], deltaId: '17171717-1414-4141-8141-141414141414', now: NOW });
   assert.equal(cleared.status, 'ready'); assert.equal(cleared.delta.subjectSnapshots.find(subject => subject.subjectEntityId === B).situational[0].towardEntityId, null, '清空对象必须持久化为 null');
+});
+
+test('NPC身份简介相同项去重、冲突只隔离简介而保留本轮结果', async () => {
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '乙继续处理作者事实。'), floorMemory: memory(MEMORY1), baseline,
+    currentState: null, trackedSubjects: [entities[2]], entities,
+    identityBriefTargets: [{ entityId: B, name: '乙', labels: ['乙', 'B'], identityBrief: null }] });
+  const targetKey = envelope.scope.identityBriefBindings[0].key;
+  const update = { targetKey, identityBrief: '作者事实中的稳定身份。', evidence: [{ source: 'worldbook:1', quote: '作者事实' }] };
+  const duplicate = await compileCseResponse({ response: { noMaterialChange: true, identityBriefUpdates: [update, structuredClone(update)] },
+    envelope, previousCurrentState: null, now: NOW, deltaId: '18181818-1111-4111-8111-181818181818' });
+  assert.equal(duplicate.delta.noMaterialChange, true);
+  assert.deepEqual(duplicate.identityBriefUpdates, [{ entityId: B, identityBrief: '作者事实中的稳定身份。' }], '同目标同简介只生成一项更新');
+
+  const conflict = await compileCseResponse({ response: { noMaterialChange: true, identityBriefUpdates: [update,
+    { ...update, identityBrief: '相冲突的另一简介。' }, { targetKey: 'unknown-target', identityBrief: '不应写入。' },
+    { ...update, identityBrief: '引文无效的简介。', evidence: [{ source: 'worldbook:1', quote: '不存在于来源中的话' }] }] }, envelope, previousCurrentState: null, now: NOW,
+  deltaId: '19191919-1111-4111-8111-191919191919' });
+  assert.equal(conflict.delta.noMaterialChange, true, '简介冲突不使可识别的 CSE 结果失败');
+  assert.deepEqual(conflict.identityBriefUpdates, [], '含义冲突时不猜选其中一条');
+  assert.ok(conflict.isolated.some(item => item.code === 'V3_CSE_IDENTITY_BRIEF_TARGET_AMBIGUOUS'));
+  assert.ok(conflict.isolated.some(item => item.code === 'V3_CSE_IDENTITY_BRIEF_TARGET_UNBOUND'));
+  assert.equal(conflict.delta.source.isolationSummary, undefined, '简介引用问题只进入本次运行诊断，不污染状态增量隔离摘要');
+  assert.ok(conflict.isolated.some(item => item.code === 'V3_CSE_EVIDENCE_UNLOCATED'));
+});
+
+test('NPC简介坏引用、未知目标或缺字段不丢状态结果，正文与角色卡证据可用', async () => {
+  const compile = async ({ name = '乙', entity = entities[2], content, baseline: sourceBaseline = baseline, existingBrief = null, updates }) => {
+    const quotedState = `${name}正在核对资料。`;
+    const envelope = createCseEnvelope({ floor: floor(FLOOR1, content), floorMemory: memory(MEMORY1), baseline: sourceBaseline,
+      currentState: null, trackedSubjects: [entity], entities,
+      identityBriefTargets: [{ entityId: entity.id, name, labels: [name], identityBrief: existingBrief }] });
+    const targetKey = envelope.scope.identityBriefBindings[0].key;
+    const response = { subjects: [{ subject: name, situational: { self: [{ text: '正在核对资料', visibility: 'observable', reason: '正文描述当前动作', evidence: [{ source: 'canonicalContent', quote: quotedState }] }], relations: [] } }],
+      ...(updates === undefined ? {} : { identityBriefUpdates: updates(targetKey) }) };
+    const result = await compileCseResponse({ response, envelope, previousCurrentState: null, now: NOW, deltaId: uuidFactory()() });
+    assert.equal(result.delta.noMaterialChange, false, '有效情境状态应正常保留');
+    assert.ok(result.delta.subjectSnapshots.find(subject => subject.subjectEntityId === entity.id)?.situational.some(item => item.text === '正在核对资料'));
+    return { result, targetKey, entity };
+  };
+  const body = await compile({ content: '乙是林岚的同事。乙正在核对资料。', updates: key => [{ targetKey: key, identityBrief: '林岚的同事。', evidence: [{ source: 'canonicalContent', quote: '乙是林岚的同事' }] }] });
+  assert.deepEqual(body.result.identityBriefUpdates, [{ entityId: B, identityBrief: '林岚的同事。' }], '正文明确身份可成为简介证据');
+
+  const cardBaseline = { ...baseline, characterCard: { ...baseline.characterCard, description: '乙是北城图书馆管理员。' } };
+  const card = await compile({ name: '乙', entity: entities[2], content: '乙正在核对资料。', baseline: cardBaseline,
+    updates: key => [{ targetKey: key, identityBrief: '北城图书馆管理员。', evidence: [{ source: 'characterCard', quote: '乙是北城图书馆管理员' }] }] });
+  assert.deepEqual(card.result.identityBriefUpdates, [{ entityId: B, identityBrief: '北城图书馆管理员。' }], '角色卡明确描述另一NPC时可成为简介证据');
+
+  const roleBaseline = { ...baseline, userPersona: { ...baseline.userPersona, entityId: B } };
+  const protectedRoles = createCseEnvelope({ floor: floor(FLOOR1, '甲与乙正在核对资料。'), floorMemory: memory(MEMORY1), baseline: roleBaseline,
+    currentState: null, trackedSubjects: [entities[1], entities[2]], entities,
+    identityBriefTargets: [
+      { entityId: A, name: '甲', labels: ['甲'] },
+      { entityId: B, name: '乙', labels: ['乙'] },
+    ] });
+  assert.deepEqual(protectedRoles.request.payload.identityBriefTargets ?? [], [], 'baseline 两个主角色即使 specialRole 为 none，也不得进入 NPC 简介目标');
+  assert.deepEqual(protectedRoles.scope.identityBriefBindings, [], '主角色不能获得可写的 NPC 简介绑定');
+
+  const invalidCases = [
+    ['唯一坏引用', '乙正在核对资料。', null, key => [{ targetKey: key, identityBrief: '无效简介。', evidence: [{ source: 'canonicalContent', quote: '正文没有这句话' }] }], 'V3_CSE_EVIDENCE_UNLOCATED'],
+    ['未知目标', '乙正在核对资料。', null, () => [{ targetKey: 'unknown-target', identityBrief: '不应保存。', evidence: [{ source: 'canonicalContent', quote: '乙正在核对资料' }] }], 'V3_CSE_IDENTITY_BRIEF_TARGET_UNBOUND'],
+    ['缺少简介字段', '乙正在核对资料。', null, key => [{ targetKey: key, evidence: [{ source: 'canonicalContent', quote: '乙正在核对资料' }] }], 'V3_CSE_IDENTITY_BRIEF_INVALID'],
+  ];
+  for (const [label, content, existingBrief, updates, expectedCode] of invalidCases) {
+    const { result } = await compile({ content, existingBrief, updates });
+    assert.deepEqual(result.identityBriefUpdates, [], `${label}不得写入简介`);
+    if (expectedCode) assert.ok(result.isolated.some(item => item.code === expectedCode), `${label}应保留在运行诊断中`);
+    assert.equal(result.delta.source.isolationSummary, undefined, `${label}不能改变状态增量的隔离摘要`);
+  }
 });
 
 test('合并身份人工纠正只替换目标组并保留其他人物，legacy 锚也能用成员 manual 标记清空旧 Core', async () => {
@@ -1513,10 +1654,12 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-38');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-17');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-41');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-18');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
+  assert.match(CSE_SYSTEM_PROMPT, /已有简介只作身份对照并保留仍有效的身份事实/);
+  assert.match(CSE_SYSTEM_PROMPT, /不得包含、替换或追加本楼临时行为/);
   assert.match(CSE_SYSTEM_PROMPT, /这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人/);
   assert.match(CSE_SYSTEM_PROMPT, /另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象/);
   assert.match(CSE_SYSTEM_PROMPT, /两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述/);
@@ -3773,4 +3916,23 @@ test('CSE dependency snapshot 每次只克隆一次缺省 provenance，保存前
         '运行时状态与独立冷读的目标楼 delta 身份一致');
     }
   }
+});
+
+
+test('有效别名：实际CSE请求复用人工目录而不回到原实体别名', async () => {
+  const requests = [];
+  const h = runtimeHarness({
+    extractor: () => ({ jsonData: { summary: '阿青抵达。', people: [{ name: '阿青', aliases: ['旧称', '旧号'], presence: 'present' }] } }),
+    cse: options => { requests.push(JSON.parse(options.taskMessages[0].content)); return { jsonData: { noMaterialChange: true } }; },
+  });
+  const state = await h.runtime.start().then(() => h.runtime.extractNext());
+  const reachable = await h.store.readReachable({ mode: 'runtime' });
+  const person = reachable.entities.find(e => e.displayName === '阿青'); assert.ok(person);
+  h.runtime.setIdentityProjection({ profilesByEntityId: { [person.id]: { aliases: '新称', manualFields: ['aliases'] } } });
+  await h.runtime.retryStateAnalysis(state.floors[0].floorId);
+  const payload = requests.at(-1).payload;
+  const entry = payload.knownPeople.find(e => e.name === '阿青');
+  assert.ok(entry); assert.deepEqual(entry.aliases, ['阿青', '新称']);
+  assert.ok(!Object.hasOwn(entry, 'entity') && !Object.hasOwn(entry, 'profile'));
+  assert.deepEqual((await h.store.readReachable({ mode: 'runtime' })).entities.find(e => e.id === person.id).aliases, person.aliases);
 });

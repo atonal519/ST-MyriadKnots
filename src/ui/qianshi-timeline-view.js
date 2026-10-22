@@ -6,9 +6,6 @@ import { formatStoryTimeFields, storyTimeFields } from '../v3/time-engine.js';
 const VALID_STATUS = new Set(['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown']);
 const STATUS_COPY = Object.freeze({ planned: '已计划 / 尚未记录完成', inProgress: '进行中 / 尚未记录完成', completed: '已完成', cancelled: '已取消', occurred: '已发生', unknown: '状态未明' });
 const STATUS_BADGE_COPY = Object.freeze({ planned: '待办', inProgress: '进行中', completed: '已完成', cancelled: '已取消', occurred: '已发生', unknown: '状态未明' });
-const HISTORY_STATUS_COPY = Object.freeze({ running: '正在补齐历史事件', completed: '历史补齐完成', partial: '历史补齐部分完成', stopped: '历史补齐已停止', failed: '历史补齐未完成' });
-const REJUDGE_STATUS_COPY = Object.freeze({ running: '正在暂存已存千事重判结果', completed: '已存千事重判完成', partial: '已存千事重判部分完成', stopped: '已存千事重判已取消', failed: '已存千事重判未完成' });
-const HISTORY_OUTCOME_COPY = Object.freeze({ failed: '本楼未能完成，原记录已保留。', skipped: '本楼已跳过，原记录保持不变。' });
 const HISTORY_START_PENDING_FEEDBACK = '计划已确认；正在启动补齐…';
 const REJUDGE_START_PENDING_FEEDBACK = '范围已确认；正在启动重判…';
 const validMessageIndex = value => Number.isSafeInteger(value) && value >= 0;
@@ -17,26 +14,20 @@ const searchText = event => text([event.title, event.description, event.object, 
   ...(event.people ?? []).map(person => person.name)].filter(Boolean).join(' '));
 
 function coverageProjection(snapshot) {
-  if (snapshot?.status !== 'ready') return { kind: 'unavailable', label: '当前不可用', copy: snapshot?.message || '当前聊天还没有可用的千事快照。' };
-  const coverage = snapshot.coverage ?? {}, events = snapshot.events ?? [];
+  if (snapshot?.status !== 'ready') return { tone: 'error', copy: snapshot?.message || '当前聊天还没有可用的千事快照。' };
+  const coverage = snapshot.coverage ?? {};
   const processable = coverage.processable ?? coverage;
   const complete = Number(processable.completeFloors) || 0, eligible = Number(processable.eligibleFloors) || 0;
-  const pending = Number(processable.pendingFloors) || 0, partial = Number(processable.partialFloors) || 0;
+  const pending = Number(processable.pendingFloors) || 0;
   const actionEligible = eligible;
   const frozenFloors = Number(processable.frozenFloors) || 0;
   const degraded = Number(processable.degradedFloors) || 0, unavailable = Number(processable.unavailableFloors) || 0;
-  const suffix = unavailable ? `无唯一有效摘要 ${unavailable} 楼` : '';
-  const processNote = frozenFloors ? `导入历史 ${frozenFloors} 楼只读，仍可查看和召回。` : '';
-  const denominator = frozenFloors ? `分母是当前聊天 ${eligible} 个有唯一有效摘要的楼。` : `分母是 ${eligible} 个有唯一有效摘要的楼。`;
-  const breakdown = `已完成 ${complete} 楼；待补 ${pending} 楼；部分整理 ${partial} 楼；断链 ${degraded} 楼${suffix ? `；${suffix}` : ''}。${denominator}${processNote ? ` ${processNote}` : ''}`;
-  if (frozenFloors && actionEligible === 0) return { kind: 'partial', label: '当前没有可处理楼', copy: breakdown };
-  if (degraded) return { kind: 'degraded', label: '部分关系失效', copy: breakdown };
-  if (partial) return { kind: 'partial', label: '尚有其他楼未完成', copy: `${breakdown}已有事件的楼按已存档计入完成；尚有其他楼待补。` };
-  if (pending) return { kind: complete ? 'partial' : 'pending', label: complete ? '尚有其他楼未完成' : '等待补齐',
-    copy: `${breakdown}${complete ? '已有事件的楼按已存档计入完成；尚有其他楼待补。' : '有摘要的楼尚未完成千事整理。'}` };
-  if (unavailable) return { kind: 'partial', label: '覆盖不完整', copy: `${breakdown}这些楼当前不能进入千事计划。` };
-  if (!events.length) return { kind: 'empty', label: '已检查为空', copy: `${breakdown}目前没有保存的剧情事件。` };
-  return { kind: 'ready', label: '覆盖就绪', copy: `${breakdown}共保存 ${events.length} 件事件。` };
+  if (frozenFloors && actionEligible === 0) return { tone: 'checking', copy: '当前没有可处理楼' };
+  if (degraded > 0) return { tone: 'checking', copy: '部分关联需核对' };
+  const uniqueIncomplete = Math.max(0, eligible - complete) + unavailable;
+  if (uniqueIncomplete > 0 && pending === uniqueIncomplete) return { tone: 'checking', copy: `待覆盖 ${pending} 楼` };
+  if (uniqueIncomplete > 0) return { tone: 'checking', copy: `有 ${uniqueIncomplete} 楼未确认完成` };
+  return { tone: 'healthy', copy: '覆盖完整' };
 }
 
 export function createQianshiTimelineView({ runtime, dialog = null, documentRef = globalThis.document } = {}) {
@@ -45,7 +36,8 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   if (!documentRef?.createElement) throw new TypeError('千事时间线 documentRef 无效');
   let container = null, active = false, unsubscribe = null, epoch = 0;
   let snapshot = runtime.getQianshiSnapshot(), runtimeState = runtime.getState(), chatId = snapshot?.identity?.qqjChatId ?? null;
-  let query = '', feedback = '';
+  let query = '', feedback = '', todoCount = 0, todoDialog = null;
+  let todoSourceEvents, todoSourceMatters, todoProjectionEntries = [];
   let runtimeRenderKey = null;
   // 只比较界面消费的投影、任务与忙态；无关通知不重建整页，权限缓存随投影变化失效。
   const renderKey = (nextSnapshot, nextState) => Number.isSafeInteger(nextSnapshot?.projectionRevision)
@@ -63,7 +55,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   const openIds = new Set(), nestedOpenIds = new Set(), matterOpenIds = new Set();
   const openDayStates = new Map();
   let anomalyContent = null;
-  let pageNode = null, coverageBoxNode = null, feedbackNode = null;
+  let pageNode = null, healthNode = null, toolbarActionsNode = null, feedbackNode = null;
   const anomalyOpenFloorIds = new Set();
   let undatedOpenState = false;
   const element = (tag, className = '', copy = '') => {
@@ -71,6 +63,16 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (className) node.className = className;
     if (copy !== '') node.textContent = copy;
     return node;
+  };
+  const findDescendant = (root, predicate) => {
+    const stack = Array.from(root?.children ?? []).reverse();
+    while (stack.length) {
+      const node = stack.pop();
+      if (predicate(node)) return node;
+      const children = Array.from(node?.children ?? []);
+      for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
+    }
+    return null;
   };
   const statusPicker = (value, ariaLabel, disabled, onChange = null) => {
     // 状态选择复用插件内控件，手机点击不会打开系统选择弹窗；人工保存仍由原按钮显式执行。
@@ -93,6 +95,37 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   const visibleEvents = () => {
     const needle = text(query).trim();
     return (snapshot?.events ?? []).filter(event => !needle || searchText(event).includes(needle));
+  };
+  const todoEntries = () => {
+    if (snapshot?.events === todoSourceEvents && snapshot?.matters === todoSourceMatters) return todoProjectionEntries;
+    todoSourceEvents = snapshot?.events;
+    todoSourceMatters = snapshot?.matters;
+    const events = new Map((snapshot?.events ?? []).map(event => [event.id, event]));
+    const entries = [];
+    for (const matter of snapshot?.matters ?? []) {
+      if (matter.synthetic === true) continue;
+      const current = matter.currentEventId ? events.get(matter.currentEventId) : null;
+      if (current?.matterId === matter.matterId && current.updatesMatter === true) {
+        if (['planned', 'inProgress'].includes(matter.status)) entries.push({ eventId: current.id, title: matter.title || current.title, status: matter.status,
+          sourceAssistantSeq: current.sourceAssistantSeq ?? matter.sourceAssistantSeq ?? 0 });
+        continue;
+      }
+      // 没有推进事件时，matter.status只是代表记录状态；沿原事件卡按动作状态逐条列待办。
+      const recordIds = Array.isArray(matter.eventIds) ? matter.eventIds : matter.recordIds ?? [];
+      for (const eventId of recordIds) {
+        const event = events.get(eventId);
+        const status = event?.actionStatus ?? event?.status;
+        if (event?.matterId === matter.matterId && event.updatesMatter === false && ['planned', 'inProgress'].includes(status)) {
+          entries.push({ eventId: event.id, title: event.title, status, sourceAssistantSeq: event.sourceAssistantSeq ?? 0 });
+        }
+      }
+    }
+    for (const event of snapshot?.events ?? []) {
+      if (event.matterId || !['planned', 'inProgress'].includes(event.actionStatus ?? event.status)) continue;
+      entries.push({ eventId: event.id, title: event.title, status: event.actionStatus ?? event.status, sourceAssistantSeq: event.sourceAssistantSeq ?? 0 });
+    }
+    todoProjectionEntries = entries;
+    return todoProjectionEntries;
   };
   const dayStateId = (segment, group) => JSON.stringify([segment.id, group.key ?? [group.period ?? '', group.day ?? '']]);
   function timelineDisplayProjection(visibleIds) {
@@ -597,6 +630,64 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     return { node: wrapper, visibleEventCount: displayedEventCount };
   }
 
+  function navigateToTodo(entry) {
+    dialog?.cancelTop?.();
+    query = ''; feedback = ''; openIds.add(entry.eventId);
+    for (const segment of snapshot?.timeline?.segments ?? []) {
+      const group = (segment.groups ?? []).find(item => item.eventIds?.includes(entry.eventId));
+      if (group) { openDayStates.set(dayStateId(segment, group), true); break; }
+    }
+    if ((snapshot?.timeline?.undatedEventIds ?? []).includes(entry.eventId)) undatedOpenState = true;
+    render();
+    const card = findDescendant(container, node => node.className === 'qqj-qianshi-event' && node.dataset?.eventId === entry.eventId);
+    const summary = Array.from(card?.children ?? []).find(child => child.className === 'qqj-qianshi-event-summary');
+    summary?.focus?.({ preventScroll: true });
+    summary?.scrollIntoView?.({ block: 'center' });
+  }
+
+  function openTodos() {
+    if (typeof dialog?.custom !== 'function') return;
+    let allEntries = [...todoProjectionEntries].sort((left, right) => right.sourceAssistantSeq - left.sourceAssistantSeq), searchTextValue = '', page = 0;
+    todoCount = allEntries.length;
+    const content = element('section', 'qqj-editor-dialog qqj-qianshi-todo');
+    const search = element('input', 'settings-input qqj-qianshi-todo-search');
+    search.type = 'search'; search.placeholder = '搜索待办事项'; search.setAttribute('aria-label', '搜索待办事项');
+    const list = element('div', 'qqj-qianshi-todo-scroll');
+    const pager = element('div', 'qqj-qianshi-todo-pager');
+    const refresh = nextEntries => {
+      if (Array.isArray(nextEntries)) allEntries = [...nextEntries].sort((left, right) => right.sourceAssistantSeq - left.sourceAssistantSeq);
+      const needle = text(searchTextValue).trim();
+      const matches = allEntries.filter(entry => text(`${entry.title} ${STATUS_BADGE_COPY[entry.status]}`).includes(needle));
+      todoCount = allEntries.length;
+      page = Math.min(page, Math.max(0, Math.ceil(matches.length / 50) - 1));
+      const start = page * 50;
+      list.replaceChildren();
+      list.scrollTop = 0;
+      for (const entry of matches.slice(start, start + 50)) {
+        const row = element('button', 'qqj-qianshi-todo-row'); row.type = 'button';
+        row.append(element('span', 'qqj-qianshi-todo-title', entry.title), element('span', 'qqj-qianshi-todo-status', STATUS_BADGE_COPY[entry.status]));
+        row.setAttribute('aria-label', `${entry.title}，${STATUS_BADGE_COPY[entry.status]}`);
+        row.addEventListener('click', () => navigateToTodo(entry));
+        list.append(row);
+      }
+      if (!matches.length) list.append(element('p', 'qqj-qianshi-todo-empty', '没有待办事项。'));
+      pager.replaceChildren();
+      if (matches.length > 50) {
+        const previous = element('button', 'secondary-action', '上一页'); previous.type = 'button'; previous.disabled = page === 0;
+        previous.addEventListener('click', () => { page -= 1; refresh(); });
+        const next = element('button', 'secondary-action', '下一页'); next.type = 'button'; next.disabled = start + 50 >= matches.length;
+        next.addEventListener('click', () => { page += 1; refresh(); });
+        pager.append(previous, next);
+      }
+    };
+    search.addEventListener('input', event => { searchTextValue = event.target.value; page = 0; refresh(); });
+    content.append(search, list, pager); refresh();
+    const refreshFromSnapshot = entries => refresh(entries);
+    todoDialog = { refresh: refreshFromSnapshot };
+    void dialog.custom({ title: '待办事项', content, confirmText: '关闭', cancelText: '', submit: () => true,
+      onClose: () => { if (todoDialog?.refresh === refreshFromSnapshot) todoDialog = null; } });
+  }
+
   async function prepareHistory() {
     if (historyBusy() || otherWorkBusy()) return;
     const operationEpoch = ++epoch, targetIdentity = runtime.captureBusinessIdentity?.() ?? null;
@@ -736,75 +827,61 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       onClose: () => { if (anomalyContent === content) anomalyContent = null; } });
   }
 
-  function renderCoverageBox() {
-    const coverage = coverageProjection(snapshot), coverageBox = element('section', `qqj-qianshi-coverage ${coverage.kind}`);
-    const coverageText = element('div'); coverageText.append(element('strong', '', coverage.label), element('p', '', coverage.copy));
+  function renderHealth() {
+    const coverage = coverageProjection(snapshot);
+    const history = snapshot?.history ?? {};
+    const health = element('p', `qqj-page-health ${coverage.tone}`, coverage.copy);
+    health.setAttribute('role', 'status');
+    if (history.status === 'running') {
+      health.textContent = `${history.mode === 'rejudge' ? '正在整理已存事项' : '正在补齐历史'}：${history.committing
+        ? '整组正在提交，提交中不能停止' : `已处理 ${history.processedFloors ?? 0}/${history.totalFloors ?? 0} 楼`}`;
+      health.className = 'qqj-page-health checking';
+    } else if (['failed', 'partial'].includes(history.status)) {
+      health.textContent = '有任务未完成，请到设置复制状态诊断。';
+      health.className = 'qqj-page-health error';
+    }
+    return health;
+  }
+
+  function renderToolbarActions() {
     const history = snapshot?.history ?? {}, historyRunning = historyBusy();
-    const coverageCounts = snapshot?.coverage ?? {}, processableCounts = coverageCounts.processable ?? coverageCounts;
+    const processableCounts = snapshot?.coverage?.processable ?? snapshot?.coverage ?? {};
     const hasHistoryToComplete = snapshot?.status === 'ready'
       && ((Number(processableCounts.pendingFloors) || 0) + (Number(processableCounts.partialFloors) || 0) > 0
         || (Number(processableCounts.emptyFloors) || 0) > 0);
-    const coverageActions = element('div', 'qqj-qianshi-coverage-actions');
-    coverageBox.append(coverageText);
+    const actions = element('div', 'qqj-qianshi-toolbar-actions');
     if (historyRunning || hasHistoryToComplete) {
       const historyAction = element('button', 'secondary-action', historyRunning ? history.committing ? '提交中…' : '停止' : '补齐旧楼'); historyAction.type = 'button';
       historyAction.dataset.focusKey = 'qianshi-history-action';
       historyAction.disabled = historyRunning ? Boolean(history.committing) : otherWorkBusy();
       historyAction.addEventListener('click', () => { void (historyRunning ? stopHistory() : prepareHistory()); });
-      coverageActions.append(historyAction);
+      actions.append(historyAction);
     }
     if (!historyRunning && snapshot?.events?.length && typeof runtime.prepareQianshiRejudge === 'function') {
       const rejudge = element('button', 'secondary-action', '整理'); rejudge.type = 'button'; rejudge.dataset.focusKey = 'qianshi-rejudge-action';
-      rejudge.disabled = otherWorkBusy(); rejudge.addEventListener('click', () => { void prepareRejudge(); }); coverageActions.append(rejudge);
+      rejudge.disabled = otherWorkBusy(); rejudge.addEventListener('click', () => { void prepareRejudge(); }); actions.append(rejudge);
+    }
+    if (snapshot?.status === 'ready') {
+      const todos = element('button', 'secondary-action', `待办事项（${todoCount}）`); todos.type = 'button'; todos.dataset.focusKey = 'qianshi-todos-action';
+      todos.disabled = typeof dialog?.custom !== 'function'; todos.addEventListener('click', openTodos); actions.append(todos);
     }
     if (snapshot?.diagnostics?.anomalyFloors?.length) {
       const anomalies = element('button', 'secondary-action', '处理异常'); anomalies.type = 'button'; anomalies.dataset.focusKey = 'qianshi-anomalies-action';
       anomalies.disabled = typeof dialog?.custom !== 'function'; anomalies.addEventListener('click', () => { void openAnomalies(); });
-      coverageActions.append(anomalies);
+      actions.append(anomalies);
     }
-    if (coverageActions.children.length) coverageBox.append(coverageActions);
-    if (history.status && history.status !== 'idle') {
-      const outcomes = history.outcomes ?? [];
-      const isRejudge = history.mode === 'rejudge';
-      const statusCopy = isRejudge ? REJUDGE_STATUS_COPY : HISTORY_STATUS_COPY;
-      const progress = history.status === 'running'
-        ? `${history.committing ? '整组正在提交' : `${isRejudge ? '已暂存' : '已处理'} ${history.processedFloors ?? 0}/${history.totalFloors ?? 0} 楼`}${history.committing ? '；此阶段不能取消' : `；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼 · 模型任务 ${history.calls ?? 0} 次`}${history.message ? ` · ${history.message}` : ''}`
-        : `${history.message || statusCopy[history.status] || '历史补齐状态待核对。'}${isRejudge
-          ? history.commitStatus === 'saved' ? ` 已确认保存 ${history.savedFloors ?? 0}/${history.totalFloors ?? 0} 楼（完整 ${history.savedCompleteFloors ?? 0}、部分 ${history.savedPartialFloors ?? 0}）。`
-            : history.commitStatus === 'unknown' ? ` 已暂存 ${history.processedFloors ?? 0} 楼；提交状态待核对。`
-              : ` 已暂存 ${history.processedFloors ?? 0} 楼；整组未提交。`
-          : history.attemptedFloors !== undefined ? ` 已处理 ${history.processedFloors} 楼；保存完整 ${history.savedCompleteFloors ?? 0} 楼、部分 ${history.savedPartialFloors ?? 0} 楼；失败 ${history.failedFloors ?? 0} 楼；跳过 ${history.skippedFloors ?? 0} 楼。` : ''}`;
-      coverageBox.append(element('p', 'qqj-qianshi-history-status', progress));
-      const results = element('div', 'qqj-qianshi-history-results');
-      results.setAttribute('role', 'region'); results.setAttribute('aria-label', '历史补齐逐楼结果'); results.setAttribute('tabindex', '0');
-      for (const outcome of outcomes.filter(item => item.status !== 'saved-complete' && (item.reasonCode || item.message))) {
-        const reason = String(outcome.message ?? '').trim() || HISTORY_OUTCOME_COPY[outcome.status] || '本楼暂未完成，原记录已保留。';
-        const floorLabel = validMessageIndex(outcome.messageIndex) ? `第 ${outcome.messageIndex} 楼`
-          : Number.isSafeInteger(outcome.assistantSeq) ? `AI 记录 ${outcome.assistantSeq}` : '目标楼';
-        results.append(element('p', 'qqj-qianshi-history-status', `${floorLabel}：${reason}`));
-      }
-      if (results.children.length) coverageBox.append(results);
-    }
-    return coverageBox;
+    return actions;
   }
 
   function updateProgressView() {
-    if (!pageNode || !coverageBoxNode || !container) { render(); return; }
-    const previousResults = container.querySelector?.('.qqj-qianshi-history-results');
-    const resultsScrollTop = previousResults?.scrollTop ?? 0;
-    const resultsHadFocus = previousResults && (previousResults === documentRef.activeElement
-      || previousResults.contains?.(documentRef.activeElement));
-    const focusKey = coverageBoxNode.contains?.(documentRef.activeElement) ? documentRef.activeElement?.dataset?.focusKey : null;
-    const nextCoverage = renderCoverageBox();
-    coverageBoxNode.className = nextCoverage.className;
-    coverageBoxNode.replaceChildren(...nextCoverage.children);
-    const nextResults = container.querySelector?.('.qqj-qianshi-history-results');
-    if (nextResults) {
-      nextResults.scrollTop = resultsScrollTop;
-      if (resultsHadFocus) nextResults.focus();
-    }
+    if (!pageNode || !healthNode || !toolbarActionsNode || !container) { render(); return; }
+    const focusKey = toolbarActionsNode.contains?.(documentRef.activeElement) ? documentRef.activeElement?.dataset?.focusKey : null;
+    const nextHealth = renderHealth();
+    healthNode.className = nextHealth.className;
+    healthNode.textContent = nextHealth.textContent;
+    toolbarActionsNode.replaceChildren(...renderToolbarActions().children);
     if (focusKey) {
-      const stack = [...(coverageBoxNode.children ?? [])];
+      const stack = [...(toolbarActionsNode.children ?? [])];
       while (stack.length) {
         const node = stack.pop();
         if (node.dataset?.focusKey === focusKey) { node.focus?.({ preventScroll: true }); break; }
@@ -833,22 +910,23 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (!container) return;
     const currentChatId = snapshot?.identity?.qqjChatId ?? null;
     const previousChatId = chatId;
-    const previousResults = container.querySelector?.('.qqj-qianshi-history-results');
-    const preserveResults = previousChatId === currentChatId && previousResults;
-    const resultsScrollTop = preserveResults ? previousResults.scrollTop : 0;
     const outerScrollPositions = [];
     for (let ancestor = container.parentElement; ancestor; ancestor = ancestor.parentElement) {
       if (ancestor.scrollTop) outerScrollPositions.push([ancestor, ancestor.scrollTop]);
     }
-    const resultsHadFocus = preserveResults && (previousResults === documentRef.activeElement
-      || previousResults.contains?.(documentRef.activeElement));
     const focusedControlKey = documentRef.activeElement?.dataset?.focusKey ?? null;
     const focusedDayStateId = documentRef.activeElement?.className === 'qqj-qianshi-day-summary' ? documentRef.activeElement.dataset?.dayStateId : null;
     resetForChat(currentChatId);
+    const todoSourceChanged = snapshot?.events !== todoSourceEvents || snapshot?.matters !== todoSourceMatters;
+    if (todoSourceChanged) {
+      const currentTodoEntries = todoEntries();
+      todoCount = currentTodoEntries.length;
+      todoDialog?.refresh?.(currentTodoEntries);
+    }
     operationMenus.reset();
     const page = element('section', 'qqj-qianshi-page'); pageNode = page;
-    const coverageBox = renderCoverageBox(); coverageBoxNode = coverageBox;
-    page.append(coverageBox);
+    healthNode = renderHealth();
+    page.append(healthNode);
     const search = element('div', 'qqj-history-search');
     const input = element('input', 'settings-input qqj-history-search-input'); input.type = 'search'; input.value = query; input.placeholder = '搜索事件、说明、人物、涉及物品或时间'; input.setAttribute('aria-label', input.placeholder);
     input.addEventListener('input', event => {
@@ -860,32 +938,19 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     search.append(input, clear); page.append(search);
     feedbackNode = null;
     if (feedback) { feedbackNode = element('p', 'qqj-qianshi-feedback', feedback); feedbackNode.setAttribute('role', 'status'); page.append(feedbackNode); }
-    if (snapshot?.status === 'ready') {
-      const visible = visibleEvents(), renderedTimeline = timelineContent(visible);
-      const toolbar = element('div', 'qqj-qianshi-toolbar');
-      toolbar.append(element('span', '', query ? `匹配 ${visible.length} 件事件 · 显示 ${renderedTimeline.visibleEventCount} 条` : '沿着时间，回看故事'));
-      page.append(toolbar, renderedTimeline.node);
-    }
+    const visible = visibleEvents(), renderedTimeline = snapshot?.status === 'ready' ? timelineContent(visible) : null;
+    const toolbar = element('div', 'qqj-qianshi-toolbar');
+    toolbar.append(element('span', '', renderedTimeline && query ? `匹配 ${visible.length} 件事件 · 显示 ${renderedTimeline.visibleEventCount} 条` : '沿着时间，回看故事'));
+    toolbarActionsNode = renderToolbarActions(); toolbar.append(toolbarActionsNode);
+    page.append(toolbar);
+    if (renderedTimeline) page.append(renderedTimeline.node);
     container.replaceChildren(page);
     if (focusedControlKey) {
-      const nextControl = [...(container.children ?? [])].flatMap(node => {
-        const visit = current => [current, ...(current.children ?? []).flatMap(visit)];
-        return visit(node);
-      }).find(node => node.dataset?.focusKey === focusedControlKey);
+      const nextControl = findDescendant(container, node => node.dataset?.focusKey === focusedControlKey);
       nextControl?.focus?.({ preventScroll: true });
     }
-    if (preserveResults) {
-      const nextResults = container.querySelector?.('.qqj-qianshi-history-results');
-      if (nextResults) {
-        nextResults.scrollTop = resultsScrollTop;
-        if (resultsHadFocus) nextResults.focus();
-      }
-    }
     if (focusedDayStateId) {
-      const nextSummary = [...(container.children ?? [])].flatMap(node => {
-        const visit = current => [current, ...(current.children ?? []).flatMap(visit)];
-        return visit(node);
-      }).find(node => node.className === 'qqj-qianshi-day-summary' && node.dataset?.dayStateId === focusedDayStateId);
+      const nextSummary = findDescendant(container, node => node.className === 'qqj-qianshi-day-summary' && node.dataset?.dayStateId === focusedDayStateId);
       nextSummary?.focus?.({ preventScroll: true });
     }
     for (const [ancestor, scrollTop] of outerScrollPositions) ancestor.scrollTop = scrollTop;
@@ -922,6 +987,6 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (active) return { status: snapshot?.status ?? 'unavailable' };
     active = true; operationMenus.activate(); snapshot = runtime.getQianshiSnapshot(); runtimeState = runtime.getState(); runtimeRenderKey = renderKey(snapshot, runtimeState); editableEvents.clear(); render(); subscribe(); return { status: snapshot?.status ?? 'unavailable' };
   }
-  function deactivate() { active = false; epoch += 1; if (anomalyContent) dialog?.cancelTop?.(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; pageNode = null; coverageBoxNode = null; feedbackNode = null; }
+  function deactivate() { active = false; epoch += 1; if (anomalyContent || todoDialog) dialog?.cancelTop?.(); operationMenus.deactivate(); unsubscribe?.(); unsubscribe = null; pageNode = null; healthNode = null; toolbarActionsNode = null; feedbackNode = null; todoSourceEvents = undefined; todoSourceMatters = undefined; todoProjectionEntries = []; }
   return Object.freeze({ mount, activate, deactivate, render });
 }

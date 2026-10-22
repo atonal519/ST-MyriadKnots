@@ -1,3 +1,4 @@
+import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { estimateRecallTokens } from './recall-selector.js';
 import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
@@ -8,6 +9,7 @@ import { readRecentBodyStoryTimes, readTimeBody, timeBodyStart, resolveTimeStart
 import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from './time-annual-setting.js';
 import { prepareQianshiCandidates, projectQianshiGraph } from './qianshi-domain.js';
 import { migrationPartition } from './migration-prefix.js';
+import { isMemoryExcludedMessage } from './memory-exclusion.js';
 
 export function createTimeStore({ client }) {
   const BATCH_READ_CONCURRENCY = 16;
@@ -190,7 +192,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
   return prepared;
 }
 
-export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, annualSettingsProvider = () => ({ ready: false }), storyCalendarProvider = () => null, sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, getMemoryActivityState = getMemoryState, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
+export function createTimeRuntime({ store, foundationStore, hostAdapter, session, generateTimeTask, processingPrompt = () => '', annualSettingsProvider = () => ({ ready: false }), storyCalendarProvider = () => null, sanitizerOptions = () => ({}), storyClockReferenceTags = () => '', newUuid = newIdentityUuid, getReachable = () => null, getMemoryState = () => null, getMemoryActivityState = getMemoryState, isEnabled = () => false, onInvalidate = () => {}, logger = console }) {
   let epoch = 0, active = null, last = null, pendingDeletionCount = 0, projectionCache = null, pendingReceipt = null, statusKey = null, statusRead = null, trackedItems = null, stoppedItems = null, annualItems = null, qianshiReferences = null, itemsKey = null, coverage = null, clockContentChanged = false, historyAuthorization = null, automatic = null, startingController = null;
   const subscribers = new Set();
   const enabled = () => isEnabled() === true;
@@ -216,7 +218,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   const sourceKey = source => {
     let host; try { host = hostAdapter.snapshot(); } catch { return null; }
     return JSON.stringify([epoch, storyCalendarProvider(), source?.root?.chatId, source?.root?.narrativeGeneration, (source?.floors ?? []).map(floor => floor.id),
-      host.chatId, host.chat.map(message => [message.is_user, message.is_system, message.is_hidden, message.hidden, message.mes, message.swipe_id, message.swipes?.[Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0]])]);
+      host.chatId, host.chat.map(message => [message.is_user, message.is_system, message.is_hidden, message.hidden, isMemoryExcludedMessage(message), message.mes, message.swipe_id, message.swipes?.[Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0]])]);
   };
   async function bodySource(base = getReachable()) {
     const owner = identity(), host = hostAdapter.snapshot();
@@ -323,11 +325,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     return trackedItems.length;
   }
   const getState = () => {
-    const memory = getMemoryActivityState(), source = getReachable(), activity = getActivityState(memory, source);
+    const memory = enabled() ? getMemoryActivityState() : null, source = enabled() ? getReachable() : null, activity = getActivityState(memory, source);
     const canDisplay = enabled() && !memoryNeedsSync(memory) && itemsKey !== null && itemsKey === sourceKey(source);
     return { ...activity, trackedItems: canDisplay ? structuredClone(trackedItems) : null, stoppedItems: canDisplay ? structuredClone(stoppedItems) : null, annualItems: canDisplay ? structuredClone(annualItems) : null };
   };
-  const getActivityState = (memory = getMemoryActivityState(), source = getReachable()) => {
+  const getActivityState = (memory = enabled() ? getMemoryActivityState() : null, source = enabled() ? getReachable() : null) => {
     const disabledReason = manualBlock(false, memory, source, true);
     return Object.freeze({ status: active ? 'running' : enabled() ? memoryNeedsSync(memory) ? 'waiting' : last?.status ?? 'idle' : 'disabled',
       phase: active?.phase ?? null, active: Boolean(active), last, coverage, clockContentChanged: enabled() && clockContentChanged,
@@ -590,7 +592,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     stored = { ...stored, head, revision: attempted.revision };
     try {
       const transportBudget = { remaining: 1, used: 0 }; operation.requests += 1;
-      const result = await generateTimeTask({ systemPrompt: ANNUAL_SETTING_SYSTEM_PROMPT, taskMessages: [{ role: 'user', content: JSON.stringify(annual.request) }],
+      const result = await generateTimeTask({ systemPrompt: withBaseProcessingPrompt(ANNUAL_SETTING_SYSTEM_PROMPT, operation.processingPrompt), taskMessages: [{ role: 'user', content: JSON.stringify(annual.request) }],
         temperature: 0, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic', transportBudget, transportRetries: 0, signal: operation.controller.signal });
       if (!await stillCurrent()) return stored;
       const compiled = compileAnnualSettingResponse(result, { sources: annual.sources });
@@ -619,6 +621,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   async function runPlan(plan, manual = false) {
     if (active || !enabled()) return getState();
     const operation = { epoch, chatId: plan.chatId, controller: new AbortController(), phase: 'preparing', promise: null, manual,
+      processingPrompt: typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt,
       requests: 0, progress: { completed: 0, total: plan.groups.length + Number(Boolean(plan.currentReview && plan.groups.at(-1)?.length)) + Number(Boolean(plan.annualSetting?.shouldRequest || plan.annualSetting?.removed?.length)) } };
     active = operation; notify();
     operation.promise = (async () => {
@@ -682,7 +685,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           operation.requests += 1;
           let result, batch;
           try {
-            result = await generateTimeTask({ systemPrompt: prepared.systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(prepared.request) }],
+            result = await generateTimeTask({ systemPrompt: withBaseProcessingPrompt(prepared.systemPrompt, operation.processingPrompt), taskMessages: [{ role: 'user', content: JSON.stringify(prepared.request) }],
               temperature: 0, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic', transportBudget, transportRetries: 0, signal: operation.controller.signal });
             if (!current(operation)) return;
             operation.phase = 'saving'; notify();

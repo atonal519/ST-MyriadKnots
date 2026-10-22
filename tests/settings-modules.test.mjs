@@ -77,7 +77,7 @@ test('附加参数随 API 角色回填，非法 JSON 阻止保存、另存和测
 
 test('提示词模块字段 change 即持久化', () => {
   const patches = [];
-  const settings = { get: () => ({ sourceKeepTags: 'content', sourceExtraTags: '' }), update: patch => { patches.push(patch); return patch; } };
+  const settings = { get: () => ({}), wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers: patch => patches.push(patch), update: patch => { patches.push(patch); return patch; } };
   const { node } = createPromptsSettings({ settings, documentRef });
   const wrappers = node.find(n => n.id === 'qqj-settings-wrappers');
   assert.ok(wrappers); assert.equal(wrappers.open, false);
@@ -85,17 +85,39 @@ test('提示词模块字段 change 即持久化', () => {
   assert.match(node.children[1].className, /settings-drawer-list/);
   const keep = fieldControl(wrappers, '保留包裹符');
   keep.value = 'content,summary'; keep.fire('change');
-  assert.deepEqual(patches.at(-1), { sourceKeepTags: 'content,summary' });
+  assert.deepEqual(patches.at(-1), { keepTags: 'content,summary' });
   const clean = fieldControl(wrappers, '清洗包裹符');
   clean.value = 'think,reasoning'; clean.fire('change');
-  assert.deepEqual(patches.at(-1), { sourceExtraTags: 'think,reasoning' });
+  assert.deepEqual(patches.at(-1), { extraTags: 'think,reasoning' });
   assert.equal(fieldControl(node, '通用附加提示词'), undefined, '退役入口不得继续显示');
+});
+
+test('包裹面板只保存编辑字段，宿主保存回显保留正在输入内容并在销毁时释放', async () => {
+  const ext = { qianqianjie: { sourceKeepTags: 'content' }, 'schedule-planner': { extraTags: 'think' } };
+  let saves = 0;
+  const settings = createSettingsStore({ extensionSettings: ext, save() { saves++; } });
+  const listeners = new Set();
+  const view = createPromptsSettings({ settings, documentRef, subscribeSettingsChange: listener => { listeners.add(listener); return () => listeners.delete(listener); } });
+  const keep = fieldControl(view.node, '保留包裹符'), extra = fieldControl(view.node, '清洗包裹符');
+  assert.equal(keep.value, 'content'); assert.equal(extra.value, 'think');
+  assert.equal(view.node.find(n => n.id === 'qqj-settings-wrappers').children[1].children[0].textContent, '白鳥系列插件全部共享');
+  ext['schedule-planner'].bodyWrappers.extraTags = '[[...]]';
+  keep.value = 'CONTENT，正文'; await keep.fire('change');
+  assert.deepEqual(settings.wrappers(), { keepTags: 'content,正文', extraTags: '[[...]]' }, '不以面板旧的另一个字段覆盖外部编辑');
+  extra.focus(); extra.value = '正在输入';
+  for (const listener of listeners) listener();
+  assert.equal(keep.value, 'content,正文'); assert.equal(extra.value, '正在输入');
+  documentRef.activeElement = null; await extra.fire('blur');
+  assert.equal(extra.value, '[[...]]');
+  extra.value = ''; await extra.fire('change');
+  assert.equal(settings.wrappers().extraTags, ''); assert.equal(saves, 2);
+  view.dispose(); assert.equal(listeners.size, 0);
 });
 
 test('长提示词从编辑入口打开草稿弹窗，取消不写设置', async () => {
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', processingPrompt: '原文本' };
   const patches = [], opened = [];
-  const settings = { get: () => ({ ...current }), update: patch => { patches.push(patch); Object.assign(current, patch); } };
+  const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { patches.push(patch); Object.assign(current, patch); } };
   const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { opened.push(options); return Promise.resolve(true); } });
   const edit = node.find(n => n.tagName === 'button' && n.textContent === '编辑破限提示词');
   assert.ok(edit, '长提示词应由明确编辑入口打开');
@@ -111,7 +133,7 @@ test('长提示词从编辑入口打开草稿弹窗，取消不写设置', async
 test('提示词模块提供时间戳开关、独立参考标签与保存后生效的时间戳编辑弹窗', async () => {
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', storyClockReferenceTags: '' };
   const patches = [], refreshes = []; let active = null;
-  const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
+  const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
   const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); }, onStoryClockChange: options => { refreshes.push(options ?? {}); return { label: current.storyClockPrompt ? '使用自定义时间戳提示词' : '已调用千千结时间戳' }; } });
   assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '已调用千千结时间戳');
   const referenceTags = fieldControl(node, '正文时间参考标签');
@@ -149,7 +171,7 @@ test('提示词模块提供时间戳开关、独立参考标签与保存后生�
 test('破限、摘要、CSE 与人物资料提示词在弹窗保存后生效，默认操作留在草稿直到保存', async () => {
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', processingPrompt: '', summaryPrompt: '', csePrompt: '', profilePrompt: '' };
   const patches = []; let active = null;
-  const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
+  const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
   const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); } });
   const processingDrawer = node.find(n => n.id === 'qqj-settings-processing-prompt');
   const summaryDrawer = node.find(n => n.id === 'qqj-settings-summary-prompt');
@@ -203,7 +225,7 @@ test('外观模块内联选择即存并即时应用；程序设置同步标签�
 test('外观设置的两个楼层卡片开关分别保存并立即应用', async () => {
   const current = { appearanceTheme: 'auto', appearanceScale: 1, appearanceFontCssUrl: '', inlineRecallVisible: true, inlineMemoryVisible: true };
   const patches = []; let applied = 0;
-  const settings = { get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
+  const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
   const { node } = createAppearanceSettings({ settings, documentRef, applyAppearance: () => { applied += 1; } });
   const recall = node.find(n => n.tagName === 'input' && n.attributes['aria-label'] === '显示楼层召回卡片');
   const memory = node.find(n => n.tagName === 'input' && n.attributes['aria-label'] === '显示楼层记忆卡片');

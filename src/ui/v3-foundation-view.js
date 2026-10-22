@@ -1,3 +1,4 @@
+import { safePrefixDifference } from '../v3/memory-prefix-diagnostic.js';
 import { createInlineSelect } from './inline-select.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
 import { bindHorizontalStrip, openPeopleOrderDialog } from './people-interactions.js';
@@ -104,7 +105,7 @@ const waitingFloorCopy = value => ({
 const waitingFloorExplanation = value => ({
   waitingNextUser: '尚未摘要，发送下一条用户消息后检查。',
   waitingEarlierFloor: '尚未摘要，先确认前面的 AI 楼。',
-  consecutiveAssistant: '尚未摘要，请在记忆管理确认连续 AI 回复。',
+  consecutiveAssistant: '尚未摘要，请到「千结」页顶部，点击「确认连续 AI 并分别记录」。',
   registrationNeedsReview: '尚未摘要，需核对楼层与记忆的对应关系。',
 })[value] ?? '这一楼尚未摘要，正在等待确认。';
 const reviewReasonCopy = value => {
@@ -164,6 +165,9 @@ const AUTOMATION_DETAILS = new Set(['Graphology 检测到重复图边。', '结�
 const enumDiagnostic = (value, allowed) => allowed.has(value) ? value : 'unknown';
 const booleanDiagnostic = value => typeof value === 'boolean' ? value : 'unknown';
 const countDiagnostic = value => Number.isSafeInteger(value) && value >= 0 ? value : 'unknown';
+const diagnosticCode = value => Number.isSafeInteger(value)
+  ? value
+  : typeof value === 'string' && /^(?:(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}|BACKEND_TIMEOUT)$/u.test(value) ? value : null;
 const presenceDiagnostic = (source, key) => source && Object.hasOwn(source, key) ? Boolean(source[key]) : 'unknown';
 const operationDiagnostic = (value, { kind = false } = {}) => value
   ? { present: true, ...(kind ? { kind: enumDiagnostic(value.kind, DIAGNOSTIC_KIND) } : {}), phase: enumDiagnostic(value.phase, DIAGNOSTIC_PHASE) }
@@ -193,6 +197,10 @@ function errorDiagnostic(value, sourceKnown = true) {
     if (typeof value.code === 'string' && (/^(?:QQJ|V3|CHAT_SESSION)_[A-Z0-9_]{1,80}$/.test(value.code) || value.code === 'BACKEND_TIMEOUT')) result.code = value.code;
     if (typeof value.phase === 'string') result.phase = enumDiagnostic(value.phase, DIAGNOSTIC_PHASE);
     if (Number.isSafeInteger(value.count) && value.count > 0) result.count = value.count;
+    if (value.code === 'V3_MEMORY_PREFIX_CHANGED') {
+      const difference = safePrefixDifference(value.prefixDifference);
+      if (difference) result.prefixDifference = difference;
+    }
     const httpStatus = value.httpStatus ?? value.status;
     if (Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) result.httpStatus = httpStatus;
   }
@@ -209,9 +217,7 @@ function automationErrorDiagnostic(value, sourceKnown = true) {
   const result = errorDiagnostic(value, sourceKnown);
   if (result.present !== true) return result;
   const safeName = typeof value?.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,79}$/u.test(value.name) ? value.name : null;
-  const safeCode = Number.isSafeInteger(value?.code)
-    ? value.code
-    : typeof value?.code === 'string' && /^(?:(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}|BACKEND_TIMEOUT)$/u.test(value.code) ? value.code : null;
+  const safeCode = diagnosticCode(value?.code);
   const safeLocation = typeof value?.location === 'string' && /^(?:src\/[A-Za-z0-9_./-]+\.js|index\.js|dist\/qqj-app\.js):[1-9]\d{0,6}:[1-9]\d{0,6}$/u.test(value.location) ? value.location : null;
   const failedAt = typeof value?.lastFailedAt === 'string' && Number.isFinite(Date.parse(value.lastFailedAt)) ? value.lastFailedAt.slice(0, 80) : null;
   return {
@@ -240,6 +246,7 @@ const unchangedDraft = (draft, payload) => String(payload.summary ?? '').trim() 
   && String(payload.timeText ?? '').trim() === String(draft.originalTimeText ?? '').trim()
   && sameList(comparableLocations(payload.locations), comparableLocations(draft.originalLocations))
   && sameList(payload.participantNames, draft.originalParticipantNames)
+  && sameList(payload.exactAnchors, draft.originalExactAnchors)
   && !String(payload.revisionNote ?? '').trim();
 const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed', '已表达'], ['observable', '可观察'], ['shared', '共享'], ['authorial', '作者设定']]);
 const visibilityBadgeCopy = value => CSE_VISIBILITY_OPTIONS.find(([key]) => key === value)?.[1] ?? '未标注';
@@ -561,6 +568,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   const readDiagnosticState = provider => { try { return provider?.() ?? null; } catch { return null; } };
   const stateDiagnostic = () => {
     const memory = readDiagnosticState(() => runtime.getState());
+    const qianshiState = readDiagnosticState(() => runtime.getQianshiStatus?.());
     const identity = readDiagnosticState(sessionStateProvider);
     const hasPluginDiagnosticProvider = typeof pluginDiagnosticProvider === 'function';
     let pluginDiagnostic = null, pluginDiagnosticReadFailed = false;
@@ -583,6 +591,44 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       indexChunkCount: indexCheckStatus === 'ready' && Number.isSafeInteger(vectorIndexResult.chunkCount) && vectorIndexResult.chunkCount >= 0 ? vectorIndexResult.chunkCount : null,
       indexChatMatchesMemory: indexMatchesMemory,
     };
+    const qianshiDiagnostic = (() => {
+      if (!qianshiState) return { status: 'unknown', coverage: null, history: null };
+      const coverage = qianshiState.coverage ?? {}, processable = coverage.processable ?? coverage;
+      const outcomes = Array.isArray(qianshiState.history?.outcomes) ? qianshiState.history.outcomes : [];
+      const history = qianshiState.history;
+      return {
+        status: enumDiagnostic(qianshiState.status, new Set(['ready', 'not-ready', 'unavailable', 'error'])),
+        coverage: {
+          eligibleFloors: countDiagnostic(processable.eligibleFloors),
+          readyFloors: countDiagnostic(processable.readyFloors),
+          completeFloors: countDiagnostic(processable.completeFloors),
+          pendingFloors: countDiagnostic(processable.pendingFloors),
+          partialFloors: countDiagnostic(processable.partialFloors),
+          degradedFloors: countDiagnostic(processable.degradedFloors),
+          unavailableFloors: countDiagnostic(processable.unavailableFloors),
+          emptyFloors: countDiagnostic(processable.emptyFloors),
+          frozenFloors: countDiagnostic(processable.frozenFloors),
+        },
+        history: history ? {
+          status: enumDiagnostic(history.status, new Set(['idle', 'running', 'completed', 'partial', 'stopped', 'failed'])),
+          mode: enumDiagnostic(history.mode, new Set(['history', 'rejudge'])),
+          committing: booleanDiagnostic(history.committing),
+          commitStatus: enumDiagnostic(history.commitStatus, new Set(['notAttempted', 'attempted', 'saved', 'unknown', 'conflict'])),
+          processedFloors: countDiagnostic(history.processedFloors), totalFloors: countDiagnostic(history.totalFloors),
+          calls: countDiagnostic(history.calls), attemptedFloors: countDiagnostic(history.attemptedFloors),
+          savedCompleteFloors: countDiagnostic(history.savedCompleteFloors), savedPartialFloors: countDiagnostic(history.savedPartialFloors),
+          savedFloors: countDiagnostic(history.savedFloors), failedFloors: countDiagnostic(history.failedFloors),
+          skippedFloors: countDiagnostic(history.skippedFloors),
+          outcomes: outcomes.filter(item => item?.status !== 'saved-complete').map(item => {
+            return {
+              messageIndex: countDiagnostic(item?.messageIndex), assistantSeq: countDiagnostic(item?.assistantSeq),
+              status: enumDiagnostic(item?.status, new Set(['failed', 'skipped', 'conflict-review', 'commit-unknown', 'saved-partial'])),
+              reasonCode: diagnosticCode(item?.reasonCode),
+            };
+          }),
+        } : null,
+      };
+    })();
     return {
         formatVersion: 2,
       pluginVersion: diagnosticVersion(pluginVersion),
@@ -634,6 +680,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         rebuildStatus: enumDiagnostic(memory?.cseRebuildStatus, DIAGNOSTIC_STATUS),
         lastError: errorDiagnostic(memory?.lastCseError, memoryKnown),
       },
+      qianshi: qianshiDiagnostic,
       recall: {
         status: recallKnown ? enumDiagnostic(recall.recallStatus, DIAGNOSTIC_STATUS) : 'unknown',
         active: recallKnown ? operationDiagnostic(recall.activeRecall) : { present: 'unknown', phase: 'unknown' },
@@ -786,10 +833,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (typeof customImpl !== 'function') { feedback = '当前环境无法打开记忆编辑窗口。'; render(state); return; }
     drafts.set(key, draft);
     const editor = element('div', 'qqj-editor-dialog qqj-memory-edit');
-    const draw = (keepLocationsOpen = false) => {
+    const draw = (keepLocationsOpen = false, keepAnchorGroupOpen = false) => {
       const controls = [];
       const priorLocationGroup = Array.from(editor.children).find(node => (node.tag === 'details' || node.tagName?.toLowerCase() === 'details') && node.children[0]?.textContent === '地点');
+      const priorAnchorGroup = Array.from(editor.children).find(node => (node.tag === 'details' || node.tagName?.toLowerCase() === 'details') && String(node.children[0]?.textContent ?? '').startsWith('关键原文'));
       keepLocationsOpen ||= priorLocationGroup?.open === true;
+      keepAnchorGroupOpen ||= priorAnchorGroup?.open === true;
       editor.replaceChildren(element('p', 'qqj-editor-intro', '只修改本楼摘要与已有元信息；保存会保留原来的楼层对应关系。'));
       const label = (copy, control) => { const node = element('label', 'qqj-memory-edit-field'); node.append(element('span', '', copy), control); controls.push(control); return node; };
       const summary = element('textarea', 'settings-input'); summary.value = draft.summary; summary.placeholder = '输入用户修订摘要'; summary.rows = 8; summary.addEventListener('input', () => { draft.summary = summary.value; });
@@ -804,6 +853,49 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       const add = element('button', 'secondary-action', '添加地点'); add.type = 'button'; add.addEventListener('click', () => { draft.locations.push({ itemId: null, name: '' }); draw(true); }); controls.push(add); locations.append(add); editor.append(locations);
       const people = element('textarea', 'settings-input'); people.value = draft.peopleText; people.placeholder = '张三、李四、路人甲'; people.addEventListener('input', () => { draft.peopleText = people.value; });
       const peopleGroup = element('details', 'qqj-editor-group'); peopleGroup.append(element('summary', 'qqj-editor-group-summary', '人物'), label('人物名称', people)); editor.append(peopleGroup);
+      const anchors = element('details', 'qqj-editor-group'); anchors.open = keepAnchorGroupOpen; anchors.append(element('summary', 'qqj-editor-group-summary', `关键原文（${draft.exactAnchors.length}）`));
+      const peopleOptions = (state.memoryEntities ?? []).filter(entity => entity?.entityId && entity.displayName).slice().sort((a, b) => String(a.displayName).localeCompare(String(b.displayName), 'zh-Hans-CN') || a.entityId.localeCompare(b.entityId));
+      draft.exactAnchors.forEach((item, index) => {
+        const row = element('div', 'qqj-memory-edit-anchor');
+        const carrier = element('input', 'settings-input'); carrier.value = item.carrier ?? ''; carrier.placeholder = '载体名称'; carrier.addEventListener('input', () => { item.carrier = carrier.value; }); controls.push(carrier);
+        const content = element('textarea', 'settings-input'); content.value = item.exactText ?? ''; content.placeholder = '关键原文，最多 2000 字；保留换行与标点'; content.rows = 4; content.addEventListener('input', () => { item.exactText = content.value; }); controls.push(content);
+        item.knownEntityIds = [...(item.knownEntityIds ?? [])];
+        const knowledge = element('details', 'qqj-editor-group qqj-exact-anchor-knowledge'); knowledge.append(element('summary', 'qqj-editor-group-summary', `知情人物（${item.knownEntityIds.length}）`));
+        knowledge.addEventListener('toggle', () => {
+          if (!knowledge.open || knowledge.datasetBuilt) return;
+          knowledge.datasetBuilt = true;
+          const hint = element('p', 'qqj-exact-anchor-knowledge-hint', '仅勾选者知道这条原文；未选者均未知，user也不会默认知情。');
+          const search = element('input', 'settings-input'); search.type = 'search'; search.placeholder = '搜索人物名称或别名'; search.setAttribute('aria-label', '搜索人物名称或别名');
+          const clear = element('button', 'secondary-action', '清空选择'); clear.type = 'button';
+          const list = element('div', 'qqj-exact-anchor-knowledge-list');
+          const empty = element('p', 'qqj-exact-anchor-knowledge-empty', '没有匹配的人物。'); empty.hidden = true;
+          const options = peopleOptions.map(person => {
+            const choice = element('label', 'qqj-exact-anchor-knowledge-choice');
+            const checkbox = element('input', ''); checkbox.type = 'checkbox'; checkbox.checked = item.knownEntityIds.includes(person.entityId); checkbox.setAttribute('data-entity-id', person.entityId);
+            checkbox.addEventListener('change', () => {
+              item.knownEntityIds = checkbox.checked ? [...new Set([...item.knownEntityIds, person.entityId])] : item.knownEntityIds.filter(id => id !== person.entityId);
+              knowledge.children[0].textContent = `知情人物（${item.knownEntityIds.length}）`;
+            });
+            choice.append(checkbox, element('span', '', `${person.displayName}${person.aliases?.length ? `（${person.aliases.join('、')}）` : ''}`)); list.append(choice); controls.push(checkbox);
+            return { choice, person, checkbox };
+          });
+          search.addEventListener('input', () => {
+            const query = String(search.value ?? '').trim().toLocaleLowerCase();
+            for (const { choice, person } of options) choice.hidden = !!query && ![person.displayName, ...(person.aliases ?? [])].some(value => String(value).toLocaleLowerCase().includes(query));
+            empty.hidden = options.some(({ choice }) => !choice.hidden);
+          });
+          search.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
+          clear.addEventListener('click', () => {
+            item.knownEntityIds = [];
+            for (const { checkbox } of options) checkbox.checked = false;
+            knowledge.children[0].textContent = '知情人物（0）';
+          });
+          knowledge.append(hint, search, clear, list, empty); controls.push(search, clear);
+        });
+        const remove = element('button', 'secondary-action', '删除原文'); remove.type = 'button'; remove.addEventListener('click', () => { draft.exactAnchors.splice(index, 1); draw(false, true); }); controls.push(remove);
+        row.append(label('载体', carrier), label('内容', content), knowledge, remove); anchors.append(row);
+      });
+      const addAnchor = element('button', 'secondary-action', '添加原文'); addAnchor.type = 'button'; addAnchor.addEventListener('click', () => { draft.exactAnchors.push({ anchorId: null, carrier: '', exactText: '', knownEntityIds: [] }); draw(false, true); }); controls.push(addAnchor); anchors.append(addAnchor); editor.append(anchors);
       const note = element('input', 'settings-input'); note.value = draft.note; note.placeholder = '修订说明（可选）'; note.addEventListener('input', () => { draft.note = note.value; });
       const noteGroup = element('details', 'qqj-editor-group'); noteGroup.append(element('summary', 'qqj-editor-group-summary', '修订说明'), note); editor.append(noteGroup);
       controls.push(note); draft.controls = controls;
@@ -811,7 +903,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     draw();
     let saved = false;
     void Promise.resolve(customImpl({ title: `编辑摘要 · ${floorCopy(state, floor)}`, content: editor, confirmText: '保存', cancelText: '取消', submit: async () => {
-      const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations, participantNames: splitPeople(draft.peopleText), revisionNote: draft.note };
+      const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations, participantNames: splitPeople(draft.peopleText), exactAnchors: draft.exactAnchors, revisionNote: draft.note };
       if (unchangedDraft(draft, payload)) { saved = true; drafts.delete(key); return true; }
       const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
       let failure = null;
@@ -926,6 +1018,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       if (memory) {
         const locations = (memory.locations ?? []).map((item, index) => locationLabelsByFloor.get(floor.floorId)?.[index] ?? item.name).filter(Boolean).join('、') || '未提取';
         const names = new Map((currentState.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName]));
+        const canonicalEntityByMemberId = new Map((currentState.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity])));
         for (const [entityId, displayName] of Object.entries(floor.memoryEntityNames ?? {})) names.set(entityId, displayName);
         const people = (memory.participants ?? []).map(item => names.get(item.entityId) ?? '未知人物').join('、') || '未提取';
         body.append(element('p', 'qqj-memory-main', floor.summary || '暂无摘要。'));
@@ -936,8 +1029,13 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         if (exactAnchors.length) {
           const quoteLine = anchor => {
             const line = element('p', 'qqj-memory-key-quote');
+            if (anchor.carrier) line.append(element('span', 'qqj-memory-key-quote-carrier', `载体：${anchor.carrier}　`));
             const speaker = names.get(anchor.speakerEntityId);
             if (speaker) line.append(element('span', 'qqj-memory-key-quote-speaker', `${speaker}：`));
+            if (anchor.manual === true) {
+              const knowers = [...new Set((anchor.knownEntityIds ?? []).map(id => canonicalEntityByMemberId.get(id)?.displayName ?? names.get(id)).filter(Boolean))];
+              line.append(element('span', 'qqj-memory-key-quote-speaker', knowers.length ? `知情：${knowers.join('、')}（其余未知）　` : '人物均未知　'));
+            }
             line.append(element('span', 'qqj-memory-key-quote-text', anchor.exactText));
             return line;
           };
@@ -962,7 +1060,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       } else if (floor.memoryId) {
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(currentState);
         trackMemoryRowWorkControl({ node: edit, disabled: current => workBusy(current) });
-        edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const names = new Map((latest.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
+        edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const names = new Map((latest.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const canonicalByMember = new Map((latest.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity.entityId]))); const normalizeKnownIds = values => [...new Set((values ?? []).map(id => canonicalByMember.get(id) ?? id))].sort(); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); const exactAnchors = (memory?.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, carrier: item.carrier ?? '', exactText: item.exactText, knownEntityIds: normalizeKnownIds(item.knownEntityIds) })); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, exactAnchors, originalExactAnchors: structuredClone(exactAnchors), note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
         trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
         extract.addEventListener('click', async () => { const latest = foundationState ?? currentState; const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: `${ranged ? `${floorCopy(latest, floor)}将整体重新压缩。` : '将重新提取本楼摘要。'}已有的人物状态和其他楼不变；千事按字段保留人工修订，无法匹配时保留旧千事并提示。`, confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
@@ -2027,7 +2125,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const stateDiagnosticAction = element('div', 'qqj-ui-diagnostic-action');
     const copyState = element('button', 'secondary-action', '复制状态诊断'); copyState.type = 'button';
     copyState.addEventListener('click', () => { void copyStateDiagnostic(); });
-    stateDiagnosticAction.append(copyState, element('span', 'settings-hint', '只含运行状态与错误代码，不含聊天正文、身份编号或 API 配置。'));
+    stateDiagnosticAction.append(copyState, element('span', 'settings-hint', '只含运行状态、错误代码、变化类别与相关 AI 楼序，不含聊天正文、身份编号或 API 配置。'));
     body.append(stateDiagnosticAction);
     if (uiDiagnosticProvider) {
       const uiDiagnostic = element('div', 'qqj-ui-diagnostic-action');
@@ -2071,7 +2169,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const taskState = managementState?.rebuildState;
     if (taskState) state = { ...state, ...taskState };
     const pageNode = element('section', 'qqj-page qqj-management-page'); pageNode.append(heading('记忆管理', '管理当前聊天的现有记忆任务。', state));
-    if (['pendingRebuild', 'paused', 'failed', 'partial'].includes(state.rebuildStatus) || (state.rebuildStatus === 'waitingRealtime' && state.rebuildHasActionableWork)) pageNode.append(element('p', 'qqj-management-notice', '记忆尚未完整。“补齐缺失”会保留已有结果，只处理摘要或人物状态缺口；刷新页面不会自动续跑旧档。'));
+    const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
+    if (cseResume) pageNode.append(element('p', 'qqj-management-notice', `人物状态重构${state.cseRebuildStatus === 'paused' ? '已暂停' : '未完成'}，请点击“继续人物状态重构”。`));
+    else if (['pendingRebuild', 'paused', 'failed', 'partial'].includes(state.rebuildStatus) || (state.rebuildStatus === 'waitingRealtime' && state.rebuildHasActionableWork)) pageNode.append(element('p', 'qqj-management-notice', '记忆尚未完整。“补齐缺失”会保留已有结果，只处理摘要或人物状态缺口；刷新页面不会自动续跑旧档。'));
     const deleting = managementState?.status === 'deleting', deletePending = managementState?.status === 'failed';
     const actions = element('div', 'v3-foundation-actions qqj-management-actions'), busy = workBusy(state) || managementState?.workBusy || deleting || deletePending;
     const refresh = element('button', 'secondary-action', '刷新状态'); refresh.type = 'button'; refresh.disabled = busy;
@@ -2084,7 +2184,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     else if (!hasRebuildTask && !['paused', 'failed'].includes(state.cseRebuildStatus)) { const begin = runtime.startHistoricalRebuild ?? runtime.retryAutomation; const proceedLabel = ['paused', 'failed', 'partial'].includes(state.rebuildStatus) ? '继续补齐' : '补齐缺失'; const proceed = element('button', 'primary-action', busy ? workPhaseCopy(state) : proceedLabel); proceed.type = 'button'; proceed.disabled = busy || typeof begin !== 'function' || !rebuildActionable; proceed.addEventListener('click', async () => { const mode = await confirmHistoricalMode(); if (!mode) { feedback = `已取消${proceedLabel}。`; render(foundationState); return; } void run(proceedLabel, () => begin === runtime.startHistoricalRebuild ? begin.call(runtime, mode) : begin.call(runtime), { resultCopy: automaticResult(proceedLabel) }); }); actions.append(proceed); }
     const reset = element('button', 'secondary-action', pausedRebuildTask ? '继续完全重构' : '完全重构'); reset.type = 'button'; reset.disabled = (busy && !pausedRebuildTask) || typeof memoryManagement?.fullRebuild !== 'function'; reset.addEventListener('click', async () => { const mode = pausedRebuildTask ? {} : await confirmHistoricalMode({ fullRebuild: true }); if (!mode) { feedback = '已取消完全重构。'; render(foundationState); return; } const resetDraft = prequelDraft; void run(pausedRebuildTask ? '继续完全重构' : '完全重构', () => memoryManagement.fullRebuild(state.chatId, mode), { after: () => { if (prequelDraft === resetDraft) { prequelDraft = null; prequelFeedback = ''; } }, resultCopy: automaticResult('完全重构') }); }); actions.append(reset);
     const cseRunning = state.cseRebuildStatus === 'running' && state.activeAutoMemory?.mode === 'cseRebuild';
-    const cseResume = ['paused', 'failed'].includes(state.cseRebuildStatus);
     const cseAction = element('button', 'secondary-action', cseRunning ? '暂停人物状态重构' : cseResume ? '继续人物状态重构' : '人物状态重构'); cseAction.type = 'button';
     cseAction.disabled = cseRunning ? typeof runtime.pauseCseRebuild !== 'function' || deleting : busy || typeof runtime.rebuildCse !== 'function' || (state.rememberedCount ?? 0) < 1;
     cseAction.addEventListener('click', async () => {
@@ -2101,6 +2200,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       : busy ? `${workPhaseCopy(state)}，完成后可继续操作。`
         : ['needsReview', 'error'].includes(effectiveStatus(state)) || sessionErrorCopy() ? `当前${sessionErrorCopy() ? '记忆读取失败' : statusCopy(effectiveStatus(state))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。`
           : uninitializedCopy(state) || (!state.chatId ? '当前记忆状态尚未载入，请点击“刷新状态”。'
+            : cseResume ? '完成后如仍有缺失，可继续补齐。'
             : !rebuildActionable ? '当前没有需要补齐的稳定楼。'
               : '可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。');
     progress.append(element('span', 'settings-hint', `${pendingCopy}。${nextStepCopy}`));

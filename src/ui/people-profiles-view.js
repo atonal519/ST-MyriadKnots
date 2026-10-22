@@ -12,7 +12,8 @@ function fieldsFrom(person) {
   const profile = person?.profile;
   const result = emptyPeopleProfileFields();
   for (const field of PEOPLE_PROFILE_FIELDS) result[field] = profile?.[field] ?? '';
-  if (!profile) { result.name = person?.entityDisplayName ?? ''; result.aliases = (person?.aliases ?? []).join('、'); }
+  if (!profile) result.name = person?.entityDisplayName ?? '';
+  if (Array.isArray(person?.aliases)) result.aliases = person.aliases.join('、');
   return result;
 }
 function sameFields(left, right) { return PEOPLE_PROFILE_FIELDS.every(field => String(left?.[field] ?? '') === String(right?.[field] ?? '')); }
@@ -129,7 +130,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const current = fieldsFrom(person);
     if (person.profiled && sameFields(draft, current)) return true;
     const token = Object.freeze({ chatId, entityId: person.entityId, draft });
-    const payload = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, draft[field]]));
+    const payload = Object.fromEntries(PEOPLE_PROFILE_FIELDS.filter(field => !person.profiled || draft.dirtyFields.has(field)).map(field => [field, draft[field]]));
     draft.saving = true; draft.notice = '保存中…'; draft.error = '';
     try {
       await runtime.saveProfile(person.entityId, payload, { manualFields: [...draft.dirtyFields] });

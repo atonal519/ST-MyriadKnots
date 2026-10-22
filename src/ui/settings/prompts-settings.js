@@ -6,15 +6,16 @@ import { DEFAULT_PROFILE_GUIDANCE } from '../../v3/people-workspace.js';
 import { BASE_PROCESSING_PROMPT } from '../../internal-processing-prompt.js';
 
 // 长提示词在草稿弹窗内编辑，保存时一次写入；短设置仍即时生效。
-export function createPromptsSettings({ settings, documentRef = globalThis.document, open = false, onToggle, onStoryClockChange, customImpl = null } = {}) {
+export function createPromptsSettings({ settings, documentRef = globalThis.document, open = false, onToggle, onStoryClockChange, customImpl = null, subscribeSettingsChange = null } = {}) {
   const { element, button, field, subDrawer } = createSettingsKit(documentRef);
   const { drawer, body } = subDrawer({ title: '提示词与包裹符', id: 'qqj-settings-prompts', open, onToggle });
   body.className += ' settings-drawer-list';
   const { drawer: wrapperDrawer, body: wrapperBody } = subDrawer({ title: '包裹符', id: 'qqj-settings-wrappers' });
   const current = settings.get();
 
-  const keepTags = element('input', 'settings-input'); keepTags.value = current.sourceKeepTags ?? 'content'; keepTags.placeholder = 'content';
-  const extraTags = element('input', 'settings-input'); extraTags.value = current.sourceExtraTags ?? ''; extraTags.placeholder = '如：think, reasoning, [[...]]';
+  const wrappers = settings.wrappers();
+  const keepTags = element('input', 'settings-input'); keepTags.value = wrappers.keepTags; keepTags.placeholder = 'content';
+  const extraTags = element('input', 'settings-input'); extraTags.value = wrappers.extraTags; extraTags.placeholder = '如：think, reasoning, [[...]]';
   const storyClockEnabled = element('input'); storyClockEnabled.type = 'checkbox'; storyClockEnabled.checked = current.storyClockEnabled !== false;
   const storyClockReferenceTags = element('input', 'settings-input'); storyClockReferenceTags.value = current.storyClockReferenceTags ?? ''; storyClockReferenceTags.placeholder = '填写成对标签名（可选）';
   const storyClockStatus = element('p', 'settings-result', onStoryClockChange?.({ readOnly: true })?.label ?? '时间戳状态会在下一次正文生成前刷新。');
@@ -26,8 +27,16 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   const { drawer: cseDrawer, body: cseBody } = subDrawer({ title: 'CSE 内容指导', id: 'qqj-settings-cse-prompt' });
   const { drawer: profileDrawer, body: profileBody } = subDrawer({ title: '人物资料内容指导', id: 'qqj-settings-profile-prompt' });
 
-  keepTags.addEventListener('change', () => settings.update({ sourceKeepTags: keepTags.value }));
-  extraTags.addEventListener('change', () => settings.update({ sourceExtraTags: extraTags.value }));
+  keepTags.addEventListener('change', () => settings.updateWrappers({ keepTags: keepTags.value }));
+  extraTags.addEventListener('change', () => settings.updateWrappers({ extraTags: extraTags.value }));
+  const refreshWrappers = () => {
+    const value = settings.wrappers();
+    for (const [input, key] of [[keepTags, 'keepTags'], [extraTags, 'extraTags']]) {
+      if (documentRef.activeElement !== input && !input.matches?.(':focus')) input.value = value[key];
+    }
+  };
+  keepTags.addEventListener('blur', refreshWrappers); extraTags.addEventListener('blur', refreshWrappers);
+  const releaseSettings = subscribeSettingsChange?.(refreshWrappers);
   const refreshClock = () => {
     const result = onStoryClockChange?.() ?? null;
     storyClockStatus.textContent = result?.label ?? '时间戳状态会在下一次正文生成前刷新。';
@@ -66,12 +75,12 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
     editorBody.append(element('p', 'settings-hint', hint));
     promptButton(editorBody, label, key, value, defaultText, async text => settings.update({ [key]: text }));
   };
-  promptEditor({ body: processingBody, value: processingPrompt, key: 'processingPrompt', defaultText: BASE_PROCESSING_PROMPT, label: '破限提示词', hint: '用于摘要、双丝网和人物整理。留空用默认；自定义文本原样发送，替换默认。' });
+  promptEditor({ body: processingBody, value: processingPrompt, key: 'processingPrompt', defaultText: BASE_PROCESSING_PROMPT, label: '破限提示词', hint: '所有文本模型任务共用，包括摘要、双丝网、人物、召回选材、千事、时间与连接测试。保存后供后续请求使用；留空用默认，自定义文本替换默认。' });
   promptEditor({ body: summaryBody, value: summaryPrompt, key: 'summaryPrompt', defaultText: DEFAULT_EXTRACTOR_GUIDANCE, label: '摘要内容指导' });
   promptEditor({ body: cseBody, value: csePrompt, key: 'csePrompt', defaultText: DEFAULT_CSE_GUIDANCE, label: 'CSE 内容指导' });
   promptEditor({ body: profileBody, value: profilePrompt, key: 'profilePrompt', defaultText: DEFAULT_PROFILE_GUIDANCE, label: '人物资料内容指导' });
 
-  wrapperBody.append(field('保留包裹符', keepTags), field('清洗包裹符', extraTags));
+  wrapperBody.append(element('p', 'settings-hint', '白鳥系列插件全部共享'), field('保留包裹符', keepTags), field('清洗包裹符', extraTags));
   body.append(
     wrapperDrawer,
     storyClockDrawer,
@@ -80,5 +89,5 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
     cseDrawer,
     profileDrawer,
   );
-  return { node: drawer };
+  return { node: drawer, dispose: () => releaseSettings?.() };
 }

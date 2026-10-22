@@ -1,3 +1,4 @@
+import { withBaseProcessingPrompt } from './internal-processing-prompt.js';
 import { parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
 import { parseAdditionalParams } from './settings.js';
 
@@ -426,8 +427,8 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
       : { jsonData: parseJsonOutput(completion.text, { finishReason: completion.finishReason }) };
     return { ...payload, taskMetadata: { ...(completion.finishReason ? { finishReason: completion.finishReason } : {}), ...(transportBudget ? { transportAttempts: transportBudget.used } : {}) } };
   };
-  const testConnection = async ({ config, signal } = {}) => {
-    await generateTask({ config, systemPrompt: 'This is a plain-text connection check. Reply with a short confirmation.', taskMessages: [{ role: 'user', content: 'Reply with OK.' }], signal, temperature: 0, parseMode: 'semantic' });
+  const testConnection = async ({ config, signal, processingPrompt = '' } = {}) => {
+    await generateTask({ config, systemPrompt: withBaseProcessingPrompt('This is a plain-text connection check. Reply with a short confirmation.', processingPrompt), taskMessages: [{ role: 'user', content: 'Reply with OK.' }], signal, temperature: 0, parseMode: 'semantic' });
     return { ok: true, model: config?.model || DEFAULT_MODEL };
   };
   const fetchModels = async ({ config, signal } = {}) => {

@@ -12,7 +12,16 @@ export const QIANSHI_CANDIDATE_CHARACTER_BUDGET = 24000;
 export const QIANSHI_PROGRESS_CHARACTER_BUDGET = 3200;
 export const QIANSHI_HISTORY_INPUT_TOKENS = 70000;
 export const QIANSHI_HISTORY_OUTPUT_TOKENS = 30000;
-export const QIANSHI_RECALL_PROJECTION_VERSION = 4;
+export const QIANSHI_RECALL_PROJECTION_VERSION = 5;
+export const QIANSHI_RECALL_PENDING_HEADER = '[相关跟进事项]';
+export const QIANSHI_RECALL_LEGACY_PENDING_HEADER = '[当前待接续]';
+const QIANSHI_RECALL_PENDING_HEADERS = new Set([QIANSHI_RECALL_PENDING_HEADER, '[相关未完事项]', QIANSHI_RECALL_LEGACY_PENDING_HEADER]);
+// 冻结资料沿用原合法标题；新生成资料才使用当前默认标题。
+export function qianshiRecallPendingHeader(text, fallback = QIANSHI_RECALL_PENDING_HEADER) {
+  return String(text ?? '').split(/\n\n/u).map(section => section.split('\n', 1)[0])
+    .find(header => QIANSHI_RECALL_PENDING_HEADERS.has(header)) ?? fallback;
+}
+
 
 const STATUSES = new Set(['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown']);
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'occurred']);
@@ -880,12 +889,20 @@ function recallSelection(projection, queryContext) {
 }
 
 const eventRecallRow = (event, matterStatus = null, order = 0) => frozen({ eventId: event.id, matterId: event.matterId,
-  matterStatus, order, line: `- ${formatStoryTime(event.parsedStoryTime, event.storyTime)}：${event.title}` });
-const pendingRecallRow = matter => frozen({ matterId: matter.matterId,
+  assistantSeq: event.assistantSeq, matterStatus, order, line: `- ${formatStoryTime(event.parsedStoryTime, event.storyTime)}：${event.title}` });
+const pendingRecallRow = (matter, assistantSeq = matter.sourceAssistantSeq) => frozen({ matterId: matter.matterId, assistantSeq,
   line: `- ${matter.title}${matter.object ? `（${matter.object}）` : ''}${matter.scheduledTime ? `；约定：${matter.scheduledTime}` : ''}；${matter.status === 'completed' ? '已记录完成，当前仍继续关注后续变化。' : '尚未记录完成。'}` });
 
-function renderQianshiRows(eventRows, pendingRows, characterBudget) {
-  const maximumCharacters = Math.max(0, characterBudget);
+function recallCurrentMatterStatuses(projection, events) {
+  return new Map(projection.matters.filter(hasTrackableCurrent).flatMap(matter => {
+    const current = events.get(matter.currentEventId);
+    return current?.matterId === matter.matterId && current.updatesMatter ? [[matter.matterId, matter.status]] : [];
+  }));
+}
+
+function renderQianshiRows(eventRows, pendingRows, characterBudget, pendingHeader = QIANSHI_RECALL_PENDING_HEADER, scopeLine = '') {
+  const scopePrefix = scopeLine ? `${scopeLine}\n\n` : '';
+  const maximumCharacters = Math.max(0, characterBudget - scopePrefix.length);
   const pendingMatterIds = new Set(pendingRows.map(row => row.matterId));
   const lastEventByMatter = new Map();
   for (const row of eventRows) if (row.matterId) lastEventByMatter.set(row.matterId, row.eventId);
@@ -902,44 +919,56 @@ function renderQianshiRows(eventRows, pendingRows, characterBudget) {
   };
   let acceptedPending = [];
   if (pendingRows.length) {
-    const firstPendingLength = ['[当前待接续]', pendingRows[0].line].join('\n').length;
+    const firstPendingLength = [pendingHeader, pendingRows[0].line].join('\n').length;
     const pendingReserve = eventRows.length
       ? Math.min(maximumCharacters, Math.max(Math.floor(maximumCharacters / 3), firstPendingLength))
       : maximumCharacters;
-    acceptedPending = takeRows('[当前待接续]', pendingRows, pendingReserve);
+    acceptedPending = takeRows(pendingHeader, pendingRows, pendingReserve);
   }
-  const pendingText = acceptedPending.length ? ['[当前待接续]', ...acceptedPending.map(row => row.line)].join('\n') : '';
+  const pendingText = acceptedPending.length ? [pendingHeader, ...acceptedPending.map(row => row.line)].join('\n') : '';
   const timelineLimit = Math.max(0, maximumCharacters - pendingText.length - (pendingText ? 2 : 0));
   const acceptedTimeline = takeRows('[相关时间线]', timelineSource, timelineLimit);
   const timelineText = acceptedTimeline.length ? ['[相关时间线]', ...acceptedTimeline.map(row => row.line)].join('\n') : '';
   const usedBeforePendingExpansion = timelineText.length + (timelineText && pendingText ? 2 : 0);
   if (acceptedPending.length < pendingRows.length) {
-    acceptedPending = takeRows('[当前待接续]', pendingRows, Math.max(0, maximumCharacters - usedBeforePendingExpansion), acceptedPending);
+    acceptedPending = takeRows(pendingHeader, pendingRows, Math.max(0, maximumCharacters - usedBeforePendingExpansion), acceptedPending);
   }
-  const finalPendingText = acceptedPending.length ? ['[当前待接续]', ...acceptedPending.map(row => row.line)].join('\n') : '';
-  const acceptedText = [timelineText, finalPendingText].filter(Boolean).join('\n\n');
+  const finalPendingText = acceptedPending.length ? [pendingHeader, ...acceptedPending.map(row => row.line)].join('\n') : '';
+  const body = [timelineText, finalPendingText].filter(Boolean).join('\n\n');
+  const acceptedText = [body && scopePrefix.trim(), body].filter(Boolean).join('\n\n');
   const eventIds = acceptedTimeline.map(row => row.eventId);
   const matterIds = acceptedPending.map(row => row.matterId);
   return frozen({ projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, text: acceptedText, characterCount: acceptedText.length,
     eventIds: frozen([...new Set(eventIds)]), matterIds: frozen([...new Set(matterIds)]) });
 }
 
-function projectSelectedQianshi(projection, eventIds, matterIds, characterBudget) {
+function projectSelectedQianshi(projection, eventIds, matterIds, characterBudget, pendingHeader = QIANSHI_RECALL_PENDING_HEADER, scopeLine = null) {
   const events = new Map(projection.events.map(event => [event.id, event]));
   const matters = new Map(projection.matters.map(matter => [matter.matterId, matter]));
-  const statusByMatter = new Map(projection.matters.map(matter => [matter.matterId, matter.status]));
+  const statusByMatter = recallCurrentMatterStatuses(projection, events);
   const eventRows = [...new Set(eventIds ?? [])].map((id, order) => events.has(id)
     ? eventRecallRow(events.get(id), statusByMatter.get(events.get(id).matterId) ?? null, order) : null).filter(Boolean);
-  const pendingRows = [...new Set(matterIds ?? [])].map(id => matters.get(id)).filter(matter => matter?.following && ['planned', 'inProgress', 'completed'].includes(matter.status)).map(pendingRecallRow);
-  return renderQianshiRows(eventRows, pendingRows, characterBudget);
+  const pendingRows = [...new Set(matterIds ?? [])].map(id => matters.get(id))
+    .filter(matter => matter?.following && ['planned', 'inProgress', 'completed'].includes(matter.status))
+    .map(matter => pendingRecallRow(matter, events.get(matter.currentEventId)?.assistantSeq ?? matter.sourceAssistantSeq));
+  const safePendingHeader = qianshiRecallPendingHeader(pendingHeader);
+  const sourceSequences = [
+    ...eventRows.map(row => events.get(row.eventId)?.assistantSeq),
+    ...pendingRows.map(row => events.get(matters.get(row.matterId)?.currentEventId)?.assistantSeq),
+  ].filter(value => Number.isSafeInteger(value) && value > 0);
+  const latestSourceSeq = sourceSequences.length ? Math.max(...sourceSequences) : null;
+  const currentScopeLine = latestSourceSeq ? `本轮千事资料来源截至：AI #${latestSourceSeq}。` : '';
+  const safeScopeLine = scopeLine === null ? currentScopeLine : typeof scopeLine === 'string' ? scopeLine : '';
+  return renderQianshiRows(eventRows, pendingRows, characterBudget, safePendingHeader,
+    eventRows.length || pendingRows.length ? safeScopeLine : '');
 }
 
 /** Query-specific prompt projection. Public/detail views remain unchanged. */
 export function projectQianshiRecall(reachable, { queryContext = null, identityProjection = null, characterBudget = 4000,
-  selectedEventIds = null, selectedMatterIds = null } = {}) {
+  selectedEventIds = null, selectedMatterIds = null, pendingHeader = QIANSHI_RECALL_PENDING_HEADER, scopeLine = null } = {}) {
   const projection = projectQianshiGraph(reachable, { identityProjection });
   if (Array.isArray(selectedEventIds) || Array.isArray(selectedMatterIds)) {
-    return projectSelectedQianshi(projection, selectedEventIds ?? [], selectedMatterIds ?? [], characterBudget);
+    return projectSelectedQianshi(projection, selectedEventIds ?? [], selectedMatterIds ?? [], characterBudget, pendingHeader, scopeLine);
   }
   const selected = recallSelection(projection, queryContext), eventIds = new Set();
   for (const { matter } of selected.directMatters) for (const id of selected.matterEventIds(matter)) eventIds.add(id);
@@ -952,9 +981,9 @@ export function prepareQianshiRecallCandidates(reachable, { queryContext = null,
   characterBudget = QIANSHI_CANDIDATE_CHARACTER_BUDGET } = {}) {
   const projection = projectQianshiGraph(reachable, { identityProjection });
   const selected = recallSelection(projection, queryContext);
-  const matterById = new Map(projection.matters.map(matter => [matter.matterId, matter]));
+  const statusByMatter = recallCurrentMatterStatuses(projection, selected.eventById);
   const rowsFor = ids => [...new Set(ids)].map(id => selected.eventById.get(id)).filter(Boolean)
-    .map(event => eventRecallRow(event, matterById.get(event.matterId)?.status ?? null));
+    .map(event => eventRecallRow(event, statusByMatter.get(event.matterId) ?? null));
   const candidates = [], lines = [];
   let usedCharacters = 0;
   const add = candidate => {
@@ -967,16 +996,20 @@ export function prepareQianshiRecallCandidates(reachable, { queryContext = null,
   };
   for (const { matter } of selected.pending) {
     const currentStatusLine = pendingRecallRow(matter).line;
+    const currentAssistantSeq = selected.eventById.get(matter.currentEventId)?.assistantSeq ?? matter.sourceAssistantSeq;
+    const pendingRow = pendingRecallRow(matter, currentAssistantSeq);
     add({ kind: 'pending', fact: { title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object, currentStatusLine },
-      eventIds: frozen([]), matterIds: frozen([matter.matterId]), eventRows: frozen([]), pendingRows: frozen([pendingRecallRow(matter)]) });
+      eventIds: frozen([]), matterIds: frozen([matter.matterId]), eventRows: frozen([]), pendingRows: frozen([pendingRow]) });
   }
   for (const { matter } of selected.directMatters) {
     const eventIds = selected.matterEventIds(matter);
-    add({ kind: 'history', fact: { title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object,
-      events: eventIds.map(id => selected.eventById.get(id)).filter(Boolean).map(event => ({ title: event.title, description: event.description, storyTime: event.storyTime })) },
+    const currentStatus = statusByMatter.get(matter.matterId);
+    add({ kind: 'history', fact: { title: matter.title, ...(currentStatus ? { status: currentStatus } : {}), people: matter.people.map(person => person.name), object: matter.object,
+      events: eventIds.map(id => selected.eventById.get(id)).filter(Boolean).map(event => ({ title: event.title, description: event.description,
+        storyTime: event.storyTime, actionStatus: event.actionStatus ?? event.status })) },
       eventIds: frozen(eventIds), matterIds: frozen([]), eventRows: frozen(rowsFor(eventIds)), pendingRows: frozen([]) });
   }
-  for (const event of selected.independent) add({ kind: 'history', fact: { title: event.title, status: event.status, people: event.people.map(person => person.name),
+  for (const event of selected.independent) add({ kind: 'history', fact: { title: event.title, status: event.actionStatus ?? event.status, people: event.people.map(person => person.name),
     description: event.description, storyTime: event.storyTime, scheduledTime: event.scheduledTime }, eventIds: frozen([event.id]), matterIds: frozen([]),
     eventRows: frozen(rowsFor([event.id])), pendingRows: frozen([]) });
   const candidateEventIds = new Set(candidates.flatMap(candidate => candidate.eventRows.map(row => row.eventId)));
@@ -994,7 +1027,13 @@ export function projectQianshiCandidateSelection(candidates, { excludedKeys = []
     for (const row of candidate.eventRows ?? []) if (!eventRows.has(row.eventId)) eventRows.set(row.eventId, row);
     for (const row of candidate.pendingRows ?? []) if (!pendingRows.has(row.matterId)) pendingRows.set(row.matterId, row);
   }
-  return renderQianshiRows([...eventRows.values()].sort((left, right) => left.order - right.order), [...pendingRows.values()], characterBudget);
+  const selectedEvents = [...eventRows.values()].sort((left, right) => left.order - right.order);
+  const selectedPending = [...pendingRows.values()];
+  const sourceSequences = [...selectedEvents, ...selectedPending].map(row => row.assistantSeq)
+    .filter(value => Number.isSafeInteger(value) && value > 0);
+  const latestSourceSeq = sourceSequences.length ? Math.max(...sourceSequences) : null;
+  const scopeLine = latestSourceSeq ? `本轮千事资料来源截至：AI #${latestSourceSeq}。` : '';
+  return renderQianshiRows(selectedEvents, selectedPending, characterBudget, QIANSHI_RECALL_PENDING_HEADER, scopeLine);
 }
 
 export function prepareQianshiCandidates(reachable, { canonicalContent = '', precedingUserInput = null, characterBudget = QIANSHI_CANDIDATE_CHARACTER_BUDGET,

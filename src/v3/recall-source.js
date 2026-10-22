@@ -7,6 +7,7 @@ import {
 import { memorySourceFloorIds } from './memory-schema.js';
 import { projectVectorSources } from './vector-source.js';
 import { migrationPartition } from './migration-prefix.js';
+import { isMemoryExcludedFloor } from './memory-exclusion.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
@@ -77,7 +78,10 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
     }) : null,
     commitments: Object.freeze((memory.commitments ?? []).map(item => ({ speakerEntityId: item.speakerEntityId, targetEntityIds: Object.freeze([...(item.targetEntityIds ?? [])]), kind: item.kind, content: safeText(item.content), status: item.status, exactAnchorId: item.exactAnchorId ?? null }))),
     openLoops: Object.freeze((memory.openLoops ?? []).map(item => ({ description: safeText(item.description), ownerEntityIds: Object.freeze([...(item.ownerEntityIds ?? [])]) }))),
-    exactAnchors: Object.freeze((memory.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, kind: item.kind, exactText: safeText(item.exactText, 2000), speakerEntityId: item.speakerEntityId ?? null, whyPreserve: safeText(item.whyPreserve, 1000) }))),
+    exactAnchors: Object.freeze((memory.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, kind: item.kind,
+      exactText: item.manual === true ? item.exactText : safeText(item.exactText, 2000), speakerEntityId: item.speakerEntityId ?? null,
+      whyPreserve: safeText(item.whyPreserve, 1000), ...(item.manual === true ? { manual: true, carrier: item.carrier, knownEntityIds: Object.freeze([...(item.knownEntityIds ?? [])]) } : {}),
+      ...(item.sourceFloorId ? { sourceFloorId: item.sourceFloorId } : {}) }))),
     events: Object.freeze((memory.eventFragments ?? []).filter(item => item.candidateStatus !== 'rejected').map(item => ({ title: safeText(item.title, 500), description: safeText(item.description), candidateStatus: item.candidateStatus }))),
     actions: Object.freeze((memory.actions ?? []).map(item => ({ actorEntityId: item.actorEntityId, targetEntityIds: Object.freeze([...(item.targetEntityIds ?? [])]), action: safeText(item.action), completion: item.completion, result: item.result === null ? null : safeText(item.result) }))),
     observations: Object.freeze((memory.observations ?? []).map(item => ({ subjectEntityId: item.subjectEntityId ?? null, kind: item.kind, description: safeText(item.description) }))),
@@ -181,6 +185,10 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   const identityProjection = normalizeIdentityProjection(identityProjectionValue ?? {});
   const partition = migrationPartition(first);
   const { floors, floorById, memoryGroups, activeMemories, activeMemoryIds } = selectRecallMemories(first);
+  const eligibleFloors = floors.filter(floor => !isMemoryExcludedFloor(floor, hostSnapshot?.chat, first.checkpoint, {
+    frozen: partition.isFrozenFloor(floor.id),
+  }));
+  const eligibleFloorIds = new Set(eligibleFloors.map(floor => floor.id));
   const degradedReasons = first.cseUnavailable === true ? ['cseReplayUnavailable'] : [];
   let trustedDeltas = [], replayed = null, cseTimeline = [];
   try {
@@ -209,15 +217,15 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   // 主角人设由酒馆注入；记忆只省去它的基础资料副本，保留剧情变化与原始记录。
   const personaCoreIds = personaCoreStateIds(trustedDeltas);
   const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
-  const missingAssistantSeq = Object.freeze(floors.filter(floor => !(memoryGroups.get(floor.id) ?? []).some(memory => activeMemoryIds.has(memory.id))).map(floor => floor.assistantSeq));
+  const missingAssistantSeq = Object.freeze(eligibleFloors.filter(floor => !(memoryGroups.get(floor.id) ?? []).some(memory => activeMemoryIds.has(memory.id))).map(floor => floor.assistantSeq));
   const throughAssistantSeq = floorSeq.get(trustedDeltas.at(-1)?.floorId) ?? 0;
   const stableThroughAssistantSeq = floors.at(-1)?.assistantSeq ?? 0;
-  const memoryComplete = floors.length > 0 && missingAssistantSeq.length === 0;
-  const cseCurrent = degradedReasons.length === 0 && trustedDeltas.length > 0;
+  const memoryComplete = missingAssistantSeq.length === 0;
+  const cseCurrent = degradedReasons.length === 0 && (trustedDeltas.length > 0 || eligibleFloors.length === 0);
   const coverage = Object.freeze({
-    stableAiFloors: floors.length,
+    stableAiFloors: eligibleFloors.length,
     stableThroughAssistantSeq,
-    rememberedAiFloors: floors.length - missingAssistantSeq.length,
+    rememberedAiFloors: eligibleFloors.length - missingAssistantSeq.length,
     missingAssistantSeq,
     cseThroughAssistantSeq: throughAssistantSeq,
     memoryComplete,
@@ -239,7 +247,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     coverage,
     degradedReasons: Object.freeze(degradedReasons),
     entities,
-    bodyMatchRefs: Object.freeze([...floors.map(floor => {
+    bodyMatchRefs: Object.freeze([...floors.filter(floor => eligibleFloorIds.has(floor.id)).map(floor => {
       const memory = (memoryGroups.get(floor.id) ?? []).find(value => activeMemoryIds.has(value.id)) ?? null;
       if (!floor || !Number.isSafeInteger(floor.hostLocator?.messageIndex)
         || typeof floor.content?.rawFingerprint !== 'string' || typeof floor.content?.canonicalFingerprint !== 'string') return null;

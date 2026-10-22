@@ -208,7 +208,7 @@ test('轻量activity快照不投影记忆楼层或调用存储', async () => {
   assert.equal(state.status, 'ready'); assert.equal(state.stableCount, 16); assert.equal(state.memoryWorkBusy, false);
   assert.equal(state.activeExtraction, null); assert.equal(state.qianshiHistoryActive, false);
   assert.equal(Object.hasOwn(state, 'floors'), false); assert.equal(Object.hasOwn(state, 'cseSubjects'), false);
-  assert.equal(visited, 16, 'activity projection partitions the loaded floor IDs once');
+  assert.equal(visited, 0, 'activity projection reuses the existing coverage total without traversing loaded floors');
   const storeDelta = Object.fromEntries(Object.keys(storeBefore).map(key => [key, h.calls[key] - storeBefore[key]]));
   assert.deepEqual(storeDelta, { readReachable: 0, readRecord: 0, putRecord: 0, commitRoot: 0, invalidate: 0, network: 0, hostSnapshot: 0 });
   assert.deepEqual({ foundationStateReads: h.getFoundationCounts().foundationStateReads - foundationBefore.foundationStateReads,

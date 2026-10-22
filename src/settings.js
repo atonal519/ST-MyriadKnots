@@ -1,4 +1,4 @@
-import { normalizeMemoryTagList } from './memory-content-sanitizer.js';
+import { getSharedBodyWrappers, updateSharedBodyWrappers } from './shared-body-wrappers.js';
 import { normalizeStoryClockReferenceTags } from './story-clock.js';
 import { normalizeStoryCalendar } from './v3/calendar-rules.js';
 
@@ -170,6 +170,7 @@ export async function applyPluginEnabledImmediately({ settings, enabled, onChang
 
 export function createSettingsStore({ extensionSettings, save = () => {}, now, random } = {}) {
   if (!extensionSettings || typeof extensionSettings !== 'object') throw new Error('千千结设置存储不可用');
+  getSharedBodyWrappers(extensionSettings);
   const get = () => {
     const settings = extensionSettings[SETTINGS_ID] ??= { ...DEFAULT_SETTINGS, apiExcludeParams: [], apiPresets: [] };
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) if (!own(settings, key)) {
@@ -235,8 +236,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'apiStream')) settings.apiStream = patch.apiStream === true;
     if (own(patch, 'apiPresetActiveId')) settings.apiPresetActiveId = text(patch.apiPresetActiveId).trim();
     if (own(patch, 'sourceWorldInfoExcludedBooks')) settings.sourceWorldInfoExcludedBooks = Array.isArray(patch.sourceWorldInfoExcludedBooks) ? patch.sourceWorldInfoExcludedBooks : [];
-    if (own(patch, 'sourceKeepTags')) settings.sourceKeepTags = normalizeMemoryTagList(patch.sourceKeepTags).join(',');
-    if (own(patch, 'sourceExtraTags')) settings.sourceExtraTags = normalizeMemoryTagList(patch.sourceExtraTags).join(',');
+    if (own(patch, 'sourceKeepTags')) updateSharedBodyWrappers(extensionSettings, { keepTags: patch.sourceKeepTags });
+    if (own(patch, 'sourceExtraTags')) updateSharedBodyWrappers(extensionSettings, { extraTags: patch.sourceExtraTags });
     if (own(patch, 'processingPrompt')) settings.processingPrompt = text(patch.processingPrompt);
     if (own(patch, 'summaryPrompt')) settings.summaryPrompt = text(patch.summaryPrompt);
     if (own(patch, 'csePrompt')) settings.csePrompt = text(patch.csePrompt);
@@ -481,6 +482,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
   return {
     get,
     update,
+    wrappers: () => getSharedBodyWrappers(extensionSettings),
+    updateWrappers: patch => { updateSharedBodyWrappers(extensionSettings, patch); notify(); },
     localConfig,
     mainConfig,
     presets,
