@@ -64,6 +64,65 @@ const editorContent = () => activeEditorDialog?.content ?? null;
 const submitEditor = () => activeEditorDialog?.submit() ?? Promise.resolve(null);
 const cancelEditor = () => activeEditorDialog?.cancel() ?? false;
 
+test('千结正常等待只在本楼提示，闲置反馈隐藏且真实处理与失败保留', async () => {
+  let state = { status: 'ready', pluginEnabled: true, chatId: 'notice-chat', foundationStatus: 'ready',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', stableCount: 71, rememberedCount: 71,
+    unprocessedCount: 0, cseReady: true, floors: [],
+    unregisteredCandidates: [{ assistantSeq: 72, messageIndex: 143, reason: 'waitingNextUser' }] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.setPage('memories'); view.mount(container); await view.activate();
+  let health = flatten(container).find(node => node.className.includes('qqj-page-health'));
+  assert.equal(health.textContent, '已记忆 71/71 楼'); assert.ok(health.className.includes('healthy'));
+  let feedback = flatten(container).find(node => node.className.includes('v3-foundation-feedback'));
+  assert.equal(feedback.hidden, true); assert.equal(feedback.textContent, '');
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /等待下一条用户消息/);
+  state = { ...state, unprocessedCount: 2, unregisteredCandidates: [{ messageIndex: 140, reason: 'waitingEarlierFloor' }] }; view.render(state);
+  health = flatten(container).find(node => node.className.includes('qqj-page-health'));
+  assert.match(health.textContent, /待摘要 2 楼.*1 楼待确认/); assert.ok(health.className.includes('checking'));
+  state = { ...state, memoryWorkBusy: true, activeMemoryWork: { kind: 'manual', phase: 'extracting' } }; view.render(state);
+  assert.match(flatten(container).find(node => node.className.includes('qqj-page-health')).textContent, /正在处理摘要/);
+  state = { ...state, memoryWorkBusy: false, activeMemoryWork: null, lastExtractorError: { floorId: 'floor', message: '请求超时，请重试。' } }; view.render(state);
+  health = flatten(container).find(node => node.className.includes('qqj-page-health')); assert.match(health.textContent, /摘要提取失败/);
+  feedback = flatten(container).find(node => node.className.includes('v3-foundation-feedback')); assert.equal(feedback.hidden, false);
+  view.deactivate();
+});
+
+test('时间状态诊断复制固定失败原因，未知正文与标识不透传', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: 'diagnostic-chat', foundationStatus: 'ready',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', stableCount: 71, rememberedCount: 71, floors: [] };
+  const secret = 'PRIVATE_BODY_AND_KEY'; let copies = [], activityReads = 0, snapshotReads = 0;
+  let time = { status: 'partial', phase: null, active: false, progress: { completed: 1, total: 2 },
+    last: { status: 'partial', cutoffAssistantSeq: 71, failedBatchCount: 1, items: 500,
+      itemErrors: [{ index: 2, reason: '来源编号未在本次请求中出现。', itemIds: [secret] }, { index: 3, reason: secret }],
+      message: `第2项：来源编号未在本次请求中出现。${secret}`, sourceKeys: [secret], signature: secret } };
+  const timeRuntime = { getState() { snapshotReads++; return time; }, getActivityState() { activityReads++; return time; } };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const view = createV3FoundationView({ runtime, timeRuntime, documentRef,
+    navigatorRef: { clipboard: { writeText: async text => { copies.push(JSON.parse(text)); } } } });
+  const container = new Node('main'); view.setPage('management'); view.mount(container);
+  const reads = activityReads, snapshots = snapshotReads;
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(activityReads, reads + 1);
+  assert.equal(snapshotReads, snapshots, '复制不投影事项正文列表');
+  assert.equal(copies[0].time.status, 'partial'); assert.equal(copies[0].time.last.failedBatchCount, 1);
+  assert.deepEqual(copies[0].time.last.itemErrors, [{ index: 2, reason: '来源编号未在本次请求中出现。' }]);
+  assert.deepEqual(copies[0].time.last.knownReasons, ['来源编号未在本次请求中出现。']);
+  assert.equal(copies[0].time.last.itemErrorIndexScope, 'batch');
+  assert.doesNotMatch(JSON.stringify(copies[0]), /PRIVATE_BODY_AND_KEY|sourceKeys|signature|"items":500/);
+  time = { ...time, last: { status: 'partial', message: '归并组：归并组字段无效。私有内容。归并组字段无效。本次未返回该事项的有效当前评估。', failedBatchCount: 2 } };
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(copies[1].time.last.itemErrors, []); assert.deepEqual(copies[1].time.last.knownReasons, ['归并组字段无效。', '本次未返回该事项的有效当前评估。']);
+  assert.doesNotMatch(JSON.stringify(copies[1]), /私有内容/);
+  time = { ...time, last: { status: 'failed', code: 'QQJ_TIMEOUT', message: '隐'.repeat(12000) + '时间事项重复。',
+    itemErrors: Array.from({ length: 20 }, (_, index) => ({ index: index + 1, reason: '时间事项来源无效。', itemIds: [secret] })) } };
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(copies[2].time.last.itemErrors.length, 12); assert.equal(copies[2].time.last.itemErrorsTruncated, true);
+  assert.deepEqual(copies[2].time.last.knownReasons, ['时间事项来源无效。']);
+  assert.equal(copies[2].time.last.error.code, 'QQJ_TIMEOUT'); assert.doesNotMatch(JSON.stringify(copies[2]), /PRIVATE_BODY_AND_KEY|隐/);
+  view.deactivate();
+});
+
 test('已保存摘要等待 CSE 时显示人物分析阶段', () => {
   const state = { status: 'running', pluginEnabled: true, chatId: 'chat', foundationStatus: 'ready',
     memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: true,
@@ -228,7 +287,8 @@ test('批量摘要结束后反馈跟随 CSE、同步阶段并在完成后清除�
   state = { ...state, activeCse: null, activeMemoryWork: { kind: 'auto', phase: 'syncing' }, activeAutoMemory: { phase: 'syncing' } };
   notify(state); assert.match(texts(), /正在同步记忆状态/);
   state = { ...state, status: 'ready', memoryWorkBusy: false, activeMemoryWork: null, activeAutoMemory: null, csePendingCount: 0 };
-  notify(state); assert.match(texts(), /已记忆 5\/5 楼/); assert.match(texts(), /记忆状态已刷新/);
+  notify(state); assert.match(texts(), /已记忆 5\/5 楼/); assert.doesNotMatch(texts(), /记忆状态已刷新/);
+  assert.equal(flatten(container).find(node => node.className.includes('v3-foundation-feedback')).hidden, true);
   assert.doesNotMatch(texts(), /正在处理|正在分析人物状态|正在同步记忆状态/);
   view.deactivate();
 });
@@ -283,9 +343,9 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   timeState = { ...timeState, last: { status: 'failed', automaticFailure: true, automaticFailureMessage: '再次推演失败。', message: '原失败原因：年表读取错误' } }; publish();
   const automaticFailure = flatten(memoryToolbar).find(node => node.className.includes('qqj-time-automatic-failure'));
   assert.equal(automaticFailure.hidden, false, '自动推演失败在折叠状态也要显示小字');
-  assert.match(automaticFailure.textContent, /原失败原因：年表读取错误/u, '自动准备失败时保留已记录的具体原因');
+  assert.equal(automaticFailure.textContent, '更新失败');
   timeState = { ...timeState, last: { status: 'partial', message: '有两条事项尚待处理。' } }; publish();
-  assert.equal(automaticFailure.hidden, false); assert.match(automaticFailure.textContent, /部分未完成：有两条事项尚待处理/u);
+  assert.equal(automaticFailure.hidden, false); assert.equal(automaticFailure.textContent, '部分未更新');
   timeState = { ...timeState, status: 'waiting', last: { status: 'failed', message: '旧周期失败' } }; publish();
   assert.equal(automaticFailure.hidden, true, '等待记忆同步时不展示可能过期的失败');
   timeState = { ...timeState, status: 'idle', last: { status: 'completed' } }; publish(); assert.equal(automaticFailure.hidden, true, '成功后清除瞬时失败提示');
@@ -331,7 +391,7 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /本次未纳入当前推测|未获得有效推测/u, '未形成结果时不显示状态占位文案');
   assert.equal(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '未形成结果不标成事项错误');
   timeState = { ...timeState, trackedItems: [{ ...item, failureReason: '来源编号无效。' }] }; publish();
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /更新失败：来源编号无效/u);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /更新失败/u);
   assert.ok(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
   timeState = { ...timeState, trackedItems: [{ ...item, reviewStatus: 'unanswered' }] }; publish();
   assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /本次未获得有效推测/u);
@@ -339,7 +399,8 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   timeState = { ...timeState, trackedItems: [item] }; publish();
   assert.equal(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '健康后标题恢复普通色');
   timeState = { ...timeState, last: { status: 'partial', message: '第2项：来源编号未在本次请求中出现。请手动继续。' } }; publish();
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /部分完成.*第2项/);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /部分未更新/);
+  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /第2项：来源编号/);
   assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, false);
   timeState = { ...timeState, status: 'failed', trackedItems: null, last: { status: 'failed', reason: 'read', message: '读取失败' } }; publish();
   const retry = flatten(container).find(node => node.textContent === '重试读取'); assert.equal(retry.hidden, false);
@@ -953,7 +1014,7 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
     request: { requestId: 'b5c5f920-53b0-4c6c-9be0-2b7b', phase: 'response', pendingStage: 'response_headers', elapsedMs: 91, deadlineMs: 30000,
       httpStatus: 400, errorCode: null, providerRequestId: 'sc_trace_20261010_12345678', providerError: { code: 'invalid_dimensions', type: 'invalid_request_error', param: 'dimensions' },
       fetchCallMs: 'unknown', responseHeadersMs: 'unknown', responseBodyMs: 'unknown' } });
-  assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, deleting: true, deletePending: false });
+  assert.deepEqual(diagnostic.ui, { syncingOverlayActive: true, workBusy: true, pluginActivity: { busy: false, phase: null }, deleting: true, deletePending: false });
   const serialized = JSON.stringify(diagnostic);
   assert.doesNotMatch(serialized, new RegExp(`${privateText}|${rawChatId}|${rawHeadId}|private-floor|private-run|private-memory|private\.invalid`));
   assert.equal(Object.hasOwn(diagnostic.identity, 'identity'), false); assert.equal(Object.hasOwn(diagnostic.foundation, 'chatId'), false); assert.equal(Object.hasOwn(diagnostic.foundation, 'headCheckpointId'), false);
@@ -1230,7 +1291,7 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmation = options; return true; } }); view.setPage('memories'); view.mount(container);
   openDetails(flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'floor-42'));
   let copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /已记忆 42\/42 楼.*另有 3 楼尚未摘要，正在等待确认/);
+  assert.match(copy, /已记忆 42\/42 楼.*2 楼待确认/);
   assert.match(copy, /本次确认 2 个连续 AI 回复.*第 84 楼.*连续 AI，尚待确认/);
   assert.match(copy, /第 85 楼.*等待前面楼层处理.*先确认前面的 AI 楼/);
   assert.match(copy, /第 87 楼.*等待下一条用户消息.*发送下一条用户消息后检查/);
@@ -3658,4 +3719,66 @@ test('前文核对失败页面说明未保存并给出已审核的真实菜单�
   assert.match(text, /提取摘要.*重新提取/);
   assert.match(text, /复制状态诊断/);
   assert.doesNotMatch(text, /人物身份目录已被并发修改/);
+});
+
+test('工作提示等待全部活动结束，核验中不把旧needsReview当作用户操作指引', () => {
+  const state = { status: 'needsReview', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT,
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', rememberedCount: 0, stableCount: 0,
+    unprocessedCount: 0, csePendingCount: 0, floors: [], metrics: {}, cseRebuildStatus: 'idle', rebuildStatus: 'caughtUp',
+    reviewReason: { code: 'stableCountMismatch', expectedCount: 1, actualCount: 2 },
+  };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const view = createV3FoundationView({ runtime, documentRef }); const container = new Node('main');
+  view.mount(container, { page: 'management' });
+  view.setActivity({ busy: true, phase: 'inspecting', copy: '正在核验记忆' });
+  const feedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  const progress = flatten(container).find(node => node.className === 'qqj-management-progress');
+  assert.equal(flatten(container).filter(node => node.textContent === '正在核验记忆').length, 1);
+  assert.equal(feedback.textContent, '');
+  assert.doesNotMatch(flatten(progress).map(node => node.textContent).join('|'), /待补 0|待分析 0|尚未开始记录|正在核验/u);
+  assert.doesNotMatch(feedback.textContent, /核验已结束|需要核对|完成/u);
+  view.setActivity({ busy: false, phase: null, copy: '' });
+  assert.match(feedback.textContent, /当前消息楼与已存记忆尚未同步/u);
+  assert.match(feedback.textContent, /刷新状态/u);
+  state.status = 'uninitialized'; state.reviewReason = null; view.render(state);
+  view.setActivity({ busy: true, phase: 'preparing', copy: '正在准备记忆' });
+  assert.equal(flatten(container).filter(node => node.textContent === '正在准备记忆').length, 1);
+  assert.doesNotMatch(flatten(container).find(node => node.className === 'qqj-management-progress').textContent, /待补 0|待分析 0|尚未开始记录/u);
+  state.status = 'error'; state.lastError = '保存回应失败'; view.render(state);
+  view.setActivity({ busy: false, phase: null, copy: '' });
+  const errorFeedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.match(errorFeedback.textContent, /保存回应失败/u);
+  assert.doesNotMatch(errorFeedback.textContent, /对应关系尚未确认/u);
+  view.deactivate();
+});
+
+test('手动刷新run跨工作阶段不重复也不残留，needsReview真实错误与复制结果均保留', async () => {
+  let resolve, view;
+  const wait = new Promise(done => { resolve = done; });
+  const state = { status: 'needsReview', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT, memorySnapshotStatus: 'ready', memorySyncStatus: 'syncing',
+    rememberedCount: 0, stableCount: 0, unprocessedCount: 0, csePendingCount: 0, floors: [], metrics: {}, cseRebuildStatus: 'idle', rebuildStatus: 'caughtUp', reviewReason: { code: 'stableCountMismatch' } };
+  const runtime = { getState: () => state, async refreshStatus() { view.setActivity({ busy: true, copy: '正在核验记忆' }); await wait; return state; }, confirmLatest: async () => state };
+  let copied = '';
+  view = createV3FoundationView({ runtime, documentRef, navigatorRef: { clipboard: { async writeText(value) { copied = value; } } } });
+  const container = new Node('main'); view.mount(container, { page: 'management' });
+  flatten(container).find(node => node.textContent === '刷新状态').click();
+  resolve(); await new Promise(done => setImmediate(done));
+  const feedback = () => flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.equal(flatten(container).filter(node => node.textContent === '正在核验记忆').length, 1);
+  assert.equal(feedback().textContent, '');
+  view.setActivity({ busy: true, copy: '正在保存记忆' });
+  assert.equal(flatten(container).filter(node => node.textContent === '正在保存记忆').length, 1);
+  assert.doesNotMatch(feedback().textContent, /正在核验/u);
+  state.status = 'ready'; state.memorySyncStatus = 'idle'; state.reviewReason = null;
+  view.setActivity({ busy: false, copy: '' });
+  assert.doesNotMatch(feedback().textContent, /正在保存|正在核验/u);
+  state.status = 'needsReview'; state.lastExtractorError = { message: '真实保存失败' }; view.render(state);
+  assert.match(feedback().textContent, /真实保存失败/u);
+  view.setActivity({ busy: true, phase: 'committing', copy: '正在保存记忆' });
+  flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(done => setImmediate(done));
+  assert.ok(copied); assert.match(feedback().textContent, /已复制/u);
+  assert.deepEqual(JSON.parse(copied).ui.pluginActivity, { busy: true, phase: 'committing' });
+  assert.equal(JSON.parse(copied).ui.workBusy, false, '插件工作灯独立于管理/宿主忙态');
+  view.deactivate();
 });

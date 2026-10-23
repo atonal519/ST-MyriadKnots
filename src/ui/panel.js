@@ -81,6 +81,14 @@ export function createPanel({
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
   const panel = root.querySelector('.panel');
+  const activityIndicator = root.querySelector('.qqj-work-indicator');
+  const setActivity = value => {
+    panel?.setAttribute?.('aria-busy', String(value.busy === true));
+    if (!activityIndicator) return;
+    activityIndicator.hidden = value.busy !== true;
+    activityIndicator.setAttribute('aria-label', value.copy || '千千结空闲');
+    activityIndicator.setAttribute('title', value.copy || '千千结空闲');
+  };
   const body = root.querySelector('.body');
   const view = root.querySelector('.view');
   const tabs = [...root.querySelectorAll('.tab')];
@@ -610,7 +618,7 @@ export function createPanel({
   tabs.forEach(tab => tab.addEventListener('click', () => selectTab(tab.dataset.tab)));
   documentRef.addEventListener?.('keydown', event => { if (event.key !== 'Escape' || host.hidden) return; if (dialog?.hasActive?.()) { dialog.cancelTop(); event.preventDefault?.(); return; } close(); });
 
-  return Object.freeze({
+  return Object.freeze({ setActivity,
     host,
     root,
     show,

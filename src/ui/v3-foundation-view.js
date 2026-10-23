@@ -50,6 +50,22 @@ function statusCopy(value) {
 }
 
 const effectiveStatus = state => state.status === 'idle' ? state.foundationStatus : state.status;
+const waitingForConfirmation = state => (state.unregisteredCandidates ?? []).filter(candidate => candidate.reason !== 'waitingNextUser').length;
+const timeFailureCopy = state => state?.active || ['waiting', 'disabled'].includes(state?.status) ? ''
+  : state?.last?.automaticFailure || state?.last?.status === 'failed' || state?.status === 'failed' ? '更新失败'
+    : state?.last?.status === 'partial' || state?.status === 'partial' ? '部分未更新'
+      : state?.last?.status === 'interrupted' ? '更新未完成' : '';
+// 只复制时间校验器的固定原因；旧汇总 message 仅用于命中这些常量，不输出自由文本。
+const TIME_ITEM_FAILURE_REASONS = new Set([
+  '当前评估只能更新选入的活跃事项。', '当前评估缺少推测、无法判断原因或退出理由。',
+  '时间事项身份或字段无效。', '来源编号未在本次请求中出现。', '时间事项人物归属不明确。',
+  '时间事项人物未在正文明确出现。', '时间事项来源无效。', '时间事项重复。', '时间事项缺少原观察。',
+  '退出跟进只允许已有活跃身体事项，并需单独提供退出理由。', '归并组字段无效。',
+  '归并组存在重复、自归并或交叉事项。', '归并组必须使用输入的同人物同类型事项。',
+  '归并成员来源不完整。', '归并组含无效事项更新。', '归并主项缺少当前评估。',
+  '已手动解除归并，缺少新观察不能重新归并。', '归并组不能撤销已停止或结束的事项。',
+  '本次未返回该事项的有效当前评估。',
+]);
 const validMessageIndex = value => Number.isSafeInteger(value) && value >= 0;
 const messageIndexFor = (state, reference = {}) => {
   if (validMessageIndex(reference.messageIndex)) return reference.messageIndex;
@@ -149,7 +165,7 @@ const memoryBusy = state => Boolean((state.activeExtraction && state.activeExtra
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
 const workPhaseCopy = state => ({ reconciling: '正在同步楼层', syncing: '正在同步记忆状态', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建后端数据', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
 const DIAGNOSTIC_STATUS = new Set(['idle', 'preparing', 'ready', 'error', 'disabled', 'suspended', 'running', 'uninitialized', 'stale', 'needsReview', 'conflict', 'empty', 'skipped', 'failed', 'partial', 'pending', 'noChange', 'notApplicable', 'unavailable', 'syncing', 'caughtUp', 'waitingRealtime', 'pendingRebuild', 'rebuilding', 'paused', 'completed', 'deleting', 'historicalDebt', 'realtimeTail', 'notReady', 'unknown']);
-const DIAGNOSTIC_PHASE = new Set(['capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'syncing', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
+const DIAGNOSTIC_PHASE = new Set(['preparing', 'migrating', 'loading', 'inspecting', 'generating', 'building', 'sealing', 'savingProfile', 'savingSelection', 'savingAvatar', 'deleting', 'cleaning', 'scanning', 'checking', 'updating', 'request', 'capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'syncing', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
 const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
 const DIAGNOSTIC_REVIEW_REASON = new Set(['missingRoot', 'indexNeedsReseal', 'stableCountMismatch', 'candidateCountMismatch', 'locatorMismatch', 'markerMismatch', 'fingerprintMismatch']);
 const DIAGNOSTIC_MARKER_STATUS = new Set(['none', 'valid', 'foreign', 'invalid']);
@@ -272,6 +288,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   if (uiDiagnosticProvider !== null && typeof uiDiagnosticProvider !== 'function') throw new TypeError('界面诊断 provider 无效');
   if (!documentRef?.createElement) throw new TypeError('V3 foundation view documentRef 无效');
 
+  let pluginActivity = { busy: false, copy: '' };
+  let refreshManagementProgress = null;
   let container = null, active = false, epoch = 0, feedback = '', refreshFeedback = null, receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
@@ -385,6 +403,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       : errorMessage(state.memorySyncError) || errorMessage(state.lastExtractorError) || errorMessage(state.lastError));
   const healthCopy = (state, timeSnapshot = null) => {
     if (state.pluginEnabled === false) return '千千结已关闭';
+    if (pluginActivity.busy && ['memories', 'management'].includes(page) && !errorCopy(state)) return pluginActivity.copy;
     const time = timeSnapshot ?? timeRuntime?.getState?.();
     const sessionError = sessionErrorCopy(); if (sessionError) return `记忆读取失败 · ${sessionError}`;
     if (state.memorySnapshotStatus === 'syncing' && !(state.floors ?? []).length) return '正在读取当前聊天记忆';
@@ -392,7 +411,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (state.activeExtraction?.phase === 'analyzingCse') return '摘要已保存，正在分析人物状态';
     if (!memoryBusy(state) && !cseBusy(state) && !workBusy(state) && !errorCopy(state)) {
       if (time?.active) return time.phase === 'saving' ? '正在保存时间事项' : time.phase === 'projecting' ? '正在推算时间状态' : '正在整理时间事项';
-      if (page === 'management' && ['failed', 'partial'].includes(time?.status)) return time.last?.message ?? '时间事项处理失败';
+      if (page === 'management' && timeFailureCopy(time)) return `时间事项${timeFailureCopy(time)}`;
     }
     if (page === 'memories') {
       if (state.activeMemoryWork?.kind === 'auto' && state.activeMemoryWork.phase === 'reconciling' && !state.activeExtraction) return `正在同步楼层 · 已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼`;
@@ -403,8 +422,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       if (cseBusy(state)) return `摘要已保存 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 正在分析人物状态`;
       if (state.activeMemoryWork?.phase === 'syncing') return `摘要已保存 · ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 正在同步记忆状态`;
       const uninitialized = uninitializedCopy(state); if (uninitialized) return uninitialized;
-      const waiting = state.unregisteredCandidates?.length ?? 0;
-      return `已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼 · 待摘要 ${state.unprocessedCount ?? 0} 楼${waiting ? ` · 另有 ${waiting} 楼尚未摘要，正在等待确认` : ''}${state.memorySyncStatus === 'syncing' ? ' · 后台同步中' : ''}`;
+      const waiting = waitingForConfirmation(state);
+      return `已记忆 ${state.rememberedCount ?? 0}/${state.stableCount ?? 0} 楼${state.unprocessedCount > 0 ? ` · 待摘要 ${state.unprocessedCount} 楼` : ''}${waiting ? ` · ${waiting} 楼待确认` : ''}${state.memorySyncStatus === 'syncing' ? ' · 后台同步中' : ''}`;
     }
     if (page === 'people') {
       if (cseBusy(state)) return `正在分析人物状态 · 待分析 ${state.csePendingCount ?? 0} 楼`;
@@ -422,7 +441,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (errorCopy(state)) return 'qqj-page-health error';
     const checking = state.pluginEnabled === false || state.memorySnapshotStatus === 'syncing'
       || workBusy(state) || state.status === 'running'
-      || (page === 'memories' && (state.unregisteredCandidates?.length ?? 0) > 0)
+      || (page === 'memories' && waitingForConfirmation(state) > 0)
       || !['ready', 'uninitialized'].includes(effectiveStatus(state));
     return `qqj-page-health ${checking ? 'checking' : 'healthy'}`;
   };
@@ -433,8 +452,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   };
   const updatePageFeedback = state => {
     if (!pageFeedbackNode) return;
-    const copy = currentFeedback(state) || errorCopy(state) || '记忆状态已显示。';
+    const copy = pageFeedbackCopy(state);
     pageFeedbackNode.textContent = copy;
+    pageFeedbackNode.hidden = !copy;
     pageFeedbackNode.className = `v3-foundation-feedback${copy.includes('失败') || (!feedback && errorCopy(state)) ? ' error' : ''}`;
   };
   const captureMemoryInputs = state => ({ chatId: state?.chatId ?? null, rootRevision: state?.rootRevision ?? null,
@@ -483,13 +503,30 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   const updateMemoryControls = state => {
     for (const control of memoryWorkControls) control.node.disabled = control.disabled(state);
   };
-  const currentFeedback = state => feedback === statusCopy('running')
-    ? (errorCopy(state) || (workBusy(state) || state.status === 'running' ? workPhaseCopy(state) : '记忆状态已刷新。')) : feedback;
+  const reviewCopy = state => {
+    const reason = state?.reviewReason;
+    const copy = ({ stableCountMismatch: '当前消息楼与已存记忆尚未同步。', markerMismatch: '有消息的记忆标记无法对应。', candidateCountMismatch: '有已存记忆楼尚未对应当前消息。', locatorMismatch: '有已存记忆楼的位置尚未对应。', fingerprintMismatch: '有消息与已存记录的正文版本依据不一致。', memoryExclusionChanged: '无需记录的楼标记尚未同步。', indexNeedsReseal: '记忆索引尚待同步。', missingRoot: '当前记忆记录尚未就绪。' })[reason?.code] || '当前记忆的对应关系尚未确认。';
+    return copy + '请点击“刷新状态”；若仍未完成，到“详细诊断”复制状态诊断反馈。';
+  };
+  const currentFeedback = state => {
+    const routine = !feedback || ['正在处理', '需要核对当前聊天记忆', '记忆状态已刷新。', '记忆状态已显示。', '当前聊天已读取完成。', '当前聊天尚未建立记忆，状态已读取完成。', '状态已显示。'].includes(feedback)
+      || refreshFeedback !== null && feedback === refreshFeedback;
+    if (!routine) return feedback;
+    const error = errorCopy(state); if (error) return error;
+    if (pluginActivity.busy && ['memories', 'management'].includes(page)) return '';
+    if (['memories', 'management'].includes(page) && !refreshSyncing(state) && (effectiveStatus(state) === 'needsReview' || state.memorySyncStatus === 'needsReview')) return reviewCopy(state);
+    return feedback === statusCopy('running') ? '' : feedback;
+  };
+  const pageFeedbackCopy = state => {
+    const copy = currentFeedback(state) || errorCopy(state) || '记忆状态已显示。';
+    return (page === 'memories' || pluginActivity.busy && page === 'management') && ['记忆状态已刷新。', '记忆状态已显示。'].includes(copy) ? errorCopy(state) : copy;
+  };
   const pageStatus = state => {
     const block = element('div', 'qqj-page-status');
     healthNode = element('p', healthClass(state), healthCopy(state));
-    const copy = currentFeedback(state) || errorCopy(state) || '记忆状态已显示。';
+    const copy = pageFeedbackCopy(state);
     pageFeedbackNode = element('p', `v3-foundation-feedback${copy.includes('失败') || (!feedback && errorCopy(state)) ? ' error' : ''}`, copy);
+    pageFeedbackNode.hidden = !copy;
     block.append(healthNode, pageFeedbackNode);
     return block;
   };
@@ -579,6 +616,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const recall = readDiagnosticState(() => recallRuntime?.getState?.());
     const vector = readDiagnosticState(() => vectorRuntime?.getState?.());
     const management = readDiagnosticState(() => memoryManagement?.getState?.());
+    const time = readDiagnosticState(() => typeof timeRuntime?.getActivityState === 'function' ? timeRuntime.getActivityState() : timeRuntime?.getState?.());
     const memoryKnown = memory !== null, identityKnown = identity !== null, recallKnown = recall !== null, managementKnown = management !== null;
     const deleting = management?.status === 'deleting', deletePending = management?.status === 'failed';
     const indexMatchesMemory = Boolean(memory && vectorIndexResult
@@ -634,6 +672,29 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       pluginVersion: diagnosticVersion(pluginVersion),
       capturedAt: new Date().toISOString(),
       backend: readDiagnosticState(backendDiagnosticProvider),
+      time: (() => {
+        const statuses = new Set(['idle', 'running', 'waiting', 'disabled', 'completed', 'empty', 'partial', 'failed', 'interrupted']);
+        const rawErrors = Array.isArray(time?.last?.itemErrors) ? time.last.itemErrors : [];
+        const fixedReason = value => {
+          const plain = typeof value === 'string' && value.startsWith('归并组：') ? value.slice(4) : value;
+          return TIME_ITEM_FAILURE_REASONS.has(plain) ? plain : null;
+        };
+        const itemErrors = rawErrors.slice(0, 12).flatMap(item => {
+          const reason = fixedReason(item?.reason);
+          return reason ? [{ index: Number.isSafeInteger(item.index) && item.index > 0 ? item.index : null, reason }] : [];
+        });
+        const message = typeof time?.last?.message === 'string' ? time.last.message.slice(0, 12000) : '';
+        const knownReasons = [...new Set([...itemErrors.map(item => item.reason), ...[...TIME_ITEM_FAILURE_REASONS].filter(reason => message.includes(reason))])];
+        return { status: enumDiagnostic(time?.status, statuses),
+          phase: time?.phase == null ? null : enumDiagnostic(time.phase, new Set(['preparing', 'collecting', 'projecting', 'saving'])),
+          active: time ? booleanDiagnostic(time.active) : 'unknown',
+          progress: time?.progress ? { completed: countDiagnostic(time.progress.completed), total: countDiagnostic(time.progress.total) } : null,
+          last: time?.last ? { status: enumDiagnostic(time.last.status, statuses),
+            cutoffAssistantSeq: countDiagnostic(time.last.cutoffAssistantSeq), failedBatchCount: countDiagnostic(time.last.failedBatchCount),
+            itemErrorIndexScope: 'batch', itemErrors, itemErrorsTruncated: rawErrors.length > 12,
+            knownReasons, reasonStatus: knownReasons.length ? 'known' : 'unknown',
+            error: ['failed', 'partial'].includes(time.last.status) ? errorDiagnostic(time.last.error ?? time.last, true) : null } : null };
+      })(),
       identity: {
         status: identityKnown ? enumDiagnostic(identity.status, DIAGNOSTIC_STATUS) : 'unknown',
         identityPresent: identityKnown ? Boolean(identity.identity) : 'unknown',
@@ -719,6 +780,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       ui: {
         syncingOverlayActive: Boolean(syncingChatId && syncingChatId === foundationState?.chatId),
         workBusy: memoryKnown ? workBusy(memory) : 'unknown',
+        pluginActivity: { busy: pluginActivity.busy === true, phase: pluginActivity.busy ? enumDiagnostic(pluginActivity.phase, DIAGNOSTIC_PHASE) : null },
         deleting,
         deletePending,
       },
@@ -728,11 +790,15 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const value = JSON.stringify(stateDiagnostic(), null, 2);
     refreshFeedback = null;
     feedback = await copy(value);
-    if (active && container) render(runtime.getState());
+    if (active && container) {
+      if (fallbackText) render(runtime.getState());
+      else if (page === 'management') updateManagementFeedback(foundationState);
+      else updatePageFeedback(foundationState);
+    }
   };
   const refreshSyncing = state => state?.memorySnapshotStatus === 'syncing' || state?.memorySyncStatus === 'syncing';
   async function run(label, task, { after, failed, resultCopy, followState = false } = {}) {
-    const mine = ++epoch, progressFeedback = `${label}…`; feedback = progressFeedback; refreshFeedback = null; updateManagementFeedback(foundationState); updateHealth(foundationState);
+    const mine = ++epoch, progressFeedback = `${label}…`; feedback = progressFeedback; refreshFeedback = followState ? progressFeedback : null; updateManagementFeedback(foundationState); updateHealth(foundationState);
     const beforeState = runtime.getState?.() ?? foundationState;
     try {
       const next = await task();
@@ -740,8 +806,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       const settledRender = after?.(nextState) === true;
       if (!active) return next;
       if (mine !== epoch) { if (settledRender) { feedback = `${label}完成。`; render(nextState); } return next; }
-      if (followState && feedback === progressFeedback && refreshSyncing(nextState)) {
-        feedback = resultCopy?.(nextState, beforeState, next) || `${label}结束：${statusCopy(nextState?.status)}`;
+      if (followState && (feedback === progressFeedback || refreshFeedback !== null && feedback === refreshFeedback) && (refreshSyncing(nextState) || pluginActivity.busy)) {
+        feedback = resultCopy?.(nextState, beforeState, next) ?? `${label}结束：${statusCopy(nextState?.status)}`;
         refreshFeedback = feedback;
       } else {
         if (followState) refreshFeedback = null;
@@ -798,16 +864,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (state?.memorySnapshotStatus === 'error' || state?.memorySyncStatus === 'error' || state?.status === 'error') {
       return `刷新状态未完成：${errorMessage(state?.memorySyncError) || errorCopy(state) || '当前聊天读取失败，请重试。'}`;
     }
+    if (pluginActivity.busy) return '';
     if (refreshSyncing(state)) return state?.memorySnapshotStatus === 'ready'
-      ? '当前聊天已读取完成；后台校验仍在进行。'
+      ? '记忆资料已读入，正在同步与核验。'
       : '正在读取当前聊天记忆。';
-    if (effectiveStatus(state) === 'needsReview' || state?.foundationStatus === 'needsReview' || state?.memorySyncStatus === 'needsReview') {
-      const count = Number.isSafeInteger(state?.rememberedCount) && state.rememberedCount >= 0 ? `已保留 ${state.rememberedCount} 楼记忆。` : '';
-      const reason = state?.reviewReason;
-      const markerConflict = reason?.code === 'markerMismatch' && reason?.bindingIssue === 'markerConflict';
-      const floor = markerConflict ? floorCopy(state, { messageIndex: reason.messageIndex }, '') : '';
-      return `核验已结束；${floor ? `${floor}记忆标记需核对。` : '记忆仍需核对。'}${count}`;
-    }
+    if (effectiveStatus(state) === 'needsReview' || state?.foundationStatus === 'needsReview' || state?.memorySyncStatus === 'needsReview') return statusCopy('needsReview');
     if (effectiveStatus(state) === 'uninitialized') return '当前聊天尚未建立记忆，状态已读取完成。';
     if (state?.memorySnapshotStatus === 'ready') return '当前聊天已读取完成。';
     return `刷新状态结束：${statusCopy(effectiveStatus(state))}`;
@@ -1102,16 +1163,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     toggle.className = `secondary-action qqj-profile-more${recentItemsOpen ? ' active' : ''}`;
     toggle.disabled = false;
     toggle.setAttribute('aria-expanded', String(recentItemsOpen)); body.hidden = !recentItemsOpen;
-    const failureNotice = state?.status === 'waiting' || state?.status === 'disabled' ? ''
-      : state?.last?.automaticFailure
-        ? `${state.last.automaticFailureMessage ?? '自动时间推演本次未能完成。'}${state.last.message ? ` ${state.last.message}` : ''}`
-        : state?.last?.status === 'failed' ? `时间推演失败：${state.last.message || '本次没有完成。'}`
-          : state?.last?.status === 'partial' ? `时间推演部分未完成：${state.last.message || '部分事项仍待处理。'}` : '';
+    const failureNotice = timeFailureCopy(state);
     automaticFailure.textContent = failureNotice;
-    automaticFailure.hidden = !failureNotice;
+    automaticFailure.hidden = !failureNotice || recentItemsOpen;
     clockReminder.hidden = state?.clockContentChanged !== true;
     if (!recentItemsOpen) return;
-    const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : result?.status === 'partial' ? '部分完成' : result?.status === 'failed' ? '失败' : result?.status === 'interrupted' ? '上次未完成' : '待初始化';
+    const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : failureNotice || (result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : '待初始化');
     status.textContent = [label, Array.isArray(tracked) ? `追踪中 ${tracked.length} 项` : '', state?.progress ? `本次进度 ${state.progress.completed}/${state.progress.total}` : ''].filter(Boolean).join(' · ');
     status.className = ['failed', 'partial'].includes(result?.status) ? 'settings-result error' : 'settings-result';
     organize.textContent = result?.currentReview && ['failed', 'interrupted', 'partial'].includes(result?.status) ? '重新更新当前事项' : ['failed', 'interrupted', 'partial'].includes(result?.status) ? '继续补查历史' : '补查历史';
@@ -1132,7 +1189,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     batchDelete.hidden = !showStoppedItems;
     batchDelete.textContent = state?.pendingDeletionCount ? '继续永久删除' : '批量永久删除';
     batchDelete.disabled = batchBusy || selectedRecentItems.size === 0 && !state?.pendingDeletionCount;
-    const failedResult = ['failed', 'partial', 'interrupted'].includes(result?.status) ? result.message || ({ failed: '本次整理失败。', partial: '本次整理未全部完成。', interrupted: '本次整理已停止。' })[result.status] : '';
     const coverage = state?.coverage;
     const coverageCopy = coverage ? [
       `正文已检查 ${coverage.checkedFloors}/${coverage.totalFloors} 楼`,
@@ -1140,8 +1196,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       coverage.pendingFloors > 0 ? `${coverage.pendingFloors} 楼等待稳定` : '',
     ].filter(Boolean).join('；') : '';
     reason.textContent = state?.disabledReason || recentItemsUi.planFeedback
-      || (result?.reason === 'read' ? result.message || '近期事项读取失败，请点击“重试读取”。' : '')
-      || failedResult
+      || (result?.reason === 'read' ? '近期事项读取失败，请点击“重试读取”。' : '')
+      || (failureNotice ? '可到“设置→记忆管理→详细诊断”复制状态诊断。' : '')
       || (state?.status === 'waiting' ? '记忆同步后读取近期事项。' : coverageCopy);
     if (recentItemDraft) {
       for (const control of recentItemDraft.controls) control.disabled = recentItemDraft.saving || state?.canOrganize !== true;
@@ -1160,7 +1216,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       if (item.status === 'active' && item.type !== 'deadline' && item.projection) results.push({ text: `当前推测：${item.projection}`, error: false });
       else if (item.status === 'active' && item.type !== 'deadline' && item.assessmentReason) results.push({ text: `依据不足：${item.assessmentReason}`, error: true });
       if (item.status === 'active' && item.type !== 'deadline' && item.projection && item.projectionTime?.date) times.push(`推算至：${formatStoryTime(item.projectionTime)}`);
-      if (item.failureReason) results.push({ text: `更新失败：${item.failureReason}`, error: true });
+      if (item.failureReason) results.push({ text: '更新失败', error: true });
       const keywords = Array.isArray(item.keywords) ? item.keywords.filter(keyword => typeof keyword === 'string' && keyword.trim()).slice(0, 4) : [];
       return {
         item,
@@ -2160,10 +2216,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function updateManagementFeedback(state) {
     if (!managementFeedbackNode) return;
-    const copy = (currentFeedback(state) || errorCopy(state) || '状态已显示。').replace('；历史召回回执已独立处理。', '');
+    const copy = (currentFeedback(state) || errorCopy(state) || (pluginActivity.busy ? '' : '状态已显示。')).replace('；历史召回回执已独立处理。', '');
     const isError = errorCopy(state) || copy.startsWith('记忆读取失败') || copy.startsWith('刷新状态未完成');
     managementFeedbackNode.className = `v3-foundation-feedback qqj-management-feedback${isError ? ' error' : ''}`;
-    managementFeedbackNode.textContent = copy;
+    managementFeedbackNode.textContent = copy; managementFeedbackNode.hidden = !copy;
   }
   function renderManagement(state) {
     const taskState = managementState?.rebuildState;
@@ -2195,15 +2251,18 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     actions.append(cseAction);
     const progress = element('div', 'qqj-management-progress');
     if (state.cseRebuildStatus !== 'idle') progress.append(element('span', 'settings-hint', `人物状态${state.cseRebuildStatus === 'completed' ? '已完成' : state.cseRebuildStatus === 'failed' ? '失败' : state.cseRebuildStatus === 'paused' ? '已暂停' : '重构中'} · ${state.cseRebuildCompletedCount ?? 0}/${state.cseRebuildTotalCount ?? 0}`));
-    const pendingCopy = `摘要待补 ${state.unprocessedCount ?? 0} 楼 · CSE 待分析 ${state.csePendingCount ?? 0} 楼`;
-    const nextStepCopy = deletePending ? '上次删除尚未完成，请先继续删除当前聊天记忆。'
-      : busy ? `${workPhaseCopy(state)}，完成后可继续操作。`
-        : ['needsReview', 'error'].includes(effectiveStatus(state)) || sessionErrorCopy() ? `当前${sessionErrorCopy() ? '记忆读取失败' : statusCopy(effectiveStatus(state))}；请先点击“刷新状态”。若仍无法确认真实归属，现有记忆会保留、正文可继续，可复制诊断反馈。`
+    const pendingCopy = [state.unprocessedCount > 0 ? `摘要待补 ${state.unprocessedCount} 楼` : '', state.csePendingCount > 0 ? `CSE 待分析 ${state.csePendingCount} 楼` : ''].filter(Boolean).join(' · ');
+    const nextStepCopy = () => deletePending ? '上次删除尚未完成，请先继续删除当前聊天记忆。'
+      : pluginActivity.busy ? ''
+      : busy ? state.mainGenerationActive ? '正文正在生成，完成后可继续操作。' : ''
+        : ['needsReview', 'error'].includes(effectiveStatus(state)) || sessionErrorCopy() ? ''
           : uninitializedCopy(state) || (!state.chatId ? '当前记忆状态尚未载入，请点击“刷新状态”。'
             : cseResume ? '完成后如仍有缺失，可继续补齐。'
             : !rebuildActionable ? '当前没有需要补齐的稳定楼。'
               : '可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。');
-    progress.append(element('span', 'settings-hint', `${pendingCopy}。${nextStepCopy}`));
+    const progressCopy = element('span', 'settings-hint');
+    refreshManagementProgress = () => { progressCopy.textContent = [pendingCopy, nextStepCopy()].filter(Boolean).join('。'); progressCopy.hidden = !progressCopy.textContent; };
+    refreshManagementProgress(); progress.append(progressCopy);
     const deleteActions = element('div', 'qqj-management-delete');
     if (memoryManagement) {
       const sessionState = readDiagnosticState(sessionStateProvider);
@@ -2324,7 +2383,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   function subscribe() {
     if (!active || !container || unsubscribe) return;
     const releases = [];
-    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (refreshFeedback !== null) { if (feedback !== refreshFeedback) refreshFeedback = null; else { feedback = refreshResult(snapshot); refreshFeedback = refreshSyncing(snapshot) ? feedback : null; } } if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
+    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (refreshFeedback !== null) { if (feedback !== refreshFeedback) refreshFeedback = null; else { feedback = refreshResult(snapshot); refreshFeedback = refreshSyncing(snapshot) || pluginActivity.busy ? feedback : null; } } if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
     if (typeof recallRuntime?.subscribe === 'function') { const release = recallRuntime.subscribe(snapshot => { recallState = snapshot; if (active && container && page === 'management') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof peopleRuntime?.subscribe === 'function') { const release = peopleRuntime.subscribe(snapshot => { peopleState = snapshot; if (active && container && page === 'people') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof timeRuntime?.subscribe === 'function') { const release = timeRuntime.subscribe(snapshot => { if (active && container) { updateHealth(foundationState, snapshot); updateRecentItems(snapshot); } }); if (typeof release === 'function') releases.push(release); }
@@ -2391,7 +2450,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (foundationOutcome.status === 'rejected') { feedback = `记忆读取失败：${publicErrorMessage(foundationOutcome.reason, { fallback: '后端数据暂时无法读取。' })}；历史召回回执已独立处理。`; const result = runtime.getState(); render(result); return { status: 'error', error: foundationOutcome.reason }; }
     const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); receiveFoundation(result); await readVectorIndexForReadyState(foundationState); return result;
   }
-  function deactivate() { active = false; vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
+  function deactivate() { refreshManagementProgress = null; active = false; vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
   function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null; if (active && container) render(foundationState); }
-  return Object.freeze({ mount, activate, deactivate, render, setPage, getPage: () => page });
+  return Object.freeze({ setActivity(value) { pluginActivity = value; if (refreshFeedback !== null && feedback === refreshFeedback) { feedback = refreshResult(foundationState); refreshFeedback = pluginActivity.busy || refreshSyncing(foundationState) ? feedback : null; } if (active && container) { updateHealth(foundationState); updatePageFeedback(foundationState); updateManagementFeedback(foundationState); if (page === 'management') refreshManagementProgress?.(); } }, mount, activate, deactivate, render, setPage, getPage: () => page });
 }

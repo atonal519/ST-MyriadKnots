@@ -1,3 +1,4 @@
+import { createActivitySignal } from './plugin-activity.js';
 import { newIdentityUuid, sha256 } from './identity.js';
 
 export const VECTOR_DEFAULT_URL = 'https://api.siliconflow.cn/v1';
@@ -148,12 +149,13 @@ export function normalizeVector(values) {
 
 export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: requestHeadersProvider = () => ({}) } = {}) {
   const controllers = new Set();
-  return Object.freeze({
+  const activity = createActivitySignal(() => ({ busy: controllers.size > 0, phase: controllers.size ? 'request' : null }));
+  return Object.freeze({ getActivityState: activity.getActivityState, subscribeActivity: activity.subscribeActivity,
     // 单次 embed 只发一次请求；正常召回的限次超时补试由查询方负责，不占宿主生成锁。
     async embed(config, input, { signal, timeoutMs = 30000, onDiagnostic = null, onProgress = null } = {}) {
       if (!Array.isArray(input) || !input.length || input.length > 16 || input.some(text => typeof text !== 'string' || !text.trim() || text.length > 12000)) throw fail('VECTOR_INPUT_INVALID', '向量请求材料无效。');
       if (signal?.aborted) throw fail('VECTOR_ABORTED', '向量请求已取消。');
-      const controller = new AbortController(); controllers.add(controller);
+      const controller = new AbortController(); controllers.add(controller); activity.notifyActivity();
       const started = Date.now();
       let requestId = null;
       try { requestId = newIdentityUuid(); } catch { requestId = `vector-${started}`; }
@@ -271,7 +273,7 @@ export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: r
         diagnostic.networkCode = safeNetworkCode(error?.code) ?? safeNetworkCode(error?.cause?.code);
         throw fail('VECTOR_CONNECTION_FAILED', '向量接口连接失败，请检查地址与跨域支持。');
       } finally {
-        clearTimeout(timer); signal?.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', signalAbort); controllers.delete(controller);
+        clearTimeout(timer); signal?.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', signalAbort); controllers.delete(controller); activity.notifyActivity();
         diagnostic.inputSha256 ??= await inputFingerprint;
         finalized = true;
         diagnostic.elapsedMs = Math.max(0, Date.now() - started);

@@ -2226,5 +2226,5 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
 
   async function setEnabled(value) { enabledOverride = value === true; if (!enabledOverride) invalidate('disabled', 'runtimeDisabled'); return getState(); }
   function clearCurrent() { clearSlot(); lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastRecallReceiptOwner = null; lastError = null; notify(); return getState(); }
-  return Object.freeze({ intercept, bind, setEnabled, clearCurrent, restorePersistedReceipt, getPrequel, savePrequel, getState, getPromptSnapshot, invalidate, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  return Object.freeze({ intercept, bind, setEnabled, clearCurrent, restorePersistedReceipt, getActivityState: () => ({ busy: active !== null, phase: active?.phase ?? null }), getPrequel, savePrequel, getState, getPromptSnapshot, invalidate, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

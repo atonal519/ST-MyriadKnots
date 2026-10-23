@@ -115,13 +115,13 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       for (const eventId of recordIds) {
         const event = events.get(eventId);
         const status = event?.actionStatus ?? event?.status;
-        if (event?.matterId === matter.matterId && event.updatesMatter === false && ['planned', 'inProgress'].includes(status)) {
+        if (event?.matterId === matter.matterId && event.updatesMatter === false && event.statusManuallyEdited === true && ['planned', 'inProgress'].includes(status)) {
           entries.push({ eventId: event.id, title: event.title, status, sourceAssistantSeq: event.sourceAssistantSeq ?? 0 });
         }
       }
     }
     for (const event of snapshot?.events ?? []) {
-      if (event.matterId || !['planned', 'inProgress'].includes(event.actionStatus ?? event.status)) continue;
+      if (event.matterId || event.statusManuallyEdited !== true || !['planned', 'inProgress'].includes(event.actionStatus ?? event.status)) continue;
       entries.push({ eventId: event.id, title: event.title, status: event.actionStatus ?? event.status, sourceAssistantSeq: event.sourceAssistantSeq ?? 0 });
     }
     todoProjectionEntries = entries;
@@ -366,10 +366,10 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
           if (wholeLine) await runtime.setQianshiMatterStatus({ matterId: matter.matterId,
             status: choice === 'automatic' ? null : choice, expectedStatus: matter.status,
             expectedManualStatus: matter.manualStatusOverride ?? null });
-          else if (choice !== currentStatus) await runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId,
+          else await runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId,
             title: event.title, description: event.description, object: event.object ?? null,
             status: event.status, actionStatus: event.actionStatus ?? event.status }, title: event.title,
-            description: event.description, object: event.object ?? null, actionStatus: choice,
+            description: event.description, object: event.object ?? null, actionStatus: choice, confirmActionStatus: true,
             ...(!event.matterId ? { status: choice } : {}) });
           if (statusSaves.get(event.id) === saving) statusSaves.delete(event.id);
         } catch (error) {

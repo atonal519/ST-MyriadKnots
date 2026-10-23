@@ -337,9 +337,10 @@ test('独立记录状态弹窗只修改本条，旧未知状态不能被人工�
   assert.equal(h.runtime.getQianshiSnapshot().matters[0].manualStatusOverride, undefined);
 });
 
-test('待办清单按整线有效状态筛选并跳到原记录，孤立记录沿用动作状态', async () => {
+test('待办清单按整线有效状态筛选并跳到原记录，人工孤立记录沿用动作状态', async () => {
   const snapshot = fixture();
   snapshot.events.find(event => event.id === 'undated').actionStatus = 'inProgress';
+  snapshot.events.find(event => event.id === 'undated').statusManuallyEdited = true;
   snapshot.events.find(event => event.id === 'event-7').title = '原事项最新进展';
   snapshot.matters = [
     { matterId: 'matter-1', title: '旧信事项', status: 'planned', following: false, currentEventId: 'event-7', latestEventIds: ['event-7'], origin: { eventId: 'event-1' }, recordIds: snapshot.events.slice(0, 7).map(event => event.id) },
@@ -379,7 +380,7 @@ test('待办清单按整线有效状态筛选并跳到原记录，孤立记录�
   assert.ok(flatten(h.container).some(node => node.className === 'qqj-qianshi-undated' && node.open === true) === false, '只读孤立状态未因另一条选择而展开');
 });
 
-test('待办按正式投影区分无当前推进的背景动作与当前整线状态', async () => {
+test('待办按正式投影区分人工背景动作与当前整线状态', async () => {
   const source = { id: '11111111-1111-4111-8111-111111111111', chatId: 'chat-a', narrativeGeneration: '22222222-2222-4222-8222-222222222222',
     assistantSeq: 24, hostLocator: { messageIndex: 24 }, content: { canonicalContent: '中性千事状态投影样例' } };
   const delta = structuredClone(await compileQianshiDelta({ floor: source, now: '2026-10-19T00:00:00.000Z', packet: { qianshi: { events: [
@@ -399,6 +400,7 @@ test('待办按正式投影区分无当前推进的背景动作与当前整线�
   oldLineAction.matterId = manualTerminalLine.matterId;
   oldLineAction.updatesMatter = false;
   delta.manualMatterStatusOverrides = [{ matterId: manualTerminalLine.matterId, status: 'completed' }];
+  delta.manualEventOverrides = [backgroundPlanned, backgroundProgress].map(event => ({ eventId: event.id, actionStatus: event.actionStatus }));
   const snapshot = publicQianshiSnapshot({ root: { chatId: 'chat-a', narrativeGeneration: source.narrativeGeneration,
     headCheckpointId: '44444444-4444-4444-8444-444444444444' }, rootRevision: 1, floors: [source],
     floorMemories: [{ id: '55555555-5555-4555-8555-555555555555', floorId: source.id, recordStatus: 'active', chronology: [], qianshiDelta: delta }], entities: [] });
@@ -474,10 +476,11 @@ test('待办搜索覆盖全量事项，弹窗列表仅渲染当前50条并在超
   assert.equal(Boolean(byText(content, '下一页')), false, '搜索结果未超50条时不显示分页');
 });
 
-test('独立孤立待办用动作状态并跳到未定日期原记录，只读迁入保留只读入口', () => {
+test('人工孤立待办用动作状态并跳到未定日期原记录，只读迁入保留只读入口', () => {
   const standalone = fixture();
   standalone.matters = [];
   standalone.events.find(event => event.id === 'undated').actionStatus = 'planned';
+  standalone.events.find(event => event.id === 'undated').statusManuallyEdited = true;
   standalone.events.find(event => event.id === 'undated').status = 'occurred';
   const h = harness({ initialSnapshot: standalone, canEdit: false });
   byText(h.container, '待办事项（1）').fire('click');
@@ -1908,7 +1911,7 @@ test('千事页使用共享健康状态条，操作留在工具行且忙态更�
   assert.equal(health.textContent, '覆盖完整');
   assert.equal(health.parent, h.container.children[0]);
   assert.equal(actions.parent.className, 'qqj-qianshi-toolbar');
-  assert.deepEqual(actions.children.map(node => node.textContent), ['整理', '待办事项（1）']);
+  assert.deepEqual(actions.children.map(node => node.textContent), ['整理', '待办事项（0）']);
   assert.equal(flatten(h.container).some(node => node.tag === 'details' && node.className.includes('diagnostic')), false);
   assert.deepEqual(h.calls(), { prepareCalls: 0, startCalls: 0 });
 
@@ -2111,7 +2114,7 @@ test('整理与处理异常短按钮并排，异常弹窗按楼展开并复用�
   } });
   h.runtime.deleteQianshiEvent = async () => ({ status: 'saved' });
   const actions = flatten(h.container).find(node => node.className === 'qqj-qianshi-toolbar-actions');
-  assert.deepEqual(actions.children.map(node => node.textContent), ['补齐旧楼', '整理', '待办事项（1）', '处理异常']);
+  assert.deepEqual(actions.children.map(node => node.textContent), ['补齐旧楼', '整理', '待办事项（0）', '处理异常']);
   byText(actions, '处理异常').fire('click'); await tick();
   assert.match(copy(content), /事件仍已收录.*部分关联失效/u);
   assert.match(copy(content), /第 12 楼.*找不到前序事件/u);
@@ -2175,4 +2178,31 @@ test('补齐旧楼可显式重查真实空结果，混合范围默认只补未�
   await tick(); await tick(); await tick();
   assert.equal(cancelled.calls().prepareCalls, 0, '取消范围选择不产生计划或模型请求');
   assert.equal(cancelled.calls().startCalls, 0);
+});
+
+test('待办只列持续事项当前状态和人工确认的历史动作，自动旧动作留在时间线', () => {
+  const snapshot = fixture();
+  const base = snapshot.events[0];
+  snapshot.events = [
+    { ...base, id: 'auto-single', matterId: null, updatesMatter: false, status: 'inProgress', actionStatus: 'inProgress' },
+    { ...base, id: 'auto-background', matterId: 'background', updatesMatter: false, status: 'inProgress', actionStatus: 'inProgress' },
+    { ...base, id: 'manual-background', matterId: 'manual', updatesMatter: false, status: 'inProgress', actionStatus: 'inProgress', statusManuallyEdited: true },
+    { ...base, id: 'ongoing', matterId: 'ongoing-matter', updatesMatter: true, status: 'inProgress' },
+    { ...base, id: 'old-manual', matterId: 'done-matter', updatesMatter: false, status: 'inProgress', statusManuallyEdited: true },
+    { ...base, id: 'done', matterId: 'done-matter', updatesMatter: true, status: 'completed' },
+  ];
+  snapshot.matters = [
+    { matterId: 'background', status: 'inProgress', currentEventId: null, recordIds: ['auto-background'] },
+    { matterId: 'manual', status: 'inProgress', currentEventId: null, recordIds: ['manual-background'] },
+    { matterId: 'ongoing-matter', status: 'inProgress', following: false, currentEventId: 'ongoing', recordIds: ['ongoing'] },
+    { matterId: 'done-matter', status: 'completed', currentEventId: 'done', recordIds: ['old-manual', 'done'] },
+  ];
+  snapshot.timeline = { segments: [], undatedEventIds: snapshot.events.map(event => event.id) };
+  const h = harness({ initialSnapshot: snapshot });
+  const button = byText(h.container, '待办事项（2）');
+  assert.ok(button);
+  button.fire('click');
+  assert.equal(flatten(h.dialogContent()).filter(node => node.className === 'qqj-qianshi-todo-row').length, 2);
+  assert.equal(h.runtime.getQianshiSnapshot().events.length, 6, '所有历史事件仍在时间线输入中');
+  h.view.deactivate();
 });

@@ -1644,11 +1644,14 @@ test('首轮召回等待读完现成索引后查询；不重建，不重复查�
   let calls = 0, reads = 0;
   const index = createVectorIndex({ client: { ...h.client, get: async (...args) => { reads++; await flush(); return h.client.get(...args); } },
     api: { embed: async (_config, texts) => { calls++; return vectors(texts); } }, configProvider: () => config, identityProvider: () => ({ chatId: 'chat' }) });
+  const activities = []; index.subscribe(() => activities.push(index.getActivityState()));
   const first = await index.query({ source, queryContext: { text: '苹果' } });
   assert.equal(first.diagnostic.status, 'ready'); assert.equal(first.candidates.length, 1);
   assert.equal(index.getState().status, 'ready'); assert.equal(reads, 2); assert.equal(calls, 1);
   assert.equal((await index.query({ source, queryContext: { text: '苹果' } })).candidates.length, 1);
   assert.equal(reads, 2); assert.equal(calls, 1); assert.equal(h.calls.length, 2, '只读取已经落盘的 manifest 和 shard');
+  assert.equal(activities.some(value => value.busy), true);
+  assert.equal(activities.at(-1).busy, false, '冷读与查询都settled后发出闲置通知');
 });
 
 test('新增楼和 checkpoint 推进不要求重建；冷读旧索引仍可召回有效旧楼', async () => {
@@ -1743,6 +1746,7 @@ test('索引读取失败保留安全阶段与后端码，并继续既有 unavail
   const index = createVectorIndex({ client: { get: async () => { throw Object.assign(new Error('private body'), { code: 'BACKEND_UNAVAILABLE', status: 503 }); } },
     api: { embed: async () => { throw new Error('must not call'); } }, configProvider: () => config,
     identityProvider: () => ({ chatId: source.chatId }) });
+  const activities = []; index.subscribe(() => activities.push(index.getActivityState()));
   const result = await index.query({ source, queryContext: { text: '苹果' } });
   assert.equal(result.diagnostic.status, 'unavailable');
   assert.equal(index.getState().query.pendingStep, 'indexLoad');
@@ -1750,6 +1754,8 @@ test('索引读取失败保留安全阶段与后端码，并继续既有 unavail
   assert.equal(index.getState().query.load.backendCode, 'BACKEND_UNAVAILABLE');
   assert.equal(index.getState().query.load.httpStatus, 503);
   assert.equal(JSON.stringify(index.getState()).includes('private body'), false);
+  assert.equal(activities.some(value => value.busy), true);
+  assert.equal(activities.at(-1).busy, false, '读取失败也以settled通知熄灯');
 });
 
 test('不同聊天或纪元的来源不复用其他来源缓存；人工摘要撤来源后无旧命中', async () => {

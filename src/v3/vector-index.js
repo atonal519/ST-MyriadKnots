@@ -200,7 +200,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     const key = ownerKey(source, modelKey), captured = epoch;
     const reportLoad = value => { if (diagnostic) { diagnostic.load = value; diagnostic.onLoadProgress?.(); } };
     if (loading?.key === key && loading.epoch === captured) return loading.promise;
-    const job = { key, epoch: captured, promise: null }; loading = job;
+    const job = { key, epoch: captured, promise: null }; loading = job; notify({});
     job.promise = (async () => {
       try {
         if (!isEnabled()) { reportLoad({ pending: null, shardsRead: 0, shardCount: null, exitReason: 'disabled', backendCode: null, httpStatus: null }); return; }
@@ -264,7 +264,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
           httpStatus: Number.isSafeInteger(error?.status) && error.status >= 100 && error.status <= 599 ? error.status : null });
         /* 缓存读取失败仍按既有行为退回无索引召回；快照只保留安全错误元数据。 */
       }
-      finally { if (loading === job) loading = null; }
+      finally { if (loading === job) loading = null; notify({}); }
     })();
     return job.promise;
   }
@@ -858,10 +858,11 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       return code.startsWith('VECTOR_') ? { ...result, diagnostic: { ...result.diagnostic, status: code } } : result;
     } finally {
       signal?.removeEventListener('abort', abortQuery);
-      if (queryOperation === operation) queryOperation = null;
+      if (queryOperation === operation) queryOperation = null; notify({});
     }
   }
   return Object.freeze({
+    getActivityState: () => ({ busy: Boolean(active || updating || loading || queryOperation), phase: queryOperation ? 'selecting' : active || updating ? 'building' : loading ? 'loading' : null }),
     build, updateIncrementally, query, readIndexStatus, getState: () => ({ ...state, active: Boolean(active || updating && state.status === 'building'), updating: Boolean(updating), background: Boolean(updating && state.status === 'building'), query: querySnapshot }), subscribe(fn) { subscribers.add(fn); return () => subscribers.delete(fn); },
     cancelIncrementally,
     copyPrefix,

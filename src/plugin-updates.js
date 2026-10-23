@@ -86,5 +86,5 @@ export function createPluginUpdates({ moduleUrl = import.meta.url, extensionType
       return { ok: true, markdown };
     } catch { return unavailable(available ? '暂时无法读取更新公告，仍可更新。' : '暂时无法读取已安装版本公告，请稍后再试。'); }
   };
-  return Object.freeze({ getState: () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }, ensureChecked: () => checkedOnce ? Promise.resolve(state) : check(), check, update, readNotice });
+  return Object.freeze({ getActivityState: () => ({ busy: ['checking', 'updating'].includes(state.status), phase: ['checking', 'updating'].includes(state.status) ? state.status : null }), getState: () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }, ensureChecked: () => checkedOnce ? Promise.resolve(state) : check(), check, update, readNotice });
 }

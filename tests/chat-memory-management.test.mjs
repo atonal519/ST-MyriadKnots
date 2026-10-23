@@ -127,8 +127,10 @@ test('搬家启动立即通知管理器busy状态，结束后再通知完成', a
   const pending = f.manager.migrateCurrent();
   assert.equal(f.manager.getState().migrationState.status, 'migrating');
   assert.equal(f.manager.getState().workBusy, true);
+  assert.deepEqual(f.manager.getActivityState(), { busy: true, phase: 'migrating' });
   assert.equal(states.at(-1).migrationState.status, 'migrating', '异步搬家运行前立即通知UI重绘');
   status = 'completed'; release({ status: 'completed' }); await pending;
+  assert.equal(f.manager.getActivityState().busy, false);
   assert.equal(states.at(-1).migrationState.status, 'completed', '搬家结束仍通知最终状态');
 });
 
@@ -201,7 +203,10 @@ test('迁移档完全重构保留冻结图和宿主身份，历史任务在原�
     return { rebuildStatus: 'caughtUp', chatId: CHAT_ID };
   } });
   const before = [...f.records.keys()].filter(key => key.startsWith(`chat-${CHAT_ID}/`)).sort();
-  const result = await f.manager.fullRebuild(CHAT_ID);
+  const pending = f.manager.fullRebuild(CHAT_ID);
+  assert.deepEqual(f.manager.getActivityState(), { busy: true, phase: 'preparing' }, '宿主读取准备不冒充摘要提取');
+  const result = await pending;
+  assert.equal(f.manager.getActivityState().busy, false);
   const after = [...f.records.keys()].filter(key => key.startsWith(`chat-${CHAT_ID}/`)).sort();
   assert.equal(result.chatId, CHAT_ID);
   assert.deepEqual(after, before, '不删除迁移归档图中的root、楼或descriptor');

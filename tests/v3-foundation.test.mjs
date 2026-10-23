@@ -2978,3 +2978,20 @@ test('清洗配置变化但前缀正文结果相同允许尾删，清洗正文�
     else { assert.equal(h.runtime.getState().status, 'ready'); assert.equal(h.runtime.getReachable().floors.length, 2); }
   }
 });
+
+test('只读冷核验以实际Promise发出开始结束活动，且不伪造写入run', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = harness([assistant('A'), user('稳定')], { scanCandidatesOverride: async (chat, options) => { await gate; return legacyScanner(chat, options); } });
+  const activity = [];
+  const unsubscribe = h.runtime.subscribeActivity(value => activity.push(value));
+  const pending = h.runtime.inspect('activity-test');
+  assert.equal(h.runtime.getActivityState().busy, true);
+  assert.equal(h.runtime.getActivityState().phase, 'inspecting');
+  assert.equal(h.runtime.getState().activeRun, null);
+  release(); await pending;
+  assert.equal(h.runtime.getActivityState().busy, false);
+  assert.equal(activity[0].busy, true);
+  assert.equal(activity.at(-1).busy, false);
+  unsubscribe();
+});

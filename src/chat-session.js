@@ -1,3 +1,4 @@
+import { createActivitySignal } from './plugin-activity.js';
 import { cloneHostJsonMetadata, ensureChatUuid, isUuid, readHostState } from './host-context.js';
 import { captureTargetChatCoordinates } from './v3/host-adapter.js';
 import { markPreparationFailure, preparationFailureDiagnostic } from './v3/preparation-diagnostic.js';
@@ -22,6 +23,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
   if (captureTaskInputs !== null && typeof captureTaskInputs !== 'function') throw new TypeError('session captureTaskInputs 无效');
 
   let active = null;
+  const activity = createActivitySignal(() => ({ busy: active !== null, phase: active ? 'preparing' : null }));
   let suspension = null;
   let state = Object.freeze({ status: 'idle' });
   const failPreparation = (error, step) => {
@@ -122,8 +124,8 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
         throw error;
       }
     })();
-    active = operation;
-    operation.promise.finally(() => { if (active === operation) active = null; }).catch(() => {});
+    active = operation; activity.notifyActivity();
+    operation.promise.finally(() => { if (active === operation) active = null; activity.notifyActivity(); }).catch(() => {});
     return operation.promise;
   }
 
@@ -160,8 +162,8 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
         throw error;
       }
     })();
-    active = operation;
-    operation.promise.finally(() => { if (active === operation) active = null; }).catch(() => {});
+    active = operation; activity.notifyActivity();
+    operation.promise.finally(() => { if (active === operation) active = null; activity.notifyActivity(); }).catch(() => {});
     return operation.promise;
   }
 
@@ -231,5 +233,5 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     return true;
   }
 
-  return Object.freeze({ prepare, rename, renameCharacter, identity, invalidate, suspend, resume, getState: () => state });
+  return Object.freeze({ getActivityState: activity.getActivityState, subscribeActivity: activity.subscribeActivity, prepare, rename, renameCharacter, identity, invalidate, suspend, resume, getState: () => state });
 }

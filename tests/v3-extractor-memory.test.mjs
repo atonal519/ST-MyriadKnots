@@ -12211,3 +12211,28 @@ test('有效别名：新摘要请求和编译匹配使用人工全集，保留�
   assert.ok(reachable.entities.find(e => e.id === person.id).aliases.some(a => a.name === '旧称'));
   assert.equal(reachable.entities.filter(e => e.displayName === '新称' && e.status !== 'merged').length, 0);
 });
+
+test('独立状态明确确认同值仍保存既有人工action覆盖，普通同值编辑保持不变', async () => {
+  const utility = options => {
+    const request = JSON.parse(options.taskMessages[0].content);
+    if (request.task !== 'extractFloorSemantics') return { jsonData: { noMaterialChange: true } };
+    return { jsonData: { summary: '当时正在整理文件。', qianshi: { events: [
+      { key: 'record', title: '整理文件', description: '当时正在整理文件。', status: 'inProgress', actionStatus: 'inProgress', matter: false },
+    ], order: [] } } };
+  };
+  const h = harness({ initialChat: [user('开始'), assistant('正在整理文件。'), user('稳定')], utility });
+  await h.runtime.start(); const floor = h.runtime.getState().floors[0];
+  await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const event = h.runtime.getQianshiSnapshot().events[0];
+  const input = { eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId, title: event.title, description: event.description, object: event.object, status: event.status, actionStatus: event.actionStatus },
+    title: event.title, description: event.description, object: event.object, actionStatus: event.actionStatus };
+  const unchanged = await h.runtime.editQianshiEventText(input);
+  assert.equal(unchanged.status, 'unchanged');
+  await h.runtime.editQianshiEventText({ ...input, confirmActionStatus: true });
+  const snapshot = h.runtime.getQianshiSnapshot(), confirmed = snapshot.events.find(value => value.id === event.id);
+  assert.equal(confirmed.statusManuallyEdited, true);
+  assert.equal(confirmed.actionStatus, 'inProgress');
+  const source = await h.store.readReachable({ mode: 'runtime' });
+  const memory = source.floorMemories.find(value => value.id === confirmed.sourceFloorMemoryId);
+  assert.deepEqual(memory.qianshiDelta.manualEventOverrides.find(value => value.eventId === event.id), { eventId: event.id, actionStatus: 'inProgress' });
+});

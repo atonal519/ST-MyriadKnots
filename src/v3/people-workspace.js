@@ -1410,6 +1410,7 @@ export function createPeopleWorkspaceRuntime({
   const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
   return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, readArchivedProfileHistory, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
+    getActivityState: () => ({ busy: Boolean(active || concurrentWrites.size), phase: active?.kind ?? (concurrentWrites.size ? 'savingProfile' : null) }),
     getState, getPeopleAvatars, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
     wakeAutomaticMaintenance: scheduleAutomaticMaintenance,
     destroy() { destroyed = true; unsubscribeMemory?.(); unsubscribeFoundation?.(); invalidate(); },

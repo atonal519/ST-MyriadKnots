@@ -16,6 +16,7 @@ import { createBackendClient } from './src/backend-client.js';
 import { isTauriTavern } from './src/tauri-backend.js';
 import { createPrivateRecallDiagnostics } from './src/private-recall-diagnostics.js';
 import { createPluginUpdates } from './src/plugin-updates.js';
+import { createPluginActivity } from './src/plugin-activity.js';
 import { bootstrap } from './src/bootstrap.js';
 import { createSettingsStore } from './src/settings.js';
 import { createApiResolver, createApiTools, createTaskRouter } from './src/api-routing.js';
@@ -116,7 +117,6 @@ const clearPluginLifecycleFailureIfUnchanged = revision => {
 const processingPrompt = () => settings.get().processingPrompt;
 const compactClient = createCompactApiClient({
   headers: () => hostContext()?.getRequestHeaders?.() ?? {},
-  onBusyChange: busy => ui?.fab?.setBusy?.(busy),
 });
 const apiResolver = createApiResolver({ settings });
 const taskRouter = createTaskRouter({
@@ -486,7 +486,9 @@ const setAllEnabled = async enabled => {
   return lifecycleResult;
 };
 const pluginUpdates = createPluginUpdates({ moduleUrl: import.meta.url, extensionTypes: () => extensionTypes, noticePath: updateNoticePath, headers: getRequestHeaders });
+const pluginActivity = createPluginActivity([session, v3RecallRuntime, foundationRuntime, v3MemoryRuntime, timeRuntime, peopleWorkspaceRuntime, vectorIndex, chatMemoryManagement, storageManagement, compactClient, vectorApi, pluginUpdates]);
 ui = bootstrap({
+  activity: pluginActivity,
   pluginUpdates,
   renderUpdateMarkdown: text => DOMPurify.sanitize(new showdown.Converter().makeHtml(text), { FORBID_TAGS: ['img', 'iframe', 'object', 'embed', 'style', 'form'], FORBID_ATTR: ['style'] }),
   settings,

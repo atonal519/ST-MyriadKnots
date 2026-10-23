@@ -1,3 +1,4 @@
+import { createActivitySignal } from '../plugin-activity.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { describePrefixDifference, safePrefixDifference } from './memory-prefix-diagnostic.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
@@ -661,7 +662,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return Object.freeze({ enabled: false, batchSize: 1 });
     }
   };
-  const notify = cseSnapshot => { const snapshot = getState(cseSnapshot); for (const listener of subscribers) { try { listener(snapshot); } catch { /* UI listener isolation */ } } return snapshot; };
+  let preparingQianshi = 0;
+  const activity = createActivitySignal(getActivityState);
+  const notify = cseSnapshot => { activity.notifyActivity(); const snapshot = getState(cseSnapshot); for (const listener of subscribers) { try { listener(snapshot); } catch { /* UI listener isolation */ } } return snapshot; };
   const markMemorySyncing = () => {
     memorySyncStatus = 'syncing';
     memorySyncError = null;
@@ -920,6 +923,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       memorySyncStatus,
       memorySyncError,
       stableCount,
+      busy: Boolean(workRun || active || cse.activeCse || qianshiHistoryRun || preparingQianshi || memorySyncStatus === 'syncing'),
+      phase: workPhase ?? active?.phase ?? cse.activeCse?.phase ?? (qianshiHistoryRun ? 'extracting' : preparingQianshi ? 'preparing' : memorySyncStatus === 'syncing' ? 'syncing' : null),
+      mainGenerationActive: Boolean(isMainGenerationActive()),
       memoryWorkBusy: workRun !== null,
       activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
       activeExtraction: active ? Object.freeze({ floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase }) : null,
@@ -3624,7 +3630,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       .map(entry => Object.freeze({ entityId: entry.entityId, name: entry.displayName, aliases: entry.aliases })));
   }
 
-  async function editQianshiEventText({ eventId, expected, title, description, object, status, actionStatus, storyTime, scheduledTime, people, manualAction = null } = {}) {
+  async function editQianshiEventText({ eventId, expected, title, description, object, status, actionStatus, storyTime, scheduledTime, people, manualAction = null, confirmActionStatus = false } = {}) {
     if (workRun || active || qianshiHistoryRun) throw errorWith('QIANSHI_TEXT_EDIT_BUSY', '当前有其他记忆操作正在进行，请稍后再试。');
     if (typeof eventId !== 'string' || !eventId || !expected || typeof expected.memoryId !== 'string'
       || typeof expected.title !== 'string' || typeof expected.description !== 'string'
@@ -3744,7 +3750,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (manualAction?.type === 'deleteEvent' && (!textUnchanged || !statusUnchanged || timeProvided || scheduledTimeProvided || peopleProvided)) {
         throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '删除只移除这条事件，不能同时改写其内容。');
       }
-      if (textUnchanged && statusUnchanged && timeUnchanged && scheduledTimeUnchanged && peopleUnchanged && !manualAction) return { status: 'unchanged' };
+      if (textUnchanged && statusUnchanged && timeUnchanged && scheduledTimeUnchanged && peopleUnchanged && !manualAction && confirmActionStatus !== true) return { status: 'unchanged' };
       const sourceFloor = reachable.floors.find(item => item.id === event.sourceFloorId);
       const sourceSelection = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
       const liveSourceFingerprint = sourceSelection ? `sha256:${await sha256(sourceSelection.rawContent)}` : null;
@@ -3789,7 +3795,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (scheduledTimeProvided) manualFields.scheduledTime = nextScheduledTime;
       if (peopleProvided && !peopleUnchanged) manualFields.people = nextPeople;
       if (event.status !== nextStatus) manualFields.status = nextStatus;
-      if ((event.actionStatus ?? event.status) !== nextActionStatus) manualFields.actionStatus = nextActionStatus;
+      if ((event.actionStatus ?? event.status) !== nextActionStatus || confirmActionStatus === true) manualFields.actionStatus = nextActionStatus;
       if (Object.keys(manualFields).length) qianshiDelta.manualEventOverrides = [...(qianshiDelta.manualEventOverrides ?? []).filter(item => item.eventId !== eventId),
         { eventId, ...manualFields }];
       const mutationKind = manualAction?.type ?? 'qianshiTextEdit';
@@ -3866,7 +3872,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     manualAction: { type: 'deleteEvent' } });
   }
 
-  async function prepareQianshiHistory({ maxInputTokens = QIANSHI_HISTORY_INPUT_TOKENS, maxOutputTokens = QIANSHI_HISTORY_OUTPUT_TOKENS, includeEmptyFloors = false, targetIdentity = captureTargetIdentity() } = {}) {
+  function prepareQianshiHistory(...args) {
+    preparingQianshi += 1; activity.notifyActivity();
+    return performPrepareQianshiHistory(...args).finally(() => { preparingQianshi -= 1; activity.notifyActivity(); });
+  }
+  async function performPrepareQianshiHistory({ maxInputTokens = QIANSHI_HISTORY_INPUT_TOKENS, maxOutputTokens = QIANSHI_HISTORY_OUTPUT_TOKENS, includeEmptyFloors = false, targetIdentity = captureTargetIdentity() } = {}) {
     if (qianshiHistoryRun) throw errorWith('QIANSHI_HISTORY_RUNNING', '千事历史补齐正在运行。');
     const visibleIdentityAtStart = captureTargetIdentity();
     const targetStore = storeForTargetIdentity(targetIdentity);
@@ -4252,7 +4262,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return structuredClone(qianshiHistoryState);
   }
 
-  async function prepareQianshiRejudge({ fromMessageIndex = null, toMessageIndex = null, targetIdentity = captureTargetIdentity() } = {}) {
+  function prepareQianshiRejudge(...args) {
+    preparingQianshi += 1; activity.notifyActivity();
+    return performPrepareQianshiRejudge(...args).finally(() => { preparingQianshi -= 1; activity.notifyActivity(); });
+  }
+  async function performPrepareQianshiRejudge({ fromMessageIndex = null, toMessageIndex = null, targetIdentity = captureTargetIdentity() } = {}) {
     if (qianshiHistoryRun) throw errorWith('QIANSHI_HISTORY_RUNNING', '千事历史操作正在运行。');
     const targetStore = storeForTargetIdentity(targetIdentity);
     let keepTargetStore = false;
@@ -4559,7 +4573,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return task;
   }
 
-  return Object.freeze({ bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, setMemoryExcluded, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
+  return Object.freeze({ subscribeActivity: activity.subscribeActivity, bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, setMemoryExcluded, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
     getCurrentSubjectStates: entityIds => cseRuntime.getCurrentSubjectStates(entityIds),
     getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), getQianshiStatus: qianshiStatus,
     getQianshiSnapshotVersion: qianshiSnapshotVersion, getQianshiEditPeople, canEditQianshiEventText, editQianshiEventText, deleteQianshiEvent,

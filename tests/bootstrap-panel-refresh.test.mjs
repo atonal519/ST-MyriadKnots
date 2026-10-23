@@ -119,3 +119,27 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   instance.setEnabled(false); assert.equal(fabHost.style.display, 'none'); instance.setEnabled(true); assert.equal(fabHost.style.display, '');
   current.fabShow = false; instance.setEnabled(true); assert.equal(fabHost.style.display, 'none', '悬浮球独立开关应与插件总开关共同决定显示');
 });
+
+test('bootstrap 工作指示同源更新悬浮球与标题，隐藏悬浮球不停止订阅', async () => {
+  const bootstrap = await loadBootstrap();
+  let listener, current = { busy: false, copy: '' };
+  const fabStates = [], panelStates = [], viewStates = [];
+  const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
+  const activity = { getState: () => current, subscribe(fn) { listener = fn; return () => {}; } };
+  const panel = { host: { hidden: true }, setEnabled() {}, setActivity(value) { panelStates.push(value); }, syncAppearance() {}, show() {}, close() {} };
+  bootstrap({ settings: { isEnabled: () => true, get: () => ({ fabShow: false }) }, activity,
+    documentRef: { createElement: () => ({}), getElementById: () => null, body: { append() {} }, defaultView: {} },
+    panelFactory: () => panel, enableFab: true,
+    fabFactory: () => ({ host: { style: {} }, setBusy(value) { fabStates.push(value); } }),
+    v3FoundationViewFactory: () => ({ ...stubView(), setActivity(value) { viewStates.push(value); } }), peopleProfilesViewFactory: stubView,
+    wandInstaller() {},
+  });
+  assert.equal(typeof listener, 'function');
+  current = { busy: true, copy: '正在保存记忆' }; listener(current);
+  assert.equal(fabStates.at(-1), true);
+  assert.equal(panelStates.at(-1).copy, '正在保存记忆');
+  assert.equal(viewStates.at(-1).busy, true);
+  current = { busy: false, copy: '' }; listener(current);
+  assert.equal(fabStates.at(-1), false);
+  assert.equal(panelStates.at(-1).busy, false);
+});

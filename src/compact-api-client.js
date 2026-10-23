@@ -1,3 +1,4 @@
+import { createActivitySignal } from './plugin-activity.js';
 import { withBaseProcessingPrompt } from './internal-processing-prompt.js';
 import { parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
 import { parseAdditionalParams } from './settings.js';
@@ -321,11 +322,13 @@ function linkedController(signal, timeoutSec, timeoutMs) {
 export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000, onBusyChange = () => {} } = {}) {
   if (fetchImpl !== undefined && typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
   let activeRequests = 0;
+  const activity = createActivitySignal(() => ({ busy: activeRequests > 0, phase: activeRequests > 0 ? 'request' : null }));
   const changeBusy = delta => {
     const wasBusy = activeRequests > 0;
     activeRequests = Math.max(0, activeRequests + delta);
     const busy = activeRequests > 0;
     if (busy === wasBusy) return;
+    activity.notifyActivity();
     try { onBusyChange(busy); } catch { /* UI 状态不能影响请求 */ }
   };
   const resolveFetch = () => {
@@ -439,7 +442,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     if (!models.length) throw safeError('models');
     return [...new Set(models)];
   };
-  return { generateTask, testConnection, fetchModels };
+  return { generateTask, testConnection, fetchModels, getActivityState: activity.getActivityState, subscribeActivity: activity.subscribeActivity };
 }
 
 export { PROTECTED_BODY_KEYS };

@@ -368,7 +368,7 @@ export function createChatMemoryManagement({
       if (busy()) throw errorWith('QQJ_REBUILD_BUSY', '当前记忆管理或生成任务仍在执行，请稍候再重构。');
     } catch (error) { return Promise.reject(error); }
     const operation = { identity, hostChatId: identity.hostChatId, chatId: identity.chatId, taskControl: null, taskState: null, unsubscribeTask: null, promise: null };
-    rebuilding = operation; notify();
+    rebuilding = operation;
     operation.promise = (async () => {
       let cleaned;
       if (preserveMigrationPrefix) {
@@ -393,6 +393,7 @@ export function createChatMemoryManagement({
       if (!operation.taskControl && rebuilding === operation) rebuilding = null;
       notify(); throw error;
     });
+    notify();
     return operation.promise;
   }
 
@@ -436,7 +437,7 @@ export function createChatMemoryManagement({
     return operation.promise;
   }
 
-  return Object.freeze({
+  return Object.freeze({ getActivityState: () => { const migrating = memoryMigration?.getState?.().status === 'migrating'; return { busy: Boolean(active || rebuilding?.promise || migrating), phase: active ? 'deleting' : rebuilding?.promise ? rebuilding.taskState?.phase ?? 'preparing' : migrating ? 'migrating' : null }; },
     deleteCurrent,
     fullRebuild,
     migrateCurrent,

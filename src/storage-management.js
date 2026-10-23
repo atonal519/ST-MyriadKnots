@@ -687,6 +687,7 @@ export function createStorageManagement({
     cleanup,
     collectExpiredTrash() { return collectExpiredTrash({ automatic: false }); },
     setAutoEnabled,
+    getActivityState: () => ({ busy: Boolean(operation) || trashGcState.status === 'checking', phase: operation?.kind ?? (trashGcState.status === 'checking' ? 'cleaning' : null) }),
     getState: scopedState,
     subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('存储管理 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
     dispose() { disposed = true; for (const unsubscribe of unsubscribers) unsubscribe(); subscribers.clear(); },

@@ -1,3 +1,4 @@
+import { createActivitySignal } from '../plugin-activity.js';
 import { isUuid, newIdentityUuid, sha256 } from '../identity.js';
 import { readHostState } from '../host-context.js';
 import {
@@ -264,6 +265,7 @@ export function createFoundationRuntime({
   let activeOperation = null;
   let scheduled = null;
   let inspectionScheduled = null;
+  const activity = createActivitySignal(() => ({ busy: Boolean(activeOperation || inspectionScheduled), phase: activeOperation?.phase ?? (inspectionScheduled ? 'inspecting' : null) }));
   let dirtyReason = null;
   let dirtyStableThrough = null;
   let dirtyTailDeletion = null;
@@ -327,6 +329,7 @@ export function createFoundationRuntime({
   let publicState = state(enabled() ? 'idle' : 'disabled');
   const publish = status => {
     publicState = state(status);
+    activity.notifyActivity();
     for (const listener of subscribers) {
       try { listener(publicState); } catch { /* read-only completion listeners are isolated */ }
     }
@@ -704,16 +707,16 @@ export function createFoundationRuntime({
         const predecessor = inspectionScheduled.promise;
         const fresh = predecessor.then(() => performInspect(reason, { ...options, allowCached: false }));
         const entry = { allowCached: false, promise: null };
-        entry.promise = fresh.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; });
-        inspectionScheduled = entry;
+        entry.promise = fresh.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; activity.notifyActivity(); });
+        inspectionScheduled = entry; activity.notifyActivity();
         return entry.promise;
       }
       return inspectionScheduled.promise;
     }
     const request = Promise.resolve().then(() => performInspect(reason, options));
     const entry = { allowCached, promise: null };
-    entry.promise = request.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; });
-    inspectionScheduled = entry;
+    entry.promise = request.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; activity.notifyActivity(); });
+    inspectionScheduled = entry; activity.notifyActivity();
     return entry.promise;
   }
 
@@ -1611,7 +1614,7 @@ export function createFoundationRuntime({
     const state = await reconcile('memoryExclusionChanged');
     return Object.freeze({ status: 'persisted', state });
   }
-  return Object.freeze({
+  return Object.freeze({ getActivityState: activity.getActivityState, subscribeActivity: activity.subscribeActivity,
     bind,
     start: () => enabled() ? reconcile('start') : Promise.resolve(publish('disabled')),
     inspect,
