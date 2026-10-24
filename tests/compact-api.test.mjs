@@ -192,6 +192,68 @@ test('completion JSON 兼容纯对象、完整围栏、单个说明围栏与唯�
   ]) assert.deepEqual(parseJsonOutput(value), expected);
 });
 
+test('正常结束别名：共享解析逐字恢复句中、句末及英文逗号旁的成对台词引号', () => {
+  for (const summary of ['他自我安慰"忍一忍"，随后继续前行。', '他自我安慰"忍一忍"', '他自我安慰"忍一忍",随后继续前行。', '他提醒"note: wait",随后继续前行。', '他提醒"name: 张三"']) {
+    const raw = '{"summary":"' + summary + '","facts":[]}';
+    for (const finishReason of ['stop', 'end_turn']) for (const fenced of [false, true]) {
+      const text = fenced ? '```json\n' + raw + '\n```' : raw;
+      assert.deepEqual(parseJsonOutput(text, { finishReason }), { summary, facts: [] });
+      const repaired = parseJsonWithSymbolRepair(raw, { finishReason });
+      assert.equal(repaired.value.summary, summary);
+      assert.deepEqual(repaired.operations.map(item => item.type), ['escape-string-quote', 'escape-string-quote']);
+    }
+    assert.deepEqual(parseJsonOutput('```json\n' + JSON.stringify({ summary }) + '\n```', { finishReason: 'end_turn' }), { summary });
+  }
+  const escaped = String.raw`{"summary":"他自我安慰"忍\"一\"忍",然后读到路径 C:\\tmp。😀"}`;
+  assert.equal(parseJsonOutput(escaped, { finishReason: 'end_turn' }).summary, '他自我安慰"忍"一"忍",然后读到路径 C:\\tmp。😀');
+});
+
+test('正常结束别名：非流式与SSE的end_turn共享修复且一次返回完整原文', async () => {
+  const summary = '他自我安慰"忍一忍",随后继续前行。', content = '{"summary":"' + summary + '"}';
+  for (const stream of [false, true]) {
+    let calls = 0;
+    const client = createCompactApiClient({ fetchImpl: async () => {
+      calls++;
+      return stream ? sseResponse([
+        'data: ' + JSON.stringify({ choices: [{ delta: { content: content.slice(0, 17) } }] }) + '\n\n',
+        'data: ' + JSON.stringify({ choices: [{ delta: { content: content.slice(17) }, finish_reason: 'end_turn' }] }) + '\n\ndata: [DONE]\n\n',
+      ]) : jsonResponse({ choices: [{ finish_reason: 'end_turn', message: { content } }] });
+    } });
+    const result = await client.generateTask({ config: config({ stream }), taskMessages: [] });
+    assert.deepEqual(result.jsonData, { summary });
+    assert.equal(result.taskMetadata.finishReason, 'stop');
+    assert.equal(calls, 1);
+  }
+});
+
+test('字面引号兼容：英寸单枚引号保基线文本，对象与数组的真实闭引号不被吞掉', () => {
+  const summary = '这根棒长6"。';
+  for (const finishReason of ['stop', 'end_turn']) {
+    assert.deepEqual(parseJsonOutput('{"summary":"这根棒长6"。","people":[]}', { finishReason }), { summary, people: [] });
+    assert.deepEqual(parseJsonOutput('{"notes":["这根棒长6"。","下一项"]}', { finishReason }), { notes: [summary, '下一项'] });
+    assert.deepEqual(parseJsonOutput('{"summary":"这根棒长6"。"}', { finishReason }), { summary });
+    assert.deepEqual(parseJsonOutput('{"summary":"这根棒长6"。",}', { finishReason }), { summary });
+    assert.deepEqual(parseJsonOutput('{"notes":["这根棒长6"。",]}', { finishReason }), { notes: [summary] });
+    assert.deepEqual(parseJsonOutput('{"notes":["这根棒长6"。",true,"这根棒长6"。",-12.5e-2,"这根棒长6"。"]}', { finishReason }), { notes: [summary, true, summary, -0.125, summary] });
+    assert.deepEqual(parseJsonOutput('{"notes":["他说"好",then leaves。","下一项"]}', { finishReason }), { notes: ['他说"好",then leaves。', '下一项'] });
+  }
+});
+
+test('正常结束别名：缺结束证据和结构歧义不启动台词修复，真正截断仍拒收', () => {
+  const raw = '{"summary":"他自我安慰"忍一忍""}';
+  for (const finishReason of [undefined, '', 'other', 'unknown', 'content_filter', 'refusal', 'tool_calls', 'function_call', 'length', 'max_tokens']) {
+    assert.equal(parseJsonWithSymbolRepair(raw, { finishReason }), null);
+    assert.throws(() => parseJsonOutput(raw, { finishReason }), error => /^QQJ_(?:COMPLETION_JSON|OUTPUT_TRUNCATED)$/u.test(error.code));
+  }
+  for (const value of ['{"summary":"一段" "facts":[]}', '{"summary":"一段""facts":[]}', '{"summary":"一段"facts:[],"next":"尾"}', '["a""b"]', '{"summary":"他说"忍一忍"', '{"summary":"一段","summary":"另一段",}']) {
+    assert.equal(parseJsonWithSymbolRepair(value, { finishReason: 'end_turn' }), null, value);
+    assert.throws(() => parseJsonOutput(value, { finishReason: 'end_turn' }), error => /^QQJ_(?:COMPLETION_JSON|OUTPUT_TRUNCATED)$/u.test(error.code), value);
+  }
+  assert.throws(() => parseJsonOutput('{"summary":"甲"}\n{"summary":"乙"}', { finishReason: 'end_turn' }), error => error.code === 'QQJ_COMPLETION_JSON');
+  assert.throws(() => parseJsonOutput('```json\n{"summary":"甲"}', { finishReason: 'end_turn' }), error => error.code === 'QQJ_OUTPUT_TRUNCATED');
+  assert.equal(parseJsonWithSymbolRepair('{"summary":"' + '说"话"。'.repeat(33) + '"}', { finishReason: 'end_turn' }), null, '保留64次修复上限');
+});
+
 test('completion JSON 拒绝多对象、顶层数组和普通乱码；未闭合对象/围栏判截断', () => {
   for (const value of ['{"a":1} 和 {"b":2}', '[{"a":1}]', '普通乱码']) {
     assert.throws(() => parseJsonOutput(value), error => error.code === 'QQJ_COMPLETION_JSON' && error.formatStage === 'completion_json');

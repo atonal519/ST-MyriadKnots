@@ -1574,6 +1574,33 @@ async function direct(response, { content = '裴晚生提醒你带伞。', entit
   return normalizeExtractorResponse({ response, finishReason, envelope, floor, existingEntities: entities, now: NOW, preservedSummary, expectedScope: envelope.scope });
 }
 
+test('正常结束别名：聚合semantic保十个来源楼与完整台词且仅请求一次', async () => {
+  const sources = Array.from({ length: 10 }, (_, index) => ({
+    id: (index + 1).toString(16).padStart(8, '0') + '-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION,
+    assistantSeq: index + 31, hostLocator: { messageIndex: 60 + 2 * index },
+    content: { canonicalContent: '合成人物休息后继续前行。', rawFingerprint: 'sha256:' + createHash('sha256').update('source-' + index).digest('hex') },
+  }));
+  const floor = sources.at(-1), envelope = await createExtractorEnvelope({ batchId: '33333333-3333-4333-8333-333333333333', chatId: CHAT,
+    narrativeGeneration: GENERATION, floor, sourceFloors: sources.map(floor => ({ floor })) });
+  for (const summary of ['他自我安慰"忍一忍"，随后继续前行。', '他自我安慰"忍一忍"', '他自我安慰"忍一忍",随后继续前行。', '这根棒长6"。']) {
+    const response = '```json\n{"summary":"' + summary + '"}\n```';
+    const compiled = await normalizeExtractorResponse({ response, finishReason: 'end_turn', envelope, floor, expectedScope: envelope.scope, now: NOW });
+    assert.equal(compiled.memory.summary.aiText, summary);
+    let calls = 0;
+    const result = await runExtractorRequest({ generateUtilityTask: async options => {
+      calls++; assert.equal(options.parseMode, 'semantic');
+      assert.equal(JSON.parse(options.taskMessages[0].content).payload.sourceFloors.length, sources.length);
+      assert.deepEqual(JSON.parse(options.taskMessages[0].content).payload.sourceFloors.map(value => value.messageIndex), sources.map(value => value.hostLocator.messageIndex));
+      return { textData: response, taskMetadata: { finishReason: 'end_turn' } };
+    }, aggregate: true, envelope, floor, expectedScope: envelope.scope, now: NOW });
+    assert.equal(result.memory.summary.aiText, summary);
+    assert.deepEqual(result.memory.sourceFloorIds, sources.map(floor => floor.id));
+    assert.deepEqual(result.memory.sourceFloorSnapshots.map(value => value.floorId), sources.map(floor => floor.id));
+    assert.equal(validateFloorMemory(result.memory).summary.aiText, summary);
+    assert.equal(calls, 1); assert.equal(result.attempts, 1);
+  }
+});
+
 test('用户权威：明确user的普通人物sameAs键不能改投用户归属', async () => {
   const seeded = await direct({ summary: '林岚与同行者在场。', people: [
     { name: '你', role: 'user', entityKind: 'individual', presence: 'present' },

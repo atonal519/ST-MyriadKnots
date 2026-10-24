@@ -1,6 +1,6 @@
 import { createActivitySignal } from './plugin-activity.js';
 import { withBaseProcessingPrompt } from './internal-processing-prompt.js';
-import { parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
+import { normalizeFinishReason, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
 import { parseAdditionalParams } from './settings.js';
 
 const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages', 'json_schema']);
@@ -28,11 +28,6 @@ const FORMAT_STAGES = Object.freeze({
   'completion-json': 'completion_json',
   'output-truncated': 'output_truncated',
 });
-const normalizeFinishReason = value => {
-  const reason = String(value ?? '').trim().toLowerCase();
-  if (!reason) return '';
-  return ['stop', 'length', 'max_tokens', 'content_filter', 'tool_calls', 'function_call'].includes(reason) ? reason : 'other';
-};
 const truncatedFinishReason = value => ['length', 'max_tokens'].includes(normalizeFinishReason(value));
 const safeError = (code, status = 0, details = {}) => {
   const messages = {

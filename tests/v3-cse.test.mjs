@@ -134,6 +134,25 @@ const baseline = { id: '88888888-1111-4111-8111-111111111111', userPersona: { en
 const memory = id => ({ id, summary: { effectiveSource: 'ai', aiText: '摘要' }, chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] });
 const floor = (id, content) => ({ id, chatId: CHAT, narrativeGeneration: GEN, content: { canonicalContent: content } });
 
+test('正常结束别名：CSE共用解析在end_turn后保留台词原文且仅请求一次', async () => {
+  const quote = '他说"忍一忍"';
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, quote + '，继续观察。'), floorMemory: memory(MEMORY1), baseline,
+    currentState: null, trackedSubjects: [entities[0]], entities });
+  for (const [text, fenced] of [['他默念"忍一忍",继续观察。', true], ['这根棒长6"。', false]]) {
+    const packet = JSON.stringify({ subjects: [{ subject: '林岚', situational: [{ text, reason: '本人明确的合成想法', visibility: 'private' }],
+      additions: { adaptive: [{ text: '会用短句鼓励自己', evidence: [{ source: 'canonicalContent', quote }] }] } }] });
+    const raw = packet.replace(JSON.stringify(text), '"' + text + '"').replace(JSON.stringify(quote), '"' + quote + '"');
+    const response = fenced ? '```json\n' + raw + '\n```' : raw;
+    let calls = 0;
+    const result = await runCseRequest({ generateAnalysisTask: async () => { calls++; return { textData: response, taskMetadata: { finishReason: 'end_turn' } }; },
+      envelope, previousCurrentState: null, now: NOW, deltaId: '99999999-1111-4111-8111-111111111111' });
+    assert.equal(result.delta.subjectSnapshots[0].situational[0].text, text);
+    assert.equal(validateStateDeltaRecord(result.delta).subjectSnapshots[0].situational[0].text, text);
+    assert.equal(result.delta.source.calibrationAudit[0].evidence[0].quote, quote);
+    assert.equal(calls, 1); assert.equal(result.attempts, 1);
+  }
+});
+
 test('用户权威：正常补提较早楼复用较晚楼已有user，原生与Luker请求和提交一致', async () => {
   for (const host of ['official', 'luker']) {
     const h = runtimeHarness({ host, chat: [user('继续'), assistant('较早楼的合成观察。'), assistant('较晚楼的合成观察。'), assistant('确认前楼稳定。')] });
@@ -3002,7 +3021,7 @@ test('CSE 最终机器合同明确 JSON 字符转义，合法引用解码后保�
   assert.equal(result.isolated.length, 0);
   assert.equal(result.delta.source.calibrationAudit[0].evidence[0].quote, quote, 'JSON 解码后必须逐字恢复英文双引号、反斜杠和实际换行');
 
-  const ambiguous = '{"subjects":[{"subject":"甲","additions":{"adaptive":[{"text":"会记录","evidence":[{"source":"canonicalContent","quote":"他说"路径""}]}]}}]}';
+  const ambiguous = '{"subjects":[{"subject":"甲","additions":{"adaptive":[{"text":"会记录","evidence":[{"source":"canonicalContent","quote":"他说"路径":"另一个字段"}]}]}}]}';
   await assert.rejects(
     compileCseResponse({ response: ambiguous, finishReason: 'stop', envelope, previousCurrentState: null, now: NOW, deltaId: '24242424-2424-4242-8242-242424242424' }),
     error => error.code === 'V3_CSE_FORMAT_INVALID',
