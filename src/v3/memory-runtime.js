@@ -2,6 +2,7 @@ import { createActivitySignal } from '../plugin-activity.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { describePrefixDifference, safePrefixDifference } from './memory-prefix-diagnostic.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
+import { projectCseSubjectDiagnostic } from './cse-failure-diagnostic.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid, scanAssistantCandidates } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun, V3_INDEX_LAYOUT_FLOOR_ORDER } from './foundation-schema.js';
@@ -17,7 +18,7 @@ import { isHostNarratorMessage, selectAssistantMessage, selectUserStabilityAncho
 import { normalizeStoryClockReferenceTags, resolveStoryClock } from '../story-clock.js';
 import { parseJsonOutput } from '../compact-api-client.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
-import { buildEntityIdentityDirectory, entitiesThroughFloorIds, normalizeIdentityProjection, resolveIdentityEntityId, reuseIdentityProjection } from './entity-identity.js';
+import { buildEntityIdentityDirectory, deriveUserIdentityProjection, entitiesThroughFloorIds, normalizeIdentityProjection, projectFloorMemoryIdentityReferences, resolveIdentityEntityId, reuseIdentityProjection } from './entity-identity.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
@@ -439,22 +440,22 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return pending;
   };
   const cseRuntime = createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled, commitGate, promptGuidance: csePromptGuidance, processingPrompt, filterWorldInfoSources, sanitizerOptions,
-    captureBusinessIdentity, storeForIdentity, identityProjectionProvider, onGraphCommitted: value => {
+    captureBusinessIdentity, storeForIdentity, identityProjectionProvider, onGraphCommitted: (value, committedIdentityProjection) => {
     reachable = value;
+    identityProjection = reuseIdentityProjection(identityProjection, committedIdentityProjection);
     foundationRuntime.adoptReachable?.(value);
   }, onFailureHint: (value, floorId, failure) => failure ? rememberCseFloorFailure(value, failure) : clearCseFloorFailure(floorId, value), now, newUuid, logger });
-  const setIdentityProjection = value => {
-    const next = reuseIdentityProjection(identityProjection, value);
+  const setIdentityProjection = (value, source = reachable) => {
+    const next = reuseIdentityProjection(identityProjection, deriveUserIdentityProjection({ ...source, identityProjection: value }));
     if (next === identityProjection) return identityProjection;
     identityProjection = next;
     cseRuntime.setIdentityProjection?.(identityProjection);
     return identityProjection;
   };
-  const readIdentityProjection = async targetIdentity => {
-    if (typeof identityProjectionProvider !== 'function') return identityProjection;
-    const value = await identityProjectionProvider(targetIdentity);
-    const normalized = normalizeIdentityProjection(value?.data ?? value ?? {});
-    return targetIdentity ? normalized : setIdentityProjection(normalized);
+  const readIdentityProjection = async (targetIdentity = null, source = reachable) => {
+    const value = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider(targetIdentity) : identityProjection;
+    const input = value?.data ?? value ?? {};
+    return targetIdentity ? deriveUserIdentityProjection({ ...source, identityProjection: input }) : setIdentityProjection(input, source);
   };
   const captureTargetIdentity = () => {
     try { return typeof captureBusinessIdentity === 'function' ? captureBusinessIdentity() : null; }
@@ -515,7 +516,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const summary = readFailureHint(parsed.failures?.[floor.id], 'V3_EXTRACTOR_FAILED');
           const cse = readFailureHint(parsed.cseFailures?.[floor.id], 'V3_CSE_FAILED');
           if (summary) failures[floor.id] = summary;
-          if (cse) cseFailures[floor.id] = cse;
+          if (cse) cseFailures[floor.id] = { ...cse, subjectResolution: projectCseSubjectDiagnostic(parsed.cseFailures[floor.id].subjectResolution) };
         }
         const savedAutomation = readAutomationFailureHint(parsed.automationFailure);
         if (savedAutomation) automationFailure = savedAutomation;
@@ -564,7 +565,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       readFailureScope(value);
       if (!failureScopeMatches(value?.root)) return;
       const previous = failureScope.cseFailures[failure.floorId];
-      failureScope = { ...failureScope, cseFailures: { ...failureScope.cseFailures, [failure.floorId]: nextFailureHint(previous, failure, 'V3_CSE_FAILED') } };
+      failureScope = { ...failureScope, cseFailures: { ...failureScope.cseFailures, [failure.floorId]: {
+        ...nextFailureHint(previous, failure, 'V3_CSE_FAILED'),
+        subjectResolution: projectCseSubjectDiagnostic(failure.diagnostics?.subjectResolution),
+      } } };
       writeFailureScope(value);
     } catch { /* optional browser failure hints must not replace the real CSE error */ }
   };
@@ -872,7 +876,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       return Object.freeze({ ...item, frozen, status: frozen && item.status === 'pending' ? 'archived' : item.status === 'pending' && savedFailure ? 'failed' : item.status, error: item.error ?? savedFailureMessage(savedFailure) });
     });
     const latestSavedCse = Object.entries(savedCseFailures).reduce((latest, current) => !latest || String(current[1].lastFailedAt).localeCompare(String(latest[1].lastFailedAt)) >= 0 ? current : latest, null);
-    const savedCseError = latestSavedCse ? Object.freeze({ floorId: latestSavedCse[0], code: latestSavedCse[1].code, message: savedFailureMessage(latestSavedCse[1]), phase: 'retryableError', count: latestSavedCse[1].count, lastFailedAt: latestSavedCse[1].lastFailedAt }) : null;
+    const savedCseError = latestSavedCse ? Object.freeze({ floorId: latestSavedCse[0], code: latestSavedCse[1].code, message: savedFailureMessage(latestSavedCse[1]), phase: 'retryableError', count: latestSavedCse[1].count, lastFailedAt: latestSavedCse[1].lastFailedAt,
+      diagnostics: { subjectResolution: latestSavedCse[1].subjectResolution } }) : null;
     const cse = Object.freeze({ ...rawCse, cseFloors: Object.freeze(cseFloors), csePendingCount: cseFloors.filter(item => item.status === 'pending').length, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, lastCseError: rawCse.lastCseError ?? savedCseError });
     const cseByFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
@@ -984,6 +989,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       : null;
     if (backgroundSync && backgroundSyncKey === syncKey) return getState();
     reachable = nextReachable;
+    setIdentityProjection(identityProjection, nextReachable);
     if (nextReachable?.root) readFailureScope(nextReachable);
     if (cseRebuildPlan?.chatId && cseRebuildPlan.chatId !== nextReachable?.root?.chatId) cseRebuildPlan = null;
     if (['paused', 'failed'].includes(cseRebuildPlan?.status)
@@ -1304,7 +1310,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       });
     }
     const floorIds = new Set(prefix.map(floor => floor.id));
-    const scopedEntities = entitiesThroughFloorIds(value.entities, floorIds)
+    const projection = identityProjectionSnapshot ?? await readIdentityProjection(null, value);
+    const scopedEntities = entitiesThroughFloorIds(value.entities, floorIds, projection)
       .map(({ firstSeenFloorId, lastSeenFloorId, ...entity }) => clone(entity)).sort((left, right) => left.id.localeCompare(right.id));
     return {
       chatId: value.root.chatId,
@@ -1316,7 +1323,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       userIdentity: clone(userIdentity ?? null),
       promptGuidance: String(promptGuidance ?? ''),
       storyClockReferenceTags: frozenReferenceTags,
-      identityProjection: clone(identityProjectionSnapshot ?? await readIdentityProjection()),
+      identityProjection: clone(projection),
     };
   }
   const dependencyMeaning = value => value ? {
@@ -1332,7 +1339,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!selected) return null;
     const prefixFloors = value.floors.slice(0, floorIndex);
     const prefixFloorIds = new Set(prefixFloors.map(item => item.id));
-    const scopedEntities = entitiesThroughFloorIds(value.entities, new Set(value.floors.slice(0, floorIndex + 1).map(item => item.id)));
+    const projection = identityProjectionSnapshot ?? await readIdentityProjection(null, value);
+    const scopedEntities = entitiesThroughFloorIds(value.entities, new Set(value.floors.slice(0, floorIndex + 1).map(item => item.id)), projection);
     const candidateSource = { ...value, calendar: storyCalendarProvider(value.root?.chatId), floors: prefixFloors,
       floorMemories: value.floorMemories.filter(memory => prefixFloorIds.has(memory.floorId)), entities: scopedEntities };
     const candidateOptions = {
@@ -1340,7 +1348,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       precedingUserInput: hostSnapshot
         ? capturePrecedingUserInputFromSnapshot(hostSnapshot, floor, sanitizerOptions())
         : capturePrecedingUserInputSnapshot(hostAdapter, floor, sanitizerOptions()),
-      identityProjection: identityProjectionSnapshot ?? await readIdentityProjection(),
+      identityProjection: projection,
     };
     const candidates = qianshiCandidateIndex
       ? qianshiCandidateIndex.prepare(candidateSource, candidateOptions)
@@ -1368,7 +1376,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const dependency = await extractorDependencySnapshot(current, operation.floorId, {
       userIdentity: currentUserIdentity(),
       promptGuidance: operation.dependencySnapshot?.promptGuidance,
-      identityProjectionSnapshot: await readIdentityProjection(),
+      identityProjectionSnapshot: await readIdentityProjection(null, current),
       referenceTags: operation.dependencySnapshot?.storyClockReferenceTags,
       onUnavailable: value => { unavailable = value; },
     });
@@ -1859,6 +1867,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && reachable?.root?.chatId === committedReachable.root.chatId;
     if (targetVisible) {
       reachable = committedReachable;
+      setIdentityProjection(identityProjection, committedReachable);
       foundationRuntime.adoptReachable?.(committedReachable);
     }
     // 已核对提交结果后立即撤在途旧召回；回调不参与落盘，也不改变删除事务结果。
@@ -1995,8 +2004,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const expectedScope = { batchId: runId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, checkpointId: source.root.headCheckpointId, floorId: floor.id, rawContentFingerprint: sourceRawFingerprint };
       const floorIndex = source.floors.findIndex(item => item.id === floor.id);
       prepareStep = 'identityDirectory';
-      const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)));
-      const identityProjectionSnapshot = await readIdentityProjection();
+      const identityProjectionSnapshot = await readIdentityProjection(null, source);
+      const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)), identityProjectionSnapshot);
       let previousStoryClock = null;
       prepareStep = 'timeSources';
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) {
@@ -2299,8 +2308,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           evidenceRefs: prior?.evidenceRefs ?? [],
         });
       }
-      const activePeople = source.entities.filter(entity => entity.entityType === 'person' && entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated');
-      const existingParticipants = new Map(old.participants.map(item => [item.entityId, item]));
+      const activePeople = buildEntityIdentityDirectory({ entities: source.entities, identityProjection }).filter(entry => entry.entityType === 'person')
+        .map(entry => ({ ...entry.entity, aliases: entry.aliases.map(name => ({ name })) }));
+      const projectedParticipants = projectFloorMemoryIdentityReferences({ participants: old.participants }, identityProjection).participants;
+      const existingParticipants = new Map(projectedParticipants.map(item => [item.entityId, item]));
       const floorPeople = activePeople.filter(entity => existingParticipants.has(entity.id));
       const match = name => [...floorPeople, ...activePeople].find(entity => [entity.displayName, ...(entity.aliases ?? []).map(alias => alias.name)].some(label => normalizedName(label) === normalizedName(name)));
       const names = Array.isArray(metadata?.participantNames) ? [...new Set(metadata.participantNames.map(name => String(name ?? '').trim().slice(0, 500)).filter(Boolean))].slice(0, 80) : null;
@@ -2315,7 +2326,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         if (!selected.some(item => item.id === entity.id)) selected.push(entity);
       }
       if (names) {
-        const unchanged = selected.length === old.participants.length && selected.every((entity, index) => entity.id === old.participants[index].entityId);
+        const unchanged = selected.length === projectedParticipants.length && selected.every((entity, index) => entity.id === projectedParticipants[index].entityId);
         if (!unchanged) participants = selected.map(entity => existingParticipants.get(entity.id) ?? { entityId: entity.id, presence: 'mentioned', evidenceRefs: [] });
       }
       const locationOrParticipantChanged = JSON.stringify(locations) !== JSON.stringify(old.locations)

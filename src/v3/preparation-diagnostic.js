@@ -1,3 +1,5 @@
+import { isUuid } from '../identity.js';
+
 export const PREPARATION_STEPS = Object.freeze([
   'synchronizing',
   'snapshotClone',
@@ -22,16 +24,47 @@ export function normalizePreparationStep(value) {
   return PREPARATION_STEP_SET.has(value) ? value : null;
 }
 
-export function markPreparationFailure(error, step) {
+const PREPARATION_ENTRIES = new Set(['direct', 'startup', 'chatChanged', 'personaChanged', 'pluginEnable', 'sourcePrepare', 'memoryManagement']);
+const READ_PHASES = new Set(['readTargetChat', 'identityBeforeSave', 'identityBeforeCommit', 'identityVerify']);
+const VALUE_TYPES = new Set(['array', 'object', 'null', 'undefined', 'string', 'number', 'boolean']);
+const IDENTITY_READ_REASONS = new Set(['payloadNotArray', 'headerMissing', 'metadataMissing', 'identityMissing', 'identityDifferent']);
+const locator = value => typeof value === 'string' && value.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
+
+// 只接纳本插件读回判断所需的固定字段，不复制宿主头部或其他插件资料。
+export function identityReadDiagnostic(value) {
+  if (!value || !IDENTITY_READ_REASONS.has(value.reason)) return null;
+  return Object.freeze({ reason: value.reason,
+    readPhase: READ_PHASES.has(value.readPhase) ? value.readPhase : 'readTargetChat',
+    payloadType: VALUE_TYPES.has(value.payloadType) ? value.payloadType : null,
+    headerPresent: value.headerPresent === true, metadataPresent: value.metadataPresent === true,
+    qqjPresent: value.qqjPresent === true, qqjSchemaVersion: Number.isSafeInteger(value.qqjSchemaVersion) ? value.qqjSchemaVersion : null,
+    expectedChatId: isUuid(value.expectedChatId) ? value.expectedChatId : null,
+    actualChatId: isUuid(value.actualChatId) ? value.actualChatId : null,
+    actualIdentityPresent: value.actualIdentityPresent === true,
+    allowedChatIds: Object.freeze((Array.isArray(value.allowedChatIds) ? value.allowedChatIds : []).filter(isUuid).slice(0, 8)),
+    allowMissingIdentity: value.allowMissingIdentity === true,
+    target: Object.freeze({ hostChatId: locator(value.target?.hostChatId), characterLocator: locator(value.target?.characterLocator), avatarUrl: locator(value.target?.avatarUrl) }),
+  });
+}
+
+export function preparationContextDiagnostic(value) {
+  const entryPoint = PREPARATION_ENTRIES.has(value?.entryPoint) ? value.entryPoint : null;
+  const identityRead = identityReadDiagnostic(value?.identityRead);
+  return { ...(entryPoint ? { entryPoint } : {}), ...(identityRead ? { identityRead } : {}) };
+}
+
+export function markPreparationFailure(error, step, entryPoint = null) {
   if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
-    if (!failureSteps.has(error)) failureSteps.set(error, normalizePreparationStep(step) ?? 'extractorHandoff');
+    const previous = failureSteps.get(error);
+    failureSteps.set(error, { step: previous?.step ?? normalizePreparationStep(step) ?? 'extractorHandoff',
+      entryPoint: previous?.entryPoint ?? (PREPARATION_ENTRIES.has(entryPoint) ? entryPoint : null) });
   }
   return error;
 }
 
 export function preparationStepFor(error) {
   return ((typeof error === 'object' && error !== null) || typeof error === 'function')
-    ? failureSteps.get(error) ?? null
+    ? failureSteps.get(error)?.step ?? null
     : null;
 }
 
@@ -71,6 +104,7 @@ export function preparationFailureDiagnostic(error, fallbackStep = null) {
   const code = safeErrorCode(error?.code);
   const status = error?.httpStatus ?? error?.status;
   return Object.freeze({
+    ...preparationContextDiagnostic({ entryPoint: failureSteps.get(error)?.entryPoint, identityRead: error?.identityRead }),
     prepareStep: preparationStepFor(error) ?? normalizePreparationStep(fallbackStep),
     name,
     code,
@@ -99,6 +133,6 @@ export function storedPreparationDiagnostic(value) {
     && /^(?:src\/[A-Za-z0-9_./-]+\.js|index\.js|dist\/qqj-app\.js):[1-9]\d{0,6}:[1-9]\d{0,6}$/u.test(value.location)
     ? value.location
     : null;
-  return Object.freeze({ prepareStep: normalizePreparationStep(value?.prepareStep), name, code,
+  return Object.freeze({ ...preparationContextDiagnostic(value), prepareStep: normalizePreparationStep(value?.prepareStep), name, code,
     httpStatus: Number.isSafeInteger(status) && status >= 100 && status <= 599 ? status : null, detail, location });
 }

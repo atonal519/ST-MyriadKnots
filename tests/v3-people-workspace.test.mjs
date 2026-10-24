@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { copyLatestPeople } from '../src/v3/chat-branch-inheritance.js';
 import { buildPeopleProfileSystemPrompt, createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, DEFAULT_PROFILE_GUIDANCE, PEOPLE_PROFILE_INPUT_CHAR_BUDGET, PEOPLE_WORKSPACE_RECORD_ID, PROFILE_FIXED_CONTRACT, projectAnnualPeople, selectRelevantWorldInfoCandidates, validatePeopleWorkspace } from '../src/v3/people-workspace.js';
 import { PEOPLE_PROFILE_DEFINITIONS, PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_LABELS } from '../src/v3/people-profile-fields.js';
 import { filterSourcesByPermission, filterWorldInfoSourcesByPermission } from '../src/source-permission.js';
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
-import { buildEntityIdentityDirectory, normalizeIdentityProjection, reuseIdentityProjection } from '../src/v3/entity-identity.js';
+import { buildEntityIdentityDirectory, deriveUserIdentityProjection, normalizeIdentityProjection, reuseIdentityProjection } from '../src/v3/entity-identity.js';
 import { projectMemoryPersonEntities } from '../src/v3/memory-runtime.js';
+import { createAvatarGenerator, DEFAULT_AVATAR_PROMPT } from '../src/avatar-generation.js';
+import { createSettingsStore } from '../src/settings.js';
+import { createPluginActivity } from '../src/plugin-activity.js';
 import { scanWorldInfo } from '../src/world-info-scanner.js';
 
 const CHAT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -34,7 +38,7 @@ function backend() {
 function entity(id, name, extra = {}) {
   return { id, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }], specialRole: 'none', firstSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', lastSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'established', recordStatus: 'active', ...extra };
 }
-function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, scanner = null, profilePromptGuidance = () => '', processingPrompt = () => '', prequel = '', foundationState = null } = {}) {
+function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, scanner = null, profilePromptGuidance = () => '', processingPrompt = () => '', avatarGenerator = null, avatarPrompt = () => '', avatarImageStore = null, prequel = '', foundationState = null } = {}) {
   const db = backend(), foundationRecords = new Map(); let hostChat = [], foundationReadHook = null, mainGenerationActive = true, identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' }, currentPrequel = prequel;
   const peopleEntities = ids.slice(0, many ? 12 : 4).map((id, index) => entity(id, `人物${index + 1}`));
   let reachable = {
@@ -50,7 +54,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   const sourceTrace = [];
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
-    foundationRuntime: { getReachable: () => { foundationReads += 1; return reachable; }, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt,
+    foundationRuntime: { getReachable: () => { foundationReads += 1; return reachable; }, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt, avatarGenerator, avatarPrompt, avatarImageStore,
     foundationStore: { async readRecord(type, id) { await foundationReadHook?.(type, id); const value = foundationRecords.get(`${type}/${id}`); return value ? { status: 'ready', data: structuredClone(value) } : { status: 'missing' }; } },
     hostAdapter: { snapshot: () => ({ context: { chatMetadata: { qianqianjie: { chatId: identity.chatId } } }, chat: hostChat }) },
     sourcePermissions: {
@@ -106,6 +110,249 @@ async function waitFor(check, message = '等待后台人物整理超时') {
   assert.fail(typeof message === 'function' ? message() : message);
 }
 
+function profileHistory(request) {
+  const person = request.people[0];
+  if (person.history) return person.history;
+  const sources = new Map();
+  for (const part of person.sourceFragments.filter(item => item.kind === 'history')) {
+    const parts = sources.get(part.sourceIndex) ?? []; parts.push(part); sources.set(part.sourceIndex, parts);
+  }
+  return [...sources.values()].map(parts => JSON.parse(parts.sort((a, b) => a.part - b.part).map(part => part.content).join('')));
+}
+
+test('人物取材：首次空档只发送已存事实和去重原句，保留不同引用含义与缺引用事实', async () => {
+  let request, calls = 0;
+  const h = harness({ generate: async options => {
+    calls++; request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', occupation: '馆员' }] } };
+  } });
+  const [target, other] = h.peopleEntities, floorId = ids[8], quote = '人物1仔细核对了每一本馆藏。';
+  const ref = { floorId, anchorId: null, quotedText: quote, occurrence: 1, evidenceMode: 'witnessed', supports: '核对馆藏', sourceEntityId: null };
+  const memory = { floorId, recordStatus: 'active', sourceCanonicalContent: `${quote}不应再发送的整楼过场原文。`,
+    summary: { effectiveSource: 'user', aiText: '旧摘要', userText: '用户确认的人物1整理馆藏。' },
+    participants: [{ entityId: target.id, evidenceRefs: [ref] }],
+    actions: [{ actorEntityId: target.id, targetEntityIds: [], action: '核对馆藏', completion: 'completed', result: null, evidenceRefs: [ref] }],
+    observations: [{ subjectEntityId: target.id, kind: 'other', description: '做事细致', evidenceRefs: [{ ...ref, evidenceMode: 'interpretation', supports: '可能做事细致', sourceEntityId: other.id }] }],
+    privateCognition: [{ ownerEntityId: other.id, kind: 'thought', content: '不应发给目标的他人内心', evidenceRefs: [ref] }],
+    openLoops: [{ ownerEntityIds: [target.id], description: '下周归还目录', evidenceRefs: [] }],
+    sourceVariableReference: { schema: { type: 'object', properties: {} }, stat_data: { 记录: 1 } } };
+  h.setReachable({ ...h.reachable, floors: [{ id: floorId, assistantSeq: 1 }], floorMemories: [memory] });
+  const original = JSON.stringify(memory);
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
+  assert.equal(calls, 1); const [entry] = profileHistory(request);
+  assert.equal(Object.hasOwn(entry, 'storyContent'), false, '完整建档不再按参与记录发送整楼原文');
+  assert.equal(entry.summary, '用户确认的人物1整理馆藏。');
+  assert.equal(entry.summarySource, 'user');
+  assert.deepEqual(entry.sources, [{ sourceFloor: 1, sourceType: 'assistant', quotedText: quote }]);
+  assert.deepEqual(entry.facts.actions[0].evidence, [{ sourceIndex: 1, occurrence: 1, evidenceMode: 'witnessed', supports: '核对馆藏', sourceEntityId: null }]);
+  assert.deepEqual(entry.facts.observations[0].evidence, [{ sourceIndex: 1, occurrence: 1, evidenceMode: 'interpretation', supports: '可能做事细致', sourceEntityId: other.id }]);
+  assert.deepEqual(entry.participantEvidence, entry.facts.actions[0].evidence);
+  assert.equal(request.people[0].entityId, target.id);
+  assert.deepEqual(request.people[0].sourceEntityNames, { [other.id]: '人物2' }, '模型能把引用来源对到另一人物，不把推断归给目标');
+  assert.deepEqual(entry.facts.openLoops, [{ description: '下周归还目录' }]);
+  assert.deepEqual(entry.auxiliaryStateSnapshot, { stat_data: { 记录: 1 } });
+  assert.equal(JSON.stringify(request).includes('不应发给目标的他人内心'), false);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].occupation, '馆员');
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].hair, '', '首次空档未知字段不编造');
+  assert.equal(JSON.stringify(memory), original, '投影不改原记忆或变量');
+});
+
+test('人物取材：聚合原句保成员楼及user来源，人工载体依明确知情归属且抑制不吞人工接管', async () => {
+  let request;
+  const h = harness({ generate: async options => {
+    request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { profiles: [{ personKey: 'person-1', notes: '已核对的资料' }] } };
+  } });
+  const [target, other, author] = h.peopleEntities, first = ids[8], last = ids[9];
+  const quote = '这只是来访者转述的职业。';
+  h.setReachable({ ...h.reachable, floors: [{ id: first, assistantSeq: 1 }, { id: last, assistantSeq: 2 }], floorMemories: [{
+    floorId: last, sourceFloorIds: [first, last], recordStatus: 'active', sourceCanonicalContent: '不发送聚合全文',
+    summary: { effectiveSource: 'ai', aiText: '聚合两楼摘要' }, participants: [{ entityId: target.id }],
+    informationTransfers: [{ fromEntityId: other.id, toEntityIds: [target.id], claimText: '转述某人的职业', channel: 'told',
+      evidenceRefs: [{ floorId: first, anchorId: null, quotedText: quote, occurrence: 2, sourceType: 'precedingUser', sourceSnapshotIndex: 1,
+        evidenceMode: 'reported', supports: '只是转述', sourceEntityId: other.id }] }],
+    exactAnchors: [
+      { anchorId: 'auto-deleted', speakerEntityId: target.id, exactText: '已抑制自动关键原文', occurrence: 1, kind: 'wording', whyPreserve: '旧自动', sourceFloorId: first },
+      { anchorId: 'manual-replaced', manual: true, carrier: '手写信', knownEntityIds: [target.id], speakerEntityId: null,
+        exactText: '信中明确谈的是另一位人物。', occurrence: 1, kind: 'other', whyPreserve: '用户保留', sourceFloorId: first },
+      { anchorId: 'other-manual', manual: true, carrier: '他人便笺', knownEntityIds: [other.id], speakerEntityId: null,
+        exactText: '没有目标知情归属的载体', occurrence: 1, kind: 'other', whyPreserve: '他人保留', sourceFloorId: last },
+      { anchorId: 'known-author', manual: true, carrier: '署名便笺', knownEntityIds: [target.id], speakerEntityId: author.id,
+        exactText: '署名者写下自己的职业。', occurrence: 1, kind: 'other', whyPreserve: '署名资料', sourceFloorId: first },
+    ], suppressedExactAnchorIds: ['auto-deleted', 'manual-replaced'],
+  }] });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.regenerateProfile(target.id);
+  const [entry] = profileHistory(request);
+  assert.ok(Array.isArray(entry.sources), '实际请求必须提供现成原句表');
+  assert.deepEqual(entry.sources[0], { sourceFloor: 1, sourceType: 'precedingUser', sourceSnapshotIndex: 1, quotedText: quote });
+  assert.deepEqual(entry.facts.informationTransfers[0].evidence, [{ sourceIndex: 1, occurrence: 2, evidenceMode: 'reported', supports: '只是转述', sourceEntityId: other.id }]);
+  assert.deepEqual(entry.sources[1], { sourceFloor: 1, manual: true, carrier: '手写信', knownEntityIds: [target.id], quotedText: '信中明确谈的是另一位人物。' });
+  assert.equal(entry.facts.exactAnchors[0].sourceIndex, 2);
+  assert.equal(JSON.stringify(entry).includes('已抑制自动关键原文'), false);
+  assert.equal(JSON.stringify(entry).includes('没有目标知情归属的载体'), false);
+  assert.equal(Object.hasOwn(entry.sources[1], 'sourceType'), false, '人工修改原文不伪造为逐字assistant来源');
+  assert.deepEqual(request.people[0].sourceEntityNames, { [other.id]: other.displayName, [target.id]: target.displayName, [author.id]: author.displayName });
+});
+
+test('人物取材：重整以旧AI作底稿，未覆盖字段保留、明确空值清除且在途人工空值优先', async () => {
+  let request, release, markStarted, calls = 0;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const response = new Promise(resolve => { release = resolve; });
+  const h = harness({ generate: async options => {
+    calls++; request = JSON.parse(options.taskMessages[0].content); markStarted(); return response;
+  } });
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '人物1', hair: '深棕短发', occupation: '旧职业', height: '171厘米', birthday: '旧生日', notes: '人工旧笔记' }, { manualFields: ['notes'] });
+  const running = h.runtime.regenerateProfile(target.id); await started;
+  await h.runtime.saveProfile(target.id, { notes: '', birthday: '人工确认生日' }, { manualFields: ['notes', 'birthday'] });
+  release({ jsonData: { profiles: [{ personKey: 'person-1', occupation: '新职业', height: '', birthday: '模型生日', notes: '模型笔记' }] } });
+  await running;
+  assert.equal(calls, 1);
+  assert.equal(request.people[0].existingProfile.hair, '深棕短发', '待核底稿保留原已知细节供模型纠错');
+  const saved = h.runtime.getState().profilesByEntityId[target.id];
+  assert.equal(saved.hair, '深棕短发'); assert.equal(saved.occupation, '新职业'); assert.equal(saved.height, '');
+  assert.equal(saved.notes, ''); assert.equal(saved.birthday, '人工确认生日');
+  assert.ok(saved.manualFields.includes('notes')); assert.ok(saved.manualFields.includes('birthday'));
+});
+
+test('别名审理：完整重整替代累计旧称且空全集保主名，普通编辑与复制合并保留来源标记', async () => {
+  for (const aliases of [['稳定称谓'], []]) {
+    const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', aliases, occupation: '馆员' }] } }) });
+    const [target, other] = h.peopleEntities;
+    h.setReachable({ ...h.reachable, entities: [...h.reachable.entities, entity(ids[8], '累计临时称呼', { status: 'merged', mergedIntoEntityId: target.id })] });
+    await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+    await h.runtime.saveProfile(target.id, { name: target.displayName, aliases: '旧AI杂称', notes: '旧资料' }, { manualFields: [] });
+    await h.runtime.regenerateProfile(target.id);
+    let state = h.runtime.getState(), profile = state.profilesByEntityId[target.id];
+    assert.equal(profile.aliasesComplete, true, '只有模型合法完整清单成为已审别名');
+    assert.equal(profile.aliases, aliases.join('、'));
+    assert.ok(!profile.manualFields.includes('aliases'), 'AI审理不得冒用人工字段');
+    assert.deepEqual(state.people.find(person => person.entityId === target.id).aliases, aliases);
+    const directory = buildEntityIdentityDirectory({ entities: h.reachable.entities, identityProjection: normalizeIdentityProjection(state) });
+    assert.deepEqual(directory.find(person => person.entityId === target.id).labels, [target.displayName, ...aliases]);
+    await h.runtime.saveProfile(target.id, { notes: '改了其它字段' }, { manualFields: ['notes'] });
+    await h.runtime.refresh({ refreshMemory: false });
+    state = h.runtime.getState(); assert.equal(state.profilesByEntityId[target.id].aliasesComplete, true);
+    assert.deepEqual(state.people.find(person => person.entityId === target.id).aliases, aliases);
+    const store = createPeopleWorkspaceStore({ client: h.db.client }), destination = { ...h.identity, chatId: CHAT_B };
+    await copyLatestPeople({ peopleStore: store, sourceIdentity: h.identity, targetIdentity: destination, entities: h.peopleEntities, now: '2026-10-24T00:00:00.000Z' });
+    assert.equal((await store.read(destination)).data.profilesByEntityId[target.id].aliasesComplete, true);
+    const source = await store.read(h.identity);
+    const snapshot = await store.putSnapshot(destination, { sourceChatId: h.identity.chatId, sourceRevision: source.revision, workspace: source.data });
+    assert.equal((await store.readSnapshot(destination, snapshot.id)).data.workspace.profilesByEntityId[target.id].aliasesComplete, true);
+    await h.runtime.mergePeople(target.id, other.id, 'source');
+    state = h.runtime.getState();
+    assert.equal(state.profilesByEntityId[other.id].aliasesComplete, true);
+    assert.deepEqual(state.people.find(person => person.entityId === other.id).aliases, aliases);
+  }
+});
+
+test('别名审理：遗漏或坏别名保旧而其它资料照常保存，旧档不自动升级', async () => {
+  for (const returned of [{ notes: '本次可用资料' }, { notes: '本次可用资料', aliases: 42 }]) {
+    const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', ...returned }] } }) });
+    const target = h.peopleEntities[0]; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+    await h.runtime.saveProfile(target.id, { aliases: '旧AI别名', notes: '旧资料' }, { manualFields: [] });
+    const state = await h.runtime.regenerateProfile(target.id), profile = state.profilesByEntityId[target.id];
+    assert.equal(profile.aliases, '旧AI别名'); assert.equal(profile.notes, '本次可用资料');
+    assert.equal(profile.aliasesComplete, undefined);
+    assert.equal(state.lastGenerationReport.saved, 1); assert.equal(state.lastGenerationReport.aliasesNotUpdated, 1);
+    assert.deepEqual(state.people.find(person => person.entityId === target.id).aliases, [target.displayName + '别名']);
+  }
+});
+
+test('别名审理：与旧档同值的合法全集仍确认权威，未改字段不再回灌实体杂称', async () => {
+  const h = harness({ generate: async () => ({ jsonData: { profiles: [{ personKey: 'person-1', aliases: ['稳定称谓'] }] } }) });
+  const target = h.peopleEntities[0];
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { aliases: '稳定称谓', notes: '已有资料' }, { manualFields: [] });
+  const revision = h.runtime.getState().revision;
+  await h.runtime.regenerateProfile(target.id);
+  const state = h.runtime.getState();
+  assert.ok(state.revision > revision);
+  assert.equal(state.profilesByEntityId[target.id].aliasesComplete, true);
+  assert.deepEqual(state.people.find(person => person.entityId === target.id).aliases, ['稳定称谓']);
+});
+
+test('别名审理：已审名单十楼只补稳定新增，空值无更新且人工空名单优先', async () => {
+  let calls = 0;
+  const h = harness({ generate: async options => {
+    calls++; const request = JSON.parse(options.taskMessages[0].content);
+    if (calls > 1) { assert.equal(request.recentFloors.length, 10); assert.ok(request.recentFloors.reduce((n, floor) => n + floor.content.length, 0) <= 19000); }
+    return { jsonData: { profiles: [{ personKey: 'person-1', aliases: calls === 1 ? ['稳定旧称'] : calls === 2 ? ['新增稳定称'] : calls === 3 ? [] : ['不得覆盖人工'], occupation: '馆员' }] } };
+  } });
+  const target = h.peopleEntities[0]; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.regenerateProfile(target.id);
+  h.setMainGenerationActive(false);
+  const publish = count => {
+    h.setReachable({ ...h.reachable, floors: Array.from({ length: count }, (_, index) => ({ id: `${String(index + 1).padStart(8, '0')}-5555-4555-8555-${String(index + 1).padStart(12, '0')}`, assistantSeq: index + 1, content: { canonicalContent: `馆员归档第${index}页。` } })), floorMemories: [] });
+    h.notifyFoundation();
+  };
+  publish(10); await waitFor(() => calls === 2 && h.runtime.getState().active === null);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].aliases, '稳定旧称、新增稳定称');
+  assert.deepEqual(h.runtime.getState().people.find(person => person.entityId === target.id).aliases, ['稳定旧称', '新增稳定称']);
+  publish(20); await waitFor(() => calls === 3 && h.runtime.getState().active === null);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].aliases, '稳定旧称、新增稳定称');
+  await h.runtime.saveProfile(target.id, { aliases: '' }, { manualFields: ['aliases'] });
+  publish(30); await waitFor(() => calls === 4 && h.runtime.getState().active === null);
+  assert.equal(h.runtime.getState().profilesByEntityId[target.id].aliases, '');
+  assert.deepEqual(h.runtime.getState().people.find(person => person.entityId === target.id).aliases, []);
+});
+
+test('别名审理：共用投影区分人工和AI全集并正确复用，主名同名人物保持独立', () => {
+  const [a, b] = [entity(ids[0], '同名'), entity(ids[1], '同名')];
+  const projection = normalizeIdentityProjection({ profilesByEntityId: { [a.id]: { aliases: '', aliasesComplete: true, manualFields: [] } } });
+  assert.deepEqual(projection.reviewedAliasesByEntityId, { [a.id]: [] });
+  const directory = buildEntityIdentityDirectory({ entities: [a, b], identityProjection: projection });
+  assert.equal(directory.length, 2); assert.deepEqual(directory[0].aliases, []); assert.deepEqual(directory[1].aliases, ['同名别名']);
+  const changed = normalizeIdentityProjection({ reviewedAliasesByEntityId: { [a.id]: ['稳定新称'] } });
+  assert.notEqual(reuseIdentityProjection(projection, changed), projection);
+  assert.equal(reuseIdentityProjection(changed, { reviewedAliasesByEntityId: { [a.id]: ['稳定新称'] } }), changed);
+  const manual = normalizeIdentityProjection({ ...changed, manualAliasesByEntityId: { [a.id]: [] } });
+  assert.deepEqual(buildEntityIdentityDirectory({ entities: [a], identityProjection: manual })[0].aliases, []);
+});
+
+test('人物姓名：人工宏姓名用于标题、整理与世界书，历史主名只作标签并仍匹配旧头像库', async () => {
+  let request;
+  const generator = createAvatarGenerator({ apiProvider: () => ({ apiVersion: 1, getBackendStatus: () => ({ configured: true }),
+    getCharacters: () => ({ characters: [{ name: '人物1', tag: 'neutral appearance' }] }), generate: async () => { throw new Error('本例不生图'); } }) });
+  const h = harness({ avatarGenerator: generator, sourceCandidates: [
+    { id: 'current-name', kind: 'worldbook', world: '资料', label: '阿澄新名', entryLabel: '阿澄新名', primaryKeys: ['阿澄新名'], content: '阿澄新名担任馆员。' },
+    { id: 'original-name', kind: 'worldbook', world: '资料', label: '人物1', entryLabel: '人物1', primaryKeys: ['人物1'], content: '原正式名对应的经历。' },
+    { id: 'old-alias', kind: 'worldbook', world: '资料', label: '临时杂称', entryLabel: '临时杂称', primaryKeys: ['临时杂称'], content: '已清掉旧称的条目。' },
+    { id: 'unrelated', kind: 'worldbook', world: '资料', label: '另一人', entryLabel: '另一人', primaryKeys: ['另一人'], content: '另一人负责修船。' },
+  ], generate: async options => { request = JSON.parse(options.taskMessages[0].content); return { jsonData: { profiles: [{ personKey: 'person-1', aliases: [], occupation: '馆员' }] } }; } });
+  const target = h.peopleEntities[0];
+  target.aliases.push({ name: '临时杂称' });
+  h.setReachable({ ...h.reachable, baseline: { ...h.reachable.baseline, userPersona: { name: '阿澄' } } });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]);
+  await h.runtime.saveProfile(target.id, { name: '{{user}}新名', aliases: '', notes: '已有资料' }, { manualFields: ['name', 'aliases'] });
+  await h.runtime.regenerateProfile(target.id);
+  assert.equal(request.people[0].currentName, '阿澄新名');
+  const person = h.runtime.getState().people.find(item => item.entityId === target.id);
+  assert.equal(person.displayName, '阿澄新名'); assert.equal(person.entityDisplayName, '人物1'); assert.deepEqual(person.aliases, []);
+  const world = request.people[0].sourceFragments.filter(item => item.kind === 'allowedWorldInfo').map(item => item.content).join('');
+  assert.equal(world, '阿澄新名担任馆员。原正式名对应的经历。');
+  const projection = deriveUserIdentityProjection({ ...h.reachable, identityProjection: h.runtime.getState() });
+  const directory = buildEntityIdentityDirectory({ entities: h.reachable.entities, identityProjection: projection });
+  const entry = directory.find(item => item.entityId === target.id);
+  assert.equal(entry.displayName, '阿澄新名'); assert.equal(entry.entity.displayName, '阿澄新名');
+  assert.deepEqual(entry.labels, ['阿澄新名', '人物1']); assert.deepEqual(entry.aliases, []);
+  assert.equal(h.runtime.prepareAvatarGeneration(target.id).selectedIndex, 0);
+  assert.equal(h.reachable.entities.find(item => item.id === target.id).displayName, '人物1');
+  const changed = normalizeIdentityProjection({ currentNamesByEntityId: { [target.id]: '下一名' } });
+  assert.notEqual(reuseIdentityProjection(projection, changed), projection);
+});
+
+test('人物来源：人工Core保人工身份和真实楼层，不自动当成作者静态设定', async () => {
+  let request;
+  const h = harness({ generate: async options => { request = JSON.parse(options.taskMessages[0].content); return { jsonData: { profiles: [{ personKey: 'person-1', aliases: [], notes: '核对完成' }] } }; } });
+  const target = h.peopleEntities[0], floorId = ids[8];
+  h.setReachable({ ...h.reachable, floors: [{ id: floorId, assistantSeq: 1 }] });
+  h.setMemoryState({ ...h.memoryState, cseSubjects: [{ subjectEntityId: target.id, core: [{ text: '人工纠正的边界', origin: 'manual', sourceFloorId: floorId }], adaptive: [], situational: [] }] });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
+  assert.deepEqual(request.people[0].cseCoreTraits, [{ text: '人工纠正的边界', source: 'manual', sourceFloor: 1 }]);
+});
+
 test('人物资料业务指导可替换，固定合同与基础处理层始终恰好一次', () => {
   const builtIn = buildPeopleProfileSystemPrompt();
   assert.match(builtIn, new RegExp(DEFAULT_PROFILE_GUIDANCE.slice(0, 20)));
@@ -119,14 +366,14 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.match(custom, /personKey 必须逐字使用/);
   assert.match(custom, /根对象必须包含 profiles 数组/);
   assert.match(custom, /\{"profiles":\[\{"personKey":"person-1","name":"示例姓名"\}\]\}/);
-  assert.match(custom, /recentFloors 是最近稳定AI楼/);
+  assert.match(custom, /recentFloors 是自动粗扫的清洗原文/);
   assert.match(custom, /自动粗扫每约十个新增稳定AI楼/);
-  assert.match(custom, /聚合多楼 history 可省略 storyContent/);
-  assert.match(custom, /不得猜测未提供的正文/);
-  assert.match(custom, /没有新信息时省略字段/);
-  assert.match(custom, /自动粗扫不得用空字符串或空 aliases 表示清除/);
+  assert.match(custom, /history 提供已记录的有效 summary/);
+  assert.match(custom, /不猜未提供的原文/);
+  assert.match(custom, /未覆盖字段省略并保留/);
+  assert.match(custom, /空字符串或空数组表示无更新/);
   assert.match(custom, /当前批可能只包含该来源的一部分/);
-  assert.match(custom, /明确要求删除旧资料且没有替代值/);
+  assert.match(custom, /明确应删除且没有替代值/);
   assert.match(custom, /build（体型）：身体骨架、体态、比例/);
   assert.match(custom, /occupation（职业）：人物从事的职业/);
   assert.match(custom, /personality（核心性格）：跨情境较稳定/);
@@ -549,22 +796,24 @@ test('人工合并以目标身份汇集历史，整档头像二选一并支持�
   await h.runtime.setSelectedEntityIds([a.id, b.id]);
   await h.runtime.saveProfile(a.id, { name: '甲档姓名', aliases: '旧称甲', notes: '采用甲档' });
   await h.runtime.saveProfile(b.id, { name: '乙档姓名', aliases: '旧称乙', notes: '乙档' });
-  await h.runtime.saveAvatar(a.id, 'data:image/png;base64,AAAA');
+  await h.runtime.saveAvatar(a.id, 'data:image/png;base64,AAAA', { originalRef: { path: '/user/images/qqj-avatars/qqj-avatar-merge-a.png', mimeType: 'image/png' }, crop: { aspectRatio: 1, zoom: 2, offsetX: 5, offsetY: 0 } });
   await h.runtime.mergePeople(a.id, b.id, 'source');
   let state = h.runtime.getState();
   assert.equal(modelCalls, 0); assert.equal(state.people.some(person => person.entityId === a.id), false);
   assert.equal(state.profilesByEntityId[b.id].name, '乙档姓名', '采用来源档案时仍保持用户选择的目标人物名');
   assert.equal(state.profilesByEntityId[b.id].notes, '采用甲档'); assert.equal(state.avatarsByEntityId[b.id], 'data:image/png;base64,AAAA');
+  assert.equal(state.people.find(p => p.entityId === b.id).avatarSource.path, '/user/images/qqj-avatars/qqj-avatar-merge-a.png');
   assert.deepEqual(state.selectedEntityIds, [b.id]); assert.equal(state.identityRedirectsByEntityId[a.id], b.id);
   assert.deepEqual(state.people.find(person => person.entityId === b.id).aliases, ['旧称甲'], '采用的人工别名全集不自动拼回被合并旧主名');
   await h.runtime.regenerateProfile(b.id);
   assert.equal(generatedRequest.people[0].sourceFragments.filter(item => item.kind === 'history').length, 2, '来源与目标的不同历史楼均归目标且不丢失');
   assert.ok(h.runtime.getState().profileMaterialProgressByEntityId[b.id], '整理成功后目标人物保存材料进度');
   await h.runtime.saveProfile(c.id, { name: '丙档姓名', aliases: '旧称丙', notes: '采用丙档' });
-  await h.runtime.saveAvatar(c.id, 'data:image/png;base64,CCCC');
+  await h.runtime.saveAvatar(c.id, 'data:image/png;base64,CCCC', { originalRef: { path: '/user/images/qqj-avatars/qqj-avatar-merge-c.png', mimeType: 'image/png' } });
   await h.runtime.mergePeople(b.id, c.id, 'target');
   state = h.runtime.getState(); assert.equal(state.identityRedirectsByEntityId[a.id], c.id); assert.equal(state.identityRedirectsByEntityId[b.id], c.id);
   assert.equal(state.profilesByEntityId[c.id].notes, '采用丙档'); assert.equal(state.avatarsByEntityId[c.id], 'data:image/png;base64,CCCC');
+  assert.equal(state.people.find(p => p.entityId === c.id).avatarSource.path, '/user/images/qqj-avatars/qqj-avatar-merge-c.png');
   assert.equal(state.profileMaterialProgressByEntityId[b.id], undefined); assert.equal(state.profileMaterialProgressByEntityId[c.id], undefined, '合并不复用任一人的旧材料覆盖进度');
   await h.runtime.deletePerson(c.id);
   state = h.runtime.getState(); assert.equal(state.people.some(person => [a.id, b.id, c.id].includes(person.entityId)), false);
@@ -659,7 +908,7 @@ test('第 50 楼才建档仍读取第 1 楼目标事实与近期变化，逐楼�
   assert.equal(JSON.stringify(request.people[0].history).includes('无关人物第25楼'), false);
 });
 
-test('人物输入优先使用与有效摘要同存正文，构造空串不回退且旧记录仍兼容楼正文', async () => {
+test('人物输入保留有效摘要，不再回读当前、空快照或旧记录的整楼正文', async () => {
   let request;
   const h = harness({ generate: async options => {
     request = JSON.parse(options.taskMessages[0].content);
@@ -681,15 +930,15 @@ test('人物输入优先使用与有效摘要同存正文，构造空串不回�
     ],
   });
   await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
-  assert.equal(request.people[0].history[0].storyContent, '人物1已经改为红发。');
+  assert.equal(Object.hasOwn(request.people[0].history[0], 'storyContent'), false);
   assert.equal(request.people[0].history[0].summary, '人物1现在是红发。');
-  assert.equal(request.people[0].history[1].storyContent, '');
-  assert.equal(request.people[0].history[2].storyContent, '人物1穿着绿色旧外套。');
+  assert.equal(Object.hasOwn(request.people[0].history[1], 'storyContent'), false);
+  assert.equal(Object.hasOwn(request.people[0].history[2], 'storyContent'), false);
   assert.equal(JSON.stringify(request).includes('人物1仍是蓝发'), false);
   assert.equal(JSON.stringify(request).includes('这段旧正文不得回退'), false);
 });
 
-test('聚合人物历史省略多楼正文但保留用户摘要、目标事实和原句，普通单楼正文不变', async () => {
+test('聚合与普通人物历史均省正文，保用户摘要、目标事实和原句引用', async () => {
   let request;
   const h = harness({ generate: async options => {
     request = JSON.parse(options.taskMessages[0].content);
@@ -727,13 +976,14 @@ test('聚合人物历史省略多楼正文但保留用户摘要、目标事实�
   assert.equal(Object.hasOwn(aggregate, 'storyContent'), false, '聚合记忆不再重复携带十楼全文');
   assert.equal(aggregate.summary, '用户修订后的聚合摘要。');
   assert.deepEqual(aggregate.facts.actions, [{ role: 'actor', action: '目标人物作出决定', completion: 'completed' }]);
-  assert.deepEqual(aggregate.facts.exactAnchors, [{ kind: 'dialogue', exactText: '我会亲自处理。', whyPreserve: '关键承诺' }]);
+  assert.deepEqual(aggregate.facts.exactAnchors, [{ kind: 'dialogue', sourceIndex: 1, speakerEntityId: target.id, whyPreserve: '关键承诺' }]);
+  assert.equal(aggregate.sources[0].quotedText, '我会亲自处理。');
   assert.equal(JSON.stringify(aggregate).includes('他人动作不应归入'), false, '目标事实归属边界不变');
-  assert.equal(singleton.storyContent, '普通单楼正文保留。');
+  assert.equal(Object.hasOwn(singleton, 'storyContent'), false);
   assert.equal(singleton.summary, '普通单楼摘要。');
 });
 
-test('固定混合历史中聚合正文减量会收敛人物整理批数且普通正文仍计入', async () => {
+test('固定混合历史与普通楼使用相同已记事实范围，整楼正文不增加整理批数', async () => {
   let calls = 0; const requests = [];
   const h = harness({ generate: async options => {
     calls += 1; requests.push(JSON.parse(options.taskMessages[0].content));
@@ -757,9 +1007,9 @@ test('固定混合历史中聚合正文减量会收敛人物整理批数且普�
   });
   await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([target.id]); await h.runtime.generateMissingProfiles();
   const serialized = requests.map(request => JSON.stringify(request)).join('');
-  assert.equal(calls, 14, '固定 33 聚合加 34 单楼材料在现有 24k 分批规则下收敛为 14 批');
+  assert.ok(calls > 1, '已记录摘要仍按原24k规则分批，不硬截尾楼');
   assert.equal(serialized.includes('聚合正文不得进入'), false);
-  assert.equal(serialized.includes('普通正文必须进入'), true);
+  assert.equal(serialized.includes('普通正文必须进入'), false);
   assert.equal(requests.every(request => JSON.stringify(request).length <= PEOPLE_PROFILE_INPUT_CHAR_BUDGET + 1000), true);
 
   let fullTextCalls = 0;
@@ -773,7 +1023,7 @@ test('固定混合历史中聚合正文减量会收敛人物整理批数且普�
     floorMemories: floorMemories.map(memory => { const copy = structuredClone(memory); delete copy.sourceFloorIds; return copy; }),
   });
   await fullText.runtime.refresh(); await fullText.runtime.setSelectedEntityIds([fullText.peopleEntities[0].id]); await fullText.runtime.generateMissingProfiles();
-  assert.equal(fullTextCalls, 42, '相同固定材料若把聚合正文按普通单楼投入会产生 42 批');
+  assert.equal(fullTextCalls, calls, '相同摘要与事实不因普通楼保留的全文更长而增加调用');
 });
 
 test('长历史按楼序连续分批，前批档案进入后批且覆盖首尾', async () => {
@@ -801,7 +1051,8 @@ test('长历史按楼序连续分批，前批档案进入后批且覆盖首尾',
   assert.deepEqual(requests.flatMap(request => request.people[0].sourceFragments).filter(item => item.kind === 'history' && item.part === 1).map(item => item.sourceFloor), Array.from({ length: 80 }, (_, index) => index + 1));
   const firstHistory = requests.flatMap(request => request.people[0].sourceFragments).filter(item => item.kind === 'history' && item.sourceFloor === 1)
     .sort((left, right) => left.part - right.part).map(item => item.content).join('');
-  assert.equal(JSON.parse(firstHistory).storyContent, `第1楼最新正文${'乙'.repeat(3990)}`, '与有效摘要同存的正文跨片后可按原顺序无损还原');
+  assert.equal(Object.hasOwn(JSON.parse(firstHistory), 'storyContent'), false);
+  assert.equal(JSON.parse(firstHistory).summary, `人物1${'甲'.repeat(3997)}`, '已记摘要跨片后完整保留');
   assert.equal(firstHistory.includes('第1楼旧正文'), false);
   assert.equal(requests[1].people[0].existingProfile.name, '人物1', '前批已保存档案必须成为后批起点');
   assert.equal(h.runtime.getState().profilesByEntityId[target.id].notes, '末批完成');
@@ -893,7 +1144,7 @@ test('批量整理按 personKey 独立接受合法项并准确报告遗漏、未
   assert.deepEqual(invalid.runtime.getState().profilesByEntityId, {});
 });
 
-test('当前人物重新整理仅请求一次且不带旧 AI 资料，最新人工字段与人工清空不会被模型覆盖', async () => {
+test('当前人物重新整理仅请求一次且带待核旧AI资料，最新人工字段与人工清空不会被覆盖', async () => {
   let calls = 0, request;
   const h = harness({ generate: async options => {
     calls += 1; request = JSON.parse(options.taskMessages[0].content);
@@ -905,14 +1156,14 @@ test('当前人物重新整理仅请求一次且不带旧 AI 资料，最新人�
   await h.runtime.regenerateProfile(first.id);
   const profile = h.runtime.getState().profilesByEntityId[first.id];
   assert.equal(calls, 1); assert.deepEqual(request.people.map(item => item.personKey), ['person-1']);
-  assert.deepEqual(request.people[0].existingProfile, {}); assert.deepEqual(request.people[0].manualProfile, { name: '原名', notes: '' }); assert.deepEqual(request.people[0].manualFields, ['name', 'notes']);
+  assert.deepEqual(request.people[0].existingProfile, { background: '原背景' }); assert.deepEqual(request.people[0].manualProfile, { name: '原名', notes: '' }); assert.deepEqual(request.people[0].manualFields, ['name', 'notes']);
   assert.equal(Object.hasOwn(request.people[0].existingProfile, 'name'), false, '人工字段只走 manualProfile，不伪装成旧 AI 字段');
   assert.equal(Object.hasOwn(request.people[0].manualProfile, 'background'), false, '旧 AI 字段不混入人工资料');
   assert.equal(profile.name, '原名'); assert.equal(profile.notes, ''); assert.equal(profile.background, '模型新背景'); assert.equal(profile.gender, '女');
   assert.equal(h.runtime.getState().profilesByEntityId[second.id], undefined, '未授权的另一人物保持不变');
 });
 
-test('主动重整替换旧AI：缺省及错误字段不继承，合法字段和空值按本轮保存', async () => {
+test('主动重整核对旧AI：缺省及错误字段保旧，合法字段和明确空值按本轮保存', async () => {
   let mode = 'initial', calls = 0, patchRequest;
   const h = harness({ generate: async options => {
     calls += 1;
@@ -928,10 +1179,10 @@ test('主动重整替换旧AI：缺省及错误字段不继承，合法字段和
   await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]); await h.runtime.generateMissingProfiles();
   mode = 'partial'; await h.runtime.regenerateProfile(id);
   let profile = h.runtime.getState().profilesByEntityId[id];
-  assert.equal(profile.name, '新名'); assert.equal(profile.aliases, '', '重整不得因错误字段继承旧AI');
-  assert.equal(profile.background, ''); assert.equal(profile.appearance, ''); assert.equal(profile.notes, '');
+  assert.equal(profile.name, '新名'); assert.equal(profile.aliases, '旧别名', '坏别名不冒充清空全集');
+  assert.equal(profile.background, '旧背景'); assert.equal(profile.appearance, '旧外貌'); assert.equal(profile.notes, '旧补充');
   assert.equal(profile.personality, '', '合法空字符串表示明确清除'); assert.equal(profile.likes, '热茶');
-  assert.deepEqual(patchRequest.people[0].existingProfile, {});
+  assert.deepEqual(patchRequest.people[0].existingProfile, { name: '旧名', aliases: '旧别名', background: '旧背景', appearance: '旧外貌', personality: '旧性格', notes: '旧补充' });
   mode = 'clear'; await h.runtime.regenerateProfile(id);
   assert.equal(h.runtime.getState().profilesByEntityId[id].aliases, '', '合法空数组表示明确清除 aliases');
   mode = 'string'; await h.runtime.regenerateProfile(id);
@@ -964,7 +1215,7 @@ test('模型 aliases 数组拼接超过 20000 字符时仅忽略别名字段并�
   await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]); await h.runtime.generateMissingProfiles();
   mode = 'patch'; await h.runtime.regenerateProfile(id);
   const profile = h.runtime.getState().profilesByEntityId[id];
-  assert.equal(profile.aliases, '');
+  assert.equal(profile.aliases, '旧别名');
   assert.equal(profile.name, '新名'); assert.equal(profile.background, '新背景');
 });
 
@@ -1425,7 +1676,7 @@ test('十楼粗扫混合池只发送有实际基础资料的人物', async () =>
   })), floorMemories: [] });
   h.notifyFoundation(); h.notifyFoundation(); await waitFor(() => calls === 1 && h.runtime.getState().active === null);
   assert.equal(request.people.length, 1);
-  assert.equal(request.people[0].currentName, hasMaterial.displayName);
+  assert.equal(request.people[0].currentName, h.runtime.getState().profilesByEntityId[hasMaterial.id].name);
   assert.equal(calls, 1);
   assert.equal(h.runtime.getState().profilesByEntityId[identityOnly.id].notes, '');
   assert.equal(h.runtime.getState().profilesByEntityId[missing.id], undefined);
@@ -1725,11 +1976,11 @@ test('长于24k的单人主动重整一次发送全部已选片段并只保存�
   const fragments = request.people[0].sourceFragments.filter(item => item.kind === 'allowedWorldInfo');
   assert.equal(calls, 1); assert.equal(request.people.length, 1); assert.equal(Object.hasOwn(request, 'batch'), false);
   assert.ok(JSON.stringify(request).length > PEOPLE_PROFILE_INPUT_CHAR_BUDGET);
-  assert.deepEqual(request.people[0].existingProfile, {}); assert.equal(request.people[0].manualProfile.notes, '人工保留');
+  assert.deepEqual(request.people[0].existingProfile, { name: '上次AI名', gender: '上次AI性别', background: '上次AI背景' }); assert.equal(request.people[0].manualProfile.notes, '人工保留');
   assert.equal(fragments.map(item => item.content).join(''), selectedSource, '首尾和中间已选材料完整保留');
   assert.equal(h.db.calls.filter(call => call[0] === 'put').length, putsBefore + 1, '档案与材料进度同一次原子保存');
   const state = h.runtime.getState(), profile = state.profilesByEntityId[id];
-  assert.equal(profile.name, '本轮新名'); assert.equal(profile.likes, '本轮喜好'); assert.equal(profile.gender, ''); assert.equal(profile.background, '');
+  assert.equal(profile.name, '本轮新名'); assert.equal(profile.likes, '本轮喜好'); assert.equal(profile.gender, '上次AI性别'); assert.equal(profile.background, '上次AI背景');
   assert.equal(profile.notes, '人工保留'); assert.deepEqual(profile.manualFields, ['notes']);
   assert.equal(state.avatarsByEntityId[id], 'data:image/png;base64,AAAA');
   assert.deepEqual(state.selectedEntityIds, [id]); assert.deepEqual(state.personOrderEntityIds, [id]);
@@ -1948,7 +2199,7 @@ test('有效别名：目录和记忆人物保主名、允许删合并旧名，�
     entityId: b.id, memberEntityIds: [a.id, b.id].sort(), displayName: b.displayName, aliases: ['人工旧称'], specialRole: 'none',
   });
   assert.equal(reuseIdentityProjection(projection, h.runtime.getState()), projection);
-  assert.deepEqual(Object.keys(projection).sort(), ['deletedEntityIds', 'identityRedirectsByEntityId', 'manualAliasesByEntityId']);
+  assert.deepEqual(Object.keys(projection).sort(), ['currentNamesByEntityId', 'deletedEntityIds', 'identityRedirectsByEntityId', 'manualAliasesByEntityId']);
   assert.deepEqual(projection.manualAliasesByEntityId, { [b.id]: ['人工旧称'] });
   await h.runtime.setSelectedEntityIds([b.id]);
   await h.runtime.regenerateProfile(b.id);
@@ -1968,4 +2219,124 @@ test('有效别名：目录和记忆人物保主名、允许删合并旧名，�
   entry = buildEntityIdentityDirectory({ entities: target.peopleEntities, identityProjection: target.runtime.getIdentityProjection() }).find(e => e.entityId === b.id);
   assert.ok(entry.labels.includes(a.displayName) && entry.labels.includes(a.aliases[0].name));
   assert.ok(!entry.labels.includes('人工不采用'));
+});
+
+test('真实人物runtime生成头像使用最新保存提示词且不写头像，工作与保存分别收口并保旧头像读取',async()=>{
+  const settings=createSettingsStore({extensionSettings:{},save(){}}),requests=[];let release;
+  let api={apiVersion:1,getBackendStatus:()=>({configured:true,supportsCharacters:true}),getCharacters:()=>({characters:[{name:'人物1别名',tag:'appearance',nl:'外貌'}]}),generate:async request=>{requests.push(request);await new Promise(resolve=>{release=resolve;});return {dataUrl:'data:image/png;base64,AAAA'};}};
+  let textRequests=0;
+  const h=harness({generate:async()=>{textRequests++;throw new Error('不应调用文字模型');},avatarGenerator:createAvatarGenerator({apiProvider:()=>api}),avatarPrompt:()=>settings.get().avatarPrompt});
+  await h.seedSelectedWithoutProgress([]);await h.runtime.saveAvatar(ids[0],'data:image/webp;base64,T0xE');
+  const activity=createPluginActivity([h.runtime]), phases=[];activity.subscribe(state=>phases.push({...state}));
+  const choice=h.runtime.prepareAvatarGeneration(ids[0]);assert.equal(choice.selectedIndex,0);
+  const before=h.db.calls.length,first=h.runtime.generateAvatar(ids[0],{character:choice.characters[0]});
+  assert.equal(activity.getState().phase,'generatingAvatar');assert.equal(activity.getState().copy,'正在生成头像');
+  assert.equal(h.runtime.getPeopleAvatars([ids[0]]).avatarsByEntityId[ids[0]],'data:image/webp;base64,T0xE');
+  assert.equal(requests[0].prompt,DEFAULT_AVATAR_PROMPT);assert.equal(h.db.calls.length,before,'生成本身不写存储');
+  await h.runtime.saveProfile(ids[0],{notes:'生成中仍可手动编辑'});assert.equal(activity.getState().busy,true);
+  release();assert.equal((await first).dataUrl,'data:image/png;base64,AAAA');assert.equal(activity.getState().busy,false);
+  await h.runtime.saveProfile(ids[0],{clothingStyle:'青色长衫'},{manualFields:['clothingStyle']});
+  settings.update({avatarPrompt:'new composition'});const second=h.runtime.generateAvatar(ids[0],{character:choice.characters[0]});assert.equal(requests[1].prompt,'new composition');assert.equal(requests[1].characters[0].nl,'外貌. Clothing reference: 青色长衫');release();await second;
+  await h.runtime.saveProfile(ids[0],{clothingStyle:''},{manualFields:['clothingStyle']});
+  settings.update({avatarPrompt:''});const third=h.runtime.generateAvatar(ids[0],{character:choice.characters[0]});assert.equal(requests[2].prompt,DEFAULT_AVATAR_PROMPT);assert.equal(requests[2].characters[0].nl,'外貌');release();await third;
+  let saved;h.db.hooks.beforePut=async()=>{await new Promise(resolve=>{saved=resolve;});};
+  const saving=h.runtime.saveAvatar(ids[0],'data:image/webp;base64,Q1JPUA==');await waitFor(()=>Boolean(saved));assert.equal(activity.getState().phase,'savingAvatar');saved();await saving;h.db.hooks.beforePut=null;
+  api.generate=async()=>{throw new Error('渠道拒绝');};await assert.rejects(h.runtime.generateAvatar(ids[0],{character:choice.characters[0]}),/渠道拒绝/);assert.equal(activity.getState().busy,false);
+  assert.equal(h.runtime.getPeopleAvatars([ids[0],ids[1]]).avatarsByEntityId[ids[0]],'data:image/webp;base64,Q1JPUA==');assert.equal(textRequests,0);assert.ok(phases.some(state=>!state.busy));
+  activity.dispose();h.runtime.destroy();
+});
+
+test('完整头像原图上传贯穿savingAvatar并随小图取景保存，公开头像仍为同步小图',async()=>{
+  let finishUpload;const uploads=[],source={path:'/user/images/柏宝绘_千千结头像/qqj-avatar-first.png',mimeType:'image/png'};
+  const h=harness({avatarImageStore:{upload:async(file,options)=>{uploads.push([file,options]);await new Promise(resolve=>{finishUpload=resolve;});return source;}}});
+  await h.seedSelectedWithoutProgress([]);const activity=createPluginActivity([h.runtime]);let cached=null;
+  const original=new Blob([new Uint8Array([1,2,3])],{type:'image/png'}),crop={aspectRatio:0.75,zoom:2,offsetX:10,offsetY:-5};
+  const saving=h.runtime.saveAvatar(ids[0],'data:image/webp;base64,QUFB',{originalFile:original,crop,generated:true,onOriginalUploaded:value=>{cached=value;}});
+  assert.equal(uploads.length,1);assert.equal(uploads[0][0],original);assert.equal(uploads[0][1].generated,true);assert.equal(activity.getState().phase,'savingAvatar');
+  finishUpload();await saving;assert.equal(activity.getState().busy,false);assert.deepEqual(cached,source);
+  assert.deepEqual(h.runtime.getState().people.find(p=>p.entityId===ids[0]).avatarSource,{...source,crop});
+  assert.equal(h.runtime.getPeopleAvatars([ids[0]]).avatarsByEntityId[ids[0]],'data:image/webp;base64,QUFB');
+  await h.runtime.saveAvatar(ids[0],'data:image/webp;base64,QUFB',{originalRef:{...source,path:'/user/images/柏宝绘_千千结头像/qqj-avatar-next.png'},crop:null});
+  assert.equal(h.runtime.getState().people.find(p=>p.entityId===ids[0]).avatarSource.path,'/user/images/柏宝绘_千千结头像/qqj-avatar-next.png','相同小图也必须替换完整源');
+  h.runtime.invalidate();await h.runtime.refresh();assert.equal(h.runtime.getState().people.find(p=>p.entityId===ids[0]).avatarSource.crop,null);
+  await h.runtime.saveAvatar(ids[0],null);assert.equal(h.runtime.getState().people.find(p=>p.entityId===ids[0]).avatarSource,undefined);activity.dispose();h.runtime.destroy();
+});
+
+test('完整原图上传成功但工作区失败时保旧头像，同预览重试复用已上传引用',async()=>{
+  let uploads=0,cached;const source={path:'/user/images/柏宝绘_千千结头像/qqj-avatar-retry.png',mimeType:'image/png'};
+  const images={upload:async()=>{uploads++;return source;}},h=harness({avatarImageStore:images});await h.seedSelectedWithoutProgress([]);await h.runtime.saveAvatar(ids[0],'data:image/webp;base64,T0xE');
+  h.db.hooks.beforePut=async()=>{throw new Error('工作区写入失败');};
+  await assert.rejects(h.runtime.saveAvatar(ids[0],'data:image/webp;base64,TkVX',{originalFile:new Blob(['original'],{type:'image/png'}),onOriginalUploaded:value=>{cached=value;}}),/工作区写入失败/);
+  assert.equal(uploads,1);assert.deepEqual(cached,source);assert.equal(h.runtime.getPeopleAvatars([ids[0]]).avatarsByEntityId[ids[0]],'data:image/webp;base64,T0xE');
+  h.db.hooks.beforePut=null;await h.runtime.saveAvatar(ids[0],'data:image/webp;base64,TkVX',{originalRef:cached});assert.equal(uploads,1);
+  assert.equal(h.runtime.getState().people.find(p=>p.entityId===ids[0]).avatarSource.path,source.path);
+  const activity=createPluginActivity([h.runtime]);images.upload=async()=>{throw new Error('原图上传失败');};
+  await assert.rejects(h.runtime.saveAvatar(ids[0],'data:image/webp;base64,QkFE',{originalFile:new Blob(['next'],{type:'image/png'})}),/原图上传失败/);
+  assert.equal(h.runtime.getPeopleAvatars([ids[0]]).avatarsByEntityId[ids[0]],'data:image/webp;base64,TkVX');assert.equal(activity.getState().busy,false);activity.dispose();h.runtime.destroy();
+});
+
+test('原图小描述随真实people复制与冻结快照保留，不读取或删除图片资产',async()=>{
+  const h=harness();await h.seedSelectedWithoutProgress([]);const source={path:'/user/images/柏宝绘_千千结头像/qqj-avatar-shared.png',mimeType:'image/png'};
+  const crop={aspectRatio:0.8,zoom:1.5,offsetX:12,offsetY:-3};await h.runtime.saveAvatar(ids[0],'data:image/webp;base64,QUFB',{originalRef:source,crop});
+  const store=createPeopleWorkspaceStore({client:h.db.client}),sourceIdentity={chatId:CHAT_A},targetIdentity={chatId:CHAT_B},current=await store.read(sourceIdentity);
+  const archived=await store.putSnapshot(sourceIdentity,{sourceChatId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',sourceRevision:current.revision,workspace:current.data});
+  await copyLatestPeople({peopleStore:store,sourceIdentity,targetIdentity,entities:h.peopleEntities,now:'2026-10-23T00:00:00.000Z',snapshotSourceIds:[archived.id]});
+  const copied=await store.read(targetIdentity),coldSnapshot=await store.readSnapshot(targetIdentity,archived.id);
+  assert.deepEqual(copied.data.avatarSourcesByEntityId[ids[0]],{...source,crop});assert.deepEqual(coldSnapshot.data.workspace.avatarSourcesByEntityId[ids[0]],{...source,crop});
+  await h.runtime.saveAvatar(ids[0],null);const cleared=await store.read(sourceIdentity);assert.equal(cleared.data.avatarSourcesByEntityId,undefined);
+  assert.equal((await store.read(targetIdentity)).data.avatarSourcesByEntityId[ids[0]].path,source.path,'其他分支共享原图描述不随当前头像移除');
+  h.runtime.destroy();
+});
+
+
+test('单人完整重整变量以首份与逐路径变化表达，300楼已记事实保全且不发送全文', async () => {
+  let request, calls = 0, scheduled = false, scheduledBeforeRequest = false;
+  const h = harness({ generate: async options => { calls++; request = JSON.parse(options.taskMessages[0].content); scheduledBeforeRequest = scheduled; return { jsonData: { profiles: [{ personKey: 'person-1', notes: '新资料' }] } }; } });
+  const id = h.peopleEntities[0].id;
+  const schema = { type: 'object', properties: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`field${i}`, { type: 'string', description: '这是变量的结构说明。'.repeat(20) }])) };
+  const snapshots = [], memories = [], floors = [];
+  for (let i = 0; i < 300; i++) {
+    const floorId = `synthetic-floor-${i}`;
+    const variables = i === 1 ? null : { schema, stat_data: { fixed: '固定实际值'.repeat(300), count: Math.floor(i / 3), flag: i % 5 === 0, nullable: i % 7 === 0 ? null : '', list: [i % 2, '😀'], nested: i < 100 ? { old: 0, schema: { business: true } } : { next: false } }, display_data: { fixed: '显示字段保留' } };
+    if (variables) snapshots.push({ sourceFloor: i + 1, value: variables });
+    floors.push({ id: floorId, assistantSeq: i + 1, content: { canonicalContent: `楼${i}完整正文` + '😀原文'.repeat(250) } });
+    memories.push({ recordStatus: 'active', floorId, assistantSeq: i + 1, participants: [{ entityId: id }], summary: { effectiveSource: 'ai', aiText: `摘要${i}` },
+      actions: [{ actorEntityId: id, targetEntityIds: [], action: `完整事实${i}`, completion: 'completed' }], ...(variables ? { sourceVariableReference: variables } : {}) });
+  }
+  h.setReachable({ ...h.reachable, floors, floorMemories: memories });
+  await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]);
+  const before = JSON.stringify(snapshots);
+  setTimeout(() => { scheduled = true; }, 0);
+  await h.runtime.regenerateProfile(id);
+  assert.equal(calls, 1);
+  const grouped = new Map();
+  for (const fragment of request.people[0].sourceFragments.filter(item => item.kind === 'history')) {
+    const value = grouped.get(fragment.sourceIndex) ?? []; value.push(fragment); grouped.set(fragment.sourceIndex, value);
+  }
+  const history = [...grouped.values()].map(parts => JSON.parse(parts.map(part => part.content).join('')));
+  assert.equal(history.length, 300);
+  assert.equal(Object.hasOwn(history[0].auxiliaryStateSnapshot, 'schema'), false, '只省识别出的顶层MVU结构定义');
+  assert.equal(Object.hasOwn(history[1], 'auxiliaryStateChanges'), false, '缺快照楼不冒充删除或空值');
+  let current;
+  for (let i = 0; i < history.length; i++) {
+    const item = history[i];
+    assert.equal(item.sourceFloor, i + 1); assert.equal(Object.hasOwn(item, 'storyContent'), false);
+    assert.equal(item.summary, `摘要${i}`); assert.equal(item.facts.actions[0].action, `完整事实${i}`);
+    if (Object.hasOwn(item, 'auxiliaryStateSnapshot')) current = structuredClone(item.auxiliaryStateSnapshot);
+    else if (item.auxiliaryStateChanges) {
+      assert.equal(item.auxiliaryStateChanges.fromSourceFloor, i === 2 ? 1 : i);
+      for (const change of item.auxiliaryStateChanges.changes) {
+        if (!change.path.length) { current = structuredClone(change.value); continue; }
+        let parent = current; for (const key of change.path.slice(0, -1)) parent = parent[key];
+        if (change.delete === true) delete parent[change.path.at(-1)]; else Object.defineProperty(parent, change.path.at(-1), { value: structuredClone(change.value), enumerable: true, configurable: true, writable: true });
+      }
+    }
+    if (memories[i].sourceVariableReference) {
+      const { schema: _schema, ...actual } = memories[i].sourceVariableReference;
+      assert.deepEqual(current, actual, `第${i + 1}个实际快照精确还原`);
+    }
+  }
+  assert.equal(scheduledBeforeRequest, true, '准备期间主线程已有正常调度机会');
+  assert.equal(JSON.stringify(snapshots), before, '原始已保存快照未修改');
+  assert.ok(request.people[0].sourceFragments.length > 300, '保留全部原文连续片段而不硬截历史');
 });

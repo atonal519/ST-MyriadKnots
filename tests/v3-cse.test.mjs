@@ -15,7 +15,7 @@ import { estimateRecallTokens } from '../src/v3/recall-selector.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { projectCseStateIdentityReferences } from '../src/v3/entity-identity.js';
-import { buildEntityIdentityDirectory } from '../src/v3/entity-identity.js';
+import { buildEntityIdentityDirectory, deriveUserIdentityProjection, entitiesThroughFloorIds, resolveIdentityEntityId, reuseIdentityProjection } from '../src/v3/entity-identity.js';
 import { createCseRuntime, selectUserAdaptiveHistory } from '../src/v3/cse-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 
@@ -133,6 +133,276 @@ const entities = [
 const baseline = { id: '88888888-1111-4111-8111-111111111111', userPersona: { entityId: USER, name: '林岚', description: '用户设定' }, characterCard: { entityId: A, name: '甲', description: '', personality: '', scenario: '' }, worldInfoSources: [{ sourceName: '世界', content: '作者事实', activated: true }] };
 const memory = id => ({ id, summary: { effectiveSource: 'ai', aiText: '摘要' }, chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] });
 const floor = (id, content) => ({ id, chatId: CHAT, narrativeGeneration: GEN, content: { canonicalContent: content } });
+
+test('用户权威：正常补提较早楼复用较晚楼已有user，原生与Luker请求和提交一致', async () => {
+  for (const host of ['official', 'luker']) {
+    const h = runtimeHarness({ host, chat: [user('继续'), assistant('较早楼的合成观察。'), assistant('较晚楼的合成观察。'), assistant('确认前楼稳定。')] });
+    await h.foundationRuntime.start();
+    let state = await h.runtime.start();
+    const early = state.floors[0].floorId, later = state.floors[1].floorId;
+    await h.runtime.extractFloor(later);
+    const before = await h.store.readReachable({ mode: 'runtime' });
+    const originalUser = before.entities.find(entity => entity.id === before.baseline.userPersona.entityId);
+    assert.equal(originalUser.firstSeenFloorId, later);
+    await h.runtime.extractFloor(early, { analyzeState: false });
+    let after = await h.store.readReachable({ mode: 'runtime' });
+    assert.equal(after.entities.filter(entity => entity.specialRole === 'user').length, 1, '补提更早楼不能另建user');
+    assert.ok(after.floorMemories.find(item => item.floorId === early).participants.some(item => item.entityId === originalUser.id));
+    state = await h.runtime.retryStateAnalysis(early);
+    assert.equal(state.cseFloors.find(item => item.floorId === early).status, 'ready');
+    after = await h.store.readReachable({ mode: 'runtime' });
+    assert.ok(after.stateDeltas.find(item => item.floorId === early).subjectSnapshots.some(item => item.subjectEntityId === originalUser.id));
+    assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2);
+    assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 2);
+  }
+});
+
+test('用户权威：旧明确user双ID在CSE加载与人工纠正中保留状态并统一归属', async () => {
+  const h = runtimeHarness();
+  await h.runtime.start(); await h.runtime.extractNext();
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  const original = graph.entities.find(entity => entity.id === graph.baseline.userPersona.entityId);
+  const duplicate = { ...original, id: 'fafafafa-1111-4111-8111-fafafafafafa', displayName: '旧用户称呼', aliases: [] };
+  const targetFloor = graph.floors[0], targetMemory = graph.floorMemories[0];
+  const envelope = createCseEnvelope({ floor: targetFloor, floorMemory: targetMemory, baseline: graph.baseline, currentState: null,
+    trackedSubjects: [original, duplicate], entities: [...graph.entities, duplicate],
+    identityDirectory: buildEntityIdentityDirectory({ entities: [...graph.entities, duplicate], identityProjection: { userEntityId: null } }) });
+  const compiled = await compileCseResponse({ response: { subjects: [
+    { subject: original.displayName, situational: ['保留原用户状态'] },
+    { subject: duplicate.displayName, adaptive: ['保留旧用户状态'] },
+  ] }, envelope, previousCurrentState: null, now: NOW, deltaId: 'fbfbfbfb-1111-4111-8111-fbfbfbfbfbfb' });
+  const fixture = { ...graph, entities: [...graph.entities, { ...duplicate, displayName: original.displayName, aliases: original.aliases }],
+    stateDeltas: [compiled.delta], currentStates: [] };
+  const cse = createCseRuntime({ store: { ...h.store, readReachable: async () => fixture }, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }), now: () => new Date(NOW), logger: { warn() {} } });
+  const state = await cse.load(fixture);
+  const users = state.cseSubjects.filter(subject => subject.displayName === original.displayName);
+  assert.equal(users.length, 1, '旧明确user不能形成两个人物状态主体');
+  assert.equal(users[0].subjectEntityId, original.id);
+  assert.deepEqual(users[0].adaptive.map(item => item.text), ['保留旧用户状态']);
+  assert.deepEqual(users[0].situational.map(item => item.text), ['保留原用户状态']);
+  assert.deepEqual(fixture.stateDeltas[0], compiled.delta, '派生归属不能改历史delta');
+  const { projectRecallSource } = await import('../src/v3/recall-source.js');
+  const recalled = await projectRecallSource(fixture, () => new Date(NOW));
+  assert.equal(recalled.entities.filter(entity => entity.specialRole === 'user').length, 1);
+  assert.equal(recalled.currentState.filter(subject => subject.subjectEntityId === original.id).length, 1);
+  assert.ok(recalled.currentState.find(subject => subject.subjectEntityId === original.id).adaptive.some(item => item.text === '保留旧用户状态'));
+  await h.store.putRecord(compiled.delta);
+  await h.store.putRecord(fixture.entities.at(-1));
+  const corrected = await cse.correctSubjectState({ subjectEntityId: original.id, expectedCurrentStateId: state.currentStateId,
+    expectedCurrentStateFingerprint: state.currentStateFingerprint, core: [], adaptive: [], situational: [] });
+  assert.equal(corrected.lastCseError, null);
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.status, 'ready');
+  assert.ok(saved.entities.some(entity => entity.id === duplicate.id), '旧实体原记录仍保留');
+  const last = saved.stateDeltas[0];
+  assert.deepEqual(last.subjectSnapshots.find(subject => subject.subjectEntityId === original.id).adaptive, []);
+  assert.deepEqual(last.subjectSnapshots.find(subject => subject.subjectEntityId === duplicate.id).adaptive, [], '成员按现有人工纠正合同写空');
+});
+
+test('用户权威：baseline与人工映射优先，空别名全集不回灌且未来同名NPC不泄漏', () => {
+  const original = { ...entities[0], firstSeenFloorId: FLOOR2, lastSeenFloorId: FLOOR2, recordStatus: 'active', status: 'established', identityBrief: '未来剧情身份简介' };
+  const duplicate = { ...original, id: 'fafafafa-1111-4111-8111-fafafafafafa', displayName: '旧用户称呼', aliases: [{ name: '历史别名' }] };
+  const npc = { ...entities[1], displayName: original.displayName, firstSeenFloorId: FLOOR2, lastSeenFloorId: FLOOR2, recordStatus: 'active', status: 'established' };
+  const all = [duplicate, original, npc];
+  const projection = deriveUserIdentityProjection({ entities: all, baseline,
+    identityProjection: { manualAliasesByEntityId: { [duplicate.id]: [] } } });
+  assert.equal(projection.userEntityId, original.id, 'baseline优先于加载顺序');
+  assert.equal(resolveIdentityEntityId(duplicate.id, projection), original.id);
+  assert.equal(resolveIdentityEntityId(npc.id, projection), npc.id, '普通同名NPC不归并');
+  const scoped = entitiesThroughFloorIds(all, new Set([FLOOR1]), projection);
+  assert.deepEqual(scoped.map(entity => entity.id), [original.id]);
+  assert.equal(Object.hasOwn(scoped[0], 'identityBrief'), false, '旧楼只复用user身份，不带未来剧情简介');
+  const directory = buildEntityIdentityDirectory({ entities: all, floorIds: [FLOOR1], identityProjection: projection });
+  assert.deepEqual(directory[0].labels, [original.displayName], '空别名全集盖住历史成员别名');
+  assert.equal(reuseIdentityProjection(projection, projection), projection);
+  const manual = deriveUserIdentityProjection({ entities: all, baseline, identityProjection: {
+    identityRedirectsByEntityId: { [original.id]: npc.id }, manualAliasesByEntityId: { [npc.id]: [] },
+  } });
+  assert.equal(manual.userEntityId, npc.id);
+  assert.equal(resolveIdentityEntityId(duplicate.id, manual), npc.id);
+  const manuallyChosen = buildEntityIdentityDirectory({ entities: all, floorIds: [FLOOR1], identityProjection: manual });
+  assert.equal(manuallyChosen[0].entityId, npc.id);
+  assert.equal(manuallyChosen[0].specialRole, 'user');
+  assert.equal(npc.specialRole, 'none', '派生角色不改原始实体');
+  const absentBaseline = deriveUserIdentityProjection({ entities: [original, npc] });
+  assert.equal(absentBaseline.userEntityId, original.id);
+  assert.ok(entitiesThroughFloorIds([original, npc], [FLOOR1], absentBaseline).some(entity => entity.id === original.id));
+});
+
+test('用户权威：旧user人工清空Core的保护标记贯穿前态、请求和正式提交', async () => {
+  const h = runtimeHarness();
+  h.context.chat.push(assistant('确认第二楼稳定。'));
+  let state = await h.runtime.start().then(() => h.runtime.extractNext());
+  await h.runtime.extractFloor(state.floors[1].floorId, { analyzeState: false });
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  const first = graph.floors[0], next = graph.floors[1];
+  const firstMemory = graph.floorMemories.find(item => item.floorId === first.id);
+  const original = graph.entities.find(entity => entity.id === graph.baseline.userPersona.entityId);
+  const duplicate = { ...original, id: 'edededed-1111-4111-8111-edededededed', displayName: '旧用户称呼', aliases: [] };
+  const allEntities = [...graph.entities, duplicate];
+  const envelope = createCseEnvelope({ floor: first, floorMemory: firstMemory, baseline: graph.baseline, currentState: null,
+    trackedSubjects: [original, duplicate], entities: allEntities,
+    identityDirectory: buildEntityIdentityDirectory({ entities: allEntities, identityProjection: { userEntityId: null } }) });
+  const before = await compileCseResponse({ response: { subjects: [
+    { subject: original.displayName, situational: ['原用户状态'] },
+    { subject: duplicate.displayName, core: ['稍后清空的旧Core'], adaptive: ['旧用户长期状态'] },
+  ] }, envelope, previousCurrentState: null, now: NOW, deltaId: 'ecececec-1111-4111-8111-ecececececec' });
+  const previous = await replayCurrentState({ chatId: graph.root.chatId, narrativeGeneration: graph.root.narrativeGeneration,
+    baselineId: graph.baseline.id, floors: [first], floorMemories: [firstMemory], stateDeltas: [before.delta], now: NOW });
+  const oldSubject = previous.subjects.find(subject => subject.subjectEntityId === duplicate.id);
+  const corrected = await createManualCseCorrection({ anchorDelta: before.delta, currentState: previous, subjectEntityId: duplicate.id,
+    allowedTowardEntityIds: allEntities.map(entity => entity.id), deltaId: 'ebebebeb-1111-4111-8111-ebebebebebeb', now: NOW,
+    edits: { core: [], adaptive: oldSubject.adaptive.map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility })), situational: [] } });
+  assert.ok(corrected.delta.source.manualCoreSubjectEntityIds.includes(duplicate.id));
+  const fixture = { ...graph, entities: [...graph.entities, { ...duplicate, displayName: original.displayName, aliases: original.aliases }],
+    stateDeltas: [corrected.delta], currentStates: [] };
+  for (const record of [fixture.entities.at(-1), before.delta, corrected.delta]) await h.store.putRecord(record);
+  const requests = [];
+  const cse = createCseRuntime({ store: { ...h.store, async readReachable(options) {
+    const value = await h.store.readReachable(options);
+    return value.root?.headCheckpointId === fixture.root.headCheckpointId ? fixture : value;
+  } }, hostAdapter: h.hostAdapter, now: () => new Date(NOW), logger: { warn() {} }, generateAnalysisTask: async options => {
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    assert.equal(request.payload.userCoreExtraction, undefined, '旧ID人工清空不能误触发Persona Core首次提取');
+    assert.equal(request.payload.trackedSubjects.filter(person => person.name === original.displayName).length, 1);
+    assert.equal(request.payload.trackedSubjects.find(person => person.name === original.displayName).coreUserEdited, true);
+    assert.match(JSON.stringify(request.payload.previousState), /旧用户长期状态/u);
+    assert.doesNotMatch(JSON.stringify(request.payload.previousState), /稍后清空的旧Core/u);
+    return { jsonData: { subjects: [{ subject: '你', situational: ['本楼正常状态'] }] } };
+  } });
+  await cse.load(fixture);
+  state = await cse.analyzeFloor(next.id);
+  assert.equal(state.lastCseError, null);
+  assert.equal(requests.length, 1);
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.status, 'ready');
+  const savedTarget = saved.stateDeltas.find(delta => delta.floorId === next.id);
+  assert.deepEqual(savedTarget.subjectSnapshots.find(subject => subject.subjectEntityId === original.id).core, []);
+  assert.deepEqual(savedTarget.subjectSnapshots.find(subject => subject.subjectEntityId === duplicate.id).adaptive, []);
+  assert.ok(savedTarget.subjectSnapshots.find(subject => subject.subjectEntityId === original.id).adaptive.some(item => item.text === '旧用户长期状态'));
+});
+
+test('用户权威：旧user已完成的Core不足检查归一后继续复用，不重复附首次提取任务', async () => {
+  const h = runtimeHarness(); h.context.chat.push(assistant('确认第二楼稳定。'));
+  let state = await h.runtime.start().then(() => h.runtime.extractNext());
+  await h.runtime.extractFloor(state.floors[1].floorId, { analyzeState: false });
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  const original = graph.entities.find(entity => entity.id === graph.baseline.userPersona.entityId);
+  const duplicate = { ...original, id: 'eaeaeaea-1111-4111-8111-eaeaeaeaeaea', displayName: '旧用户称呼', aliases: [] };
+  const check = { ...graph.stateDeltas[0].source.userCoreExtraction, userEntityId: duplicate.id, hasDescription: true };
+  assert.ok(check.descriptionFingerprint);
+  const all = [...graph.entities, duplicate], first = graph.floors[0], next = graph.floors[1];
+  const envelope = createCseEnvelope({ floor: first, floorMemory: graph.floorMemories.find(item => item.floorId === first.id), baseline: graph.baseline,
+    currentState: null, trackedSubjects: [duplicate], entities: all, userCoreExtraction: check,
+    identityDirectory: buildEntityIdentityDirectory({ entities: all, identityProjection: { userEntityId: null } }) });
+  const compiled = await compileCseResponse({ response: { userCoreExtraction: { status: 'insufficient' }, subjects: [{ subject: duplicate.displayName, situational: ['旧用户状态'] }] },
+    envelope, previousCurrentState: null, now: NOW, deltaId: 'e9e9e9e9-1111-4111-8111-e9e9e9e9e9e9', userCoreExtraction: envelope.scope.userCoreExtraction });
+  assert.equal(compiled.delta.source.userCoreExtraction.status, 'insufficient');
+  const fixture = { ...graph, entities: [...graph.entities, { ...duplicate, displayName: original.displayName, aliases: original.aliases }], stateDeltas: [compiled.delta], currentStates: [] };
+  for (const record of [fixture.entities.at(-1), compiled.delta]) await h.store.putRecord(record);
+  let requests = 0;
+  const cse = createCseRuntime({ store: { ...h.store, async readReachable(options) {
+    const value = await h.store.readReachable(options); return value.root?.headCheckpointId === fixture.root.headCheckpointId ? fixture : value;
+  } }, hostAdapter: h.hostAdapter, now: () => new Date(NOW), logger: { warn() {} }, generateAnalysisTask: async options => {
+    requests += 1; const payload = JSON.parse(options.taskMessages[0].content).payload;
+    assert.equal(payload.userCoreExtraction, undefined);
+    return { jsonData: { subjects: [{ subject: '你', situational: ['本楼状态'] }] } };
+  } });
+  await cse.load(fixture); state = await cse.analyzeFloor(next.id);
+  assert.equal(state.lastCseError, null); assert.equal(requests, 1);
+});
+
+test('CSE 拒收诊断保留本次真实人物范围及零/多匹配原因，不带状态正文', async () => {
+  for (const ambiguous of [false, true]) {
+    const scoped = entities.map(entity => ({ ...entity, aliases: ambiguous ? [{ name: '共同称呼' }] : entity.aliases }));
+    const envelope = createCseEnvelope({ floor: floor(FLOOR1, '不应进入诊断的正文'), floorMemory: memory(MEMORY1), baseline,
+      currentState: null, trackedSubjects: scoped.slice(1), entities: scoped });
+    const subject = ambiguous ? '共同称呼' : '范围外人物';
+    let failure;
+    try {
+      await compileCseResponse({ response: { subjects: [{ subject, situational: [{ text: '不应进入诊断的候选状态', reason: '不应进入诊断的依据' }] }] },
+        envelope, previousCurrentState: null, now: NOW, deltaId: MEMORY2 });
+    } catch (error) { failure = error; }
+    assert.equal(failure?.code, 'V3_CSE_ALL_CANDIDATES_ISOLATED');
+    const diagnostic = failure.cseDiagnostics?.subjectResolution;
+    assert.equal(diagnostic?.status, 'recorded');
+    assert.deepEqual(diagnostic.trackedSubjects.items.map(item => item.name), envelope.request.payload.trackedSubjects.map(item => item.name));
+    assert.equal(diagnostic.isolated.items[0].label, subject);
+    assert.equal(diagnostic.isolated.items[0].matchCount, ambiguous ? 2 : 0);
+    assert.equal(diagnostic.isolated.items[0].code, 'V3_CSE_SUBJECT_UNBOUND');
+    assert.doesNotMatch(JSON.stringify(diagnostic), /不应进入诊断/u);
+    assert.match(failure.message, /人物状态未保存/u);
+    assert.match(failure.message, /复制状态诊断/u);
+  }
+});
+
+test('CSE 诊断截断名单后仍按完整绑定计算歧义，已知未追踪人物不冒充分析范围', async () => {
+  const people = Array.from({ length: 42 }, (_, index) => ({ ...entities[1], id: `${(index + 100).toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    displayName: `合成人物${index}`, aliases: [{ name: index === 0 || index === 41 ? '重复称呼' : `称呼${index}` }] }));
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '合成正文'), floorMemory: memory(MEMORY1), baseline,
+    currentState: null, trackedSubjects: people, entities: [...entities, ...people] });
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '重复称呼', situational: ['状态'] }] },
+    envelope, previousCurrentState: null, now: NOW, deltaId: MEMORY2 }), error => {
+    const diagnostic = error.cseDiagnostics?.subjectResolution;
+    assert.equal(diagnostic?.trackedSubjects.total, 42);
+    assert.equal(diagnostic.trackedSubjects.truncated, true);
+    assert.equal(diagnostic.isolated.items[0].matchCount, 2);
+    return error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED';
+  });
+  const knownOnly = createCseEnvelope({ floor: floor(FLOOR1, '合成正文'), floorMemory: memory(MEMORY1), baseline,
+    currentState: null, trackedSubjects: [entities[1]], entities });
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '乙', situational: ['状态'] }] },
+    envelope: knownOnly, previousCurrentState: null, now: NOW, deltaId: MEMORY2 }), error => {
+    const diagnostic = error.cseDiagnostics?.subjectResolution;
+    assert.equal(diagnostic.isolated.items[0].matchCount, 0);
+    assert.deepEqual(diagnostic.trackedSubjects.items.map(item => item.name), ['甲']);
+    assert.ok(diagnostic.knownPeople.items.some(item => item.name === '乙'));
+    return error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED';
+  });
+  const mixed = await compileCseResponse({ response: { subjects: [{ subject: '甲', situational: [{ text: '合法状态' }, { text: '隔离状态', toward: '不存在的人物' }] }] },
+    envelope: knownOnly, previousCurrentState: null, now: NOW, deltaId: MEMORY2 });
+  assert.deepEqual(mixed.delta.subjectSnapshots[0].situational.map(item => item.text), ['合法状态']);
+  assert.deepEqual(mixed.isolated, [{ field: 'situational', index: 1, code: 'V3_CSE_TOWARD_UNBOUND' }]);
+  await assert.rejects(compileCseResponse({ response: { subjects: [{ subject: '甲', situational: [{ text: '隔离状态', toward: '不存在的人物' }] }] },
+    envelope: knownOnly, previousCurrentState: null, now: NOW, deltaId: MEMORY2 }), error => {
+    const rejection = error.cseDiagnostics?.subjectResolution?.isolated.items[0];
+    assert.equal(rejection?.code, 'V3_CSE_TOWARD_UNBOUND');
+    assert.equal(rejection.label, '不存在的人物');
+    assert.equal(rejection.matchCount, 0);
+    assert.equal(rejection.subjectIndex, 0);
+    return error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED';
+  });
+});
+
+test('CSE 失败诊断经真实请求和现有失败提示保留，重载后仍是当次范围', async () => {
+  const values = new Map();
+  const failureStorage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+  for (const host of ['official', 'luker']) {
+    values.clear();
+    const h = runtimeHarness({ host, failureStorage, cse: () => ({ jsonData: { subjects: [{ subject: '范围外人物', situational: ['候选正文禁止进入诊断'] }] } }) });
+    let state = await h.runtime.start().then(() => h.runtime.extractNext());
+    const original = state.lastCseError?.diagnostics?.subjectResolution;
+    assert.equal(original?.status, 'recorded');
+    assert.equal(original.isolated.items[0].matchCount, 0);
+    assert.equal(h.calls.filter(call => call.systemPrompt === CSE_SYSTEM_PROMPT).length, 3, '沿用现有请求次数');
+    const saved = JSON.parse([...values.values()][0]);
+    assert.deepEqual(saved.cseFailures[state.floors[0].floorId].subjectResolution, original);
+    assert.doesNotMatch(JSON.stringify(saved), /候选正文禁止|canonicalContent|candidate|evidence/u);
+    const cold = runtimeHarness({ host, failureStorage, sharedBackend: h.backend });
+    cold.context.name1 = '后来更改的名字';
+    state = await cold.runtime.start();
+    assert.deepEqual(state.lastCseError?.diagnostics?.subjectResolution, original);
+    assert.equal(cold.calls.length, 0);
+    const key = [...values.keys()][0];
+    const old = JSON.parse(values.get(key));
+    for (const hint of Object.values(old.cseFailures)) delete hint.subjectResolution;
+    values.set(key, JSON.stringify(old));
+    const legacy = runtimeHarness({ host, failureStorage, sharedBackend: h.backend });
+    state = await legacy.runtime.start();
+    assert.equal(state.lastCseError?.diagnostics?.subjectResolution?.status, 'notRecorded');
+  }
+});
 
 test('CSE 直接消费该楼当前保存的人工 chronology，不重新解析自动时间戳', () => {
   const chronology = [{ itemId: 'manual-clock', time: { kind: 'explicit', sourceText: '后来入夜时', normalized: null, precision: 'unresolved' }, description: '后来入夜时', evidenceRefs: [] }];
@@ -3919,7 +4189,8 @@ test('CSE dependency snapshot 每次只克隆一次缺省 provenance，保存前
 });
 
 
-test('有效别名：实际CSE请求复用人工目录而不回到原实体别名', async () => {
+test('有效别名：实际CSE请求复用人工或已审AI目录而不回到原实体别名', async () => {
+  for (const source of ['manual', 'reviewed']) {
   const requests = [];
   const h = runtimeHarness({
     extractor: () => ({ jsonData: { summary: '阿青抵达。', people: [{ name: '阿青', aliases: ['旧称', '旧号'], presence: 'present' }] } }),
@@ -3928,11 +4199,12 @@ test('有效别名：实际CSE请求复用人工目录而不回到原实体别�
   const state = await h.runtime.start().then(() => h.runtime.extractNext());
   const reachable = await h.store.readReachable({ mode: 'runtime' });
   const person = reachable.entities.find(e => e.displayName === '阿青'); assert.ok(person);
-  h.runtime.setIdentityProjection({ profilesByEntityId: { [person.id]: { aliases: '新称', manualFields: ['aliases'] } } });
+  h.runtime.setIdentityProjection({ profilesByEntityId: { [person.id]: { name: '青禾', aliases: '新称', manualFields: source === 'manual' ? ['aliases'] : [], ...(source === 'reviewed' ? { aliasesComplete: true } : {}) } } });
   await h.runtime.retryStateAnalysis(state.floors[0].floorId);
   const payload = requests.at(-1).payload;
-  const entry = payload.knownPeople.find(e => e.name === '阿青');
-  assert.ok(entry); assert.deepEqual(entry.aliases, ['阿青', '新称']);
+  const entry = payload.knownPeople.find(e => e.name === '青禾');
+  assert.ok(entry); assert.deepEqual(entry.aliases, ['青禾', '新称', '阿青']);
   assert.ok(!Object.hasOwn(entry, 'entity') && !Object.hasOwn(entry, 'profile'));
   assert.deepEqual((await h.store.readReachable({ mode: 'runtime' })).entities.find(e => e.id === person.id).aliases, person.aliases);
+  }
 });

@@ -50,6 +50,61 @@ test('concurrent consumers share one read and receive independently owned snapsh
   assert.equal(c.head.batchIds.length, 13); assert.equal(c.batches[0].label, 'one');
 });
 
+test('时间冷读按64项批读且保留head顺序、revision与同次合并', async () => {
+  for (const count of [0, 64, 65]) {
+    const f = fixture(count), batchCalls = [];
+    const ids = f.records.get(f.key('one', TIME_HEAD_ID)).data.batchIds;
+    ids.reverse();
+    for (let index = 0; index < ids.length; index++) f.records.get(f.key('one', ids[index])).revision = index + 2;
+    f.client.getMany = async (collection, recordIds) => {
+      batchCalls.push([...recordIds]);
+      await new Promise(resolve => setImmediate(resolve));
+      return recordIds.map(recordId => ({ recordId, status: 200, envelope: structuredClone(f.records.get(`${collection}/${recordId}`)) }));
+    };
+    const expected = await fixtureSnapshot(f, ids);
+    const [a, b] = await Promise.all([f.store.read('one'), f.store.read('one')]);
+    assert.deepEqual(a, expected); assert.deepEqual(b, expected);
+    assert.deepEqual(batchCalls.map(part => part.length), count === 0 ? [] : count === 64 ? [64] : [64, 1]);
+    assert.deepEqual(f.calls.map(call => call.id), [TIME_HEAD_ID], '冷读只逐GET确认head');
+    a.batches.push({}); b.batchRecords[0] && (b.batchRecords[0].revision = -1);
+    assert.deepEqual(await f.store.read('one'), expected, '缓存与调用方快照独立');
+    assert.equal(batchCalls.length, Math.ceil(count / 64), '未变head不重读批次');
+  }
+});
+
+async function fixtureSnapshot(f, ids) {
+  const head = structuredClone(f.records.get(f.key('one', TIME_HEAD_ID)));
+  const records = ids.map(id => structuredClone(f.records.get(f.key('one', id))));
+  return { head: head.data, revision: head.revision, batches: records.map(record => record.data),
+    batchRecords: records.map((record, index) => ({ id: ids[index], revision: record.revision, data: record.data })) };
+}
+
+test('时间批读保留缺失、归属、结构与HTTP失败，不发布部分快照', async () => {
+  for (const fault of ['missing', 'owner', 'schema', 'recordId', 'shape', 'http', 'transport']) {
+    const f = fixture(2), failure = new Error('transport unavailable');
+    let broken = true, reads = 0;
+    f.client.getMany = async (collection, ids) => {
+      reads++;
+      if (broken && fault === 'transport') throw failure;
+      const result = ids.map(recordId => ({ recordId, status: 200, envelope: structuredClone(f.records.get(`${collection}/${recordId}`)) }));
+      if (!broken) return result;
+      if (fault === 'missing') result[1] = { recordId: ids[1], status: 404 };
+      if (fault === 'owner') result[1].envelope.data.chatId = 'two';
+      if (fault === 'schema') result[1].envelope.data.schemaVersion = 2;
+      if (fault === 'recordId') result.reverse();
+      if (fault === 'shape') result.pop();
+      if (fault === 'http') result[1] = { recordId: ids[1], status: 500 };
+      return result;
+    };
+    await assert.rejects(f.store.read('one'), error => fault === 'transport' ? error === failure
+      : fault === 'http' ? error.status === 500 : /时间增量记录无效/u.test(error.message), fault);
+    assert.equal(f.calls.length, 1, '失败不额外逐项GET或自动重试');
+    broken = false;
+    const loaded = await f.store.read('one');
+    assert.equal(loaded.batches.length, 2); assert.equal(reads, 2, '失败结果未成为成功缓存');
+  }
+});
+
 test('floor-reference query covers time head, batches, fragments, state refs and review projections', async () => {
   const f = fixture(1), target = 'floor-target', other = 'floor-other';
   const head = { schemaVersion: 1, chatId: 'one', batchIds: ['batch-0'], bodyStart: { floorId: other },

@@ -1,7 +1,7 @@
 import { deriveCseTimeline, filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { assessMemoryCoverageFromHost } from './memory-coverage.js';
 import {
-  buildEntityIdentityDirectory, normalizeIdentityProjection, projectCseStateIdentityReferences,
+  buildEntityIdentityDirectory, deriveUserIdentityProjection, projectCseStateIdentityReferences,
   projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
@@ -182,7 +182,7 @@ export function selectRecallMemories(first) {
 }
 
 export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
-  const identityProjection = normalizeIdentityProjection(identityProjectionValue ?? {});
+  const identityProjection = deriveUserIdentityProjection({ ...first, identityProjection: identityProjectionValue });
   const partition = migrationPartition(first);
   const { floors, floorById, memoryGroups, activeMemories, activeMemoryIds } = selectRecallMemories(first);
   const eligibleFloors = floors.filter(floor => !isMemoryExcludedFloor(floor, hostSnapshot?.chat, first.checkpoint, {
@@ -211,6 +211,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     entityType: entry.entityType,
     displayName: safeText(entry.displayName, 500),
     aliases: Object.freeze([...new Set(entry.aliases.map(aliasText).filter(Boolean))]),
+    labels: Object.freeze([...entry.labels]),
     specialRole: entry.specialRole,
   })));
   const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));

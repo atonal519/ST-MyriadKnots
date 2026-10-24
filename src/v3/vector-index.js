@@ -298,6 +298,21 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       if (incremental && (!previous || !vectorRecordOwned(previous) || ownerKey(previous.data, previous.data.modelKey) !== key)) {
         updateBuildDiagnostic(operation, { status: 'skipped', phase: 'cache' }); return { status: 'notIndexed' };
       }
+      if (incremental && cached?.key !== key && previous.data.chunkCount === chunks.length
+        && previous.data.shardIds.length === Math.ceil(chunks.length / BATCH)) {
+        // 目录ID由完整原文见证生成；一致只说明无需增量更新，真正查询仍加载并校验向量。
+        let matches = true;
+        for (let start = 0; start < chunks.length; start += BATCH) {
+          const { id } = await batchWitnesses(source, modelKey, chunks.slice(start, start + BATCH));
+          guard(source);
+          if (previous.data.shardIds[start / BATCH] !== id) { matches = false; break; }
+        }
+        guard(source);
+        if (matches) {
+          updateBuildDiagnostic(operation, { status: 'ready', phase: 'complete', completedChunks: chunks.length, totalChunks: chunks.length });
+          return { status: 'unchanged', chunkCount: chunks.length };
+        }
+      }
       // 冷启动和手动重复建索引先恢复已提交向量；后台不因缓存冷而重算整档。
       if (cached?.key !== key) await load(source, operation.configValue, modelKey, null, { allowActive: !incremental });
       guard(source);

@@ -1,4 +1,6 @@
+import { collectPeopleHistory, compactPeopleHistory, createPeopleEvidenceProjection, peopleMaterialSignature as materialSignature, splitProfileSource, yieldProfileWork } from './people-profile-material.js';
 import { isUuid } from '../host-context.js';
+import { normalizeAvatarSource } from '../avatar-image-store.js';
 import { scanWorldInfo, createWorldInfoSourceCandidates } from '../world-info-scanner.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { replaceCseSourceMacros } from '../cse-source-selection.js';
@@ -29,10 +31,10 @@ const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
   .join('\n');
 
 export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
-1. 只处理输入 people 中的目标人物。characterCard 是本次请求共享的一份作者侧角色卡材料，可包含多个人物设定；按卡内明确归属为 people 中的目标提取，不默认把卡名或卡主当作目标。recentFloors、allowedWorldInfo、history、cseCoreTraits、priorContext、existingProfile 与 manualProfile 是分开的来源；recentFloors 是最近稳定AI楼按楼标记的清洗原文，楼内注明片段的内容并非完整楼。普通单楼的 history.storyContent 是与对应楼有效 summary 同次保存的清洗正文。聚合多楼 history 可省略 storyContent，此时只根据 summary、目标相关 facts 及其中的 exactAnchors 原句整理，不得猜测未提供的正文。必须按目标相关事实判断归属，不得把正文中其他人物的描写写给目标人物，也不得把他人的私密认知当成目标人物资料。priorContext 标记为导入前情，只能作为过去经历背景，不是当前楼或当前状态；与现行资料冲突时，以当前 history、CSE 中明确的新变化及 existingProfile 为准。
-2. history.auxiliaryStateSnapshot 若存在，是对应楼当前分支当时已保存的只读变量快照，只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
+1. 只处理输入 people 中的目标人物。characterCard 是共享的作者侧角色卡材料，按明确归属提取，不默认把卡名或卡主当作目标。history 提供已记录的有效 summary、目标相关 facts 和 sources 原句，不含整楼全文。事实的 evidence 与 participantEvidence 用 sourceIndex 引用当前楼材料 sources（从1开始）；各自的 evidenceMode、sourceEntityId、supports 和 occurrence 保留原意，转述、内心和推断不等于客观设定。sourceFloor 指真实来源楼；precedingUser 及其 sourceSnapshotIndex 表示该楼前置用户原文。manual 原句保留人工载体及已明确知情人；知情不等于作者或内容主体，不得把原文中他人的设定归给知情目标。缺引用不表示事实无效，不猜未提供的原文。recentFloors 是自动粗扫的清洗原文，注明片段时并非完整楼。sourceEntityNames 将实际引用的来源人或知情人 ID 对应到确定姓名，people.entityId 表明目标身份；未知名不猜。summarySource 保留有效摘要的 user/ai 来源。CSE Core 仍为分析，manual 仅表示人工纠正，不自动成为作者静态设定；priorContext 是过去背景，不覆盖新事实；人物卡、许可世界书、旧档案和人工字段各按其来源判断归属。
+2. history.auxiliaryStateSnapshot 是首份有来源的只读变量快照；后续 auxiliaryStateChanges 基于 fromSourceFloor 的快照，changes 按字符串数组 path 定位，value 替换、delete:true 删除，数组整值替换，空 changes 表示当楼无变化。缺少快照/变化字段不表示清空；按 history 原顺序延续，不把缺楼视作变化。变量只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
 3. 只返回一个 JSON 对象，根对象必须包含 profiles 数组；profiles 每个输入人物恰好一项，且每项内部的 personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。合法形状示例：{"profiles":[{"personKey":"person-1","name":"示例姓名"}]}。
-4. 每项除 personKey 外只返回需要新增或纠正的字段。有明确新值时返回正确的新值；没有新信息时省略字段，表示保留输入 existingProfile 的值。自动粗扫不得用空字符串或空 aliases 表示清除，空值表示无更新。单人主动重整的 existingProfile 为空且本次请求包含全部已选材料；分批整理时后批只包含本轮累计资料，上次 AI 档案中本轮未生成的字段不保留。只有材料明确要求删除旧资料且没有替代值时才返回空值。文本字段最多 20000 字符；aliases 可返回字符串或字符串数组，数组每项最多 500 字符、合并后最多 20000 字符。不要返回 null、对象或其他错误类型。
+4. 每项除 personKey 外只返回需要新增或纠正的字段。existingProfile 是待核旧 AI 资料，不是权威；结合本次证据纠错、补齐和整合，未覆盖字段省略并保留，不因缺少整楼原文而删除旧细节。材料明确否定旧值时可替换，明确应删除且没有替代值时返回空值。完整整理中，非人工 aliases 必须返回经本次全部材料核对的稳定别名全集；旧 aliases 仅为待核候选，不照单保留临时叫法，无稳定别名返回 []。自动粗扫的 aliases 只返回新发现的稳定称谓，空字符串或空数组表示无更新。文本字段最多 20000 字符；aliases 可返回字符串或字符串数组，数组每项最多 500 字符、合并后最多 20000 字符。不要返回 null、对象或其他错误类型。
 5. sourceFragments 是长资料按顺序切出的连续来源片段；part/total 表示同一来源的连续位置。长材料分批时，共享角色卡也按来源连续切片并在当前请求中只提供一次。单人主动重整的一次请求包含本轮全部已选片段，应综合完整输入整理；分批整理时当前批可能只包含该来源的一部分，以 existingProfile 作为前批累计结果继续整理。不要把当前请求未出现的来源或字段当成不存在，也不要把局部片段当成完整人物档。
 6. manualProfile 和 manualFields 由保存层保护，不需要模型复制；不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。
 7. 自动粗扫每约十个新增稳定AI楼运行一次，输入为楼层标记的清洗原文；仅提取明确新增或重大变化的长期基础资料，例如稳定外貌、职业和身份。短期处境、换装和剧情状态不固化；无变化时该人物只返回 personKey。原文按最新楼优先提供，人工资料和旧档案仅作边界参考。
@@ -136,7 +138,8 @@ function validateProfile(value, entityId, schemaVersion) {
   if (!['manual', 'generated'].includes(value.source) || !Number.isFinite(Date.parse(value.createdAt)) || !Number.isFinite(Date.parse(value.updatedAt))) {
     throw errorWith('QQJ_PEOPLE_WORKSPACE_INVALID', '人物资料来源或时间无效，已停止读取。');
   }
-  return Object.freeze({ entityId, ...profileFields(value), manualFields: Object.freeze(manualFields(value, schemaVersion)), source: value.source, createdAt: value.createdAt, updatedAt: value.updatedAt });
+  if (value.aliasesComplete !== undefined && typeof value.aliasesComplete !== 'boolean') throw errorWith('QQJ_PEOPLE_WORKSPACE_INVALID', '人物别名资料记录损坏，已停止读取。');
+  return Object.freeze({ entityId, ...profileFields(value), ...(value.aliasesComplete !== undefined ? { aliasesComplete: value.aliasesComplete } : {}), manualFields: Object.freeze(manualFields(value, schemaVersion)), source: value.source, createdAt: value.createdAt, updatedAt: value.updatedAt });
 }
 function validateAvatar(value, entityId) {
   if (typeof value !== 'string' || value.length > 2 * 1024 * 1024 || !/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u.test(value) || !isUuid(entityId)) {
@@ -182,6 +185,14 @@ export function validatePeopleWorkspace(value, expectedChatId) {
     for (const [entityId, avatar] of Object.entries(value.avatarsByEntityId)) avatarsByEntityId[entityId] = validateAvatar(avatar, entityId);
   }
   const identityRedirectsByEntityId = {};
+  const avatarSourcesByEntityId = {};
+  if (value.avatarSourcesByEntityId !== undefined) {
+    if (!value.avatarSourcesByEntityId || typeof value.avatarSourcesByEntityId !== 'object' || Array.isArray(value.avatarSourcesByEntityId)) throw errorWith('QQJ_PEOPLE_WORKSPACE_INVALID', '人物原图索引无效。');
+    for (const [id, source] of Object.entries(value.avatarSourcesByEntityId)) {
+      if (!isUuid(id) || !avatarsByEntityId[id]) throw errorWith('QQJ_PEOPLE_WORKSPACE_INVALID', '人物原图缺少对应头像。');
+      avatarSourcesByEntityId[id] = normalizeAvatarSource(source);
+    }
+  }
   const deletedEntityIds = [];
   const profileMaterialProgressByEntityId = {};
   if (value.schemaVersion >= 3) {
@@ -214,6 +225,7 @@ export function validatePeopleWorkspace(value, expectedChatId) {
   return Object.freeze({
     schemaVersion: PEOPLE_WORKSPACE_SCHEMA_VERSION, kind: 'qqj-v3-people-workspace', chatId: value.chatId,
     selectedEntityIds: Object.freeze(selectedEntityIds), personOrderEntityIds: Object.freeze(personOrderEntityIds), profilesByEntityId: Object.freeze(profilesByEntityId), avatarsByEntityId: Object.freeze(avatarsByEntityId),
+    ...(Object.keys(avatarSourcesByEntityId).length ? { avatarSourcesByEntityId: Object.freeze(avatarSourcesByEntityId) } : {}),
     identityRedirectsByEntityId: Object.freeze(identityRedirectsByEntityId), deletedEntityIds: Object.freeze(deletedEntityIds),
     profileMaterialProgressByEntityId: Object.freeze(profileMaterialProgressByEntityId),
     createdAt: value.createdAt, updatedAt: value.updatedAt,
@@ -301,7 +313,7 @@ export function projectAnnualPeople(reachable, workspace) {
   return [...people.values()];
 }
 function activePersonDirectory(reachable, workspace) {
-  return buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: identityProjection(workspace) })
+  return buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: normalizeIdentityProjection(workspace ?? {}, macrosFor(reachable)) })
     .filter(entry => entry.entityType === 'person' && entry.entity.specialRole !== 'user');
 }
 function activePersonEntities(reachable, workspace) {
@@ -343,8 +355,9 @@ function candidateProjection(reachable, memoryState, workspace) {
     const appearanceCount = counts.get(entity.id) ?? 0;
     return Object.freeze({
       entityId: entity.id, displayName: profile?.name || macroText(entity.displayName, macros),
-      entityDisplayName: macroText(entity.displayName, macros), aliases: Object.freeze(entry.aliases.map(alias => macroText(alias, macros)).filter(Boolean)),
+      entityDisplayName: macroText(entry.originalDisplayName ?? entity.displayName, macros), aliases: Object.freeze(entry.aliases.map(alias => macroText(alias, macros)).filter(Boolean)),
       specialRole: entity.specialRole, selected: selected.has(entity.id), profiled: Boolean(profile), profile, avatar: workspace?.avatarsByEntityId?.[entity.id] ?? null,
+      ...(workspace?.avatarSourcesByEntityId?.[entity.id] ? { avatarSource: workspace.avatarSourcesByEntityId[entity.id] } : {}),
       appearanceCount, cse,
     });
   }).sort((left, right) => Number(right.selected) - Number(left.selected)
@@ -370,132 +383,135 @@ function emptyWorkspace(chatId, timestamp) {
 }
 function sameFields(left, right) { return PEOPLE_PROFILE_FIELDS.every(field => String(left?.[field] ?? '') === String(right?.[field] ?? '')); }
 function effectiveSummary(memory) { return memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText; }
-function materialSignature(value) {
-  const text = JSON.stringify(value);
-  let left = 0x811c9dc5, right = 0x9e3779b9;
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    left = Math.imul(left ^ code, 0x01000193) >>> 0;
-    right = Math.imul((right + code + index) >>> 0, 0x85ebca6b) >>> 0;
-  }
-  return `people-material-v1:${text.length}:${left.toString(16).padStart(8, '0')}${right.toString(16).padStart(8, '0')}`;
-}
+
 function targetRole(primary, related, entityId, primaryRole = 'owner', relatedRole = 'target', projection = {}) {
   const owns = resolveIdentityEntityId(primary, projection) === entityId;
   const receives = (related ?? []).some(id => resolveIdentityEntityId(id, projection) === entityId);
   return owns && receives ? `${primaryRole}-and-${relatedRole}` : owns ? primaryRole : receives ? relatedRole : null;
 }
-function targetHistory(reachable, entityId, macros, projection = {}) {
+function* targetHistoryEntries(reachable, entityId, macros, projection = {}, onEntityReference = () => {}) {
   const floorSequence = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor.assistantSeq]));
-  const floorContent = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor.content?.canonicalContent]));
-  return Object.freeze((reachable?.floorMemories ?? []).flatMap((memory, index) => {
-    if (memory?.recordStatus !== 'active') return [];
+  for (const [index, memory] of (reachable?.floorMemories ?? []).entries()) {
+    if (memory?.recordStatus !== 'active') { yield null; continue; }
+    const references = createPeopleEvidenceProjection({ floorSequence, fallbackFloorId: memory.floorId,
+      resolveEntityId: id => resolveIdentityEntityId(id, projection), onEntityReference });
+    const fact = (item, value) => {
+      const evidence = references.evidence(item.evidenceRefs);
+      return { ...value, ...(evidence.length ? { evidence } : {}) };
+    };
     const facts = {};
     const actions = (memory.actions ?? []).flatMap(item => {
       const role = targetRole(item.actorEntityId, item.targetEntityIds, entityId, 'actor', 'target', projection);
       if (!role) return [];
-      return [{ role, action: macroText(clean(item.action, 2000), macros), completion: item.completion,
-        ...(item.result ? { result: macroText(clean(item.result, 2000), macros) } : {}) }];
+      return [fact(item, { role, action: macroText(clean(item.action, 2000), macros), completion: item.completion,
+        ...(item.result ? { result: macroText(clean(item.result, 2000), macros) } : {}) })];
     });
     if (actions.length) facts.actions = actions;
     const observations = (memory.observations ?? []).filter(item => resolveIdentityEntityId(item.subjectEntityId, projection) === entityId)
-      .map(item => ({ kind: item.kind, description: macroText(clean(item.description, 2000), macros) }));
+      .map(item => fact(item, { kind: item.kind, description: macroText(clean(item.description, 2000), macros) }));
     if (observations.length) facts.observations = observations;
     const privateCognition = (memory.privateCognition ?? []).filter(item => resolveIdentityEntityId(item.ownerEntityId, projection) === entityId)
-      .map(item => ({ kind: item.kind, content: macroText(clean(item.content, 2000), macros) }));
+      .map(item => fact(item, { kind: item.kind, content: macroText(clean(item.content, 2000), macros) }));
     if (privateCognition.length) facts.privateCognition = privateCognition;
     const commitments = (memory.commitments ?? []).flatMap(item => {
       const role = targetRole(item.speakerEntityId, item.targetEntityIds, entityId, 'speaker', 'recipient', projection);
       if (!role) return [];
-      return [{ role, kind: item.kind, content: macroText(clean(item.content, 2000), macros), status: item.status }];
+      return [fact(item, { role, kind: item.kind, content: macroText(clean(item.content, 2000), macros), status: item.status })];
     });
     if (commitments.length) facts.commitments = commitments;
     const informationTransfers = (memory.informationTransfers ?? []).flatMap(item => {
       const role = targetRole(item.fromEntityId, item.toEntityIds, entityId, 'source', 'recipient', projection);
       if (!role) return [];
-      return [{ role, claim: macroText(clean(item.claimText, 2000), macros), channel: item.channel }];
+      return [fact(item, { role, claim: macroText(clean(item.claimText, 2000), macros), channel: item.channel })];
     });
     if (informationTransfers.length) facts.informationTransfers = informationTransfers;
     const locations = (memory.locations ?? []).filter(item => (item.participantEntityIds ?? []).some(id => resolveIdentityEntityId(id, projection) === entityId))
-      .map(item => ({ name: macroText(clean(item.name, 500), macros), change: item.change }));
+      .map(item => fact(item, { name: macroText(clean(item.name, 500), macros), change: item.change }));
     if (locations.length) facts.locations = locations;
     const openLoops = (memory.openLoops ?? []).filter(item => (item.ownerEntityIds ?? []).some(id => resolveIdentityEntityId(id, projection) === entityId))
-      .map(item => ({ description: macroText(clean(item.description, 2000), macros) }));
+      .map(item => fact(item, { description: macroText(clean(item.description, 2000), macros) }));
     if (openLoops.length) facts.openLoops = openLoops;
     const cseSignals = (memory.cseSignals ?? []).flatMap(item => {
       const role = targetRole(item.subjectEntityId, item.objectEntityId ? [item.objectEntityId] : [], entityId, 'subject', 'object', projection);
       if (!role) return [];
-      return [{ role, type: item.signalType, description: macroText(clean(item.description, 2000), macros) }];
+      return [fact(item, { role, type: item.signalType, description: macroText(clean(item.description, 2000), macros) })];
     });
     if (cseSignals.length) facts.cseSignals = cseSignals;
-    const exactAnchors = (memory.exactAnchors ?? []).filter(item => resolveIdentityEntityId(item.speakerEntityId, projection) === entityId)
-      .map(item => ({ kind: item.kind, exactText: macroText(clean(item.exactText, 2000), macros), whyPreserve: macroText(clean(item.whyPreserve, 1000), macros) }));
+    const suppressed = new Set(memory.suppressedExactAnchorIds ?? []);
+    const exactAnchors = (memory.exactAnchors ?? []).flatMap(item => {
+      if (item.manual !== true && suppressed.has(item.anchorId)) return [];
+      const knownEntityIds = (item.knownEntityIds ?? []).map(id => resolveIdentityEntityId(id, projection));
+      if (resolveIdentityEntityId(item.speakerEntityId, projection) !== entityId
+        && !(item.manual === true && knownEntityIds.includes(entityId))) return [];
+      const anchor = references.anchor({ ...item, ...(item.manual === true ? { knownEntityIds } : {}) });
+      const speakerEntityId = resolveIdentityEntityId(item.speakerEntityId, projection);
+      if (anchor && speakerEntityId && speakerEntityId !== entityId) onEntityReference(speakerEntityId);
+      return anchor ? [{ kind: item.kind, ...anchor, whyPreserve: macroText(clean(item.whyPreserve, 1000), macros),
+        ...(speakerEntityId ? { speakerEntityId } : {}) }] : [];
+    });
     if (exactAnchors.length) facts.exactAnchors = exactAnchors;
-    const participated = (memory.participants ?? []).some(item => resolveIdentityEntityId(item.entityId, projection) === entityId);
-    if (!participated && !Object.keys(facts).length) return [];
+    const participants = (memory.participants ?? []).filter(item => resolveIdentityEntityId(item.entityId, projection) === entityId);
+    const participated = participants.length > 0;
+    if (!participated && !Object.keys(facts).length) { yield null; continue; }
     const summary = macroText(clean(effectiveSummary(memory), 4000), macros);
-    const aggregate = Array.isArray(memory.sourceFloorIds) && memory.sourceFloorIds.length > 1;
-    const storyContent = aggregate ? null : macroText(memory.sourceCanonicalContent ?? floorContent.get(memory.floorId) ?? '', macros);
-    return [Object.freeze({
+    const participantEvidence = references.evidence(participants.flatMap(item => item.evidenceRefs ?? []));
+    yield Object.freeze({
       sourceFloor: floorSequence.get(memory.floorId) ?? (Number.isSafeInteger(memory.assistantSeq) ? memory.assistantSeq : index + 1),
-      ...(!aggregate ? { storyContent } : {}),
-      ...(summary ? { summary } : {}),
+      ...(summary ? { summary, summarySource: memory.summary?.effectiveSource } : {}),
       ...(Object.keys(facts).length ? { facts: Object.freeze(facts) } : {}),
-      ...(memory.sourceVariableReference ? { auxiliaryStateSnapshot: clone(memory.sourceVariableReference) } : {}),
-    })];
-  }));
+      ...(references.sources.length ? { sources: Object.freeze(references.sources) } : {}),
+      ...(participantEvidence.length ? { participantEvidence } : {}),
+      ...(memory.sourceVariableReference ? { auxiliaryStateSnapshot: memory.sourceVariableReference } : {}),
+    });
+  }
 }
+function targetHistory(...args) { return Object.freeze([...targetHistoryEntries(...args)].filter(Boolean)); }
 
-function targetContext(reachable, memoryState, target, workspace, macros) {
+function targetContext(reachable, memoryState, target, workspace, macros, preparedDirectory = null) {
   const projection = identityProjection(workspace);
-  const directory = activePersonDirectory(reachable, workspace);
+  const directory = preparedDirectory ?? activePersonDirectory(reachable, workspace);
   const entry = directory.find(item => item.entityId === target.entityId);
-  const entity = entry?.entity;
   const floorSequence = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor.assistantSeq]));
   const cseCoreTraits = [];
   for (const subject of memoryState?.cseSubjects ?? []) {
     if (resolveIdentityEntityId(subject.subjectEntityId, projection) !== target.entityId) continue;
-    for (const item of subject.core ?? []) cseCoreTraits.push({ text: macroText(item.text, macros), source: item.sourceFloorId ? 'story-floor' : item.origin || 'unknown',
+    for (const item of subject.core ?? []) cseCoreTraits.push({ text: macroText(item.text, macros), source: item.origin === 'manual' ? 'manual' : item.sourceFloorId ? 'story-floor' : item.origin || 'unknown',
       ...(item.sourceFloorId && floorSequence.has(item.sourceFloorId) ? { sourceFloor: floorSequence.get(item.sourceFloorId) } : {}) });
   }
   return Object.freeze({
-    currentName: macroText(entity?.displayName ?? target.entityDisplayName, macros),
+    currentName: macroText(entry?.displayName ?? target.displayName ?? target.entityDisplayName, macros),
+    ...(entry?.originalDisplayName ? { previousName: macroText(entry.originalDisplayName, macros) } : {}),
     aliases: Object.freeze((entry?.aliases ?? []).map(alias => macroText(alias, macros))),
     cseCoreTraits: Object.freeze(cseCoreTraits),
   });
 }
 
-function splitContinuous(text, maximum) {
-  const value = String(text ?? '');
-  const characters = [...value];
-  if (characters.length <= maximum) return [value];
-  const parts = [];
-  for (let offset = 0; offset < characters.length; offset += maximum) parts.push(characters.slice(offset, offset + maximum).join(''));
-  return parts;
-}
 
-function sourceFragments(person, worldInfo, maximumPartCharacters, sharedCharacterCard = null) {
+async function sourceFragments(person, worldInfo, maximumPartCharacters, sharedCharacterCard = null) {
   const sources = [];
   for (const [field, value] of Object.entries(sharedCharacterCard ?? person.characterCard ?? {})) if (value) sources.push({ kind: 'characterCard', label: field, content: value });
   for (const source of worldInfo ?? []) sources.push({ kind: 'allowedWorldInfo', label: `${source.source || ''}${source.label ? ` · ${source.label}` : ''}`.trim(), content: source.content });
   for (const item of person.history ?? []) sources.push({ kind: 'history', sourceFloor: item.sourceFloor, content: JSON.stringify(item) });
   for (const item of person.cseCoreTraits ?? []) sources.push({ kind: 'cseCoreTrait', ...(item.sourceFloor ? { sourceFloor: item.sourceFloor } : {}), content: JSON.stringify(item) });
   if (person.priorContext) sources.push({ kind: 'priorContext', label: '导入前情', content: person.priorContext });
-  return Object.freeze(sources.flatMap((source, sourceIndex) => {
-    const parts = splitContinuous(source.content, maximumPartCharacters);
-    return parts.map((content, partIndex) => Object.freeze({ sourceIndex: sourceIndex + 1, kind: source.kind,
+  const fragments = [];
+  for (const [sourceIndex, source] of sources.entries()) {
+    const parts = splitProfileSource(source.content, maximumPartCharacters);
+    for (const [partIndex, content] of parts.entries()) fragments.push(Object.freeze({ sourceIndex: sourceIndex + 1, kind: source.kind,
       ...(source.label ? { label: source.label } : {}), ...(source.sourceFloor ? { sourceFloor: source.sourceFloor } : {}),
       part: partIndex + 1, total: parts.length, content }));
-  }));
+    if ((sourceIndex + 1) % 16 === 0) await yieldProfileWork();
+  }
+  return Object.freeze(fragments);
 }
 
-function longProfileBatches(request, maximumCharacters = PEOPLE_PROFILE_INPUT_CHAR_BUDGET) {
+async function longProfileBatches(request, maximumCharacters = PEOPLE_PROFILE_INPUT_CHAR_BUDGET) {
   const batches = [];
   for (const person of request.people) {
     const base = Object.fromEntries(Object.entries(person).filter(([key]) => !['history', 'cseCoreTraits', 'characterCard', 'priorContext'].includes(key)));
     const overhead = JSON.stringify({ task: request.task, people: [{ ...base, sourceFragments: [] }], allowedWorldInfo: [], batch: {} }).length;
     const partLimit = Math.max(2000, Math.min(12000, maximumCharacters - overhead - 1200));
-    const fragments = sourceFragments(person, request.allowedWorldInfo, partLimit, request.characterCard);
+    const fragments = await sourceFragments(person, request.allowedWorldInfo, partLimit, request.characterCard);
     const groups = [];
     let group = [];
     for (const fragment of fragments) {
@@ -514,19 +530,20 @@ function longProfileBatches(request, maximumCharacters = PEOPLE_PROFILE_INPUT_CH
   return Object.freeze(batches.map((batch, index) => Object.freeze({ ...batch, overallIndex: index + 1, overallTotal: batches.length })));
 }
 
-function completeProfileRequest(request, maximumCharacters = PEOPLE_PROFILE_INPUT_CHAR_BUDGET) {
-  const people = request.people.map(person => {
+export async function completeProfileRequest(request, maximumCharacters = PEOPLE_PROFILE_INPUT_CHAR_BUDGET) {
+  const people = [];
+  for (const person of request.people) {
     const base = Object.fromEntries(Object.entries(person).filter(([key]) => !['history', 'cseCoreTraits', 'characterCard', 'priorContext'].includes(key)));
     const overhead = JSON.stringify({ task: request.task, people: [{ ...base, sourceFragments: [] }], allowedWorldInfo: [] }).length;
     const partLimit = Math.max(2000, Math.min(12000, maximumCharacters - overhead - 1200));
-    return { ...base, sourceFragments: sourceFragments(person, request.allowedWorldInfo, partLimit, request.characterCard) };
-  });
+    people.push({ ...base, sourceFragments: await sourceFragments(person, request.allowedWorldInfo, partLimit, request.characterCard) });
+  }
   // 单人主动重整必须把同一选材计划的所有连续片段放进一次请求，不能分批早写部分档案。
   return { task: request.task, people, allowedWorldInfo: [] };
 }
 
 function personTerms(people) {
-  return [...new Set(people.flatMap(person => [person.currentName, ...(person.aliases ?? [])])
+  return [...new Set(people.flatMap(person => [person.currentName, person.previousName, ...(person.aliases ?? [])])
     .map(value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase('zh-Hans-CN'))
     .filter(value => [...value].length >= 2))];
 }
@@ -583,7 +600,7 @@ function incompleteProfileResult(result) {
 export function createPeopleWorkspaceRuntime({
   store, session, foundationRuntime, foundationStore, hostAdapter, memoryRuntime, generateUtilityTask, sourcePermissions,
   contextProvider, scanner = scanWorldInfo, isMainGenerationActive = () => false,
-  sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', processingPrompt = () => '', isEnabled = true, now = () => new Date(), logger = console,
+  sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', processingPrompt = () => '', avatarGenerator = null, avatarPrompt = () => '', avatarImageStore = null, isEnabled = true, now = () => new Date(), logger = console,
 } = {}) {
   if (!store || typeof store.read !== 'function' || typeof store.put !== 'function') throw new TypeError('人物工作区 store 无效');
   if (!session || typeof session.identity !== 'function') throw new TypeError('人物工作区 session 无效');
@@ -614,15 +631,20 @@ export function createPeopleWorkspaceRuntime({
     projectedInputs = projectionInputs(reachable, memoryState);
   };
   const syncIdentityProjection = () => { try { memoryRuntime.setIdentityProjection?.(identityProjection(workspace)); } catch { /* memory projection remains readable */ } };
-  function fullMaterialPlanFor(candidate, characterCard) {
+  async function fullMaterialPlanFor(candidate, characterCard) {
     const reachable = foundationRuntime.getReachable?.();
     const memoryState = memoryRuntime.getState();
     const macros = macrosFor(reachable);
-    const history = targetHistory(reachable, candidate.entityId, macros, identityProjection(workspace));
-    const context = targetContext(reachable, memoryState, candidate, workspace, macros);
+    const projection = normalizeIdentityProjection(workspace ?? {}, macros);
+    const directory = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: projection });
+    const names = new Map(directory.filter(entry => entry.entityType === 'person').map(entry => [entry.entityId, entry.displayName]));
+    const sourceEntityNames = {};
+    const rememberName = id => { if (id && names.has(id)) sourceEntityNames[id] = names.get(id); };
+    const { history, signature } = await collectPeopleHistory(targetHistoryEntries(reachable, candidate.entityId, macros, projection, rememberName));
+    const context = targetContext(reachable, memoryState, candidate, workspace, macros, directory);
     const contextSignature = materialSignature({ context, characterCard });
-    return Object.freeze({ entityId: candidate.entityId, history, context, historyStart: 0, includeContext: true, includeWorldInfo: true,
-      processedHistoryCount: history.length, materialSignature: materialSignature(history), contextSignature });
+    return Object.freeze({ entityId: candidate.entityId, history, context, sourceEntityNames: Object.freeze(sourceEntityNames), historyStart: 0, includeContext: true, includeWorldInfo: true,
+      processedHistoryCount: history.length, materialSignature: signature, contextSignature });
   }
   function memoryIsBusy() {
     const state = memoryRuntime.getState();
@@ -843,7 +865,7 @@ export function createPeopleWorkspaceRuntime({
   }
   function begin(kind) {
     if (!enabled()) throw errorWith('QQJ_PEOPLE_DISABLED', '千千结已关闭。');
-    const alongsideGeneration = active?.kind === 'generating' && ['savingProfile', 'savingSelection', 'savingAvatar'].includes(kind);
+    const alongsideGeneration = ['generating', 'generatingAvatar'].includes(active?.kind) && ['savingProfile', 'savingSelection', 'savingAvatar'].includes(kind);
     if (active && !alongsideGeneration) throw errorWith('QQJ_PEOPLE_BUSY', '人物资料正在处理，请稍候。');
     const operation = { kind, epoch, identity: capture(), controller: new AbortController() };
     if (alongsideGeneration) concurrentWrites.add(operation); else active = operation;
@@ -963,19 +985,45 @@ export function createPeopleWorkspaceRuntime({
         const manual = [...new Set([...(existing?.manualFields ?? []), ...declared])];
         const timestamp = nowIso(now);
         return { ...clone(current), profilesByEntityId: { ...clone(current.profilesByEntityId), [entityId]: {
-          entityId, ...desired, manualFields: manual, source: manual.length ? 'manual' : existing?.source ?? 'manual', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp,
+          entityId, ...desired, ...(existing?.aliasesComplete !== undefined ? { aliasesComplete: existing.aliasesComplete } : {}), manualFields: manual, source: manual.length ? 'manual' : existing?.source ?? 'manual', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp,
         } }, updatedAt: timestamp };
       });
       lastError = null; return result.state;
     });
   }
-  async function saveAvatar(entityId, avatarDataUrl) {
+  function prepareAvatarGeneration(entityId) {
+    const person = people.find(item => item.entityId === entityId);
+    if (!person) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
+    if (!avatarGenerator) throw new Error('当前环境无法生成头像。');
+    return avatarGenerator.prepare(person);
+  }
+  async function generateAvatar(entityId, { character } = {}) {
+    const operation = begin('generatingAvatar');
+    let result;
+    await settle(operation, async () => {
+      const person = people.find(person => person.entityId === entityId);
+      if (!person) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
+      if (!avatarGenerator) throw new Error('当前环境无法生成头像。');
+      result = await avatarGenerator.generate({ character, prompt: avatarPrompt(), clothingStyle: person.profile?.clothingStyle ?? '', signal: operation.controller.signal });
+    });
+    return result;
+  }
+  async function saveAvatar(entityId, avatarDataUrl, { originalFile = null, originalRef = null, crop = null, generated = false, onOriginalUploaded } = {}) {
     const operation = begin('savingAvatar');
     return settle(operation, async () => {
       const startingAvatar = workspace?.avatarsByEntityId?.[entityId] ?? null;
+      const startingSource = workspace?.avatarSourcesByEntityId?.[entityId] ?? null;
       const candidate = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).find(person => person.entityId === entityId);
       if (!candidate) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
       const requested = avatarDataUrl === null || avatarDataUrl === '' ? null : validateAvatar(avatarDataUrl, entityId);
+      let source = null;
+      if (requested && originalRef) source = normalizeAvatarSource({ ...originalRef, crop });
+      else if (requested && originalFile) {
+        if (!avatarImageStore) throw new Error('当前环境无法保存头像原图。');
+        const uploaded = await avatarImageStore.upload(originalFile, { signal: operation.controller.signal, generated });
+        onOriginalUploaded?.(uploaded);
+        source = normalizeAvatarSource({ ...uploaded, crop });
+      }
       const result = await mutate(operation, current => {
         const projection = identityProjection(current);
         if (resolveIdentityEntityId(entityId, projection) !== entityId || isIdentityDeleted(entityId, projection)
@@ -983,11 +1031,14 @@ export function createPeopleWorkspaceRuntime({
           throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已删除或归属变化，本次头像没有写入。');
         }
         const existing = current.avatarsByEntityId[entityId] ?? null;
-        if (existing === requested) return null;
-        if (existing !== startingAvatar) throw errorWith('QQJ_PEOPLE_PROFILE_CONFLICT', '这个人物头像已在其他页面更新，本次没有覆盖新头像，请重试。');
+        const existingSource = current.avatarSourcesByEntityId?.[entityId] ?? null;
+        if (existing === requested && JSON.stringify(existingSource) === JSON.stringify(source)) return null;
+        if (existing !== startingAvatar || JSON.stringify(existingSource) !== JSON.stringify(startingSource)) throw errorWith('QQJ_PEOPLE_PROFILE_CONFLICT', '这个人物头像已在其他页面更新，本次没有覆盖新头像，请重试。');
         const timestamp = nowIso(now), avatars = { ...clone(current.avatarsByEntityId) };
+        const sources = { ...clone(current.avatarSourcesByEntityId ?? {}) };
         if (requested) avatars[entityId] = requested; else delete avatars[entityId];
-        return { ...clone(current), avatarsByEntityId: avatars, updatedAt: timestamp };
+        if (source) sources[entityId] = source; else delete sources[entityId];
+        return { ...clone(current), avatarsByEntityId: avatars, avatarSourcesByEntityId: sources, updatedAt: timestamp };
       });
       lastError = null; return result.state;
     });
@@ -1013,6 +1064,7 @@ export function createPeopleWorkspaceRuntime({
         const chosenId = profileSource === 'source' ? sourceEntityId : targetEntityId;
         const chosenProfile = current.profilesByEntityId[chosenId] ?? null;
         const chosenAvatar = current.avatarsByEntityId[chosenId] ?? null;
+        const chosenSource = current.avatarSourcesByEntityId?.[chosenId] ?? null;
         const targetProfile = current.profilesByEntityId[targetEntityId] ?? null;
         const timestamp = nowIso(now);
         const redirects = { ...clone(current.identityRedirectsByEntityId), [sourceEntityId]: targetEntityId };
@@ -1023,8 +1075,9 @@ export function createPeopleWorkspaceRuntime({
         }
         const profiles = { ...clone(current.profilesByEntityId) };
         const avatars = { ...clone(current.avatarsByEntityId) };
+        const avatarSources = { ...clone(current.avatarSourcesByEntityId ?? {}) };
         const progress = { ...clone(current.profileMaterialProgressByEntityId ?? {}) };
-        delete profiles[sourceEntityId]; delete avatars[sourceEntityId];
+        delete profiles[sourceEntityId]; delete avatars[sourceEntityId]; delete avatarSources[sourceEntityId];
         delete progress[sourceEntityId]; delete progress[targetEntityId];
         if (chosenProfile) {
           const name = targetDisplayName || chosenProfile.name;
@@ -1037,11 +1090,12 @@ export function createPeopleWorkspaceRuntime({
             manualFields: [...manual], source: chosenProfile.source, updatedAt: timestamp };
         } else delete profiles[targetEntityId];
         if (chosenAvatar) avatars[targetEntityId] = chosenAvatar; else delete avatars[targetEntityId];
+        if (chosenSource) avatarSources[targetEntityId] = clone(chosenSource); else delete avatarSources[targetEntityId];
         const selected = [...new Set(current.selectedEntityIds.map(id => resolveIdentityEntityId(id, provisional)).filter(id => id !== sourceEntityId))];
         if ((current.selectedEntityIds.includes(sourceEntityId) || current.selectedEntityIds.includes(targetEntityId)) && !selected.includes(targetEntityId)) selected.push(targetEntityId);
         const personOrder = [...new Set((current.personOrderEntityIds ?? []).map(id => resolveIdentityEntityId(id, provisional)).filter(id => id !== sourceEntityId))];
         const deleted = current.deletedEntityIds.filter(id => id !== sourceEntityId && id !== targetEntityId);
-        return { ...clone(current), selectedEntityIds: selected, personOrderEntityIds: personOrder, profilesByEntityId: profiles, avatarsByEntityId: avatars,
+        return { ...clone(current), selectedEntityIds: selected, personOrderEntityIds: personOrder, profilesByEntityId: profiles, avatarsByEntityId: avatars, avatarSourcesByEntityId: avatarSources,
           profileMaterialProgressByEntityId: progress,
           identityRedirectsByEntityId: redirects, deletedEntityIds: deleted, updatedAt: timestamp };
       });
@@ -1061,12 +1115,13 @@ export function createPeopleWorkspaceRuntime({
         if (canonical !== entityId || isIdentityDeleted(canonical, projection)) throw errorWith('QQJ_PEOPLE_DELETE_CONFLICT', '人物归属已经变化，请刷新后重试。');
         const members = new Set(identityProjectionMembers(canonical, projection));
         const profiles = { ...clone(current.profilesByEntityId) }, avatars = { ...clone(current.avatarsByEntityId) };
+        const avatarSources = { ...clone(current.avatarSourcesByEntityId ?? {}) };
         const progress = { ...clone(current.profileMaterialProgressByEntityId ?? {}) };
-        for (const id of members) { delete profiles[id]; delete avatars[id]; delete progress[id]; }
+        for (const id of members) { delete profiles[id]; delete avatars[id]; delete avatarSources[id]; delete progress[id]; }
         const timestamp = nowIso(now);
         return { ...clone(current), selectedEntityIds: current.selectedEntityIds.filter(id => !members.has(resolveIdentityEntityId(id, projection))),
           personOrderEntityIds: (current.personOrderEntityIds ?? []).filter(id => !members.has(resolveIdentityEntityId(id, projection))),
-          profilesByEntityId: profiles, avatarsByEntityId: avatars,
+          profilesByEntityId: profiles, avatarsByEntityId: avatars, avatarSourcesByEntityId: avatarSources,
           profileMaterialProgressByEntityId: progress,
           deletedEntityIds: [...new Set([...current.deletedEntityIds, canonical])], updatedAt: timestamp };
       });
@@ -1081,12 +1136,15 @@ export function createPeopleWorkspaceRuntime({
     const macros = operation.macros;
     const hostContext = contextProvider();
     const prequelText = typeof hostContext?.chatMetadata?.[PREQUEL_METADATA_KEY] === 'string' ? hostContext.chatMetadata[PREQUEL_METADATA_KEY] : '';
-    const peopleRequest = targets.map((target, index) => {
+    const peopleRequest = [];
+    const worldInfoPeople = [];
+    for (const [index, target] of targets.entries()) {
       const history = target.materialPlan?.history ?? targetHistory(reachable, target.entityId, macros, identityProjection(workspace));
       const context = target.materialPlan?.context ?? targetContext(reachable, memoryState, target, workspace, macros);
+      worldInfoPeople.push(context);
       const historyStart = target.materialPlan?.historyStart ?? 0;
       const includeContext = target.materialPlan?.includeContext !== false;
-      const priorContext = selectPrequel({
+      const priorContext = prequelText.trim() ? selectPrequel({
         text: prequelText,
         queryContext: {
           latestUserText: [context.currentName, ...context.aliases].join(' '),
@@ -1097,14 +1155,15 @@ export function createPeopleWorkspaceRuntime({
         maxTokens: target.profiled ? 1000 : 10000,
         requireMatch: true,
         fallbackToTail: false,
-      }).injectionText;
-      return { personKey: `person-${index + 1}`, currentName: context.currentName,
+      }).injectionText : '';
+      peopleRequest.push({ personKey: `person-${index + 1}`, entityId: target.entityId, currentName: context.currentName,
+        ...(Object.keys(target.materialPlan?.sourceEntityNames ?? {}).length ? { sourceEntityNames: target.materialPlan.sourceEntityNames } : {}),
         aliases: context.aliases,
-        history: history.slice(historyStart),
+        history: await compactPeopleHistory(historyStart ? history.slice(historyStart) : history),
         cseCoreTraits: includeContext ? context.cseCoreTraits : [],
         ...(priorContext ? { priorContext } : {}),
-        existingProfile: existingAiProfile(target.profile, macros), manualProfile: manualProfile(target.profile, macros), manualFields: target.profile?.manualFields ?? [] };
-    });
+        existingProfile: existingAiProfile(target.profile, macros), manualProfile: manualProfile(target.profile, macros), manualFields: target.profile?.manualFields ?? [] });
+    }
     let worldInfo = [];
     let worldInfoReport = null;
     if (includeWorldInfo) {
@@ -1127,7 +1186,7 @@ export function createPeopleWorkspaceRuntime({
       const candidates = await sourceCandidateFactory(catalog);
       const allowed = sourcePermissions.filterCandidates({ chatId: operation.identity.chatId, candidates });
       if (!Array.isArray(allowed)) throw errorWith('QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID', '世界书许可过滤结果无效。');
-      const selected = selectRelevantWorldInfo ? selectRelevantWorldInfoCandidates(allowed, peopleRequest, macros) : allowed;
+      const selected = selectRelevantWorldInfo ? selectRelevantWorldInfoCandidates(allowed, worldInfoPeople, macros) : allowed;
       worldInfo = selected.map(candidate => ({ source: candidate.world, label: candidate.label, content: candidate.content })).filter(item => item.content);
       worldInfoReport = Object.freeze({ matched: worldInfo.length });
     }
@@ -1213,16 +1272,16 @@ export function createPeopleWorkspaceRuntime({
   }
   async function generateProfiles(targetResolver, { replaceExisting = false, automatic = false, firstInitialization = false, includeWorldInfo = true } = {}) {
     const operation = begin('generating');
-    operation.automatic = automatic;
-    const rebuilding = replaceExisting && !automatic;
-    operation.firstInitializationEntityId = firstInitialization ? null : undefined;
-    const initialReachable = foundationRuntime.getReachable?.();
-    operation.macros = macrosFor(initialReachable);
-    operation.characterCard = automatic ? null : characterCardContext(initialReachable, operation.macros);
-    const guidanceSnapshot = typeof profilePromptGuidance === 'function' ? profilePromptGuidance() : profilePromptGuidance;
-    const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
-    const systemPrompt = buildPeopleProfileSystemPrompt(guidanceSnapshot, processingPromptSnapshot);
     return settle(operation, async () => {
+      operation.automatic = automatic;
+      const rebuilding = replaceExisting && !automatic;
+      operation.firstInitializationEntityId = firstInitialization ? null : undefined;
+      const initialReachable = foundationRuntime.getReachable?.();
+      operation.macros = macrosFor(initialReachable);
+      operation.characterCard = automatic ? null : characterCardContext(initialReachable, operation.macros);
+      const guidanceSnapshot = typeof profilePromptGuidance === 'function' ? profilePromptGuidance() : profilePromptGuidance;
+      const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
+      const systemPrompt = buildPeopleProfileSystemPrompt(guidanceSnapshot, processingPromptSnapshot);
       let targets = targetResolver(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace));
       if (automatic) targets = targets.filter(target => hasProfileMaterial(target.profile));
       if (!targets.length) {
@@ -1230,7 +1289,9 @@ export function createPeopleWorkspaceRuntime({
         throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', replaceExisting ? '当前人物不可重新整理。' : '选中的人物都已有基础资料。');
       }
       if (firstInitialization) operation.firstInitializationEntityId = targets[0].entityId;
-      const plans = automatic ? new Map() : new Map(targets.map(target => [target.entityId, fullMaterialPlanFor(target, operation.characterCard)]));
+      if (!automatic) await yieldProfileWork();
+      const plans = new Map();
+      if (!automatic) for (const target of targets) plans.set(target.entityId, await fullMaterialPlanFor(target, operation.characterCard));
       const preparedTargets = targets.map(target => ({ ...target, materialPlan: target.materialPlan ?? plans.get(target.entityId) }));
       const envelope = automatic
         ? automaticGenerationEnvelope(operation, targets)
@@ -1243,30 +1304,29 @@ export function createPeopleWorkspaceRuntime({
       }
       if (rebuilding) {
         envelope.request.task = '主动重新整理选中人物的静态基础资料';
-        for (const person of envelope.request.people) person.existingProfile = {};
       }
-      const serialized = JSON.stringify(envelope.request);
+      const serializedLength = automatic || rebuilding ? 0 : JSON.stringify(envelope.request).length;
       // A full manual rebuild is one request and is persisted only after that complete response validates.
       const requests = rebuilding
-        ? Object.freeze([{ request: completeProfileRequest(envelope.request), keys: envelope.keys, overallIndex: 1, overallTotal: 1 }])
-        : automatic || serialized.length <= PEOPLE_PROFILE_INPUT_CHAR_BUDGET
+        ? Object.freeze([{ request: await completeProfileRequest(envelope.request), keys: envelope.keys, overallIndex: 1, overallTotal: 1 }])
+        : automatic || serializedLength <= PEOPLE_PROFILE_INPUT_CHAR_BUDGET
           ? Object.freeze([{ request: envelope.request, keys: envelope.keys, overallIndex: 1, overallTotal: 1 }])
-          : longProfileBatches(envelope.request).map(batch => Object.freeze({ ...batch, keys: new Map([[batch.personKey, envelope.keys.get(batch.personKey)]]) }));
+          : (await longProfileBatches(envelope.request)).map(batch => Object.freeze({ ...batch, keys: new Map([[batch.personKey, envelope.keys.get(batch.personKey)]]) }));
       const saved = new Set();
-      const rebuiltProfiles = new Map();
+      const aliasesNotUpdated = new Set();
       const expectedBatches = new Map(), completedBatches = new Map();
       for (const batch of requests) for (const entityId of new Set(batch.keys.values())) expectedBatches.set(entityId, (expectedBatches.get(entityId) ?? 0) + 1);
       const totals = { missing: 0, conflicts: 0, invalid: 0, unknown: 0, skipped: 0 };
       let finalState = getState();
       for (const batch of requests) {
         operation.batchIndex = batch.overallIndex; operation.batchTotal = batch.overallTotal;
-        const request = clone(batch.request);
+        const request = { ...batch.request, people: batch.request.people.map(person => ({ ...person })) };
         const requestCandidates = new Map(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace)
           .map(item => [item.entityId, item]));
         for (const person of request.people) {
           const entityId = batch.keys.get(person.personKey);
           const current = requestCandidates.get(entityId);
-          person.existingProfile = rebuilding ? existingAiProfile(rebuiltProfiles.get(entityId), operation.macros) : existingAiProfile(current?.profile, operation.macros);
+          person.existingProfile = existingAiProfile(current?.profile, operation.macros);
           person.manualProfile = manualProfile(current?.profile, operation.macros);
           person.manualFields = current?.profile?.manualFields ?? [];
         }
@@ -1337,11 +1397,20 @@ export function createPeopleWorkspaceRuntime({
           if (firstInitialization && hasProfileMaterial(existing)) { skipped += 1; continue; }
           if (!automatic && existing && !replaceExisting && !saved.has(entityId)) { skipped += 1; continue; }
           const manual = existing?.manualFields ?? [];
+          const fullAliasReview = !automatic && completedMaterialEntityIds.has(entityId) && !manual.includes('aliases');
+          const hasAliases = Object.hasOwn(patch, 'aliases');
+          if (fullAliasReview && !hasAliases) aliasesNotUpdated.add(entityId);
+          else aliasesNotUpdated.delete(entityId);
           if (!Object.keys(patch).length) { skipped += 1; continue; }
-          const merged = { ...profileFields(rebuilding ? rebuiltProfiles.get(entityId) ?? {} : existing ?? {}), ...patch };
+          const merged = { ...profileFields(existing ?? {}), ...patch };
+          if (automatic && existing?.aliasesComplete === true && hasAliases && !manual.includes('aliases')) {
+            const names = [existing.aliases, patch.aliases].flatMap(value => value.split(/[、，,\r\n]+/u));
+            merged.aliases = normalizeIdentityProjection({ reviewedAliasesByEntityId: { [entityId]: names } }).reviewedAliasesByEntityId[entityId].join('、');
+          }
           for (const field of manual) merged[field] = existing[field];
-          if (existing && sameFields(existing, merged)) { skipped += 1; continue; }
-          profiles[entityId] = { entityId, ...merged, manualFields: [...manual], source: manual.length ? 'manual' : 'generated', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
+          const aliasesComplete = fullAliasReview && hasAliases ? true : existing?.aliasesComplete;
+          if (existing && sameFields(existing, merged) && existing.aliasesComplete === aliasesComplete) { skipped += 1; continue; }
+          profiles[entityId] = { entityId, ...merged, ...(aliasesComplete !== undefined ? { aliasesComplete } : {}), manualFields: [...manual], source: manual.length ? 'manual' : 'generated', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp };
           savedEntityIds.push(entityId); changed = true;
         }
         if (!automatic) {
@@ -1371,14 +1440,11 @@ export function createPeopleWorkspaceRuntime({
         }
         return changed ? { ...clone(current), profilesByEntityId: profiles, profileMaterialProgressByEntityId: progress, updatedAt: timestamp } : null;
         });
-        if (rebuilding) for (const entityId of parsed.generated.keys()) {
-          const profile = workspace.profilesByEntityId[entityId];
-          if (profile) rebuiltProfiles.set(entityId, profile);
-        }
         for (const entityId of savedEntityIds) saved.add(entityId);
         totals.skipped += skipped;
         finalState = persisted.state;
         lastGenerationReport = Object.freeze({ requested: targets.length, saved: saved.size,
+          ...(aliasesNotUpdated.size ? { aliasesNotUpdated: aliasesNotUpdated.size } : {}),
           ...(requests.length > 1 ? { batches: requests.length, completedBatches: batch.overallIndex } : {}),
           ...(envelope.worldInfoReport ? { worldInfoMatched: envelope.worldInfoReport.matched } : {}), ...totals });
         notify();
@@ -1408,7 +1474,7 @@ export function createPeopleWorkspaceRuntime({
     scheduleAutomaticMaintenance();
   }) : null;
   const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
-  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, readArchivedProfileHistory, invalidate, abortAll: invalidate, setEnabled,
+  return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, prepareAvatarGeneration, generateAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, readArchivedProfileHistory, invalidate, abortAll: invalidate, setEnabled,
     getIdentityProjection: () => identityProjection(workspace),
     getActivityState: () => ({ busy: Boolean(active || concurrentWrites.size), phase: active?.kind ?? (concurrentWrites.size ? 'savingProfile' : null) }),
     getState, getPeopleAvatars, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },

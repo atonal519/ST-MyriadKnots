@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { projectTime, projectTimeSource, effectiveTime, timeDistance, timeHours, shiftTime, validTimeProjection, prepareTimeBatch, compileTimeResponse, timeFingerprint, timeBodyReads, timeRecallProjection } from '../src/v3/time-engine.js';
+import { projectTime, projectTimeSource, storyTimeBounds, timeHoursRange, storyTimeFields, formatStoryTimeFields, effectiveTime, timeDistance, timeHours, shiftTime, validTimeProjection, prepareTimeBatch, compileTimeResponse, timeFingerprint, timeBodyReads, timeRecallProjection } from '../src/v3/time-engine.js';
 import { readTimeBody, planTimeBody } from '../src/v3/time-body.js';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 
@@ -214,4 +214,109 @@ test('日期前后约略词不被误读成纪年或钟点修饰', () => {
     assert.equal(time.minute, raw.includes('左右') ? null : 18 * 60, raw);
   }
   assert.equal(projectTime('2026年5月10日 18:00（补充说明）').minute, 18 * 60, '普通括注仍按原钟点解析');
+});
+
+
+test('古法时辰剥离后保具名纪年和中文日期，纯钟点只沿现有锚定', () => {
+  const value = projectTime('星际七年秋月初五 卯時');
+  assert.equal(value.year, 7); assert.equal(value.monthDay, 5);
+  assert.equal(value.minute, null); assert.match(value.date, /星际7年秋月5日/u);
+  assert.equal(projectTime('辰', projectTime('2026-10-23')).date, '2026-10-23');
+  assert.equal(projectTime('卯时').date, null);
+});
+
+
+test('十二时辰与初正刻保范围，单字只在钟点边界且子时不擅自换日', () => {
+  const mapping = [['子',null,null],['丑',60,180],['寅',180,300],['卯',300,420],['辰',420,540],['巳',540,660],['午',660,780],['未',780,900],['申',900,1020],['酉',1020,1140],['戌',1140,1260],['亥',1260,1380]];
+  for (const [branch, min, max] of mapping) {
+    for (const suffix of ['', '时', '時']) {
+      const value = projectTime(`2026年10月23日 ${branch}${suffix}`);
+      assert.equal(value.date, '2026-10-23'); assert.equal(value.minute, null);
+      assert.deepEqual(storyTimeBounds(value), min === null ? null : { min, max, kind: 'range' });
+    }
+  }
+  for (const [raw, min, max] of [['卯初',300,360],['卯正',360,420],['卯初一刻',315,330],['卯正3刻',405,420],['子初',1380,1440],['子正',0,60]]) {
+    const value = projectTime(`2026年10月23日 ${raw}`); assert.equal(value.date,'2026-10-23'); assert.equal(value.minute,null);
+    assert.deepEqual(storyTimeBounds(value),{min,max,kind:'range'});
+  }
+  for (const raw of ['辰时左右','辰时（左右）','（辰时）','卯时三刻','卯初四刻','甲辰年','卯月','星辰']) assert.equal(storyTimeBounds({raw}), null, raw);
+  const a = projectTime('卯时', projectTime('1年夏1日', null, {calendar:{months:4,prefix:''}}));
+  const b = projectTime('酉时', a);
+  assert.equal(effectiveTime(a).date,'1年2月1日'); assert.equal(timeHours(a,b),null);
+  assert.deepEqual(timeHoursRange(a,b),{min:10,max:14});
+  const nextDay=shiftTime(a,1); assert.equal(nextDay.clock,'卯时'); assert.deepEqual(timeHoursRange(a,nextDay),{min:22,max:26});
+  assert.equal(timeHours(a,nextDay),null);
+  assert.deepEqual(storyTimeBounds(projectTime('次日 卯时',a)),{min:300,max:420,kind:'range'});
+});
+
+test('人工五格时辰范围不丢端点，括注与约略不被升级成精确钟点', () => {
+  for (const raw of ['约卯时至酉时','卯时至酉时左右','卯时至酉时（左右）','卯时至约酉时','卯时左右至酉时']) {
+    const fields=storyTimeFields(`2026年10月23日 ${raw}`); assert.equal(fields.day,'23'); assert.equal(fields.clock,raw.normalize('NFKC'));
+    assert.equal(formatStoryTimeFields({...fields,day:'24'}),`2026年10月24日 ${raw.normalize('NFKC').replace('至','~')}`);
+  }
+  const fields = storyTimeFields('嘉靖三年正月初五 卯时至酉时');
+  assert.equal(fields.clock,'卯时至酉时');
+  assert.equal(formatStoryTimeFields({...fields,day:'六'}),'嘉靖3年1月6日 卯时~酉时');
+  assert.equal(storyTimeFields('2026年10月23日（18:00）').clock,'');
+  assert.equal(storyTimeFields('2026年10月23日 18:00左右').clock,'');
+  assert.equal(storyTimeFields('2026年10月23日（卯时）').clock,'');
+  for (const raw of ['卯时左右','约辰时','大约辰时','辰时（左右）']) {
+    const fields=storyTimeFields(`2026年10月23日 ${raw}`); assert.equal(fields.clock,raw.normalize('NFKC'));
+    assert.equal(formatStoryTimeFields({...fields,day:'24'}),`2026年10月24日 ${raw.normalize('NFKC')}`);
+    assert.equal(storyTimeBounds(projectTime(formatStoryTimeFields({...fields,day:'24'}))),null);
+  }
+  assert.equal(storyTimeBounds(projectTime('2026年10月23日 卯时（左右）')),null);
+});
+
+test('古法范围真实prepare编译结果立即显示当下推测，推进倒退不复用旧推测', async () => {
+  const observed = projectTime('2026年10月23日 卯时');
+  const item = {id:'main',subjectEntityId:'person',subjectName:'甲',type:'body',label:'擦伤',status:'active',observation:'仍有不适',observationKey:'key',observationTime:observed,occurrenceTime:observed,dueTime:projectTime(''),sourceRefs:[{floorId:'floor',canonicalFingerprint:'body'}],stateRefs:[]};
+  const batches = [{cutoffFloorId:'floor',cutoffAssistantSeq:1,dependencies:[],changes:[item],sourceKeys:[]}], before=structuredClone(batches);
+  const reachable={root:{chatId:'chat'},floors:[{id:'floor',assistantSeq:1,canonicalFingerprint:'body'}],floorMemories:[],entities:[],bodyTimes:new Map([['floor',observed]])};
+  const prepared=await prepareTimeBatch(reachable,batches,{currentReview:true,allowInitialProjection:true});
+  assert.equal(prepared.request.trackedItems[0].observationElapsedHours,null);
+  assert.deepEqual(prepared.request.trackedItems[0].observationElapsedHoursRange,{min:-2,max:2});
+  const compiled=await compileTimeResponse({changes:[{itemId:'main',progression:'当前观察仍不适，恢复未确认',assessmentReason:''}]},prepared,batches);
+  assert.equal(validTimeProjection(compiled.changes[0],observed),true);
+  const source={entities:[],currentState:[],identityProjection:{}};
+  const immediate=timeRecallProjection(compiled.changes,source,observed).reminders;
+  assert.equal(immediate.length,1); assert.doesNotMatch(immediate[0].text,/距发生0天|0小时/);
+  const later=projectTime('2026年10月23日 酉时');
+  assert.equal(validTimeProjection(compiled.changes[0],later),false);
+  assert.deepEqual(timeHoursRange(observed,later),{min:10,max:14});
+  assert.equal(validTimeProjection(compiled.changes[0],projectTime('2026年10月23日 寅时')),false);
+  assert.equal(Object.hasOwn(compiled.currentTime,'min'),false);
+  assert.equal(Object.hasOwn(compiled.changes[0].observationTime,'max'),false);
+  assert.deepEqual(batches,before);
+});
+
+test('古法正文读取保旧来源指纹和已读覆盖，实际钟点变动仍有独立文字见证', async () => {
+  const stamp=clock=>`<!-- QQJ-start | date=2026年10月23日 | weekday=周五 | time=${clock} -->甲仍有不适。<!-- QQJ-end | date=2026年10月23日 | weekday=周五 | time=${clock} -->`;
+  const chat=[{is_user:false,mes:stamp('卯时')},{is_user:true,mes:'继续'},{is_user:false,mes:stamp('酉时')},{is_user:true,mes:'继续'}];
+  const candidates=await scanAssistantCandidates(chat,{chatId:'chat'});
+  const reachable={root:{chatId:'chat'},floors:candidates.map((candidate,index)=>createFloorRecord({candidate,id:`floor${index}`,chatId:'chat',narrativeGeneration:'gen'})),floorMemories:[]};
+  const source=await readTimeBody(reachable,{chat});
+  assert.deepEqual(timeHoursRange(source.bodyFloors[0].observationTime,source.bodyFloors[1].observationTime),{min:10,max:14});
+  assert.equal(source.bodyFloors[0].timeSourceFingerprint,await timeFingerprint(['2026-10-23',null,null]));
+  assert.notEqual(source.bodyFloors[0].clockContentFingerprint,source.bodyFloors[1].clockContentFingerprint);
+  const body=source.bodyFloors[0], batch={cutoffFloorId:body.floorId,dependencies:[],sourceKeys:[],changes:[],bodyReads:[{floorId:body.floorId,canonicalFingerprint:body.canonicalFingerprint,timeSourceFingerprint:body.timeSourceFingerprint,from:0,to:body.content.length,totalCharacters:body.content.length}]};
+  assert.equal(planTimeBody(source,[batch]).groups.flat().some(row=>row.floorId===body.floorId),false);
+  chat[0].mes=stamp('辰时'); const changed=await readTimeBody(reachable,{chat});
+  assert.notEqual(changed.bodyFloors[0].clockContentFingerprint,body.clockContentFingerprint);
+});
+
+test('同范围与未分初正子时只允许同楼当下观察，隔楼不假定先后或经过时长', async () => {
+  for (const clock of ['子时','卯时']) {
+  const observed=projectTime(`2026年10月23日 ${clock}`);
+  const item={id:'midnight',subjectEntityId:'person',subjectName:'甲',type:'body',label:'伤情',status:'active',observation:'仍有不适',observationKey:'key',observationTime:observed,occurrenceTime:observed,dueTime:projectTime(''),sourceRefs:[{floorId:'floor',canonicalFingerprint:'body'}],stateRefs:[]};
+  const batches=[{cutoffFloorId:'floor',cutoffAssistantSeq:1,dependencies:[],changes:[item],sourceKeys:[]}];
+  const reachable={root:{chatId:'chat'},floors:[{id:'floor',assistantSeq:1,canonicalFingerprint:'body'}],floorMemories:[],entities:[],bodyTimes:new Map([['floor',observed]])};
+  const prepare=()=>prepareTimeBatch(reachable,batches,{currentReview:true,allowInitialProjection:true});
+  let prepared=await prepare(), compiled=await compileTimeResponse({changes:[{itemId:'midnight',progression:'当下仍不适',assessmentReason:''}]},prepared,batches);
+  assert.equal(compiled.changes[0].reviewAssessment,null); assert.equal(validTimeProjection(compiled.changes[0],observed),true);
+  assert.equal(prepared.request.trackedItems[0].elapsedHours,null); assert.deepEqual(timeHoursRange(observed,observed),clock==='子时'?null:{min:-2,max:2});
+  reachable.floors.push({id:'later',assistantSeq:2,canonicalFingerprint:'new'}); reachable.bodyTimes.set('later',observed);
+  prepared=await prepare(); compiled=await compileTimeResponse({changes:[{itemId:'midnight',progression:'当下仍不适',assessmentReason:''}]},prepared,batches);
+  assert.match(compiled.changes[0].reviewAssessment.reason,/范围先后未明/); assert.equal(compiled.changes[0].projection,null);
+  }
 });

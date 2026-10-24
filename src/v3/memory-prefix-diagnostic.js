@@ -7,7 +7,9 @@ const json = value => JSON.stringify(value);
 const names = values => [...new Set((values ?? []).map(value => typeof value === 'string' ? value : value?.name).filter(value => typeof value === 'string'))].sort();
 const userMeaning = value => [typeof value?.displayName === 'string' ? value.displayName : null, names(value?.aliases), typeof value?.personaIdentifier === 'string' ? value.personaIdentifier : null];
 const directoryMeaning = value => [value.entityType, value.displayName, value.specialRole, value.status, value.mergedIntoEntityId, names(value.aliases)];
-const projectionMeaning = value => [Object.entries(value?.identityRedirectsByEntityId ?? {}).sort(([a], [b]) => a.localeCompare(b)), names(value?.deletedEntityIds), Object.entries(value?.manualAliasesByEntityId ?? {}).map(([id, aliases]) => [id, names(aliases)]).sort(([a], [b]) => a.localeCompare(b))];
+const projectionMeaning = value => [Object.entries(value?.identityRedirectsByEntityId ?? {}).sort(([a], [b]) => a.localeCompare(b)), names(value?.deletedEntityIds),
+  Object.entries(value?.currentNamesByEntityId ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+  ...['manualAliasesByEntityId', 'reviewedAliasesByEntityId'].map(key => Object.entries(value?.[key] ?? {}).map(([id, aliases]) => [id, names(aliases)]).sort(([a], [b]) => a.localeCompare(b)))];
 const summaryMeaning = value => [value?.aiText, value?.userText, value?.effectiveSource];
 const memoryWithoutMetadata = value => {
   if (!value) return value;

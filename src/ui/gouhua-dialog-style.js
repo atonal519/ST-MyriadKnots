@@ -78,7 +78,7 @@ export const gouhuaDialogCss = `
 .qqj-editor-dialog textarea{min-height:80px;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere}
 .qqj-editor-dialog .qqj-editor-textarea{min-height:min(42dvh,360px)}
 .qqj-editor-inline-actions{display:flex;flex-wrap:wrap;gap:7px}
-.qqj-editor-dialog button.secondary-action,.qqj-editor-dialog button.primary-action{appearance:none;min-height:36px;margin:0;padding:7px 11px;border:1px solid var(--sp-divider);border-radius:7px;background:var(--sp-sheet-bg);color:var(--sp-on-surface);font:inherit;font-size:var(--sp-fs-75);line-height:1.4;cursor:pointer}
+.qqj-editor-dialog button.secondary-action,.qqj-editor-dialog button.primary-action,.qqj-avatar-crop-panel button.secondary-action,.qqj-avatar-crop-panel a.secondary-action{appearance:none;box-sizing:border-box;min-height:36px;margin:0;padding:7px 11px;border:1px solid var(--sp-divider);border-radius:7px;background:var(--sp-sheet-bg);color:var(--sp-on-surface);font:inherit;font-size:var(--sp-fs-75);line-height:1.4;cursor:pointer}
 .qqj-editor-dialog button.primary-action{border-color:var(--sp-primary);background:var(--sp-primary);color:var(--sp-on-primary)}
 .qqj-editor-dialog button:disabled{opacity:.55;cursor:not-allowed}
 .qqj-editor-dialog .qqj-inline-select{position:relative;display:flex;min-width:0;flex:1 1 110px}
@@ -146,6 +146,10 @@ export const gouhuaDialogCss = `
 .qqj-people-order-row.dragging .qqj-people-order-handle{cursor:grabbing}
 .qqj-people-order-name{min-width:0;font-size:var(--sp-fs-85);line-height:1.45;overflow-wrap:anywhere}
 .qqj-avatar-crop-panel{display:grid;gap:12px;min-width:0}
+.qqj-avatar-preview-frame{display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden}
+.qqj-avatar-preview-image{display:block;width:auto;height:auto;max-width:100%;max-height:min(50dvh,420px);object-fit:contain}
+.qqj-avatar-crop-panel a.secondary-action{display:inline-flex;align-items:center;text-decoration:none}
+.qqj-avatar-zoom[hidden]{display:none}
 .qqj-avatar-crop-frame{position:relative;width:min(240px,100%);margin-inline:auto;aspect-ratio:var(--qqj-avatar-aspect,1);overflow:hidden;border:1px solid var(--sp-divider);border-radius:10px;background:var(--sp-surface-high);touch-action:none;cursor:move}
 .qqj-avatar-crop-image{position:absolute;max-width:none;max-height:none;user-select:none;pointer-events:none}
 .qqj-avatar-zoom{display:grid;grid-template-columns:auto minmax(0,240px);align-items:center;justify-content:center;gap:9px;color:var(--sp-subtle);font-size:var(--sp-fs-75)}

@@ -168,8 +168,8 @@ test('提示词模块提供时间戳开关、独立参考标签与保存后生�
   assert.equal(refreshes[0].readOnly, true); assert.equal(refreshes.length, 3);
 });
 
-test('破限、摘要、CSE 与人物资料提示词在弹窗保存后生效，默认操作留在草稿直到保存', async () => {
-  const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', processingPrompt: '', summaryPrompt: '', csePrompt: '', profilePrompt: '' };
+test('破限、摘要、CSE、人物资料与头像提示词在弹窗保存后生效，默认操作留在草稿直到保存', async () => {
+  const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', processingPrompt: '', summaryPrompt: '', csePrompt: '', profilePrompt: '', avatarPrompt: '' };
   const patches = []; let active = null;
   const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
   const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); } });
@@ -177,11 +177,13 @@ test('破限、摘要、CSE 与人物资料提示词在弹窗保存后生效，�
   const summaryDrawer = node.find(n => n.id === 'qqj-settings-summary-prompt');
   const cseDrawer = node.find(n => n.id === 'qqj-settings-cse-prompt');
   const profileDrawer = node.find(n => n.id === 'qqj-settings-profile-prompt');
+  const avatarDrawer = node.find(n => n.id === 'qqj-settings-avatar-prompt');
   const prompts = [
     [processingDrawer, '破限提示词', 'processingPrompt', '  用户破限文本\n'],
     [summaryDrawer, '摘要内容指导', 'summaryPrompt', '  用户摘要要求\n'],
     [cseDrawer, 'CSE 内容指导', 'csePrompt', '  用户 CSE 要求\n'],
     [profileDrawer, '人物资料内容指导', 'profilePrompt', '  用户人物资料要求\n'],
+    [avatarDrawer, '头像生图提示词', 'avatarPrompt', '  custom portrait\n'],
   ];
   const savedTextareas = [];
   for (const [drawer, labelText, key, value] of prompts) {
@@ -190,7 +192,7 @@ test('破限、摘要、CSE 与人物资料提示词在弹窗保存后生效，�
     assert.equal(current[key], '', '输入不立即写设置');
     await active.submit(); active = null; savedTextareas.push(textarea);
   }
-  assert.deepEqual(patches.slice(-4), [{ processingPrompt: '  用户破限文本\n' }, { summaryPrompt: '  用户摘要要求\n' }, { csePrompt: '  用户 CSE 要求\n' }, { profilePrompt: '  用户人物资料要求\n' }]);
+  assert.deepEqual(patches.slice(-prompts.length),prompts.map(([, ,key,value])=>({[key]:value})));
 
   for (const [drawer, labelText, key] of prompts) {
     await drawer.find(n => n.tagName === 'button' && n.textContent === `编辑${labelText}`).fire('click');
@@ -200,8 +202,8 @@ test('破限、摘要、CSE 与人物资料提示词在弹窗保存后生效，�
     assert.equal(current[key], prompts.find(item => item[2] === key)[3], '默认操作未提交前保持原值');
     await active.submit(); active = null;
   }
-  assert.deepEqual(patches.slice(-4), [{ processingPrompt: '' }, { summaryPrompt: '' }, { csePrompt: '' }, { profilePrompt: '' }]);
-  assert.deepEqual(savedTextareas.map(textarea => textarea.value), ['  用户破限文本\n', '  用户摘要要求\n', '  用户 CSE 要求\n', '  用户人物资料要求\n']);
+  assert.deepEqual(patches.slice(-prompts.length),prompts.map(([, ,key])=>({[key]:''})));
+  assert.deepEqual(savedTextareas.map(textarea => textarea.value),prompts.map(([, ,,value])=>value));
 });
 
 test('外观模块内联选择即存并即时应用；程序设置同步标签，改 URL 清空缓存 family', async () => {

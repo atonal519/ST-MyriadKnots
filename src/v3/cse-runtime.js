@@ -10,7 +10,7 @@ import {
 } from './cse-engine.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
 import {
-  buildEntityIdentityDirectory, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection, reuseIdentityProjection,
+  buildEntityIdentityDirectory, deriveUserIdentityProjection, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection, reuseIdentityProjection,
   projectCseStateIdentityReferences, projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { captureCseRequestSources } from '../cse-source-selection.js';
@@ -142,7 +142,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
   const setIdentityProjection = value => {
-    const next = reuseIdentityProjection(identityProjection, value);
+    const next = reuseIdentityProjection(identityProjection, deriveUserIdentityProjection({ ...reachable, identityProjection: value }));
     if (next === identityProjection) return getState();
     identityProjection = next;
     return notify();
@@ -299,6 +299,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     }
     if (reachable?.root?.chatId === value.root.chatId && reachable.rootRevision > value.rootRevision) return getState();
     reachable = value;
+    identityProjection = reuseIdentityProjection(identityProjection, deriveUserIdentityProjection({ ...value, identityProjection }));
     if (!await calculateReplay(value)) return getState();
     return notify();
   }
@@ -522,8 +523,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     publishFailureHint(next, floor.id, null);
     if (reachable?.root?.chatId === next.root.chatId) {
       reachable = next;
+      identityProjection = reuseIdentityProjection(identityProjection, operation.identityProjection ?? identityProjection);
       const replayCurrent = await calculateReplay(next);
-      if (replayCurrent && reachable === next) { onGraphCommitted?.(next); lastFailure = null; }
+      if (replayCurrent && reachable === next) { onGraphCommitted?.(next, identityProjection); lastFailure = null; }
     }
     return notify();
   }
@@ -558,7 +560,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const dependencyPreviousState = dependencyPrecedingDeltas.length
       ? await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline?.id, floors: dependencyPrecedingFloors, floorMemories: dependencyPrecedingMemories, stateDeltas: dependencyPrecedingDeltas, now: nowIso(now) })
       : null;
-    const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(dependencyPrecedingDeltas, targetStore, operation.coreUserEditedSubjectReadCache);
+    const coreUserEditedSubjectEntityIds = [...new Set((await coreUserEditedSubjects(dependencyPrecedingDeltas, targetStore, operation.coreUserEditedSubjectReadCache))
+      .map(id => resolveIdentityEntityId(id, operation.identityProjection)))];
     const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, coreUserEditedSubjectEntityIds, operation.identityProjection, operation.identityBriefTargetIds);
     if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '此前楼层、摘要或人物资料已变化，请刷新后重新分析。');
 
@@ -615,7 +618,6 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     try {
       operation.identityProjection = normalizeIdentityProjection(typeof identityProjectionProvider === 'function'
         ? await identityProjectionProvider(targetIdentity) : currentIdentityProjection());
-      const identityProjection = operation.identityProjection;
       value = await ensureBaseline(value, operation);
       operation.sourceReachable = value;
       operation.phase = 'analyzing'; notify();
@@ -623,11 +625,13 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const entitiesById = new Map(value.entities.map(entity => [entity.id, entity]));
       for (const entity of roleEntities) if (!entitiesById.has(entity.id)) entitiesById.set(entity.id, entity);
       const entities = [...entitiesById.values()];
+      operation.identityProjection = deriveUserIdentityProjection({ entities, baseline: value.baseline, identityProjection: operation.identityProjection });
+      const identityProjection = operation.identityProjection;
       const targetIndex = value.floors.findIndex(item => item.id === floor.id);
       const precedingFloors = value.floors.slice(0, targetIndex);
       const precedingFloorIds = new Set(precedingFloors.map(item => item.id));
       const trackedFloorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
-      const scopedDirectory = buildEntityIdentityDirectory({ entities: entitiesThroughFloorIds(entities, trackedFloorIds), identityProjection });
+      const scopedDirectory = buildEntityIdentityDirectory({ entities: entitiesThroughFloorIds(entities, trackedFloorIds, identityProjection), identityProjection });
       const scopedEntities = scopedDirectory.map(entry => entry.entity);
       const precedingMemories = value.floorMemories.filter(item => precedingFloorIds.has(item.floorId) && item.recordStatus === 'active');
       const precedingDeltas = filterReachableDeltas({ floors: precedingFloors, floorMemories: precedingMemories, stateDeltas: value.stateDeltas });
@@ -683,8 +687,10 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       });
       operation.sourceDiagnostics = requestSources.diagnostics;
       const allReachableDeltas = filterReachableDeltas({ floors: value.floors, floorMemories: value.floorMemories, stateDeltas: value.stateDeltas });
-      const coreUserEditedSubjectEntityIds = await coreUserEditedSubjects(precedingDeltas, targetStore, operation.coreUserEditedSubjectReadCache);
-      const allCoreUserEditedSubjectEntityIds = await coreUserEditedSubjects(allReachableDeltas, targetStore, operation.coreUserEditedSubjectReadCache);
+      const coreUserEditedSubjectEntityIds = [...new Set((await coreUserEditedSubjects(precedingDeltas, targetStore, operation.coreUserEditedSubjectReadCache))
+        .map(id => resolveIdentityEntityId(id, identityProjection)))];
+      const allCoreUserEditedSubjectEntityIds = [...new Set((await coreUserEditedSubjects(allReachableDeltas, targetStore, operation.coreUserEditedSubjectReadCache))
+        .map(id => resolveIdentityEntityId(id, identityProjection)))];
       const userEntityId = resolveIdentityEntityId(value.baseline.userPersona.entityId, identityProjection);
       const personaLocator = requestSources.userPersona.personaLocator ?? '';
       const hasPersonaDescription = Boolean(requestSources.userPersona.description.trim());
@@ -704,7 +710,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const hasCompletedExtraction = needsUserCoreExtraction && allReachableDeltas.some(delta => {
         if (completedRebuildFloorIds && !completedRebuildFloorIds.has(delta.floorId)) return false;
         const extraction = delta.source?.userCoreExtraction ?? delta.source?.userCoreCheck;
-        return extraction?.userEntityId === userEntityId && extraction.personaLocator === personaLocator
+        return resolveIdentityEntityId(extraction?.userEntityId, identityProjection) === userEntityId && extraction.personaLocator === personaLocator
           && extraction.descriptionFingerprint === descriptionFingerprint
           && ['traits', 'insufficient'].includes(extraction.status);
       });

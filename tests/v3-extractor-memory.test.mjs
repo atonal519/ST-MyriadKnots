@@ -15,7 +15,7 @@ import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { createQianshiTimelineView } from '../src/ui/qianshi-timeline-view.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
-import { historySelectionContext, selectRecall } from '../src/v3/recall-selector.js';
+import { cseSelectionContext, historySelectionContext, selectRecall } from '../src/v3/recall-selector.js';
 import { selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
 import { buildExtractorSystemPrompt, buildHighFloorExtractorSystemPrompt, createExtractorEnvelope, DEFAULT_EXTRACTOR_GUIDANCE, EXTRACTOR_FIXED_CONTRACT, EXTRACTOR_OUTPUT_CONTRACT, EXTRACTOR_PROMPT_VERSION, EXTRACTOR_RESPONSE_SCHEMA, EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_VERSION, inferCanonicalCurrentTime, normalizeExtractorResponse, runExtractorRequest } from '../src/v3/extractor.js';
 import { buildCseSystemPrompt, CSE_FIXED_CONTRACT, CSE_SYSTEM_PROMPT, compileCseResponse, createCseEnvelope, DEFAULT_CSE_GUIDANCE, replayCurrentState } from '../src/v3/cse-engine.js';
@@ -1574,6 +1574,58 @@ async function direct(response, { content = '裴晚生提醒你带伞。', entit
   return normalizeExtractorResponse({ response, finishReason, envelope, floor, existingEntities: entities, now: NOW, preservedSummary, expectedScope: envelope.scope });
 }
 
+test('用户权威：明确user的普通人物sameAs键不能改投用户归属', async () => {
+  const seeded = await direct({ summary: '林岚与同行者在场。', people: [
+    { name: '你', role: 'user', entityKind: 'individual', presence: 'present' },
+    { name: '同行者', entityKind: 'individual', presence: 'present' },
+  ] });
+  const originalUser = seeded.newEntities.find(entity => entity.specialRole === 'user');
+  const npc = seeded.newEntities.find(entity => entity.specialRole === 'none');
+  for (const hasExistingUser of [true, false]) {
+    const entities = hasExistingUser ? [originalUser, npc] : [npc];
+    const result = await direct({ summary: '林岚停下脚步。', people: [{ name: '你', role: 'user', entityKind: 'individual', presence: 'present',
+      sameAsEntityKey: hasExistingUser ? 'catalog-2' : 'catalog-1' }] }, { entities, batchId: '45454545-1111-4111-8111-454545454545' });
+    const participantId = result.memory.participants[0].entityId;
+    assert.notEqual(participantId, npc.id, '明确user不能被普通人物key改投');
+    if (hasExistingUser) assert.equal(participantId, originalUser.id);
+    else assert.ok(result.newEntities.some(entity => entity.id === participantId && entity.specialRole === 'user'));
+    assert.ok(result.isolated.some(item => item.code === 'V3_EXTRACTOR_USER_ROLE_CONFLICT'));
+  }
+});
+
+test('用户权威：摘要元信息保存使用当前canonical人物并保留人工映射', async () => {
+  const h = harness({ utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+    ? { jsonData: { summary: '合成用户与同行者在场。', people: [{ name: '你', role: 'user', presence: 'present' }, { name: '同行者', presence: 'mentioned' }] } }
+    : { jsonData: { noMaterialChange: true } } });
+  await h.runtime.start(); await h.runtime.extractNext();
+  const state = h.runtime.getState(), floor = state.floors[0];
+  const user = state.memoryEntities.find(entity => entity.specialRole === 'user');
+  const target = state.memoryEntities.find(entity => entity.displayName === '同行者');
+  h.runtime.setIdentityProjection({ identityRedirectsByEntityId: { [user.entityId]: target.entityId } });
+  const calls = h.calls.length;
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  await h.runtime.editMemory(floor.floorId, { summary: floor.summary, participantNames: ['同行者'], locations: [],
+    timeText: '时间未明确', originalTimeText: '时间未明确', timeChanged: false });
+  const unchanged = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(unchanged.root.headCheckpointId, before.root.headCheckpointId, '无改保存不能因raw/canonical ID不同写新revision');
+  assert.equal(unchanged.floorMemories[0].id, before.floorMemories[0].id);
+  assert.deepEqual(unchanged.floorMemories[0].participants, before.floorMemories[0].participants);
+  await h.runtime.editMemory(floor.floorId, { summary: '修订后的合成摘要', timeText: '时间未明确', originalTimeText: '时间未明确', timeChanged: false });
+  const summaryOnly = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(summaryOnly.floorMemories[0].participants, before.floorMemories[0].participants, '只改摘要不改旧raw人物引用');
+  await h.runtime.editMemory(floor.floorId, { summary: '修订后的合成摘要', participantNames: ['同行者', '新路人'], locations: [],
+    timeText: '时间未明确', originalTimeText: '时间未明确', timeChanged: false, revisionNote: '人工核对' });
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.status, 'ready');
+  assert.equal(saved.floorMemories[0].participants[0].entityId, target.entityId);
+  assert.equal(saved.floorMemories[0].participants.length, 2);
+  assert.equal(saved.floorMemories[0].participants[0].presence, 'present', 'canonical参与者沿现有投影保留首条presence');
+  assert.equal(h.runtime.getState().memoryEntities.find(entity => entity.specialRole === 'user').entityId, target.entityId);
+  assert.equal(saved.entities.find(entity => entity.id === user.entityId).specialRole, 'user');
+  assert.equal(saved.entities.find(entity => entity.id === target.entityId).specialRole, 'none');
+  assert.equal(h.calls.length, calls);
+});
+
 test('NPC身份简介随正式people结果按变化写入本地实体，复用已有目录作对照且不新增请求', async () => {
   const entityId = '99999999-9999-4999-8999-999999999801';
   const floorId = '11111111-1111-4111-8111-111111111111';
@@ -2671,8 +2723,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(buildExtractorSystemPrompt('自定义偏好'), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
   assertQianshiLifecycleGuidance(buildExtractorSystemPrompt('用户自定义偏好'));
   assert.doesNotMatch(buildHighFloorExtractorSystemPrompt(), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-44');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-44/schema-3/semantic-compiler-18');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-45');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-45/schema-3/semantic-compiler-19');
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.aliases.maxItems, 20);
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.maxLength, 400);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /无旧简介且有明确稳定身份依据时首次填写.*不得包含、替换或追加本楼临时行为/su);
@@ -3264,9 +3316,7 @@ test('sameAs 只接受局部同类型精确绑定，错误键、用户冒绑与�
   assert.equal(result.memory.participants.filter(item => item.entityId === entities[0].id).length, 1, '同一 canonical 的重复 mentions 应去重');
   assert.equal(result.memory.actions[0].actorEntityId, entities[0].id, 'char 的合法局部 sameAs 必须可用');
   const aliasRecords = result.newEntities.filter(entity => entity.status === 'merged');
-  assert.equal(aliasRecords.length, 1);
-  assert.equal(aliasRecords[0].mergedIntoEntityId, entities[0].id);
-  assert.deepEqual([aliasRecords[0].displayName, ...aliasRecords[0].aliases.map(alias => alias.name)].sort(), ['晚生', '裴先生'].sort());
+  assert.equal(aliasRecords.length, 0, 'sameAs绑定本轮称呼，不自动把surface登记为永久别名');
   assert.ok(result.newEntities.some(entity => entity.status !== 'merged' && entity.displayName === '阿'), '包含匹配不得把“阿”误并入“阿砚”');
   for (const code of ['V3_EXTRACTOR_ENTITY_TYPE_CONFLICT', 'V3_EXTRACTOR_USER_ROLE_CONFLICT', 'V3_EXTRACTOR_ENTITY_AMBIGUOUS', 'V3_EXTRACTOR_ENTITY_KEY_INVALID']) assert.ok(result.isolated.some(item => item.code === code), code);
   assert.equal(result.newEntities.some(entity => ['守卫组', '冒名者', '共同称呼', '错误键'].includes(entity.displayName)), false, '显式错误或歧义不能回退新建');
@@ -12184,7 +12234,8 @@ test('外层准备错误的新公开文案仍沿既有过滤脱敏中文凭证',
 });
 
 
-test('有效别名：新摘要请求和编译匹配使用人工全集，保留旧记录与身份引用', async () => {
+test('有效别名：新摘要请求和编译使用人工或已审AI全集，保留旧记录与身份引用', async () => {
+  for (const source of ['manual', 'reviewed']) {
   let projection = {}, request;
   const h = harness({
     initialChat: [user('开始'), assistant('阿青首次出现。'), assistant('新称递来地图。'), assistant('用于确认上一楼稳定。')],
@@ -12200,7 +12251,7 @@ test('有效别名：新摘要请求和编译匹配使用人工全集，保留�
   await h.runtime.extractFloor(state.floors[0].floorId, { analyzeState: false });
   let reachable = await h.store.readReachable({ mode: 'runtime' });
   const person = reachable.entities.find(e => e.displayName === '阿青'); assert.ok(person);
-  projection = { profilesByEntityId: { [person.id]: { aliases: '新称', manualFields: ['aliases'] } } };
+  projection = { profilesByEntityId: { [person.id]: { aliases: '新称', manualFields: source === 'manual' ? ['aliases'] : [], ...(source === 'reviewed' ? { aliasesComplete: true } : {}) } } };
   state = h.runtime.getState();
   await h.runtime.extractFloor(state.floors[1].floorId, { analyzeState: false });
   const catalog = request.payload.knownPeople.find(e => e.displayName === '阿青');
@@ -12210,6 +12261,30 @@ test('有效别名：新摘要请求和编译匹配使用人工全集，保留�
   assert.equal(saved.participants[0].entityId, person.id); assert.equal(saved.actions[0].actorEntityId, person.id);
   assert.ok(reachable.entities.find(e => e.id === person.id).aliases.some(a => a.name === '旧称'));
   assert.equal(reachable.entities.filter(e => e.displayName === '新称' && e.status !== 'merged').length, 0);
+  }
+});
+
+test('人物姓名：摘要模型有旧正式名参照，历史称名归原ID并参与实际召回实体识别', async () => {
+  let projection = {}, request;
+  const h = harness({ initialChat: [user('开始'), assistant('阿青首次出现。'), assistant('阿青归还地图。'), assistant('确认前楼。')],
+    identityProjectionProvider: async () => projection, utility: options => {
+      request = JSON.parse(options.taskMessages[0].content);
+      return { jsonData: { summary: request.payload.canonicalContent, people: [{ name: '阿青', presence: 'present', ...(request.payload.canonicalContent.includes('首次') ? { aliases: ['旧杂称'] } : {}) }] } };
+    } });
+  await h.runtime.start(); const floors = h.runtime.getState().floors;
+  await h.runtime.extractFloor(floors[0].floorId, { analyzeState: false });
+  const before = await h.store.readReachable({ mode: 'runtime' }), person = before.entities.find(item => item.displayName === '阿青');
+  projection = { profilesByEntityId: { [person.id]: { name: '青禾', aliases: '', aliasesComplete: true, manualFields: [] } } };
+  await h.runtime.extractFloor(floors[1].floorId, { analyzeState: false });
+  const entry = request.payload.knownPeople.find(item => item.displayName === '青禾');
+  assert.equal(entry.previousName, '阿青'); assert.deepEqual(entry.aliases, []);
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(after.floorMemories.find(item => item.floorId === floors[1].floorId).participants[0].entityId, person.id);
+  const source = await readRecallSource({ store: h.store, identityProjection: projection, now: () => new Date(NOW) });
+  const current = source.entities.find(item => item.entityId === person.id);
+  assert.equal(current.displayName, '青禾'); assert.deepEqual(current.aliases, []);
+  assert.ok(cseSelectionContext(source, { text: '阿青现在在哪里？' }).involvedIds.has(person.id));
+  assert.equal(cseSelectionContext(source, { text: '旧杂称现在在哪里？' }).involvedIds.has(person.id), false);
 });
 
 test('独立状态明确确认同值仍保存既有人工action覆盖，普通同值编辑保持不变', async () => {
@@ -12235,4 +12310,51 @@ test('独立状态明确确认同值仍保存既有人工action覆盖，普通�
   const source = await h.store.readReachable({ mode: 'runtime' });
   const memory = source.floorMemories.find(value => value.id === confirmed.sourceFloorMemoryId);
   assert.deepEqual(memory.qianshiDelta.manualEventOverrides.find(value => value.eventId === event.id), { eventId: event.id, actionStatus: 'inProgress' });
+});
+
+test('已知人物临时称呼只供本轮绑定，显式稳定别名与身份简介独立保存', async () => {
+  const known = { id: '10000000-0000-4000-8000-000000000091', chatId: CHAT, narrativeGeneration: GENERATION,
+    entityType: 'person', displayName: '青禾', aliases: [], specialRole: 'none', firstSeenFloorId: null,
+    lastSeenFloorId: null, status: 'established', recordStatus: 'active' };
+  const temporary = await direct({ summary: '那个人递来地图。', people: [
+    { name: '那个人', sameAsEntityKey: 'catalog-1', identityBrief: '药铺学徒。' },
+  ], actions: [{ actor: '那个人', action: '递来地图' }] }, { entities: [known], content: '那个人是药铺学徒，递来地图。' });
+  assert.equal(temporary.memory.actions[0].actorEntityId, known.id);
+  const directory = buildEntityIdentityDirectory({ entities: [known, ...temporary.newEntities] });
+  assert.deepEqual(directory[0].aliases, [], '临时surface不进入永久目录');
+  assert.equal(directory[0].identityBrief, '药铺学徒。', '跳过surface学习仍接纳独立身份简介');
+  const explicit = await direct({ summary: '青禾递来地图。', people: [
+    { name: '阿禾', aliases: ['阿禾'], sameAsEntityKey: 'catalog-1' },
+  ], actions: [{ actor: '阿禾', action: '递来地图' }] }, { entities: [known], content: '阿禾递来地图。' });
+  assert.equal(explicit.memory.actions[0].actorEntityId, known.id);
+  assert.deepEqual(buildEntityIdentityDirectory({ entities: [known, ...explicit.newEntities] })[0].aliases, ['阿禾'], '显式稳定别名即使与本轮surface相同仍可学习');
+  const newcomer = await direct({ summary: '戴斗笠的人递来地图。', people: [{ name: '戴斗笠的人' }],
+    actions: [{ actor: '戴斗笠的人', action: '递来地图' }] }, { content: '戴斗笠的人递来地图。' });
+  assert.equal(newcomer.newEntities[0].displayName, '戴斗笠的人', '未知实名不阻止新人物按当前称呼建档');
+  assert.equal(newcomer.memory.actions[0].actorEntityId, newcomer.newEntities[0].id);
+  const userEntity = { ...known, id: '10000000-0000-4000-8000-000000000093', displayName: '林岚', specialRole: 'user' };
+  const maskedUser = await direct({ summary: '戴帽子的人递来地图。', people: [
+    { name: '戴帽子的人', aliases: ['林岚'], role: 'user' },
+  ], actions: [{ actor: '戴帽子的人', action: '递来地图' }] }, { entities: [userEntity], content: '戴帽子的人递来地图。' });
+  assert.equal(maskedUser.memory.actions[0].actorEntityId, userEntity.id);
+  const userLabels = buildEntityIdentityDirectory({ entities: [userEntity, ...maskedUser.newEntities] })[0].aliases;
+  assert.ok(!userLabels.includes('戴帽子的人'), 'host主名归一不得把raw临时name变为长期别名');
+  assert.ok(userLabels.includes('你'), 'host明确提供的身份别名保持');
+});
+
+test('同一已知人物多条临时称呼全部绑定但不变成长久别名', async () => {
+  const known = { id: '10000000-0000-4000-8000-000000000092', chatId: CHAT, narrativeGeneration: GENERATION,
+    entityType: 'person', displayName: '青禾', aliases: [], specialRole: 'none', firstSeenFloorId: null,
+    lastSeenFloorId: null, status: 'established', recordStatus: 'active' };
+  const result = await direct({ summary: '他递来地图，那位青年说出关键口令。', people: [
+    { name: '他', sameAsEntityKey: 'catalog-1' }, { name: '那位青年', sameAsEntityKey: 'catalog-1' },
+  ], actions: [{ actor: '那位青年', action: '递来地图' }],
+  exactQuotes: [{ exactText: '秋水为凭', kind: 'codePhrase', speaker: '那位青年', whyPreserve: '后续核对口令' }],
+  observations: [{ subject: '那位青年', description: '仍拿着地图' }] },
+  { entities: [known], content: '他递来地图，那位青年说：“秋水为凭”，仍拿着地图。' });
+  assert.equal(result.memory.actions[0].actorEntityId, known.id);
+  assert.equal(result.memory.exactAnchors[0].speakerEntityId, known.id);
+  assert.equal(result.memory.observations[0].subjectEntityId, known.id);
+  assert.equal(result.memory.participants.length, 1);
+  assert.equal(result.newEntities.length, 0, '临时多称呼不产生永久alias修订');
 });

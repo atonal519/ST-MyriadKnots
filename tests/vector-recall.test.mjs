@@ -359,6 +359,77 @@ test('后台增量复用完整旧shard：16变17只为新片请求embedding并�
   assert.equal(coldWrites.length, 2, '冷增量只PUT新增shard和manifest，不重写未变shard');
 });
 
+test('冷态自动检查完整内容目录一致时不读分片，首次查询仍实际加载校验', async () => {
+  const source = await sourceFixture(); source.rawSources = [];
+  for (let seq = 1; seq <= 17; seq++) source.rawSources.push(await rawFloor(source, seq));
+  const h = harness(source); await h.index.build();
+  const expected = await h.index.query({ source, queryContext: { text: '苹果' } });
+  const gets = [], writes = [], embeds = [], decode = globalThis.atob;
+  let decoded = 0;
+  const cold = createVectorIndex({ client: { ...h.client,
+    get: async (collection, id) => { gets.push(id); return h.client.get(collection, id); },
+    put: async (...args) => { writes.push(args[1]); return h.client.put(...args); } },
+    api: { embed: async (_config, texts) => { embeds.push([...texts]); return vectors(texts); } },
+    configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  globalThis.atob = (...args) => { decoded++; return decode(...args); };
+  try {
+    assert.deepEqual(await cold.updateIncrementally(), { status: 'unchanged', chunkCount: 17 });
+    assert.deepEqual(gets, [VECTOR_INDEX_ID], '只读一次已发布目录，不预加载向量');
+    assert.equal(decoded, 0); assert.equal(embeds.length, 0); assert.equal(writes.length, 0);
+    assert.equal(cold.getActivityState().busy, false);
+    assert.equal(cold.getState().buildDiagnostic.status, 'ready');
+    const actual = await cold.query({ source, queryContext: { text: '苹果' } });
+    assert.equal(actual.diagnostic.status, 'ready');
+    assert.deepEqual(actual.candidates, expected.candidates);
+    assert.deepEqual(gets.slice(1), [VECTOR_INDEX_ID, ...h.records.get(VECTOR_INDEX_ID).data.shardIds]);
+    assert.equal(decoded, 17, '真实查询仍完整解码，不伪造暖缓存');
+    assert.equal(embeds.length, 1);
+  } finally { globalThis.atob = decode; }
+});
+
+test('冷态目录内容、顺序或旧摘要身份不一致仍走原增量复用', async () => {
+  for (const change of ['content', 'order', 'summary']) {
+    const source = await sourceFixture(); source.rawSources = [];
+    for (let seq = 1; seq <= 17; seq++) source.rawSources.push(await rawFloor(source, seq));
+    const h = harness(source); await h.index.build();
+    const latest = structuredClone(source), gets = [], puts = [], embeds = [];
+    if (change === 'content') latest.rawSources[0] = await rawFloor(source, 1, '相同数量，但已保存正文换成梨。');
+    if (change === 'summary') latest.rawSources = latest.rawSources.map(raw => ({ ...raw, floorMemoryId: `revised-${raw.floorMemoryId}` }));
+    if (change === 'order') h.records.get(VECTOR_INDEX_ID).data.shardIds.reverse();
+    const cold = createVectorIndex({ client: { ...h.client,
+      get: async (collection, id) => { gets.push(id); return h.client.get(collection, id); },
+      put: async (...args) => { puts.push(args[1]); return h.client.put(...args); } },
+      api: { embed: async (_config, texts) => { embeds.push(...texts); return vectors(texts); } },
+      configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => latest });
+    const result = await cold.updateIncrementally();
+    assert.equal(result.status, change === 'content' ? 'ready' : 'unchanged');
+    assert.equal(gets.filter(id => id === VECTOR_INDEX_ID).length, 2, `${change}不得凭数量或部分ID跳过`);
+    assert.ok(h.records.get(VECTOR_INDEX_ID).data.shardIds.every(id => gets.includes(id) || puts.includes(id)));
+    assert.equal(embeds.length, change === 'content' ? 1 : 0, '只补真正变化的原文，旧摘要ID不增加embedding');
+    if (change !== 'content') assert.equal(puts.length, 0);
+  }
+});
+
+test('冷态内容目录快路不代替手动建立或真实查询的分片校验', async () => {
+  for (const mode of ['build', 'missing', 'invalid']) {
+    const source = await sourceFixture(), h = harness(source); await h.index.build();
+    const shard = h.records.get(VECTOR_INDEX_ID).data.shardIds[0], gets = [];
+    if (mode === 'missing') h.records.delete(shard);
+    if (mode === 'invalid') h.records.get(shard).data.rows[0].vector = 'AAAA';
+    const cold = createVectorIndex({ client: { ...h.client, get: async (collection, id) => { gets.push(id); return h.client.get(collection, id); } },
+      api: { embed: async () => { assert.fail('此路径不得请求新embedding'); } },
+      configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+    if (mode === 'build') assert.equal((await cold.build()).status, 'ready');
+    else {
+      assert.equal((await cold.updateIncrementally()).status, 'unchanged');
+      assert.deepEqual(gets, [VECTOR_INDEX_ID]);
+      const queried = await cold.query({ source, queryContext: { text: '苹果' } });
+      assert.equal(queried.diagnostic.status, 'unavailable'); assert.deepEqual(queried.candidates, []);
+    }
+    assert.ok(gets.includes(shard), '手动建立与真实查询都必须读取实际分片');
+  }
+});
+
 test('摘要记录ID变化但原文锚点不变时手动重建保留旧shard见证', async () => {
   const source = await sourceFixture(); let apiCalls = 0;
   const h = harness(source, { api: { embed: async (_config, texts) => { apiCalls++; return vectors(texts); } } });

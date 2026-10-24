@@ -1,3 +1,4 @@
+import { storedPreparationDiagnostic } from './v3/preparation-diagnostic.js';
 import { REQUEST_CONNECTION_FIELDS, REQUEST_SIZE_FIELDS, requestProtocol } from './v3/recall-request-diagnostic.js';
 
 export const PRIVATE_DIAGNOSTIC_POLICY = '/scripts/extensions/third-party/ST-QianQianJie/diagnostics.local.json';
@@ -160,9 +161,11 @@ function selector(value) {
 }
 
 // 临时失败不能依赖聊天回执落盘；独立诊断只投影白名单，绝不复制材料、异常消息或配置对象。
-export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityState } = {}) {
+export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityState, sessionState } = {}) {
   const active = state?.activeRecall, last = state?.lastRecall, request = state?.requestDiagnostic;
-  return { status: choose(state?.recallStatus, ['running', 'ready', 'empty', 'skipped', 'stale', 'error', 'idle']), pageVisibility: choose(visibilityState, ['visible', 'hidden', 'prerender']),
+  return { ...(sessionState ? { identity: { status: choose(sessionState.status, ['idle', 'disabled', 'preparing', 'ready', 'error', 'suspended']),
+    preparationFailure: sessionState.preparationFailure ? storedPreparationDiagnostic(sessionState.preparationFailure) : null } } : {}),
+    status: choose(state?.recallStatus, ['running', 'ready', 'empty', 'skipped', 'stale', 'error', 'idle']), pageVisibility: choose(visibilityState, ['visible', 'hidden', 'prerender']),
     chatId: uuid(active?.chatId ?? state?.lastRecallBinding?.chatId),
     active: active ? { ...safeActive(active), chatId: uuid(active.chatId) } : null,
     lastTerminated: safeTerminated(state?.lastTerminated),
@@ -193,7 +196,7 @@ export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityS
 }
 
 export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRuntime, fetchImpl = globalThis.fetch, documentRef = globalThis.document, isEnabled = () => true, policyUrl = PRIVATE_DIAGNOSTIC_POLICY,
-  bundleUrl = import.meta.url, random = Math.random, now = Date.now, pollMs = 5000, flushMs = 1000 } = {}) {
+  session = null, bundleUrl = import.meta.url, random = Math.random, now = Date.now, pollMs = 5000, flushMs = 1000 } = {}) {
   let enabled = false, disposed = false, starting = null, revision = null, sequence = 0, sent = 0, previous = null, pending = null, timer = null, poll = null;
   const events = [], failureSnapshots = [], cleanups = [];
   const recordId = `recall-live-${Math.min(SLOT_COUNT - 1, Math.max(0, Math.floor(random() * SLOT_COUNT)))}`;
@@ -215,6 +218,12 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
     const candidates = primary && terminal && primary.chatId === terminal.chatId && primary.roundStartedAt === terminal.roundStartedAt && primary.reason === terminal.reason
       ? [{ ...terminal, ...primary, lastTerminated: terminal.lastTerminated }]
       : [primary, terminal].filter(Boolean);
+    if (data.identity?.status === 'error' && data.identity.preparationFailure) {
+      const failure = data.identity.preparationFailure;
+      const existing = failureSnapshots.find(item => item.value.kind === 'identity' && JSON.stringify(item.value.identity) === JSON.stringify(data.identity));
+      if (!existing) candidates.push({ kind: 'identity', chatId: failure.identityRead?.expectedChatId ?? null,
+        roundStartedAt: capturedAt, reason: failure.code, capturedAt, identity: data.identity });
+    }
     for (const value of candidates) {
       const key = JSON.stringify([value.chatId, value.roundStartedAt, value.reason]);
       const index = failureSnapshots.findIndex(item => item.key === key);
@@ -232,7 +241,7 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
   };
   const capture = () => {
     if (!enabled || disposed || !isEnabled()) return;
-    const data = projectPrivateRecallDiagnostic(recallRuntime.getState(), vectorRuntime?.getState?.(), { visibilityState: documentRef?.visibilityState });
+    const data = projectPrivateRecallDiagnostic(recallRuntime.getState(), vectorRuntime?.getState?.(), { visibilityState: documentRef?.visibilityState, sessionState: session?.getState?.() });
     rememberFailure(data, new Date(now()).toISOString());
     const signature = JSON.stringify(data);
     if (signature === previous) return;
@@ -274,6 +283,7 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
         if (!response.ok || (await response.json())?.enabled !== true || disposed) return false;
         enabled = true;
         cleanups.push(recallRuntime.subscribe(capture));
+        if (session?.subscribeActivity) cleanups.push(session.subscribeActivity(capture));
         if (vectorRuntime?.subscribe) cleanups.push(vectorRuntime.subscribe(capture));
         // 手机切到后台可能暂停计时与网络；只记状态切换，不读取页面内容或设备信息。
         if (documentRef?.addEventListener) {

@@ -51,11 +51,11 @@ export function createPluginLifecycle({
     if (firstError) throw firstError;
   }
 
-  async function prepare({ refresh = true, explicitEnable = false } = {}) {
+  async function prepare({ refresh = true, explicitEnable = false, entryPoint = 'direct' } = {}) {
     const mine = ++prepareEpoch;
     if (!enabled()) return { status: 'disabled' };
     let result;
-    try { result = await session.prepare(); }
+    try { result = await session.prepare({ entryPoint: explicitEnable ? 'pluginEnable' : entryPoint }); }
     catch (error) {
       try { onDiagnostic?.(error, explicitEnable ? 'pluginEnable' : 'identityPrepare'); } catch {}
       throw error;
@@ -67,9 +67,9 @@ export function createPluginLifecycle({
     return result;
   }
 
-  function scheduleIdentityPrepare() {
+  function scheduleIdentityPrepare(entryPoint) {
     if (!enabled()) return Promise.resolve({ status: 'disabled' });
-    return Promise.resolve().then(() => prepare()).catch(error => {
+    return Promise.resolve().then(() => prepare({ entryPoint })).catch(error => {
       logger?.warn?.('[qianqianjie] 聊天身份准备失败', error);
       return { status: 'error', error };
     });
@@ -82,7 +82,7 @@ export function createPluginLifecycle({
       : null;
     try { invalidate({ cancelBusiness: false }); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
-    const preparePromise = scheduleIdentityPrepare();
+    const preparePromise = scheduleIdentityPrepare('chatChanged');
     if (transition) {
       transition.preparePromise = preparePromise;
       renameTransition = Object.freeze(transition);
@@ -95,7 +95,7 @@ export function createPluginLifecycle({
     renameTransition = null;
     try { invalidate(); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
-    scheduleIdentityPrepare();
+    scheduleIdentityPrepare('personaChanged');
   }
 
   async function onChatRenamed(event) {
@@ -175,7 +175,7 @@ export function createPluginLifecycle({
       getUi()?.setEnabled?.(false);
       return Promise.resolve({ status: 'disabled' });
     }
-    return prepare({ refresh: false });
+    return prepare({ refresh: false, entryPoint: 'startup' });
   }
 
   return Object.freeze({ bind, invalidate, prepare, setEnabled, start, onIdentityChange, onChatChanged, onChatRenamed, onCharacterRenamed });

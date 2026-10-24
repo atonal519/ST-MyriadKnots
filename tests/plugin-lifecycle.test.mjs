@@ -275,3 +275,17 @@ test('初始身份失败不启动读取，后续有效 CHAT_CHANGED 可恢复；
   assert.equal(attempts, 2);
   assert.equal((await lifecycle.prepare({ refresh: false })).status, 'ready', '后台失败不能把 session ready 伪装成身份失败');
 });
+
+
+test('身份准备将现有启动与人物事件入口传给会话诊断，不改变事件准备流程', async () => {
+  const entries = [], handlers = new Map();
+  let enabled = true;
+  const lifecycle = createPluginLifecycle({ isEnabled: () => enabled, session: { prepare: async options => { entries.push(options.entryPoint); return { status: 'ready' }; }, invalidate() {} } });
+  lifecycle.bind({ eventSource: { on: (name, callback) => handlers.set(name, callback) }, eventTypes: { CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' } });
+  await lifecycle.start();
+  handlers.get('chat')(); await new Promise(resolve => setImmediate(resolve));
+  handlers.get('persona')(); await new Promise(resolve => setImmediate(resolve));
+  enabled = false; await lifecycle.setEnabled(false);
+  enabled = true; await lifecycle.setEnabled(true);
+  assert.deepEqual(entries, ['startup', 'chatChanged', 'personaChanged', 'pluginEnable']);
+});

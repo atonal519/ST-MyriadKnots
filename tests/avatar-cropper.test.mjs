@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AVATAR_SOURCE_MAX_BYTES, avatarCropLayout, cropAvatarDataUrl, loadAvatarSource } from '../src/ui/avatar-cropper.js';
+import { AVATAR_SOURCE_MAX_BYTES, avatarCropLayout, cropAvatarDataUrl, fitAvatarDataUrl, loadAvatarSource } from '../src/ui/avatar-cropper.js';
 
 test('头像裁剪按目标框比例 cover、限制拖动并输出最大边 512 的同构图', () => {
   const layout = avatarCropLayout({ naturalWidth: 1200, naturalHeight: 800, frameWidth: 240, frameHeight: 320, zoom: 1.5, offsetX: 999, offsetY: -999 });
@@ -20,4 +20,12 @@ test('头像源文件拒绝危险类型与超限文件，切页取消挂起解�
   controller.abort();
   await assert.rejects(pending, error => error.name === 'AbortError');
   assert.equal(image.src, ''); assert.equal(created, 1); assert.equal(revoked, 1);
+});
+
+
+test('完整头像按原比例缩小但不放大，画布接收全部构图而非cover裁边',()=>{
+  for (const [naturalWidth,naturalHeight,width,height] of [[1200,800,512,341],[600,900,341,512],[120,80,120,80]]) {
+    const image={naturalWidth,naturalHeight},draws=[],canvas={getContext:()=>({clearRect(){},drawImage(...args){draws.push(args);}}),toDataURL:()=> 'data:image/webp;base64,AAAA'};
+    assert.equal(fitAvatarDataUrl({image,canvas}),'data:image/webp;base64,AAAA');assert.equal(canvas.width,width);assert.equal(canvas.height,height);assert.deepEqual(draws,[[image,0,0,width,height]]);
+  }
 });

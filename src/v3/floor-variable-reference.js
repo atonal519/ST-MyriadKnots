@@ -28,3 +28,14 @@ export function captureFloorVariableReference(snapshot, floor) {
   if (!slots || typeof slots !== 'object') return null;
   return jsonObjectCopy(slots[selectedSwipeIndex]);
 }
+
+export function auxiliaryStateSnapshotForPrompt(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return snapshot;
+  const schema = snapshot.schema, statData = snapshot.stat_data;
+  const structuralSchema = schema && typeof schema === 'object' && !Array.isArray(schema)
+    && schema.type === 'object' && schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties);
+  if (!statData || typeof statData !== 'object' || Array.isArray(statData) || !structuralSchema) return snapshot;
+  // 仅将识别出的顶层 MVU schema 作为请求元数据省略；原变量快照和嵌套业务字段保持不变。
+  const { schema: _schema, ...snapshotWithoutSchema } = snapshot;
+  return snapshotWithoutSchema;
+}

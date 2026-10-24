@@ -26,9 +26,10 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
   const activity = createActivitySignal(() => ({ busy: active !== null, phase: active ? 'preparing' : null }));
   let suspension = null;
   let state = Object.freeze({ status: 'idle' });
-  const failPreparation = (error, step) => {
-    markPreparationFailure(error, step);
+  const failPreparation = (error, step, entryPoint) => {
+    markPreparationFailure(error, step, entryPoint);
     state = Object.freeze({ status: 'error', error, preparationFailure: preparationFailureDiagnostic(error, step) });
+    activity.notifyActivity();
     return error;
   };
   const enabled = () => {
@@ -65,7 +66,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     characterLocator: host.characterAvatar,
     personaLocator: host.personaAvatar,
   });
-  function prepare() {
+  function prepare({ entryPoint = 'direct' } = {}) {
     if (!enabled()) {
       state = Object.freeze({ status: 'disabled' });
       return Promise.resolve(state);
@@ -74,8 +75,10 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     try { context = capture({ allowNoChat: true }); }
     catch (error) {
       const cause = error?.cause ?? error;
-      markPreparationFailure(error, 'synchronizing');
+      markPreparationFailure(error, 'synchronizing', entryPoint);
+      markPreparationFailure(cause, 'synchronizing', entryPoint);
       state = Object.freeze({ status: 'error', error, preparationFailure: preparationFailureDiagnostic(cause, 'synchronizing') });
+      activity.notifyActivity();
       return Promise.reject(error);
     }
     if (context.host.noChat === true) {
@@ -100,7 +103,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     }
     let taskInputs = null;
     try { taskInputs = identityCoordinator ? captureTaskSnapshot(context) : null; }
-    catch (error) { return Promise.reject(failPreparation(error, 'snapshotClone')); }
+    catch (error) { return Promise.reject(failPreparation(error, 'snapshotClone', entryPoint)); }
     const operation = { host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
@@ -119,7 +122,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
         return result;
       } catch (error) {
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
-        markPreparationFailure(error, 'identityDirectory');
+        markPreparationFailure(error, 'identityDirectory', entryPoint);
         try { if (sameHost(operation.host, capture().host)) state = Object.freeze({ status: 'error', error, preparationFailure: preparationFailureDiagnostic(error, 'identityDirectory') }); } catch { /* Keep the current page state independent. */ }
         throw error;
       }

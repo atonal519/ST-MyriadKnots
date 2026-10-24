@@ -282,3 +282,28 @@ test('准备诊断只保有限子阶段枚举和数字，每attempt最多两条�
   assert.equal(waiting.active.currentPreparation.status, 'inProgress');
   assert.doesNotMatch(JSON.stringify(result), /SECRET|"url":|"source":|"error":"/u);
 });
+
+
+test('私有身份失败沿现有订阅与四项槽保留，后续idle不会覆盖且关闭policy不采集', async t => {
+  const { createChatSession } = await import('../src/chat-session.js');
+  const { readTargetChat } = await import('../src/v3/message-floor-anchor.js');
+  const id = '123e4567-e89b-42d3-a456-426614174000';
+  const raw = { chatId: '合成聊天', characterId: 0, characters: [{ avatar: 'person.png', name: '人物' }], userAvatar: 'user.png', chatMetadata: { qianqianjie: { chatId: id } }, chat: [] };
+  const session = createChatSession({ contextProvider: () => raw,
+    identityCoordinator: { prepare: () => readTargetChat({ chatId: id, hostChatId: raw.chatId, characterName: '人物', avatarUrl: 'person.png' }, {
+      fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: { otherPlugin: 'SECRET' } }, { mes: 'SECRET' }] }) }) } });
+  const h = harness({ session }); t.after(h.channel.dispose);
+  await h.channel.start(); await h.channel.flush();
+  const before = h.writes.length;
+  await assert.rejects(session.prepare({ entryPoint: 'startup' }));
+  await h.channel.flush();
+  assert.ok(h.writes.length > before, '真实session settled活动订阅触发采集');
+  assert.equal(h.writes.at(-1).data.events.at(-1).data.identity.status, 'error');
+  assert.equal(h.writes.at(-1).data.failures.find(item => item.kind === 'identity').identity.preparationFailure.identityRead.reason, 'identityMissing');
+  session.invalidate(); h.channel.capture(); await h.channel.flush();
+  assert.equal(h.writes.at(-1).data.events.at(-1).data.identity.status, 'idle');
+  assert.equal(h.writes.at(-1).data.failures.filter(item => item.kind === 'identity').length, 1);
+  assert.doesNotMatch(JSON.stringify(h.writes), /SECRET|otherPlugin|requestHeaders|chat_metadata/u);
+  const off = harness({ session, policy: { enabled: false } }); t.after(off.channel.dispose);
+  assert.equal(await off.channel.start(), false); off.channel.capture(); assert.equal(await off.channel.flush(), false); assert.equal(off.writes.length, 0);
+});

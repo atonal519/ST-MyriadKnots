@@ -45,6 +45,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   summaryPrompt: '',
   csePrompt: '',
   profilePrompt: '',
+  avatarPrompt: '',
   appearanceTheme: 'auto',
   inlineRecallVisible: true,
   inlineMemoryVisible: true,
@@ -242,6 +243,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'summaryPrompt')) settings.summaryPrompt = text(patch.summaryPrompt);
     if (own(patch, 'csePrompt')) settings.csePrompt = text(patch.csePrompt);
     if (own(patch, 'profilePrompt')) settings.profilePrompt = text(patch.profilePrompt);
+    if (own(patch, 'avatarPrompt')) settings.avatarPrompt = text(patch.avatarPrompt);
     if (own(patch, 'appearanceTheme')) settings.appearanceTheme = APPEARANCE_THEMES.has(patch.appearanceTheme) ? patch.appearanceTheme : 'auto';
     if (own(patch, 'inlineRecallVisible')) settings.inlineRecallVisible = patch.inlineRecallVisible !== false;
     if (own(patch, 'inlineMemoryVisible')) settings.inlineMemoryVisible = patch.inlineMemoryVisible !== false;

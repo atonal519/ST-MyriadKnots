@@ -250,7 +250,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       const dirty = () => state[clearFlag] === true || Object.keys(state[initial]).some(key => state[field][key] !== state[initial][key]);
       const valueKey = field === 'timeDraft' ? 'storyTime' : 'scheduledTime';
       const update = () => { try { preview.textContent = dirty() ? `保存后：${formatStoryTimeFields(state[field]) || '时间未知'}` : `${titleText}：${raw || '时间未知'}`; } catch (error) { preview.textContent = error.message; } };
-      for (const [key, labelText, placeholder] of [['prefix', '前缀', '可留空'], ['year', '年', '2027'], ['month', '月', '3 / 夏月'], ['day', '日', '5'], ['clock', '时间', '07:45']]) {
+      for (const [key, labelText, placeholder] of [['prefix', '前缀', '可留空'], ['year', '年', '2027'], ['month', '月', '3 / 夏月'], ['day', '日', '5'], ['clock', '时间', '07:45 / 卯正一刻']]) {
         const input = element('input', 'settings-input qqj-qianshi-time-input'); input.value = state[field][key]; input.placeholder = placeholder; input.setAttribute('aria-label', `${titleText}${labelText}`);
         input.addEventListener('input', () => { state[field][key] = input.value; update(); }); fields.append(label(labelText, input)); controls.push(input);
       }

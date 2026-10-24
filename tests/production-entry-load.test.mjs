@@ -366,8 +366,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     uuidv4: () => '11111111-1111-4111-8111-111111111111',
     async saveMetadata() { saveMetadataCalls += 1; },
     ...(locationReferenceChat ? { async saveChat() { chatSaveCalls += 1; return true; } } : {}),
-    getRequestHeaders: () => ({}), eventTypes: { CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
-    eventSource: { on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
+    getRequestHeaders: () => ({}), eventTypes: { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
+    eventSource: { once(name, callback) { assert.equal(name, 'app-ready'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); assert.equal(callback(), undefined, '已就绪宿主回放不等待QQJ准备'); }, on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
   const readyRecords = locationReferenceChat || legacyReceiptUi ? await readyFoundationRecords(hostGlobalName, host, manualAliases) : null;
   if (legacyReceiptUi) {
@@ -668,7 +668,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.9.2');
+  assert.equal(manifest.version, '0.9.3');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -812,6 +812,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const recallInvalidations = [];
   let bootstrapOptions;
   let compactOptions;
+  let pluginActivitySources;
+  const compactStub = {};
   let foundationOptions;
   let coreCacheOptions;
   let coreCacheFactoryCalls = 0;
@@ -825,10 +827,11 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const persistAnchors = async options => { anchorCalls.push(options); return { status: 'persisted' }; };
   const productionEventHandlers = new Map();
   const productionEventSource = {
+    once(name, handler) { this.on(name, (...args) => { productionEventHandlers.delete(name); handler(...args); }); },
     on(name, handler) { const handlers = productionEventHandlers.get(name) ?? new Set(); handlers.add(handler); productionEventHandlers.set(name, handlers); },
     removeListener(name, handler) { productionEventHandlers.get(name)?.delete(handler); },
   };
-  const productionEventTypes = { CHAT_CHANGED: 'chat', GENERATION_STARTED: 'generation-started', MESSAGE_SENT: 'sent', GENERATION_STOPPED: 'generation-stopped', GENERATION_ENDED: 'generation-ended', GROUP_WRAPPER_FINISHED: 'group-wrapper-finished' };
+  const productionEventTypes = { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', GENERATION_STARTED: 'generation-started', MESSAGE_SENT: 'sent', GENERATION_STOPPED: 'generation-stopped', GENERATION_ENDED: 'generation-ended', GROUP_WRAPPER_FINISHED: 'group-wrapper-finished' };
   const hostUuid = '123e4567-e89b-42d3-a456-426614174000';
   let hostUuidCalls = 0;
   const uuidv4 = () => { hostUuidCalls += 1; return hostUuid; };
@@ -859,6 +862,10 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendSnapshot = { sinceClientCreatedRequestCounts: { get: 3, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   const backendClient = { getDiagnosticSnapshot: () => backendSnapshot };
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
+  define('./src/plugin-activity.js', { createPluginActivity: sources => { pluginActivitySources = sources; return ({ getState: () => ({ busy: false }), subscribe: () => () => {} }); } });
+  define('./src/plugin-updates.js', { createPluginUpdates: () => ({}) });
+  define('./src/avatar-generation.js', { createAvatarGenerator: () => ({}) });
+  define('./src/avatar-image-store.js', { createAvatarImageStore: () => ({}) });
   define('./src/tauri-backend.js', { isTauriTavern: () => false });
   define('./src/private-recall-diagnostics.js', { createPrivateRecallDiagnostics: () => ({ start: async () => false, dispose() {} }) });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {}, openMemory() { openMemoryCalls += 1; } }; } });
@@ -870,7 +877,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     createApiTools: options => { apiToolsOptions = options; return { abortAll() {} }; },
     createTaskRouter: () => ({ generateAnalysisTask: analysisTask, generateUtilityTask: utilityTask, generateRecallTask: recallTask, abortAll() {} }),
   });
-  define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return {}; } });
+  define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return compactStub; } });
   define('./src/chat-session.js', { createChatSession: options => {
     sessionOptions = options;
     return { prepare: () => options.identityCoordinator.prepare(), identity: () => { if (sessionIdentityError) throw sessionIdentityError; return { chatId: 'test' }; }, invalidate() {}, getState: () => sessionState };
@@ -983,6 +990,10 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     return dependency;
   });
   await entry.evaluate();
+  assert.equal(bootstrapOptions.pluginDiagnosticProvider(), null, 'APP_READY前不可先启动身份准备');
+  assert.equal(failStartupLifecycleStart, true);
+  assert.equal(productionEventHandlers.get('app-ready')?.size, 1);
+  for (const handler of productionEventHandlers.get('app-ready')) assert.equal(handler(), undefined, '宿主就绪派发不等待QQJ工作Promise');
   await new Promise(resolvePromise => setImmediate(resolvePromise));
 
   const startupDiagnostic = nativeJson(bootstrapOptions.pluginDiagnosticProvider());
@@ -1179,7 +1190,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(bootstrapOptions.enableFab, true);
   assert.equal(typeof bootstrapOptions.subscribeDialogContextChange, 'function');
   assert.equal(bootstrapOptions.isSevenDaysAvailable(), true);
-  assert.equal(typeof compactOptions.onBusyChange, 'function');
+  assert.ok(pluginActivitySources.includes(compactStub), '实际compact客户端沿统一活动源供悬浮球使用');
   assert.ok(publicMemoryBridgeOptions.session);
   assert.ok(publicMemoryBridgeOptions.store);
   assert.ok(publicMemoryBridgeOptions.hostAdapter);

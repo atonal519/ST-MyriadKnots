@@ -1,3 +1,5 @@
+import { createChatSession } from '../src/chat-session.js';
+import { readTargetChat } from '../src/v3/message-floor-anchor.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -240,6 +242,34 @@ test('ready快照内的后续向量进度通知不重复读取manifest', async (
   assert.equal(getCalls.length, afterActivationGets + 1, '增量本身只执行其必要manifest读取');
   assert.equal(getCalls.length, afterActivationGets + 1, '已读向量通知不触发额外提醒读取');
   assert.equal(embedCalls, 0, '不自动建立索引'); assert.equal(putCalls.length, 0, '不写入索引');
+  view.deactivate();
+});
+
+test('用户权威：摘要旧成员引用仍显示姓名且编辑表单不漏人物', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    floors: [{ floorId: 'editor-floor', assistantSeq: 1, messageIndex: 0, status: 'ready', memoryId: 'editor-memory', summary: '原摘要', canonicalFingerprint: 'canonical', rawFingerprint: 'raw',
+      memory: { summary: '原摘要', chronology: [], participants: [{ entityId: 'old-user', presence: 'present', evidenceRefs: [] }, { entityId: 'same-name-npc', presence: 'present', evidenceRefs: [] }], locations: [] } }],
+    memoryEntities: [{ entityId: 'canonical-user', memberEntityIds: ['canonical-user', 'old-user'], displayName: '合成用户', specialRole: 'user' },
+      { entityId: 'same-name-npc', memberEntityIds: ['same-name-npc'], displayName: '合成用户', specialRole: 'none' }] };
+  let submitted;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    editMemory: async (floorId, fields) => { submitted = fields; return state; } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.setPage('memories'); view.mount(container);
+  openDetails(flatten(container).find(node => String(node.className).split(' ').includes('qqj-memory-card')));
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /人物\|合成用户、合成用户/u);
+  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /未知人物/u);
+  flatten(container).find(node => node.textContent === '编辑').click();
+  const group = flatten(editorContent()).find(node => node.className.split(' ').includes('qqj-editor-group') && node.children[0]?.textContent === '人物');
+  assert.ok(flatten(group).some(node => node.value === '合成用户、合成用户'));
+  await submitEditor();
+  assert.equal(submitted, undefined, '不同ID同名人物原样保存不能误触发修订');
+  flatten(container).find(node => node.textContent === '编辑').click();
+  const summaryInput = flatten(editorContent()).find(node => node.tag === 'textarea');
+  summaryInput.value = '修订摘要'; summaryInput.fire('input');
+  await submitEditor();
+  assert.equal(submitted.participantNames, undefined, '只改摘要不重写未改的人物引用');
+  assert.equal(submitted.summary, '修订摘要');
   view.deactivate();
 });
 
@@ -2652,7 +2682,7 @@ test('摘要楼默认折叠，折叠条显示楼号/时间/真实状态，展开
   await submitEditor(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(saved[0], 'floor'); assert.equal(saved[1].summary, '修订后摘要');
   assert.equal(saved[1].timeText, '10月4日 周二 15:30'); assert.equal(saved[1].originalTimeText, '10月4日 周二 15:30'); assert.equal(saved[1].timeChanged, false); assert.equal(saved[1].locations[0].itemId, 'place-1');
-  assert.deepEqual(saved[1].participantNames, ['裴晚生']);
+  assert.equal(saved[1].participantNames, undefined, '人物输入未改时保留原引用，不按姓名重选');
   assert.equal(flatten(container).find(node => String(node.className).includes('qqj-memory-card')).open, true);
   view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
 });
@@ -3686,6 +3716,40 @@ test('准备子阶段在回执及复制诊断中按attempt展示，不复制来�
 });
 
 
+test('复制状态诊断白名单导出有界CSE人物拒收信息，旧失败明确未记录', async () => {
+  const raw = {
+    trackedSubjects: Array.from({ length: 100 }, (_, index) => ({ name: index === 0 ? '长姓名'.repeat(40) : `人物${index}`,
+      aliases: Array.from({ length: 20 }, (_, alias) => alias === 0 ? '长别名'.repeat(40) : `别名${alias}`), text: '禁止泄漏' })),
+    knownPeople: [{ name: '已知人物', aliases: ['https://example.test/secret'] }],
+    isolated: Array.from({ length: 100 }, (_, index) => ({ field: 'subjects', index, code: 'V3_CSE_SUBJECT_UNBOUND', label: '范围外人物', matchCount: 0, text: '禁止泄漏', reason: '禁止泄漏' })),
+    candidate: '禁止泄漏', authorization: 'Bearer 禁止泄漏',
+  };
+  let copied = '';
+  let state = { status: 'ready', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT, floors: [],
+    lastCseError: { code: 'V3_CSE_ALL_CANDIDATES_ISOLATED', message: '禁止泄漏', diagnostics: { subjectResolution: raw, candidate: '禁止泄漏' } } };
+  const view = createV3FoundationView({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, subscribe() { return () => {}; } }, documentRef,
+    navigatorRef: { clipboard: { async writeText(value) { copied = value; } } } });
+  const container = new Node('main'); view.mount(container, { page: 'management' });
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /CSE 失败时附当次分析人物姓名、别名与拒收原因/u);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  const output = JSON.parse(copied).cse.lastError.subjectResolution;
+  assert.equal(output.trackedSubjects.total, 100);
+  assert.equal(output.trackedSubjects.truncated, true);
+  assert.ok(output.trackedSubjects.items.length < 100);
+  assert.equal(output.trackedSubjects.items[0].aliasesTruncated, true);
+  assert.equal(output.trackedSubjects.items[0].nameTruncated, true);
+  assert.equal(output.trackedSubjects.items[0].aliasLabelsTruncated, true);
+  assert.equal(output.isolated.total, 100);
+  assert.equal(output.isolated.truncated, true);
+  assert.equal(output.isolated.items[0].matchCount, 0);
+  assert.doesNotMatch(copied, /禁止泄漏|example\.test|Bearer/u);
+  assert.ok(copied.length < 100000);
+  state = { ...state, lastCseError: { code: 'V3_CSE_ALL_CANDIDATES_ISOLATED' } };
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  assert.equal(JSON.parse(copied).cse.lastError.subjectResolution.status, 'notRecorded');
+  view.deactivate();
+});
+
 test('复制状态诊断只带前文差异类别与有界楼序，不带错误原文或额外字段', async () => {
   const secret = 'PREFIX_DIAGNOSTIC_PRIVATE_SENTINEL';
   const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 4, rememberedCount: 1,
@@ -3779,6 +3843,36 @@ test('手动刷新run跨工作阶段不重复也不残留，needsReview真实错
   await new Promise(done => setImmediate(done));
   assert.ok(copied); assert.match(feedback().textContent, /已复制/u);
   assert.deepEqual(JSON.parse(copied).ui.pluginActivity, { busy: true, phase: 'committing' });
+  view.setActivity({ busy: true, phase: 'generatingAvatar', copy: '正在生成头像' });
+  flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(done => setImmediate(done));
+  assert.deepEqual(JSON.parse(copied).ui.pluginActivity, { busy: true, phase: 'generatingAvatar' });
   assert.equal(JSON.parse(copied).ui.workBusy, false, '插件工作灯独立于管理/宿主忙态');
+  view.deactivate();
+});
+
+
+test('真实身份读回失败在设置复制诊断保留有限头部与入口，不带正文请求头', async () => {
+  const chatId = '123e4567-e89b-42d3-a456-426614174000';
+  const raw = { chatId: '合成聊天', characterId: 0, characters: [{ name: '人物', avatar: 'person.png' }], userAvatar: 'user.png', chat: [], chatMetadata: { qianqianjie: { chatId } } };
+  const session = createChatSession({ contextProvider: () => raw, identityCoordinator: { prepare: () => readTargetChat({ chatId, hostChatId: raw.chatId,
+    characterName: '人物', avatarUrl: 'person.png', requestHeaders: { Authorization: 'SECRET' } }, {
+    readPhase: 'identityVerify', fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: { qianqianjie: { schemaVersion: 2 }, privatePlugin: 'SECRET' } }, { mes: 'SECRET' }] }) }) } });
+  await assert.rejects(session.prepare({ entryPoint: 'startup' }));
+  const state = { status: 'idle', pluginEnabled: false, floors: [] };
+  let copied;
+  const view = createV3FoundationView({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state }, documentRef, sessionStateProvider: session.getState,
+    pluginDiagnosticProvider: () => ({ phase: 'startup', failure: session.getState().preparationFailure }),
+    navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  const container = new Node('main'); view.mount(container);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  const parsed = JSON.parse(copied);
+  assert.equal(parsed.identity.preparationFailure.entryPoint, 'startup');
+  assert.equal(parsed.identity.preparationFailure.identityRead.reason, 'identityMissing');
+  assert.equal(parsed.identity.preparationFailure.identityRead.readPhase, 'identityVerify');
+  assert.equal(parsed.identity.preparationFailure.identityRead.expectedChatId, chatId);
+  assert.equal(parsed.identity.preparationFailure.identityRead.qqjSchemaVersion, 2);
+  assert.deepEqual(parsed.pluginLifecycle.failure.identityRead, parsed.identity.preparationFailure.identityRead);
+  assert.doesNotMatch(copied, /SECRET|Authorization|privatePlugin|chat_metadata|mes"/u);
   view.deactivate();
 });

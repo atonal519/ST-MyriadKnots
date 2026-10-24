@@ -38,7 +38,7 @@ function dialogHarness() {
     },
     get active() { return active; },
     confirms,
-    async submit() { const current = active; try { const value = await current.submit(); active = null; current.onClose?.(); current.resolve(value); return value; } catch (error) { current.error = error; return false; } },
+    async submit() { const current = active; try { const value = await current.submit(); if (active === current) { active = null; current.onClose?.(); current.resolve(value); } return value; } catch (error) { current.error = error; return false; } },
   };
 }
 function createPeopleProfilesView(options = {}) {
@@ -264,11 +264,13 @@ test('千人页横向切换只显示一份常显资料，资料编辑使用独�
   assert.deepEqual(tabs.map(node => node.attributes.title), ['甲', '乙'], '截断显示仍保留完整姓名提示');
   assert.equal(tabs[0].attributes['aria-selected'], 'true'); assert.match(visible(container), /甲.*别名 · 甲别名/);
   const summary = flatten(container).find(node => node.className === 'qqj-profile-summary');
-  assert.deepEqual(summary.children.map(node => node.className), ['qqj-profile-mark has-alias', 'qqj-profile-identity', 'qqj-profile-badges']);
+  assert.deepEqual(summary.children.map(node => node.className), ['qqj-profile-mark', 'qqj-profile-identity']);
   assert.match(summary.children[0].innerHTML, /<svg[\s\S]*?<path/, '档案标记应复用千千结自己的结形图标');
-  assert.match(visible(summary.children[1]), /甲.*别名 · 甲别名/); assert.match(visible(summary.children[2]), /待建档/); assert.doesNotMatch(visible(container), /推荐/);
+  assert.deepEqual(summary.children[1].children.map(node => node.className), ['qqj-profile-title-row', 'qqj-profile-alias']);
+  assert.deepEqual(summary.children[1].children[0].children.map(node => node.className), ['', 'qqj-profile-badges']);
+  assert.match(visible(summary.children[1]), /甲.*待建档.*别名 · 甲别名/); assert.doesNotMatch(visible(container), /推荐/);
   assert.deepEqual(flatten(container).filter(node => node.className?.includes?.('qqj-profile-section')).map(node => node.children[0].textContent), [], '空资料板块不显示');
-  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-menu-pop').children.map(node => node.textContent), ['整理当前资料', '编辑资料', '上传头像', '', '移出关注', '', '合并到其他人物', '删除人物']);
+  assert.deepEqual(flatten(container).find(node => node.className === 'qqj-profile-menu-pop').children.map(node => node.textContent), ['整理当前资料', '编辑资料', '上传头像', '生成头像', '', '移出关注', '', '合并到其他人物', '删除人物']);
   const profileMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
   profileMenu.open = true; menuDocument.click({ target: profileMenu.children[0], composedPath: () => [profileMenu.children[0], profileMenu] }); assert.equal(profileMenu.open, true, '千人菜单内部点击不提前关闭');
   menuDocument.click({ target: container, composedPath: () => [container] }); assert.equal(profileMenu.open, false, '千人菜单点击外部后关闭');
@@ -532,9 +534,10 @@ test('人物资料弹窗保存失败保留内容，成功后回到当前人物�
   const failure = await runCase(true); assert.equal(failure.scroller.scrollTop, 40); assert.equal(editorField(failure.view, '姓名').value, '新甲');
 });
 
-test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁剪独立保存并保留文字草稿', async () => {
+test('基础资料四项按紧凑行分组且空字段隐藏；头像完整预览与主动裁剪独立保存', async () => {
   const profile = { entityId: A, name: '无别名人物', aliases: '', manualFields: ['aliases'], gender: '女', age: '28', birthday: '3月8日', species: '人类', background: '旧背景', appearance: '', personality: '', notes: '旧补充', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
-  const h = runtimeHarness({ profile }), canvasDraws = [];
+  const h = runtimeHarness({ profile }), canvasDraws = [], avatarOptions=[];
+  const saveAvatar=h.runtime.saveAvatar;h.runtime.saveAvatar=async(...args)=>{avatarOptions.push(args[2]);return saveAvatar(...args);};
   const avatarDocument = {
     activeElement: null,
     createElement(tag) {
@@ -542,8 +545,8 @@ test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁�
       return { width: 0, height: 0, getContext: () => ({ clearRect() {}, drawImage(...args) { canvasDraws.push(args); } }), toDataURL: () => 'data:image/webp;base64,AAAA' };
     },
   };
-  let revoked = 0, sequence = 0;
-  const urlApi = { createObjectURL: () => `blob:${++sequence}`, revokeObjectURL: () => { revoked += 1; } };
+  let revoked = 0, sequence = 0;const originals=[];
+  const urlApi = { createObjectURL: original => { originals.push(original);return `blob:${++sequence}`; }, revokeObjectURL: () => { revoked += 1; } };
   const imageFactory = () => ({ naturalWidth: 800, naturalHeight: 600, onload: null, onerror: null, _src: '', set src(value) { this._src = value; if (value) queueMicrotask(() => this.onload?.()); }, get src() { return this._src; } });
   const dialogs = dialogHarness();
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef: avatarDocument, imageFactory, urlApi }); view.mount(container);
@@ -553,13 +556,28 @@ test('基础资料四项按紧凑行分组且空字段隐藏；头像弹窗裁�
   const basic = flatten(container).find(node => node.className.includes('qqj-profile-section-basic'));
   assert.deepEqual(basic.children.slice(1).map(node => node.className), ['qqj-profile-read-row qqj-profile-read-gender', 'qqj-profile-read-row qqj-profile-read-age', 'qqj-profile-read-row qqj-profile-read-birthday', 'qqj-profile-read-row qqj-profile-read-species', 'qqj-profile-read-row qqj-profile-read-notes']);
   assert.doesNotMatch(visible(container), /NSFW/);
+  const longName='一位姓名很长的合成人物', longAliases='别名一、别名二、别名三、别名四、别名五';
+  h.emitState({...h.state,people:h.state.people.map(person=>person.entityId===A?{...person,displayName:longName,aliases:longAliases.split('、'),profile:{...person.profile,name:longName,aliases:longAliases}}:person)});
+  const header=flatten(container).find(node=>node.className==='qqj-profile-summary');
+  assert.equal(header.children[0].className,'qqj-profile-mark');
+  assert.equal(header.children[1].children[1].textContent,`别名 · ${longAliases}`,'完整别名独占标题行下方，不与状态菜单共占一行');
+  assert.equal(flatten(header).find(node=>node.tag==='h2').textContent,longName);
+  h.emitState({...h.state,people:h.state.people.map(person=>person.entityId===A?{...person,displayName:profile.name,aliases:[],profile}:person)});
   flatten(container).find(node => node.textContent === '编辑资料').click(); const notes = fieldControl(dialogs.active.content, '补充资料'); notes.value = '尚未保存的文字'; notes.fire('input'); dialogs.dialog.cancelTop();
   let file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change', { target: { files: [{ type: 'image/png', size: 1024 }], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(dialogs.active.title, '裁剪头像'); assert.ok(flatten(dialogs.active.content).find(node => node.className === 'qqj-avatar-crop-frame')); assert.equal(flatten(container).some(node => node.className.includes('qqj-profile-form')), false, '头像裁剪不嵌套在资料编辑窗中');
+  assert.equal(dialogs.active.title, '头像预览'); assert.ok(flatten(dialogs.active.content).find(node => node.className === 'qqj-avatar-preview-frame')); assert.equal(flatten(container).some(node => node.className.includes('qqj-profile-form')), false, '头像裁剪不嵌套在资料编辑窗中');
   dialogs.dialog.cancelTop(); assert.equal(revoked, 1); assert.equal(h.calls.avatar.length, 0);
-  file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change', { target: { files: [{ type: 'image/webp', size: 2048 }], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
+  file = flatten(container).find(node => node.className === 'qqj-avatar-file'); const originalFile={type:'image/webp',size:2048};file.fire('change', { target: { files: [originalFile], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
+  const content=dialogs.active.content, image=flatten(content).find(node=>node.className==='qqj-avatar-preview-image');
+  const download=flatten(content).find(node=>node.tag==='a'&&node.textContent==='保存原图');assert.equal(download.href,'blob:2');assert.equal(download.download,'头像原图.webp');assert.equal(originals[1],originalFile,'下载地址对应输入原文件，未经canvas重编码');
+  assert.equal(canvasDraws.length,0,'预览和原图下载不经过canvas');download.click();assert.equal(canvasDraws.length,0);
+  const toggle=flatten(content).find(node=>node.tag==='button'&&node.textContent==='裁剪');toggle.click();assert.ok(flatten(content).some(node=>node.className==='qqj-avatar-crop-frame'));
+  const zoom=flatten(content).find(node=>node.type==='range');zoom.value='2';zoom.fire('input');toggle.click();assert.ok(flatten(content).some(node=>node.className==='qqj-avatar-preview-frame'));assert.equal(image.src,'blob:2');
   await dialogs.submit(); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(h.calls.avatar[0], [A, 'data:image/webp;base64,AAAA']); assert.equal(canvasDraws.length, 1); assert.equal(revoked, 2);
+  assert.deepEqual(canvasDraws[0].slice(1),[0,0,512,384],'回完整图后保存原图比例，不沿用裁剪参数');
+  file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change',{target:{files:[{type:'image/png',size:100}],value:'chosen'}}); await new Promise(resolve=>setImmediate(resolve));
+  flatten(dialogs.active.content).find(node=>node.tag==='button'&&node.textContent==='裁剪').click();await dialogs.submit();assert.ok(Math.abs(canvasDraws[1][1]+85.33333333333333)<1e-9);assert.equal(canvasDraws[1][2],0);assert.ok(Math.abs(canvasDraws[1][3]-682.6666666666666)<1e-9);assert.equal(canvasDraws[1][4],512);
+  assert.equal(avatarOptions[0].generated,false);assert.deepEqual(h.calls.avatar[0], [A, 'data:image/webp;base64,AAAA']); assert.equal(canvasDraws.length, 2); assert.equal(revoked, 3);
   view.deactivate();
 });
 
@@ -633,13 +651,14 @@ test('真实人物资料保存后停用重开仍保持归属，取消不写另�
 
 test('搬家后人物详情按需只读显示冻结旧资料，不提供编辑入口', async () => {
   const current = { name: '甲新名', notes: 'B当前资料' };
-  const archived = { name: '甲旧名', notes: 'A冻结资料' };
+  const archived = { name: '甲旧名', aliases: '冻结旧称', notes: 'A冻结资料' };
   const h = runtimeHarness({ profile: current, archivedProfileHistory: [{ entityId: A, sourceChatId: 'source-chat', sourceRevision: 7, profile: archived }] });
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container); await view.activate();
   assert.match(visible(container), /甲新名/); assert.doesNotMatch(visible(container), /甲旧名/);
   flatten(container).find(node => node.textContent === '查看搬家前资料（只读）').click();
   await waitFor(() => visible(container).includes('A冻结资料'));
   assert.match(visible(container), /搬家前资料 1 · 甲旧名/);
+  assert.match(visible(container), /冻结旧称/);
   const archive = flatten(container).find(node => node.className === 'qqj-profile-archive-entry');
   assert.ok(archive); assert.doesNotMatch(visible(archive), /编辑|保存资料|删除人物|整理当前资料/);
 });
@@ -664,4 +683,66 @@ test('有效别名：真实编辑框展示累计全集并保存删回旧三项',
   assert.deepEqual(h.runtime.getState().people.find(p => p.entityId === A).aliases, ['简称一', '简称二', '简称三']);
   assert.ok(h.runtime.getState().profilesByEntityId[A].manualFields.includes('aliases'));
   view.deactivate();
+});
+
+test('生成头像走现有裁剪确认，库项不唯一需显式选择且取消或失败保旧头像', async () => {
+  const h=runtimeHarness(), generated=[], saves=[]; let selectedIndex=0, fail=false;
+  const saveAvatar=h.runtime.saveAvatar;h.runtime.saveAvatar=async(...args)=>{saves.push(args);return saveAvatar(...args);};
+  const characters=[{name:'甲',tag:'appearance-a',nl:'外貌甲'},{name:'同名甲',tag:'appearance-b',nl:'外貌乙'}];
+  h.emitState({...h.state,people:h.state.people.map(person=>({...person,avatar:person.entityId===A?'data:image/webp;base64,T0xE':null}))});
+  h.runtime.prepareAvatarGeneration=()=>({characters,selectedIndex});
+  h.runtime.generateAvatar=async(entityId,{character})=>{generated.push([entityId,character]);if(fail)throw new Error('生图通道未配置');return {dataUrl:'data:image/png;base64,AAAA'};};
+  let revoked=0;
+  const imageFactory=()=>({naturalWidth:800,naturalHeight:600,set src(value){if(value)queueMicrotask(()=>this.onload?.());},onload:null,onerror:null});
+  const doc={createElement:tag=>tag==='canvas'?{getContext:()=>({clearRect(){},drawImage(){}}),toDataURL:()=> 'data:image/webp;base64,Q1JPUA=='}:new Node(tag)};
+  const dialogs=dialogHarness(), container=new Node('main');
+  const view=createPeopleProfilesView({runtime:h.runtime,dialog:dialogs.dialog,documentRef:doc,imageFactory,urlApi:{createObjectURL:()=> 'blob:generated',revokeObjectURL:()=>{revoked++;}}});view.mount(container);
+  const generate=()=>{const button=flatten(container).find(node=>node.tag==='button'&&node.textContent==='生成头像');assert.ok(button,'人物菜单应有明确生成入口');button.click();};
+  generate();await waitFor(()=>dialogs.active?.title==='头像预览');assert.equal(generated.length,1);assert.equal(h.calls.avatar.length,0);dialogs.dialog.cancelTop();assert.equal(revoked,1);
+  assert.equal(h.runtime.getState().people.find(person=>person.entityId===A).avatar,'data:image/webp;base64,T0xE');
+  characters[0]={...characters[0],scope:'global'};characters[1]={...characters[1],name:'甲',scope:'global'};
+  selectedIndex=null;generate();await waitFor(()=>dialogs.active?.title==='选择柏宝绘角色');assert.equal(generated.length,1);
+  assert.ok(visible(dialogs.active.content).includes('外貌甲'));assert.ok(visible(dialogs.active.content).includes('外貌乙'));
+  const select=flatten(dialogs.active.content).find(node=>node.className==='qqj-inline-select');select.value='1';await dialogs.submit();
+  await waitFor(()=>dialogs.active?.title==='头像预览');assert.equal(generated.length,2);assert.deepEqual(generated[1],[A,characters[1]]);
+  flatten(dialogs.active.content).find(node=>node.tag==='button'&&node.textContent==='裁剪').click();
+  await dialogs.submit();assert.equal(saves[0][2].generated,true);assert.equal(saves[0][2].crop.aspectRatio,1);assert.deepEqual(h.calls.avatar,[[A,'data:image/webp;base64,Q1JPUA==']]);assert.equal(revoked,2);assert.equal(h.runtime.getState().people.find(person=>person.entityId===B).avatar,null);
+  selectedIndex=0;fail=true;generate();await waitFor(()=>visible(container).includes('生图通道未配置'));assert.equal(h.calls.avatar.length,1);assert.equal(dialogs.active,null);
+  let finish;h.runtime.generateAvatar=()=>new Promise(resolve=>{finish=resolve;});generate();view.deactivate();finish({dataUrl:'data:image/png;base64,AAAA'});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(dialogs.active,null,'正常关闭千人页后不再打开新裁剪窗');assert.equal(h.calls.avatar.length,1);
+});
+
+test('头像确认先呈现处理状态再编码，延迟保存与失败重试保持原图', async () => {
+  const h = runtimeHarness(), frames = [], encoded = [];let resolveSave, rejectSave, released = 0;
+  h.runtime.saveAvatar = async (id, data) => { h.calls.avatar.push([id, data]);await new Promise((resolve,reject)=>{resolveSave=resolve;rejectSave=reject;}); };
+  const doc = { defaultView: { requestAnimationFrame: callback => frames.push(callback) }, createElement: tag => tag === 'canvas'
+    ? { getContext:()=>({clearRect(){},drawImage(){encoded.push('draw');}}),toDataURL:()=> 'data:image/webp;base64,AAAA' } : new Node(tag) };
+  const imageFactory = () => ({ naturalWidth:800,naturalHeight:600,set src(value){if(value)queueMicrotask(()=>this.onload?.());} });
+  const dialogs = dialogHarness(), container = new Node('main');
+  const view = createPeopleProfilesView({runtime:h.runtime,dialog:dialogs.dialog,documentRef:doc,imageFactory,urlApi:{createObjectURL:()=> 'blob:original',revokeObjectURL:()=>{released++;}}});view.mount(container);
+  flatten(container).find(node=>node.className==='qqj-avatar-file').fire('change',{target:{files:[{type:'image/png',size:100}],value:'chosen'}});
+  await waitFor(()=>dialogs.active?.title==='头像预览');const content=dialogs.active.content,toggle=flatten(content).find(node=>node.tag==='button'&&node.textContent==='裁剪');
+  const first=dialogs.submit();assert.match(visible(content),/正在处理头像/);assert.equal(toggle.disabled,true);assert.equal(content.attributes['aria-busy'],'true');assert.equal(encoded.length,0);
+  assert.equal(frames.length,1);frames.shift()();assert.equal(encoded.length,0);frames.shift()();await waitFor(()=>h.calls.avatar.length===1);
+  assert.match(visible(content),/正在保存头像/);assert.equal(toggle.disabled,true);assert.equal(released,0);
+  rejectSave(new Error('头像保存失败'));assert.equal(await first,false);assert.match(dialogs.active.error.message,/头像保存失败/);assert.equal(dialogs.active.content,content);
+  assert.equal(toggle.disabled,false);assert.equal(content.attributes['aria-busy'],'false');assert.equal(released,0);
+  const second=dialogs.submit();frames.shift()();frames.shift()();await waitFor(()=>h.calls.avatar.length===2);resolveSave();await second;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(dialogs.active,null);assert.equal(released,1);assert.match(visible(container),/头像已保存/);
+  flatten(container).find(node=>node.className==='qqj-avatar-file').fire('change',{target:{files:[{type:'image/png',size:100}],value:'again'}});
+  await waitFor(()=>dialogs.active?.title==='头像预览');const cancelled=dialogs.submit();frames.shift()();dialogs.dialog.cancelTop();frames.shift()();await cancelled;
+  assert.equal(h.calls.avatar.length,2,'正常取消预览后，不启动尚未开始的保存');assert.equal(encoded.length,2,'已取消的待绘制提交不再编码');assert.equal(released,2);view.deactivate();
+});
+
+test('点击已存头像懒看完整图与下载，旧头像仍只显示原有小图',async()=>{
+  for(const original of [true,false]){
+    const h=runtimeHarness();const source={path:'/user/images/qqj-avatars/qqj-avatar-view.png',mimeType:'image/png',crop:{aspectRatio:1,zoom:2,offsetX:5,offsetY:0}};
+    h.emitState({...h.state,people:h.state.people.map(p=>p.entityId===A?{...p,avatar:'data:image/webp;base64,QUFB',...(original?{avatarSource:source}:{})}:p)});
+    const dialogs=dialogHarness(),container=new Node('main');const view=createPeopleProfilesView({runtime:h.runtime,dialog:dialogs.dialog,documentRef});view.mount(container);
+    flatten(container).find(node=>String(node.className).startsWith('qqj-profile-mark')).click();
+    assert.equal(dialogs.active?.title,'头像大图');const image=flatten(dialogs.active.content).find(node=>node.tag==='img');
+    assert.equal(image.src,original?source.path:'data:image/webp;base64,QUFB');assert.equal(image.className,'qqj-avatar-preview-image');
+    const download=flatten(dialogs.active.content).find(node=>node.tag==='a');assert.equal(download.href,image.src);assert.equal(h.calls.avatar.length,0);
+    dialogs.dialog.cancelTop();assert.equal(image.src,'');view.deactivate();
+  }
 });

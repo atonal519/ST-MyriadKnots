@@ -120,7 +120,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   current.fabShow = false; instance.setEnabled(true); assert.equal(fabHost.style.display, 'none', '悬浮球独立开关应与插件总开关共同决定显示');
 });
 
-test('bootstrap 工作指示同源更新悬浮球与标题，隐藏悬浮球不停止订阅', async () => {
+test('bootstrap 工作指示同源更新悬浮球与窗口忙态，隐藏悬浮球不停止订阅', async () => {
   const bootstrap = await loadBootstrap();
   let listener, current = { busy: false, copy: '' };
   const fabStates = [], panelStates = [], viewStates = [];

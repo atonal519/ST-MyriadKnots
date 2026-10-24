@@ -38,19 +38,33 @@ export function createTimeStore({ client }) {
     }
     const batches = [], batchRecords = [];
     const envelopes = new Array(head.data.batchIds.length);
-    let cursor = 0, firstError = null;
-    async function worker() {
-      while (!firstError) {
-        const index = cursor++;
-        if (index >= head.data.batchIds.length) return;
-        try { envelopes[index] = await readRecord(chatId, head.data.batchIds[index]); }
-        catch (error) { firstError ??= error; }
+    if (typeof client.getMany === 'function') {
+      for (let offset = 0; offset < envelopes.length; offset += 64) {
+        const ids = head.data.batchIds.slice(offset, offset + 64);
+        const loaded = await client.getMany(collection(chatId), ids);
+        if (!Array.isArray(loaded) || loaded.length !== ids.length) throw new Error('时间增量记录无效。');
+        for (let index = 0; index < ids.length; index++) {
+          const item = loaded[index];
+          if (!item || item.recordId !== ids[index] || ![200, 404, 500].includes(item.status)) throw new Error('时间增量记录无效。');
+          if (item.status === 500) throw Object.assign(new Error('时间增量记录读取失败（HTTP 500）。'), { status: 500 });
+          envelopes[offset + index] = item.status === 404 ? { data: null, revision: 0 } : item.envelope;
+        }
       }
+    } else {
+      let cursor = 0, firstError = null;
+      async function worker() {
+        while (!firstError) {
+          const index = cursor++;
+          if (index >= head.data.batchIds.length) return;
+          try { envelopes[index] = await readRecord(chatId, head.data.batchIds[index]); }
+          catch (error) { firstError ??= error; }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(BATCH_READ_CONCURRENCY, envelopes.length) }, () => worker()));
+      if (firstError) throw firstError;
     }
-    await Promise.all(Array.from({ length: Math.min(BATCH_READ_CONCURRENCY, envelopes.length) }, () => worker()));
-    if (firstError) throw firstError;
     for (const [index, envelope] of envelopes.entries()) {
-      if (!envelope.data || envelope.data.chatId !== chatId || envelope.data.schemaVersion !== 1) throw new Error('时间增量记录无效。');
+      if (!envelope?.data || envelope.data.chatId !== chatId || envelope.data.schemaVersion !== 1) throw new Error('时间增量记录无效。');
       batches.push(envelope.data); batchRecords.push({ id: head.data.batchIds[index], revision: envelope.revision, data: envelope.data });
     }
     const value = { head: head.data, revision: head.revision, batches, batchRecords };

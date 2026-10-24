@@ -1,7 +1,8 @@
 import { MultiDirectedGraph, DirectedGraph } from 'graphology';
 import { topologicalSort } from 'graphology-dag';
 import { deterministicUuid } from './foundation-domain.js';
-import { formatStoryTime, isRelativeStoryTime, projectTime, storyTimes, timeDistance } from './time-engine.js';
+import { isStoryClockOnly } from '../story-time-clock.js';
+import { storyTimeBounds, formatStoryTime, isRelativeStoryTime, projectTime, storyTimes, timeDistance } from './time-engine.js';
 import { calendarKey } from './calendar-rules.js';
 import { buildEntityIdentityDirectory, normalizeIdentityProjection } from './entity-identity.js';
 import { rankRecallDocuments, tokenizeRecallText } from './recall-ranking.js';
@@ -196,7 +197,8 @@ function stableTopologicalOrder(graph, indices) {
       }
     }
   };
-  for (const [id, degree] of remainingIncoming) if (degree === 0) release(id);
+  const initiallyReady = [...remainingIncoming].filter(([, degree]) => degree === 0).map(([id]) => id);
+  for (const id of initiallyReady) release(id);
   const ordered = [];
   while (ready.length) {
     const id = pop();
@@ -218,6 +220,36 @@ function explicitStorySecond(event) {
   const start = range ? raw.slice(0, range.index).trim() : raw;
   const match = start.match(STORY_SECONDS);
   return match ? Number(match[1]) : null;
+}
+
+// 每日端点DAG只表达已知先后；重叠节点按现有来源优先堆出队。
+function addDayClockConstraints(graph, events, indices) {
+  const clocks = events.map(event => ({ event, bounds: storyTimeBounds(event.parsedStoryTime) })).filter(row => row.bounds);
+  const endpoints = [...new Set(clocks.flatMap(row => [row.bounds.min, row.bounds.max]))].sort((a, b) => a - b);
+  const before = time => `clock-before:${time}`, after = time => `clock-after:${time}`;
+  for (const [index, time] of endpoints.entries()) {
+    graph.addNode(before(time), { kind: 'time-boundary' }); graph.addNode(after(time), { kind: 'time-boundary' });
+    if (index) graph.addDirectedEdge(after(endpoints[index - 1]), before(time));
+  }
+  const points = new Map();
+  for (const { event, bounds } of clocks) {
+    if (bounds.kind === 'range') { graph.addDirectedEdge(before(bounds.min), eventNode(event.id)); graph.addDirectedEdge(eventNode(event.id), before(bounds.max)); }
+    else { const group = points.get(bounds.min) ?? []; group.push(event); points.set(bounds.min, group); }
+  }
+  for (const time of endpoints) {
+    const values = points.get(time) ?? [], minuteGraph = new DirectedGraph({ allowSelfLoops: false });
+    for (const event of values) minuteGraph.addNode(eventNode(event.id), { value: event });
+    const seconds = values.map(event => ({ event, second: explicitStorySecond(event) })).filter(row => Number.isInteger(row.second))
+      .sort((a, b) => a.second - b.second || indices.get(a.event.id) - indices.get(b.event.id));
+    for (let index = 1; index < seconds.length; index++) minuteGraph.addDirectedEdge(eventNode(seconds[index - 1].event.id), eventNode(seconds[index].event.id));
+    const ordered = stableTopologicalOrder(minuteGraph, indices);
+    if (!ordered.length) graph.addDirectedEdge(before(time), after(time));
+    else {
+      graph.addDirectedEdge(before(time), eventNode(ordered[0].id));
+      for (let index = 1; index < ordered.length; index++) graph.addDirectedEdge(eventNode(ordered[index - 1].id), eventNode(ordered[index].id));
+      graph.addDirectedEdge(eventNode(ordered.at(-1).id), after(time));
+    }
+  }
 }
 
 export function orderQianshiLineRecords(values, sourceIndex) {
@@ -254,32 +286,7 @@ export function orderQianshiLineRecords(values, sourceIndex) {
     const orderedBuckets = [...buckets.values()].map(events => {
       const dayGraph = new DirectedGraph({ allowSelfLoops: false });
       for (const event of events) dayGraph.addNode(eventNode(event.id), { value: event });
-      const minuteGroups = new Map();
-      for (const event of events.filter(item => Number.isInteger(item.parsedStoryTime?.minute))) {
-        const minute = event.parsedStoryTime.minute;
-        const group = minuteGroups.get(minute);
-        if (group) group.push(event);
-        else minuteGroups.set(minute, [event]);
-      }
-      let previousMinuteTail = null;
-      for (const minute of [...minuteGroups.keys()].sort((left, right) => left - right)) {
-        const minuteEvents = minuteGroups.get(minute), minuteGraph = new DirectedGraph({ allowSelfLoops: false });
-        for (const event of minuteEvents) minuteGraph.addNode(eventNode(event.id), { value: event });
-        const seconds = minuteEvents.map(event => ({ event, second: explicitStorySecond(event) }))
-          .filter(item => Number.isInteger(item.second))
-          .sort((left, right) => left.second - right.second || indices.get(left.event.id) - indices.get(right.event.id));
-        for (let index = 1; index < seconds.length; index += 1) {
-          minuteGraph.addDirectedEdge(eventNode(seconds[index - 1].event.id), eventNode(seconds[index].event.id));
-        }
-        const minuteOrder = stableTopologicalOrder(minuteGraph, indices);
-        if (previousMinuteTail && minuteOrder.length) {
-          dayGraph.addDirectedEdge(eventNode(previousMinuteTail.id), eventNode(minuteOrder[0].id));
-        }
-        for (let index = 1; index < minuteOrder.length; index += 1) {
-          dayGraph.addDirectedEdge(eventNode(minuteOrder[index - 1].id), eventNode(minuteOrder[index].id));
-        }
-        previousMinuteTail = minuteOrder.at(-1) ?? previousMinuteTail;
-      }
+      addDayClockConstraints(dayGraph, events, indices);
       const ordered = stableTopologicalOrder(dayGraph, indices);
       for (let index = 1; index < ordered.length; index += 1) graph.addDirectedEdge(eventNode(ordered[index - 1].id), eventNode(ordered[index].id));
       return { events: ordered, firstSourceIndex: events.reduce((minimum, event) => Math.min(minimum, indices.get(event.id)), Number.MAX_SAFE_INTEGER) };
@@ -672,7 +679,7 @@ function recallTimelineTime(event, calendarOverride = null) {
   const relative = isRelativeStoryTime(rangeStart);
   const calendar = event.parsedStoryTime?.calendar ?? calendarOverride;
   // 楼内已确认日期的纯钟点沿用解析结果；继承来的楼层范围不能覆盖事件原文的纯钟点。
-  const anchoredClock = !rangeSeparator && CLOCK_ONLY.test(sortableRaw) && event.parsedStoryTime?.date ? event.parsedStoryTime : null;
+  const anchoredClock = !rangeSeparator && (CLOCK_ONLY.test(sortableRaw) || isStoryClockOnly(sortableRaw)) && event.parsedStoryTime?.date ? event.parsedStoryTime : null;
   const time = ranged ? rangeSeparator && rangeStart ? projectQianshiTime(rangeStart, null, calendar) : null
       : relative && !event.parsedStoryTime?.date ? null
       : relative ? event.parsedStoryTime : anchoredClock ?? (sortableRaw ? projectQianshiTime(sortableRaw, null, calendar) : event.parsedStoryTime);
@@ -683,14 +690,17 @@ function recallTimelineTime(event, calendarOverride = null) {
 }
 
 function recallTimelineTimeComparator(events) {
-  const views = new Map(events.map(event => [event.id, recallTimelineTime(event)]));
+  const views = new Map(events.map(event => { const view = recallTimelineTime(event); return [event.id, { ...view, bounds: storyTimeBounds(view.time) }]; }));
   return (left, right) => {
     const a = views.get(left.id), b = views.get(right.id);
     if (!a?.time || !b?.time || a.kind !== b.kind) return 0;
     const distance = timeDistance(a.time, b.time);
     if (distance !== null && distance !== 0) return distance > 0 ? -1 : 1;
-    return distance === 0 && Number.isInteger(a.time.minute) && Number.isInteger(b.time.minute)
-      ? a.time.minute - b.time.minute : 0;
+    const x = a.bounds, y = b.bounds;
+    if (distance !== 0 || !x || !y) return 0;
+    if (x.max <= y.min && !(x.min === y.min && x.kind === 'point')) return -1;
+    if (y.max <= x.min && !(y.min === x.min && y.kind === 'point')) return 1;
+    return 0;
   };
 }
 

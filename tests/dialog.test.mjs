@@ -223,3 +223,16 @@ test('复制构画实际结构/CSS闭包并映射 QQJ 实色主题', async () =>
   for (const name of ['prepareDialog', 'mountDialog', 'choose', 'confirm', 'prompt']) assert.match(source, new RegExp(`function ${name}\\(`));
   assert.doesNotMatch(source, /selectMany|selectOne|promptTextarea|promptFields/);
 });
+
+test('自定义弹窗提交立即可见忙态，重复确认不多保存，失败恢复后可重试', async () => {
+  const h = fakeDom(); let attempts = 0, settle;
+  const pending = h.manager.custom({ title: '确认头像', content: h.documentRef.createElement('section'), confirmText: '确认头像',
+    submit: async () => { attempts += 1; await new Promise(resolve => { settle = resolve; }); if (attempts === 1) throw new Error('头像保存失败'); return true; } });
+  const button = h.find('.sp-dialog-submit');button.trigger('click');
+  assert.equal(button[0].disabled, true);assert.equal(button[0].textContent, '处理中…');assert.equal(button[0].attrs['aria-busy'], 'true');
+  button.trigger('click');assert.equal(attempts, 1, '原提交入口拒绝重复点击');
+  settle();await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.find('.sp-dialog-input-error').html(), /头像保存失败/);assert.equal(h.manager.hasActive(), true);
+  assert.equal(button[0].disabled, false);assert.equal(button[0].textContent, '确认头像');assert.equal(button[0].attrs['aria-busy'], 'false');
+  button.trigger('click');assert.equal(attempts, 2);assert.equal(button[0].disabled, true);settle();assert.equal(await pending, true);
+});

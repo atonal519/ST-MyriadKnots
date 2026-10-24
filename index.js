@@ -41,6 +41,8 @@ import { persistMessageFloorAnchors, persistTargetChatIdentity } from './src/v3/
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, projectAnnualPeople } from './src/v3/people-workspace.js';
+import { createAvatarGenerator } from './src/avatar-generation.js';
+import { createAvatarImageStore } from './src/avatar-image-store.js';
 import { createChatBranchInitializer } from './src/v3/chat-branch-inheritance.js';
 import { copyLatestPeople } from './src/v3/chat-branch-inheritance.js';
 import { createChatMemoryMigration } from './src/chat-memory-migration.js';
@@ -173,7 +175,7 @@ const foundationRuntime = createFoundationRuntime({
   hostAdapter,
   store: foundationStore,
   contextProvider,
-  prepareSession: () => session.prepare(),
+  prepareSession: () => session.prepare({ entryPoint: 'sourcePrepare' }),
   deferChatChangeRefreshUntilPrepared: true,
   isEnabled: settings.isEnabled,
   sanitizerOptions,
@@ -311,7 +313,7 @@ v3RecallRuntime = createV3RecallRuntime({
 // 本机私有开关启用后独立留存临时诊断；专用客户端不混入记忆存储计数，也不等待诊断写入。
 const privateRecallDiagnostics = createPrivateRecallDiagnostics({
   client: createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {}, timeoutMs: 5000 }),
-  recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, isEnabled: settings.isEnabled,
+  recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, session, isEnabled: settings.isEnabled,
 });
 if (globalThis.location?.origin) void privateRecallDiagnostics.start();
 globalThis.addEventListener?.('beforeunload', privateRecallDiagnostics.dispose, { once: true });
@@ -326,6 +328,9 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   sourcePermissions,
   contextProvider,
   profilePromptGuidance: profilePrompt,
+  avatarGenerator: createAvatarGenerator(),
+  avatarImageStore: createAvatarImageStore({ headers: getRequestHeaders, uuid: newUuid }),
+  avatarPrompt: () => settings.get().avatarPrompt,
   processingPrompt,
   isEnabled: settings.isEnabled,
   isMainGenerationActive: isGenerating,
@@ -539,7 +544,7 @@ ui = bootstrap({
   storageManagement,
   sessionStateProvider: () => session.getState(),
   pluginDiagnosticProvider: () => pluginLifecycleFailure,
-  prepareSession: () => session.prepare(),
+  prepareSession: () => session.prepare({ entryPoint: 'memoryManagement' }),
   backendDiagnosticProvider: () => ({ ...backendClient.getDiagnosticSnapshot(), coreCache: {
     ...(coreRecordCache?.getStats?.() ?? { available: false }), enabled: Boolean(coreRecordCache),
   } }),
@@ -577,8 +582,19 @@ void (async () => {
     }
     refreshStoryClock({ announce: true });
     inlineRenderer.setEnabled(settings.isEnabled());
-    await lifecycle.start();
-    clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
+    const start = async () => {
+      try {
+        await lifecycle.start();
+        clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
+      } catch (error) {
+        recordPluginLifecycleFailure(error, 'startup');
+        console.warn('[qianqianjie] 身份或后端数据准备失败', error);
+      }
+    };
+    // APP_READY会向后加载的扩展回放；回调不让宿主等待千千结的后台准备。
+    if (host?.eventTypes?.APP_READY && typeof host?.eventSource?.once === 'function') {
+      host.eventSource.once(host.eventTypes.APP_READY, () => { void start(); });
+    } else void start();
   } catch (error) {
     recordPluginLifecycleFailure(error, 'startup');
     console.warn('[qianqianjie] 身份或后端数据准备失败', error);

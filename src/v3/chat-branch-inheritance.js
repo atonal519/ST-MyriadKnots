@@ -170,6 +170,7 @@ export async function copyLatestPeople({ peopleStore, sourceIdentity, targetIden
     personOrderEntityIds: uniqueAllowed(source.data.personOrderEntityIds),
     profilesByEntityId: pickMap(source.data.profilesByEntityId),
     avatarsByEntityId: pickMap(source.data.avatarsByEntityId),
+    ...(source.data.avatarSourcesByEntityId ? { avatarSourcesByEntityId: pickMap(source.data.avatarSourcesByEntityId) } : {}),
     identityRedirectsByEntityId: redirects,
     deletedEntityIds: uniqueAllowed(source.data.deletedEntityIds),
     profileMaterialProgressByEntityId: {},

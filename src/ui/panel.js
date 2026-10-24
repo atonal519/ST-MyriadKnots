@@ -81,13 +81,8 @@ export function createPanel({
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
   const panel = root.querySelector('.panel');
-  const activityIndicator = root.querySelector('.qqj-work-indicator');
   const setActivity = value => {
     panel?.setAttribute?.('aria-busy', String(value.busy === true));
-    if (!activityIndicator) return;
-    activityIndicator.hidden = value.busy !== true;
-    activityIndicator.setAttribute('aria-label', value.copy || '千千结空闲');
-    activityIndicator.setAttribute('title', value.copy || '千千结空闲');
   };
   const body = root.querySelector('.body');
   const view = root.querySelector('.view');

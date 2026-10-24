@@ -2206,3 +2206,15 @@ test('待办只列持续事项当前状态和人工确认的历史动作，自�
   assert.equal(h.runtime.getQianshiSnapshot().events.length, 6, '所有历史事件仍在时间线输入中');
   h.view.deactivate();
 });
+
+
+test('古法时间五格改日期保存仍保完整起止，取消不写入', async () => {
+  const snapshot=fixture(); snapshot.events[0].storyTime='大陆历1686年9月22日 卯时至酉时';
+  const submitted=[], h=harness({initialSnapshot:snapshot,editText:async value=>{submitted.push(value);return {status:'saved'};}});
+  const open=()=>{const event=h.eventCard('event-1');byText(flatten(event.parent).find(node=>node.className.includes('qqj-qianshi-event-menu')),'编辑详情').fire('click');return h.editor();};
+  let form=open(); assert.equal(flatten(form).find(node=>node.attributes['aria-label']==='发生时间时间').value,'卯时至酉时');
+  h.cancelEditor(); assert.equal(submitted.length,0); form=open();
+  const day=flatten(form).find(node=>node.attributes['aria-label']==='发生时间日'); day.value='23';day.fire('input');await h.saveEditor();
+  assert.equal(submitted[0].storyTime,'大陆历1686年9月23日 卯时~酉时');
+  assert.equal(submitted[0].expected.storyTime,snapshot.events[0].storyTime);
+});

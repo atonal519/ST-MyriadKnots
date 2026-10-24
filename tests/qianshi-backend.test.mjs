@@ -2309,3 +2309,34 @@ test('坏参与者事件只部分退回并保留同批合法事件及编译回�
   assert.equal(accepted.events.length, 2);
   assert.equal(accepted.events[1].people.length, 40);
 });
+
+test('同日古法范围用确定先后排序，重叠沿可用来源顺序且不造分钟', () => {
+  const rows = labels => labels.map((raw, index) => ({ id: `time-${index}`, assistantSeq: index + 1, storyTime: `2026年10月23日 ${raw}`, parsedStoryTime: projectTime(`2026年10月23日 ${raw}`) }));
+  const ordered = values => orderQianshiLineRecords(values, new Map(values.map((row, index) => [row.id, index]))).map(row => row.id);
+  assert.deepEqual(ordered(rows(['酉时','卯时'])), ['time-1','time-0']);
+  assert.deepEqual(ordered(rows(['08:30','辰时','07:30'])), ['time-1','time-2','time-0']);
+  assert.deepEqual(ordered(rows(['07:00','卯时'])), ['time-1','time-0']);
+  assert.deepEqual(ordered(rows(['05:00','卯时'])), ['time-0','time-1']);
+  const many=rows(Array.from({length:320},(_,index)=>index%2?'卯时':'亥时'));
+  assert.deepEqual(ordered(many),[...many.filter((_,index)=>index%2),...many.filter((_,index)=>!(index%2))].map(row=>row.id));
+});
+
+test('古法事件真实投影 current与全页召回同序，普通纯时辰可锚定而人工纯时辰不借日', async () => {
+  const floors=[floor('11111111-1111-4111-8111-111111111111',1),floor('22222222-2222-4222-8222-222222222222',2),floor('33333333-3333-4333-8333-333333333333',3)];
+  const deltas=[];
+  for(const [index,storyTime] of ['2026年10月23日 酉时','2026年10月23日 卯时','辰'].entries()) deltas.push(await compileQianshiDelta({floor:floors[index],now:NOW,packet:{qianshi:{events:[{key:'e',title:`时辰记录${index}`,description:'保留明确来源',status:index===0?'inProgress':'completed',matter:true,storyTime}],order:[]}}}));
+  deltas[1].events[0].matterId=deltas[0].events[0].matterId;
+  const memories=deltas.map((delta,index)=>memory(`${String(index+4).repeat(8)}-${String(index+4).repeat(4)}-4${String(index+4).repeat(3)}-8${String(index+4).repeat(3)}-${String(index+4).repeat(12)}`,floors[index],delta));
+  memories[2].chronology=[{time:{kind:'explicit',sourceText:'2026年10月23日',normalized:null}}];
+  const reachable={root:{chatId:CHAT,narrativeGeneration:GENERATION},floors,floorMemories:memories,entities:[]};
+  let graph=projectQianshiGraph(reachable), matter=graph.matters.find(row=>row.matterId===deltas[0].events[0].matterId);
+  assert.equal(matter.currentEventId,deltas[0].events[0].id); assert.equal(matter.status,'inProgress');
+  const order=projectQianshiTimeline(graph).segments.flatMap(segment=>segment.groups.flatMap(group=>group.eventIds));
+  assert.deepEqual(order,[deltas[1].events[0].id,deltas[2].events[0].id,deltas[0].events[0].id]);
+  const recall=projectQianshiRecall(reachable,{queryContext:{text:'时辰记录',latestUserText:'时辰记录'}});
+  assert.deepEqual(recall.eventIds,[deltas[1].events[0].id,deltas[2].events[0].id,deltas[0].events[0].id]);
+  assert.equal(graph.events.find(row=>row.id===deltas[2].events[0].id).parsedStoryTime.date,'2026-10-23');
+  memories[2].qianshiDelta={...deltas[2],manualEventOverrides:[{eventId:deltas[2].events[0].id,storyTime:'辰'}]};
+  graph=projectQianshiGraph(reachable);
+  assert.equal(graph.events.find(row=>row.id===deltas[2].events[0].id).parsedStoryTime.date,null);
+});

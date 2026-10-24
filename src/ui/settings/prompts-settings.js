@@ -4,6 +4,7 @@ import { DEFAULT_EXTRACTOR_GUIDANCE } from '../../v3/extractor.js';
 import { DEFAULT_CSE_GUIDANCE } from '../../v3/cse-engine.js';
 import { DEFAULT_PROFILE_GUIDANCE } from '../../v3/people-workspace.js';
 import { BASE_PROCESSING_PROMPT } from '../../internal-processing-prompt.js';
+import { DEFAULT_AVATAR_PROMPT } from '../../avatar-generation.js';
 
 // 长提示词在草稿弹窗内编辑，保存时一次写入；短设置仍即时生效。
 export function createPromptsSettings({ settings, documentRef = globalThis.document, open = false, onToggle, onStoryClockChange, customImpl = null, subscribeSettingsChange = null } = {}) {
@@ -26,6 +27,7 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   const { drawer: summaryDrawer, body: summaryBody } = subDrawer({ title: '摘要内容指导', id: 'qqj-settings-summary-prompt' });
   const { drawer: cseDrawer, body: cseBody } = subDrawer({ title: 'CSE 内容指导', id: 'qqj-settings-cse-prompt' });
   const { drawer: profileDrawer, body: profileBody } = subDrawer({ title: '人物资料内容指导', id: 'qqj-settings-profile-prompt' });
+  const { drawer: avatarDrawer, body: avatarBody } = subDrawer({ title: '头像生图提示词', id: 'qqj-settings-avatar-prompt' });
 
   keepTags.addEventListener('change', () => settings.updateWrappers({ keepTags: keepTags.value }));
   extraTags.addEventListener('change', () => settings.updateWrappers({ extraTags: extraTags.value }));
@@ -79,6 +81,7 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   promptEditor({ body: summaryBody, value: summaryPrompt, key: 'summaryPrompt', defaultText: DEFAULT_EXTRACTOR_GUIDANCE, label: '摘要内容指导' });
   promptEditor({ body: cseBody, value: csePrompt, key: 'csePrompt', defaultText: DEFAULT_CSE_GUIDANCE, label: 'CSE 内容指导' });
   promptEditor({ body: profileBody, value: profilePrompt, key: 'profilePrompt', defaultText: DEFAULT_PROFILE_GUIDANCE, label: '人物资料内容指导' });
+  promptEditor({ body: avatarBody, value: current.avatarPrompt ?? '', key: 'avatarPrompt', defaultText: DEFAULT_AVATAR_PROMPT, label: '头像生图提示词', hint: '单人头像构图，人物外貌来自柏宝绘角色库。保存后供后续生成使用；留空使用默认。' });
 
   wrapperBody.append(element('p', 'settings-hint', '白鳥系列插件全部共享'), field('保留包裹符', keepTags), field('清洗包裹符', extraTags));
   body.append(
@@ -88,6 +91,7 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
     summaryDrawer,
     cseDrawer,
     profileDrawer,
+    avatarDrawer,
   );
   return { node: drawer, dispose: () => releaseSettings?.() };
 }

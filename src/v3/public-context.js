@@ -1,6 +1,6 @@
 import { selectRecallMemories } from './recall-source.js';
 import { rankRecallDocuments } from './recall-ranking.js';
-import { buildEntityIdentityDirectory, normalizeIdentityProjection, resolveIdentityEntityId } from './entity-identity.js';
+import { buildEntityIdentityDirectory, deriveUserIdentityProjection, resolveIdentityEntityId } from './entity-identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
 import { PEOPLE_PROFILE_FIELDS } from './people-profile-fields.js';
 
@@ -55,7 +55,7 @@ export function buildPublicContext({ reachable, peopleState, currentStates, iden
     return { status: 'not-ready', identity, anchor: null, routerText: '', actors: [], coverage: { partial: false, cseStatus: 'not-ready', selectedCharacters: 0, maxCharacters: 0 } };
   }
   const limit = Number.isFinite(Number(maxCharacters)) ? Math.max(0, Math.min(40000, Math.floor(Number(maxCharacters)))) : 12000;
-  const projection = normalizeIdentityProjection(peopleState ?? {});
+  const projection = deriveUserIdentityProjection({ ...reachable, identityProjection: peopleState });
   const directory = buildEntityIdentityDirectory({ entities: reachable.entities ?? [], identityProjection: projection });
   const peopleById = new Map(directory.filter(entry => entry.entityType === 'person').map(entry => [entry.entityId, entry]));
   const selected = [...new Set((entityIds ?? []).map(id => resolveIdentityEntityId(id, projection)).filter(id => peopleById.has(id)))];

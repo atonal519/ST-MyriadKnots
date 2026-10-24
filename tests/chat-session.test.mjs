@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChatSession } from '../src/chat-session.js';
-import { persistTargetChatIdentity } from '../src/v3/message-floor-anchor.js';
+import { persistTargetChatIdentity, readTargetChat } from '../src/v3/message-floor-anchor.js';
 import { CHAT_IDENTITY_COLLECTION, createChatIdentityCoordinator } from '../src/chat-identity.js';
 
 const UUID = '123e4567-e89b-42d3-a456-426614174000';
@@ -429,4 +429,37 @@ test('A删除结束恢复时保留已完成准备的B session owner', async () =
   assert.equal(session.getState().status, 'ready');
   assert.equal(session.getState().identity.chatId, otherId);
   assert.equal(session.identity().chatId, otherId);
+});
+
+
+test('正常身份准备读回区分缺失与不同，并把受控入口和头部诊断带到会话', async () => {
+  const different = '223e4567-e89b-42d3-a456-426614174000';
+  const target = { hostChatId: '合成聊天', characterName: '人物', avatarUrl: 'person.png', characterLocator: 'person.png', chatId: UUID, requestHeaders: { Authorization: 'SECRET' } };
+  const cases = [
+    [null, 'payloadNotArray'], [[], 'headerMissing'], [[{}], 'metadataMissing'],
+    [[{ chat_metadata: { otherPlugin: 'SECRET' } }], 'identityMissing'],
+    [[{ chat_metadata: { qianqianjie: { schemaVersion: 2, chatId: different }, otherPlugin: 'SECRET' } }, { mes: 'SECRET' }], 'identityDifferent'],
+  ];
+  for (const [payload, reason] of cases) {
+    const session = createChatSession({ contextProvider: () => chatContext('合成聊天'),
+      identityCoordinator: { prepare: () => readTargetChat(target, { readPhase: 'identityBeforeSave', fetchImpl: async () => ({ ok: true, json: async () => payload }) }) } });
+    await assert.rejects(session.prepare({ entryPoint: 'startup' }), error => {
+      assert.equal(error.code, 'V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH');
+      assert.match(error.message, reason === 'identityDifferent' ? /身份.*不一致/u : /缺少|不完整/u);
+      return true;
+    });
+    const failure = session.getState().preparationFailure;
+    assert.equal(failure.entryPoint, 'startup');
+    assert.equal(failure.identityRead.reason, reason);
+    assert.equal(failure.identityRead.readPhase, 'identityBeforeSave');
+    assert.equal(failure.identityRead.target.hostChatId, target.hostChatId);
+    assert.equal(failure.identityRead.expectedChatId, UUID);
+    assert.equal(failure.identityRead.actualChatId, reason === 'identityDifferent' ? different : null);
+    assert.doesNotMatch(JSON.stringify(failure), /SECRET|Authorization|otherPlugin|mes"/u);
+  }
+  const fetchImpl = async () => ({ ok: true, json: async () => [{ chat_metadata: {} }] });
+  assert.equal((await readTargetChat(target, { fetchImpl, allowMissingIdentity: true })).chat.length, 0);
+  await assert.rejects(readTargetChat(target, { fetchImpl, allowedChatIds: [different] }), { code: 'V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH' });
+  const accepted = await readTargetChat(target, { allowedChatIds: [different], fetchImpl: async () => ({ ok: true, json: async () => [{ chat_metadata: { qianqianjie: { chatId: different } } }] }) });
+  assert.equal(accepted.header.chat_metadata.qianqianjie.chatId, different);
 });

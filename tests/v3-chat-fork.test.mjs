@@ -645,7 +645,9 @@ test('native/Luker普通分支从冻结历史接续，只继承实际C前缀并�
     const archiveWorkspace = { schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: archiveId,
       selectedEntityIds: [archiveCharacterId], personOrderEntityIds: [archiveCharacterId],
       profilesByEntityId: { [archiveCharacterId]: { entityId: archiveCharacterId, name: '归档人物手工名', manualFields: ['name'], source: 'manual', createdAt: NOW, updatedAt: NOW } },
-      avatarsByEntityId: {}, identityRedirectsByEntityId: {}, deletedEntityIds: [], profileMaterialProgressByEntityId: {}, createdAt: NOW, updatedAt: NOW };
+      avatarsByEntityId: { [archiveCharacterId]: 'data:image/webp;base64,QUFB' },
+      avatarSourcesByEntityId: { [archiveCharacterId]: { path: '/user/images/qqj-avatars/qqj-avatar-frozen.png', mimeType: 'image/png', crop: { aspectRatio: 1, zoom: 2, offsetX: 4, offsetY: 0 } } },
+      identityRedirectsByEntityId: {}, deletedEntityIds: [], profileMaterialProgressByEntityId: {}, createdAt: NOW, updatedAt: NOW };
     await archivePeople.put(archiveIdentity, archiveWorkspace, 0);
     const archiveSnapshotId = `snapshot-${archiveId}`;
     await archivePeople.putSnapshot(archiveIdentity, { id: archiveSnapshotId, sourceChatId: archiveId, sourceRevision: 1, workspace: archiveWorkspace });
@@ -719,7 +721,11 @@ test('native/Luker普通分支从冻结历史接续，只继承实际C前缀并�
     const targetPeopleWorkspace = await targetPeople.read(identity(targetHostChatId, targetId));
     assert.equal(targetPeopleWorkspace.data.profilesByEntityId[archiveCharacterId].name, '归档人物手工名');
     assert.ok(target.migrationDescriptor.recordRefs.peopleSnapshotIds.includes(archiveSnapshotId));
-    assert.ok(await targetPeople.readSnapshot(identity(targetHostChatId, targetId), archiveSnapshotId), '归档快照复制到目标集合');
+    const copiedSnapshot = await targetPeople.readSnapshot(identity(targetHostChatId, targetId), archiveSnapshotId);
+    assert.ok(copiedSnapshot, '归档快照复制到目标集合');
+    assert.deepEqual(copiedSnapshot.data.workspace.avatarSourcesByEntityId[archiveCharacterId], archiveWorkspace.avatarSourcesByEntityId[archiveCharacterId]);
+    assert.deepEqual(targetPeopleWorkspace.data.avatarSourcesByEntityId[archiveCharacterId], archiveWorkspace.avatarSourcesByEntityId[archiveCharacterId]);
+    assert.equal(targetPeopleWorkspace.data.avatarsByEntityId[archiveCharacterId], 'data:image/webp;base64,QUFB');
     assert.equal(target.migrationDescriptor.carriedAliases.length, 1, '保留并验证仍在分支中的冻结楼alias');
     assert.equal(targetContext.chat[0].extra[MIGRATION_ALIAS_KEY], aliasId);
     assert.equal(targetContext.chat[0].extra.qianqianjie_floor, undefined, '冻结alias不伪装成物理floor marker');

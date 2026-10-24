@@ -1,3 +1,5 @@
+import { replaceCseSourceMacros } from '../cse-source-selection.js';
+
 const labelKey = value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase();
 
 function inFloorPrefix(entity, floorIds) {
@@ -13,9 +15,19 @@ export function identityLabelKey(value) {
   return labelKey(value);
 }
 
-export function entitiesThroughFloorIds(entities = [], floorIds = null) {
+export function entitiesThroughFloorIds(entities = [], floorIds = null, identityProjection = null) {
   const allowed = floorIds instanceof Set ? floorIds : (Array.isArray(floorIds) ? new Set(floorIds) : null);
-  return entities.filter(entity => inFloorPrefix(entity, allowed));
+  const userEntityId = identityProjection?.userEntityId;
+  const scoped = [];
+  for (const entity of entities) {
+    if (inFloorPrefix(entity, allowed)) scoped.push(entity);
+    else if (userEntityId ? entity.id === userEntityId : entity.specialRole === 'user') {
+      // Only carry the role identity into an earlier floor, not its later story brief.
+      const { identityBrief, ...identity } = entity;
+      scoped.push(identity);
+    }
+  }
+  return scoped;
 }
 
 function manualAliasProjection(value) {
@@ -23,6 +35,10 @@ function manualAliasProjection(value) {
   const source = Object.hasOwn(value ?? {}, 'profilesByEntityId')
     ? Object.fromEntries(Object.entries(value.profilesByEntityId ?? {}).filter(([, profile]) => profile?.manualFields?.includes('aliases')).map(([id, profile]) => [id, profile.aliases]))
     : value?.manualAliasesByEntityId ?? {};
+  return normalizeAliasLists(source);
+}
+
+function normalizeAliasLists(source) {
   return Object.fromEntries(Object.entries(source).filter(([id]) => id).map(([id, aliases]) => {
     const seen = new Set();
     const names = (Array.isArray(aliases) ? aliases : typeof aliases === 'string' ? aliases.split(/[、，,\r\n]+/) : []).flatMap(value => {
@@ -34,19 +50,63 @@ function manualAliasProjection(value) {
   }));
 }
 
-export function normalizeIdentityProjection(value = {}) {
+function reviewedAliasProjection(value) {
+  const source = Object.hasOwn(value ?? {}, 'profilesByEntityId')
+    ? Object.fromEntries(Object.entries(value.profilesByEntityId ?? {}).filter(([, profile]) => profile?.aliasesComplete === true).map(([id, profile]) => [id, profile.aliases]))
+    : value?.reviewedAliasesByEntityId ?? {};
+  return normalizeAliasLists(source);
+}
+
+export function normalizeIdentityProjection(value = {}, macros = null) {
   const redirects = value?.identityRedirectsByEntityId && typeof value.identityRedirectsByEntityId === 'object' && !Array.isArray(value.identityRedirectsByEntityId)
     ? Object.fromEntries(Object.entries(value.identityRedirectsByEntityId).filter(([source, target]) => typeof source === 'string' && typeof target === 'string' && source && target && source !== target))
     : {};
   const deleted = [...new Set(Array.isArray(value?.deletedEntityIds) ? value.deletedEntityIds.filter(id => typeof id === 'string' && id) : [])];
   const manualAliases = manualAliasProjection(value);
+  const reviewedAliases = reviewedAliasProjection(value);
+  const profileNames = Object.hasOwn(value ?? {}, 'profilesByEntityId')
+    ? Object.fromEntries(Object.entries(value.profilesByEntityId ?? {}).map(([id, profile]) => [id, profile?.name])) : value?.currentNamesByEntityId ?? {};
+  const currentNames = Object.fromEntries(Object.entries(profileNames).filter(([id, name]) => id && typeof name === 'string' && name.trim())
+    .map(([id, name]) => [id, replaceCseSourceMacros(name.trim(), macros)]));
   return Object.freeze({ identityRedirectsByEntityId: Object.freeze(redirects), deletedEntityIds: Object.freeze(deleted),
-    ...(Object.keys(manualAliases).length ? { manualAliasesByEntityId: Object.freeze(manualAliases) } : {}) });
+    ...(Object.hasOwn(value ?? {}, 'userEntityId') ? { userEntityId: typeof value.userEntityId === 'string' && value.userEntityId ? value.userEntityId : null } : {}),
+    ...(Object.keys(manualAliases).length ? { manualAliasesByEntityId: Object.freeze(manualAliases) } : {}),
+    ...(Object.keys(reviewedAliases).length ? { reviewedAliasesByEntityId: Object.freeze(reviewedAliases) } : {}),
+    ...(Object.keys(currentNames).length ? { currentNamesByEntityId: Object.freeze(currentNames) } : {}) });
+}
+
+export function deriveUserIdentityProjection({ entities = [], baseline = null, identityProjection = null } = {}) {
+  const projection = normalizeIdentityProjection(identityProjection ?? {}, { user: baseline?.userPersona?.name, char: baseline?.characterCard?.name });
+  const active = entities.filter(entity => (entity.recordStatus === undefined || entity.recordStatus === 'active') && entity.status !== 'invalidated');
+  const users = active.filter(entity => entity.entityType === 'person' && entity.specialRole === 'user');
+  const redirects = { ...Object.fromEntries(active.filter(entity => entity.status === 'merged' && entity.mergedIntoEntityId)
+    .map(entity => [entity.id, entity.mergedIntoEntityId])), ...projection.identityRedirectsByEntityId };
+  const userEntityId = resolveIdentityEntityId(baseline?.userPersona?.entityId ?? projection.userEntityId ?? users[0]?.id, { identityRedirectsByEntityId: redirects });
+  if (!userEntityId) return normalizeIdentityProjection({ ...projection, userEntityId: null });
+  // The host's user role is global identity, not an appearance in a particular story floor.
+  // Explicit manual redirects remain authoritative, including a redirected baseline user.
+  for (const user of users) if (user.id !== userEntityId && !Object.hasOwn(projection.identityRedirectsByEntityId, user.id)) redirects[user.id] = userEntityId;
+  const aliases = {};
+  for (const key of ['manualAliasesByEntityId', 'reviewedAliasesByEntityId']) {
+    const lists = { ...(projection[key] ?? {}) };
+    if (!Object.hasOwn(lists, userEntityId)) {
+      const member = users.find(user => resolveIdentityEntityId(user.id, { identityRedirectsByEntityId: redirects }) === userEntityId && Object.hasOwn(lists, user.id));
+      if (member) lists[userEntityId] = lists[member.id];
+    }
+    aliases[key] = lists;
+  }
+  const currentNames = { ...(projection.currentNamesByEntityId ?? {}) };
+  if (!Object.hasOwn(currentNames, userEntityId)) {
+    const member = users.find(user => resolveIdentityEntityId(user.id, { identityRedirectsByEntityId: redirects }) === userEntityId && Object.hasOwn(currentNames, user.id));
+    if (member) currentNames[userEntityId] = currentNames[member.id];
+  }
+  return normalizeIdentityProjection({ ...projection, identityRedirectsByEntityId: redirects, userEntityId, ...aliases, currentNamesByEntityId: currentNames });
 }
 
 export function reuseIdentityProjection(previous, value) {
   const normalized = normalizeIdentityProjection(value);
   if (!previous) return normalized;
+  if (previous.userEntityId !== normalized.userEntityId) return normalized;
   const previousRedirects = previous.identityRedirectsByEntityId ?? {};
   const nextRedirects = normalized.identityRedirectsByEntityId;
   const previousSources = Object.keys(previousRedirects), nextSources = Object.keys(nextRedirects);
@@ -55,12 +115,16 @@ export function reuseIdentityProjection(previous, value) {
   if (previousDeleted.length !== nextDeleted.length) return normalized;
   const previousDeletedSet = new Set(previousDeleted);
   if (!nextDeleted.every(id => previousDeletedSet.has(id))) return normalized;
-  const before = previous.manualAliasesByEntityId ?? {}, after = normalized.manualAliasesByEntityId ?? {};
-  if (Object.keys(before).length !== Object.keys(after).length) return normalized;
-  for (const [id, names] of Object.entries(after)) {
-    if (!Object.hasOwn(before, id) || before[id].length !== names.length) return normalized;
-    const oldNames = new Set(before[id]);
-    if (!names.every(name => oldNames.has(name))) return normalized;
+  const beforeNames = previous.currentNamesByEntityId ?? {}, afterNames = normalized.currentNamesByEntityId ?? {};
+  if (Object.keys(beforeNames).length !== Object.keys(afterNames).length || Object.entries(afterNames).some(([id, name]) => beforeNames[id] !== name)) return normalized;
+  for (const key of ['manualAliasesByEntityId', 'reviewedAliasesByEntityId']) {
+    const before = previous[key] ?? {}, after = normalized[key] ?? {};
+    if (Object.keys(before).length !== Object.keys(after).length) return normalized;
+    for (const [id, names] of Object.entries(after)) {
+      if (!Object.hasOwn(before, id) || before[id].length !== names.length) return normalized;
+      const oldNames = new Set(before[id]);
+      if (!names.every(name => oldNames.has(name))) return normalized;
+    }
   }
   return previous;
 }
@@ -199,8 +263,10 @@ export function projectCseStateIdentityReferences(state, projection = {}) {
 }
 
 export function buildEntityIdentityDirectory({ entities = [], floorIds = null, identityProjection = null, identityRedirectsByEntityId = null, deletedEntityIds = null } = {}) {
-  const scoped = entitiesThroughFloorIds(entities, floorIds);
-  const projection = normalizeIdentityProjection(identityProjection ?? { identityRedirectsByEntityId, deletedEntityIds });
+  const supplied = identityProjection ?? { identityRedirectsByEntityId, deletedEntityIds };
+  const projection = Object.hasOwn(supplied, 'userEntityId') ? normalizeIdentityProjection(supplied)
+    : deriveUserIdentityProjection({ entities, identityProjection: supplied });
+  const scoped = entitiesThroughFloorIds(entities, floorIds, projection);
   const isActive = entity => entity?.recordStatus === undefined || entity.recordStatus === 'active';
   const foundationRedirects = Object.fromEntries(scoped
     .filter(entity => isActive(entity) && entity.status === 'merged' && typeof entity.mergedIntoEntityId === 'string')
@@ -208,7 +274,10 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, i
   const combinedProjection = normalizeIdentityProjection({
     identityRedirectsByEntityId: { ...foundationRedirects, ...projection.identityRedirectsByEntityId },
     deletedEntityIds: projection.deletedEntityIds,
+    userEntityId: projection.userEntityId,
     manualAliasesByEntityId: projection.manualAliasesByEntityId,
+    reviewedAliasesByEntityId: projection.reviewedAliasesByEntityId,
+    currentNamesByEntityId: projection.currentNamesByEntityId,
   });
   const canonical = scoped.filter(entity => isActive(entity) && entity.status !== 'merged' && entity.status !== 'invalidated'
     && resolveIdentityEntityId(entity.id, combinedProjection) === entity.id && !isIdentityDeleted(entity.id, combinedProjection));
@@ -232,20 +301,28 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, i
     const seen = new Set();
     const labels = [];
     const manual = combinedProjection.manualAliasesByEntityId;
+    const reviewed = combinedProjection.reviewedAliasesByEntityId;
+    const displayName = entity.entityType === 'person' ? combinedProjection.currentNamesByEntityId?.[entity.id] || entity.displayName : entity.displayName;
     const names = entity.entityType === 'person' && Object.hasOwn(manual ?? {}, entity.id)
-      ? [entity.displayName, ...manual[entity.id]] : [...aliasNames(entity), ...(learned.get(entity.id) ?? [])];
-    for (const label of names) {
+      ? manual[entity.id]
+      : entity.entityType === 'person' && Object.hasOwn(reviewed ?? {}, entity.id)
+        ? reviewed[entity.id] : [...aliasNames(entity), ...(learned.get(entity.id) ?? [])].filter(name => labelKey(name) !== labelKey(entity.displayName));
+    for (const label of [displayName, ...names]) {
       const key = labelKey(label);
       if (!key || seen.has(key)) continue;
       seen.add(key); labels.push(label.trim());
     }
+    const aliases = Object.freeze(labels.filter(label => labelKey(label) !== labelKey(displayName)));
+    if (!seen.has(labelKey(entity.displayName))) labels.push(entity.displayName);
+    const specialRole = entity.id === projection.userEntityId ? 'user' : entity.specialRole;
     return Object.freeze({
-      entity,
+      entity: displayName !== entity.displayName || specialRole !== entity.specialRole ? Object.freeze({ ...entity, displayName, specialRole }) : entity,
       entityId: entity.id,
       entityType: entity.entityType,
-      specialRole: entity.specialRole,
-      displayName: entity.displayName,
-      aliases: Object.freeze(labels.filter(label => labelKey(label) !== labelKey(entity.displayName))),
+      specialRole,
+      displayName,
+      ...(displayName !== entity.displayName ? { originalDisplayName: entity.displayName } : {}),
+      aliases,
       labels: Object.freeze(labels),
       ...(identityBriefRecords.has(entity.id) ? { identityBrief: identityBriefRecords.get(entity.id).identityBrief } : {}),
     });

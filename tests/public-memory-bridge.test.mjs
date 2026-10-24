@@ -412,6 +412,25 @@ test('安装器只清理自己挂载的版本化桥', () => {
 });
 
 
+test('用户权威：公开上下文以baseline统一旧user查询、状态和本人记忆', async () => {
+  const value = reachable(), oldUser = 'edededed-1111-4111-8111-edededededed';
+  value.baseline.userPersona = { entityId: PERSON };
+  const canonical = { ...value.entities[0], specialRole: 'user', displayName: '合成用户', aliases: [] };
+  value.entities = [{ ...canonical, id: oldUser }, canonical];
+  value.floorMemories[0].privateCognition = [{ ownerEntityId: oldUser, content: '旧用户本人的合成想法' }];
+  const bridge = createPublicMemoryBridge({ session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+    store: { readReachable: async () => value }, foundationRuntime: readyFoundation(value), hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) },
+    peopleRuntime: { getState: () => ({ status: 'ready', chatId: QQJ_CHAT, people: [] }) },
+    memoryRuntime: { getCurrentSubjectStates: () => ({ status: 'ready', subjects: [{ subjectEntityId: PERSON, core: [], adaptive: [],
+      situational: [{ text: 'canonical用户状态', visibility: 'private', sourceAssistantSeq: 1 }] }] }) } });
+  const context = await bridge.readContext({ entityIds: [oldUser] });
+  assert.equal(context.status, 'ready');
+  assert.equal(context.actors.length, 1);
+  assert.equal(context.actors[0].entityId, PERSON);
+  assert.match(context.actors[0].stateText, /canonical用户状态/u);
+  assert.match(context.actors[0].memoryText, /旧用户本人的合成想法/u);
+});
+
 test('有效别名：公开人物DTO及人物上下文读取同一有效目录，不改原资料', async () => {
   const value = reachable(), profile = { aliases: '旧档案三项', manualFields: [], notes: '已存资料' };
   const peopleState = { chatId: QQJ_CHAT, status: 'ready', profilesByEntityId: { [PERSON]: profile }, people: [{ entityId: PERSON, displayName: '裴晚生', entityDisplayName: '裴晚生', aliases: ['阿裴', '新称'], profile, profiled: true }] };
@@ -426,4 +445,13 @@ test('有效别名：公开人物DTO及人物上下文读取同一有效目录�
   const cleared = await bridge.readContext({ entityIds: [PERSON] });
   assert.doesNotMatch(cleared.actors[0].profileText, /aliases：/);
   assert.equal(bridge.getPeopleSnapshot().people.items[0].profile.aliases, '');
+  profile.manualFields = []; profile.aliasesComplete = true; profile.aliases = '已审称谓';
+  peopleState.people[0].aliases = ['已审称谓'];
+  const reviewed = await bridge.readContext({ entityIds: [PERSON] });
+  assert.match(reviewed.actors[0].profileText, /aliases：已审称谓/);
+  assert.equal(bridge.getPeopleSnapshot().people.items[0].profile.aliases, '已审称谓');
+  profile.name = '裴新名'; peopleState.people[0].displayName = '裴新名';
+  const renamed = await bridge.readContext({ entityIds: [PERSON] });
+  assert.match(renamed.actors[0].profileText, /name：裴新名/);
+  assert.equal(bridge.getPeopleSnapshot().people.items[0].displayName, '裴新名');
 });

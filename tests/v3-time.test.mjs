@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatStoryTime, projectTime, projectTimeSource, timeDistance, timeHours, nextCycleTime, storyTimes, timeRecallProjection } from '../src/v3/time-engine.js';
+import { formatStoryTime, projectTime, projectTimeSource, timeDistance, timeHours, nextCycleTime, storyTimes, timeRecallProjection, validTimeProjection } from '../src/v3/time-engine.js';
 import { formatRecallInjection, selectRecall, buildRecallQueryContext, estimateRecallTokens } from '../src/v3/recall-selector.js';
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 import { inferCanonicalCurrentTime } from '../src/v3/extractor.js';
@@ -381,4 +381,25 @@ test('实际CSE校正代替提醒且空间归还，候选没渲染则提醒保�
   const excluded = runBudget(source, { selectedCseCandidates: [] });
   assert.equal(excluded.timeDependencies.corrections.length, 0);
   assert.equal(excluded.stages.timeReminderCount, 1);
+});
+
+
+test('同日古时辰倒退不采纳未来推测，不能以minute空放过', () => {
+  const observation = projectTime('2026年10月23日 酉时');
+  const current = projectTime('2026年10月23日 卯时');
+  const item = { observationKey: 'key', observationTime: observation, projection: { observationKey: 'key', applicableTime: observation, text: '旧推测' } };
+  assert.equal(validTimeProjection(item, current), false);
+});
+
+test('正文状态栏古法钟点与中文纪年由实际extractor入口完整读取', () => {
+  const value = inferCanonicalCurrentTime('<status><date>嘉靖三年正月初五</date><time>卯時</time></status>');
+  assert.equal(value?.text, '嘉靖三年正月初五 卯時');
+  assert.equal(inferCanonicalCurrentTime('<status><date>正月初五</date><time>卯时</time></status>')?.text,'正月初五 卯时');
+  for (const raw of ['任务尚未正式开始','人物张子正正在等候']) assert.equal(projectTime(`2026年10月23日 ${raw}`).clock,null,raw);
+  assert.equal(inferCanonicalCurrentTime('2026年10月23日，任务尚未正式开始')?.text,'2026年10月23日');
+  for (const raw of ['约辰时','辰时（左右）']) {
+    const approximate=inferCanonicalCurrentTime(`<status><date>2026年10月23日</date><time>${raw}</time></status>`);
+    assert.ok(approximate?.text.includes(raw));
+    assert.equal(projectTime(approximate.text).clock,null);
+  }
 });

@@ -25,7 +25,7 @@ const playable = message => {
   const text = message.mes;
   return typeof text === 'string' && Boolean(text.trim());
 };
-const entityLabels = entity => [entity.displayName, ...(entity.aliases ?? [])].map(value => clean(value, 500)).filter(Boolean);
+const entityLabels = entity => (entity.labels ?? [entity.displayName, ...(entity.aliases ?? [])]).map(value => clean(value, 500)).filter(Boolean);
 const genericAlias = value => /^(?:\{\{user\}\}|\{\{char\}\}|user|char|player|你|用户|主角)$/iu.test(value);
 
 // The host does not expose a local tokenizer here. This intentionally errs on

@@ -1,3 +1,5 @@
+import { preparationContextDiagnostic } from '../v3/preparation-diagnostic.js';
+import { projectCseSubjectDiagnostic } from '../v3/cse-failure-diagnostic.js';
 import { safePrefixDifference } from '../v3/memory-prefix-diagnostic.js';
 import { createInlineSelect } from './inline-select.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
@@ -165,7 +167,7 @@ const memoryBusy = state => Boolean((state.activeExtraction && state.activeExtra
 const cseBusy = state => Boolean(state.activeCse || state.activeMemoryWork?.phase === 'analyzingCse' || state.activeAutoMemory?.phase === 'analyzingCse');
 const workPhaseCopy = state => ({ reconciling: '正在同步楼层', syncing: '正在同步记忆状态', extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', revisingCse: '正在保存人物状态', committing: '正在保存结果', resetting: '正在重建后端数据', revising: '正在保存修订' })[state.activeMemoryWork?.phase ?? state.activeAutoMemory?.phase ?? state.activeExtraction?.phase ?? state.activeCse?.phase] ?? '正在处理';
 const DIAGNOSTIC_STATUS = new Set(['idle', 'preparing', 'ready', 'error', 'disabled', 'suspended', 'running', 'uninitialized', 'stale', 'needsReview', 'conflict', 'empty', 'skipped', 'failed', 'partial', 'pending', 'noChange', 'notApplicable', 'unavailable', 'syncing', 'caughtUp', 'waitingRealtime', 'pendingRebuild', 'rebuilding', 'paused', 'completed', 'deleting', 'historicalDebt', 'realtimeTail', 'notReady', 'unknown']);
-const DIAGNOSTIC_PHASE = new Set(['preparing', 'migrating', 'loading', 'inspecting', 'generating', 'building', 'sealing', 'savingProfile', 'savingSelection', 'savingAvatar', 'deleting', 'cleaning', 'scanning', 'checking', 'updating', 'request', 'capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'syncing', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
+const DIAGNOSTIC_PHASE = new Set(['preparing', 'migrating', 'loading', 'inspecting', 'generating', 'generatingAvatar', 'building', 'sealing', 'savingProfile', 'savingSelection', 'savingAvatar', 'deleting', 'cleaning', 'scanning', 'checking', 'updating', 'request', 'capturing', 'completed', 'stale', 'retryableError', 'anchor', 'load', 'foundation', 'extracting', 'validating', 'committing', 'resetting', 'reconciling', 'syncing', 'analyzingCse', 'revisingCse', 'revising', 'baseline', 'analyzing', 'correcting', 'pending', 'input', 'source', 'selecting', 'receipt', 'starting', 'deletingRecords', 'deletingBinding', 'clearingHost', 'unknown']);
 const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
 const DIAGNOSTIC_REVIEW_REASON = new Set(['missingRoot', 'indexNeedsReseal', 'stableCountMismatch', 'candidateCountMismatch', 'locatorMismatch', 'markerMismatch', 'fingerprintMismatch']);
 const DIAGNOSTIC_MARKER_STATUS = new Set(['none', 'valid', 'foreign', 'invalid']);
@@ -224,7 +226,7 @@ function errorDiagnostic(value, sourceKnown = true) {
 }
 function preparationErrorFields(value) {
   if (!value || typeof value !== 'object') return {};
-  const fields = {};
+  const fields = preparationContextDiagnostic(value);
   if (typeof value.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,79}$/u.test(value.name)) fields.name = value.name;
   if (Number.isSafeInteger(value.code) || typeof value.code === 'string' && /^(?:(?:QQJ|V3|CHAT_SESSION|QIANQIANJIE|QIANSHI)_[A-Z0-9_]{1,80}|BACKEND_TIMEOUT)$/u.test(value.code)) fields.code = value.code;
   return fields;
@@ -261,7 +263,7 @@ const sameList = (left, right) => JSON.stringify(left) === JSON.stringify(right)
 const unchangedDraft = (draft, payload) => String(payload.summary ?? '').trim() === String(draft.originalSummary ?? '').trim()
   && String(payload.timeText ?? '').trim() === String(draft.originalTimeText ?? '').trim()
   && sameList(comparableLocations(payload.locations), comparableLocations(draft.originalLocations))
-  && sameList(payload.participantNames, draft.originalParticipantNames)
+  && (!Object.hasOwn(payload, 'participantNames') || sameList(payload.participantNames, draft.originalParticipantNames))
   && sameList(payload.exactAnchors, draft.originalExactAnchors)
   && !String(payload.revisionNote ?? '').trim();
 const CSE_VISIBILITY_OPTIONS = Object.freeze([['private', '私密'], ['expressed', '已表达'], ['observable', '可观察'], ['shared', '共享'], ['authorial', '作者设定']]);
@@ -739,7 +741,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       cse: {
         active: memoryKnown ? operationDiagnostic(memory.activeCse) : { present: 'unknown', phase: 'unknown' },
         rebuildStatus: enumDiagnostic(memory?.cseRebuildStatus, DIAGNOSTIC_STATUS),
-        lastError: errorDiagnostic(memory?.lastCseError, memoryKnown),
+        lastError: { ...errorDiagnostic(memory?.lastCseError, memoryKnown),
+          ...(memory?.lastCseError ? { subjectResolution: projectCseSubjectDiagnostic(memory.lastCseError.diagnostics?.subjectResolution) } : {}) },
       },
       qianshi: qianshiDiagnostic,
       recall: {
@@ -964,7 +967,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     draw();
     let saved = false;
     void Promise.resolve(customImpl({ title: `编辑摘要 · ${floorCopy(state, floor)}`, content: editor, confirmText: '保存', cancelText: '取消', submit: async () => {
-      const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations, participantNames: splitPeople(draft.peopleText), exactAnchors: draft.exactAnchors, revisionNote: draft.note };
+      const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations,
+        ...(draft.peopleText !== draft.originalParticipantNames.join('、') ? { participantNames: splitPeople(draft.peopleText) } : {}),
+        exactAnchors: draft.exactAnchors, revisionNote: draft.note };
       if (unchangedDraft(draft, payload)) { saved = true; drafts.delete(key); return true; }
       const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
       let failure = null;
@@ -1078,10 +1083,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       }
       if (memory) {
         const locations = (memory.locations ?? []).map((item, index) => locationLabelsByFloor.get(floor.floorId)?.[index] ?? item.name).filter(Boolean).join('、') || '未提取';
-        const names = new Map((currentState.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName]));
+        const names = new Map((currentState.memoryEntities ?? []).flatMap(entity => [entity.entityId, ...(entity.memberEntityIds ?? [])].map(id => [id, entity.displayName])));
         const canonicalEntityByMemberId = new Map((currentState.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity])));
         for (const [entityId, displayName] of Object.entries(floor.memoryEntityNames ?? {})) names.set(entityId, displayName);
-        const people = (memory.participants ?? []).map(item => names.get(item.entityId) ?? '未知人物').join('、') || '未提取';
+        const people = [...new Set((memory.participants ?? []).map(item => canonicalEntityByMemberId.get(item.entityId)?.entityId ?? item.entityId))].map(id => names.get(id) ?? '未知人物').join('、') || '未提取';
         body.append(element('p', 'qqj-memory-main', floor.summary || '暂无摘要。'));
         const meta = element('div', 'qqj-memory-meta');
         const metaItem = (label, value) => { const item = element('span', 'qqj-memory-meta-item'); item.append(element('strong', '', label), element('span', '', value)); return item; };
@@ -1121,7 +1126,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       } else if (floor.memoryId) {
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(currentState);
         trackMemoryRowWorkControl({ node: edit, disabled: current => workBusy(current) });
-        edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const names = new Map((latest.memoryEntities ?? []).map(entity => [entity.entityId, entity.displayName])); const canonicalByMember = new Map((latest.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity.entityId]))); const normalizeKnownIds = values => [...new Set((values ?? []).map(id => canonicalByMember.get(id) ?? id))].sort(); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = (memory?.participants ?? []).map(item => names.get(item.entityId)).filter(Boolean); const exactAnchors = (memory?.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, carrier: item.carrier ?? '', exactText: item.exactText, knownEntityIds: normalizeKnownIds(item.knownEntityIds) })); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, exactAnchors, originalExactAnchors: structuredClone(exactAnchors), note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
+        edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const names = new Map((latest.memoryEntities ?? []).flatMap(entity => [entity.entityId, ...(entity.memberEntityIds ?? [])].map(id => [id, entity.displayName]))); const canonicalByMember = new Map((latest.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity.entityId]))); const normalizeKnownIds = values => [...new Set((values ?? []).map(id => canonicalByMember.get(id) ?? id))].sort(); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = [...new Set((memory?.participants ?? []).map(item => canonicalByMember.get(item.entityId) ?? item.entityId))].map(id => names.get(id)).filter(Boolean); const exactAnchors = (memory?.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, carrier: item.carrier ?? '', exactText: item.exactText, knownEntityIds: normalizeKnownIds(item.knownEntityIds) })); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, exactAnchors, originalExactAnchors: structuredClone(exactAnchors), note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
         trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
         extract.addEventListener('click', async () => { const latest = foundationState ?? currentState; const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: `${ranged ? `${floorCopy(latest, floor)}将整体重新压缩。` : '将重新提取本楼摘要。'}已有的人物状态和其他楼不变；千事按字段保留人工修订，无法匹配时保留旧千事并提示。`, confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
@@ -2181,7 +2186,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const stateDiagnosticAction = element('div', 'qqj-ui-diagnostic-action');
     const copyState = element('button', 'secondary-action', '复制状态诊断'); copyState.type = 'button';
     copyState.addEventListener('click', () => { void copyStateDiagnostic(); });
-    stateDiagnosticAction.append(copyState, element('span', 'settings-hint', '只含运行状态、错误代码、变化类别与相关 AI 楼序，不含聊天正文、身份编号或 API 配置。'));
+    stateDiagnosticAction.append(copyState, element('span', 'settings-hint', '包含运行状态、错误代码、变化类别与相关 AI 楼序；CSE 失败时附当次分析人物姓名、别名与拒收原因。不含聊天正文、请求头或 API 配置。'));
     body.append(stateDiagnosticAction);
     if (uiDiagnosticProvider) {
       const uiDiagnostic = element('div', 'qqj-ui-diagnostic-action');

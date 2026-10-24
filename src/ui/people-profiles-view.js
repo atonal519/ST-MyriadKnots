@@ -2,7 +2,7 @@ import { KNOT_ICON_SVG } from './brand.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
 import { createInlineSelect } from './inline-select.js';
 import { PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_GROUPS, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields } from '../v3/people-profile-fields.js';
-import { avatarCropLayout, cropAvatarDataUrl, loadAvatarSource } from './avatar-cropper.js';
+import { avatarCropLayout, cropAvatarDataUrl, fitAvatarDataUrl, loadAvatarSource } from './avatar-cropper.js';
 import { publicErrorMessage } from '../public-error.js';
 import { bindHorizontalStrip, openPeopleOrderDialog } from './people-interactions.js';
 
@@ -41,7 +41,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   };
   const element = (tag, className = '', text = '') => { const node = documentRef.createElement(tag); if (className) node.className = className; if (text !== '') node.textContent = text; return node; };
   const busyControl = (node, isDisabled) => { busyControls.push({ node, isDisabled }); return node; };
-  const busyExceptGeneration = value => Boolean(value.active && value.active.kind !== 'generating');
+  const busyExceptGeneration = value => Boolean(value.active && !['generating', 'generatingAvatar'].includes(value.active.kind));
   const readFeedback = value => value.active?.kind === 'loading' ? '正在读取当前聊天…'
     : value.lastError ? `读取失败：${publicErrorMessage(value.lastError, { fallback: '人物资料暂时无法读取，请重试。' })}` : '人物资料读取完成。';
   const statusCopy = value => {
@@ -55,6 +55,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     if (value.active?.kind === 'savingSelection') return '正在保存重要人物选择';
     if (value.active?.kind === 'savingOrder') return '正在保存人物顺序';
     if (value.active?.kind === 'savingProfile') return '正在保存人物资料';
+    if (value.active?.kind === 'generatingAvatar') return '正在生成头像';
+    if (value.active?.kind === 'savingAvatar') return '正在保存人物头像';
     if (value.active?.kind === 'merging') return '正在合并人物归属';
     if (value.active?.kind === 'deleting') return '正在删除人物';
     if (value.lastError?.message) return `需要处理 · ${publicErrorMessage(value.lastError, { fallback: '人物资料处理失败，请重试。' })}`;
@@ -77,6 +79,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       if (active && mine === epoch) {
         const report = generationReport ? result?.lastGenerationReport : null;
         const details = report ? [report.missing ? `未返回 ${report.missing} 位` : '', report.conflicts ? `回复重复 ${report.conflicts} 位` : '', report.invalid ? `格式无效 ${report.invalid} 位` : '', report.unknown ? `无法对应人物 ${report.unknown} 项` : '', report.skipped ? `未更新 ${report.skipped} 位` : '',
+          report.aliasesNotUpdated ? `别名未更新 ${report.aliasesNotUpdated} 位` : '',
           Number.isSafeInteger(report.worldInfoMatched) ? `送入世界书 ${report.worldInfoMatched} 项` : '',
           ].filter(Boolean) : [];
         feedback = report ? `保存 ${report.saved}/${report.requested} 位${details.length ? `；${details.join('；')}` : ''}。` : `${label}完成。`;
@@ -157,6 +160,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   function personGenerationButton(person, className = 'secondary-action') {
     const label = person.profiled ? '重新整理资料' : '整理当前资料';
     const button = element('button', className, state.active?.kind === 'generating' ? '正在整理…' : label);
+    button.title = '按已记录的事实和原句核对资料，重新筛选非人工别名；人工字段保留。';
     button.type = 'button'; button.disabled = Boolean(state.active); busyControl(button, () => Boolean(state.active));
     generationButtons.push({ node: button, label });
     button.addEventListener('click', () => { void run(label, () => runtime.regenerateProfile(person.entityId), { generationReport: true }); });
@@ -257,6 +261,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         const profile = snapshot.profile ?? {}, details = element('details', 'qqj-profile-archive-entry');
         const summary = element('summary', '', `搬家前资料 ${index + 1}${profile.name ? ` · ${profile.name}` : ''}`);
         details.append(summary);
+        if (String(profile.aliases ?? '').trim()) details.append(element('p', 'qqj-profile-alias', `别名 · ${profile.aliases}`));
         for (const group of PEOPLE_PROFILE_GROUPS) {
           const present = group.fields.filter(([field]) => String(profile[field] ?? '').trim());
           if (!present.length) continue;
@@ -273,21 +278,44 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     }
     return section;
   }
-  async function chooseAvatar(person, mark, file) {
+  async function generateAvatar(person, mark) {
+    const cropLifecycle = cropLoadId;
+    try {
+      const options = runtime.prepareAvatarGeneration(person.entityId);
+      let character = Number.isInteger(options.selectedIndex) ? options.characters[options.selectedIndex] : null;
+      if (!character) {
+        if (!dialog?.custom) throw new Error('当前环境无法选择柏宝绘角色。');
+        const content = element('section', 'qqj-editor-dialog');
+        content.append(element('p', 'qqj-editor-intro', '请选择用于这位人物头像的外貌档案。'));
+        const nameCounts = new Map();
+        for (const item of options.characters) nameCounts.set(item.name, (nameCounts.get(item.name) ?? 0) + 1);
+        const select = createInlineSelect({ documentRef, ariaLabel: '柏宝绘角色', options: options.characters.map((item, index) => ({ value: String(index), label: `${item.name}${item.scope === 'global' ? '（全局）' : item.scope === 'chat' ? '（当前聊天）' : ''}${nameCounts.get(item.name) > 1 ? ` · ${item.nl || item.tag}` : ''}` })) });
+        content.append(select.node);
+        const selected = await dialog.custom({ title: '选择柏宝绘角色', content, confirmText: '生成头像', cancelText: '取消', submit: () => options.characters[Number(select.value)] });
+        if (!selected) return;
+        character = selected;
+      }
+      const result = await run('生成头像', () => runtime.generateAvatar(person.entityId, { character }));
+      if (result?.dataUrl && active && cropLifecycle === cropLoadId) await chooseAvatar(person, mark, result.dataUrl, true);
+    } catch (error) {
+      feedback = `生成头像失败：${publicErrorMessage(error, { fallback: '头像没有生成，请检查柏宝绘设置。' })}`; if (active) render(state);
+    }
+  }
+  async function chooseAvatar(person, mark, file, generated = false) {
     cropLoadController?.abort();
     const controller = new AbortController(); cropLoadController = controller;
     const loadId = ++cropLoadId, operationChatId = chatId, entityId = person.entityId;
     const rect = mark.getBoundingClientRect?.() ?? {};
-    const aspectRatio = Number(rect.width) > 0 && Number(rect.height) > 0 ? rect.width / rect.height : fieldsFrom(person).aliases ? 5 / 6 : 1;
+    const aspectRatio = Number(rect.width) > 0 && Number(rect.height) > 0 ? rect.width / rect.height : 1;
     try {
       const source = await loadAvatarSource(file, { imageFactory, urlApi, signal: controller.signal });
       if (loadId !== cropLoadId || chatId !== operationChatId || currentEntityId !== entityId) { source.release(); return; }
       cropLoadController = null; closeCrop();
-      const draft = { entityId, chatId: operationChatId, source, aspectRatio, zoom: 1, offsetX: 0, offsetY: 0, saving: false, dialogOpen: false };
+      const draft = { entityId, chatId: operationChatId, source, generated, originalRef: null, aspectRatio, cropping: false, zoom: 1, offsetX: 0, offsetY: 0, saving: false, dialogOpen: false };
       cropDraft = draft;
-      if (!dialog?.custom) { releaseCrop(draft); feedback = '当前环境无法打开头像裁剪窗口。'; render(state); return; }
+      if (!dialog?.custom) { releaseCrop(draft); feedback = '当前环境无法打开头像预览窗口。'; render(state); return; }
       const crop = avatarCropContent(person, draft); draft.dialogOpen = true;
-      void dialog.custom({ title: '裁剪头像', content: crop.content, confirmText: '确认头像', cancelText: '取消', submit: crop.submit,
+      void dialog.custom({ title: '头像预览', content: crop.content, confirmText: '确认头像', cancelText: '取消', submit: crop.submit,
         onClose: () => { draft.dialogOpen = false; releaseCrop(draft); } }).then(saved => {
           if (saved && chatId === operationChatId && currentEntityId === entityId) { state = runtime.getState(); feedback = '头像已保存。'; if (active) render(state); }
         });
@@ -301,29 +329,75 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const frame = element('div', 'qqj-avatar-crop-frame'), image = element('img', 'qqj-avatar-crop-image');
     frame.style?.setProperty?.('--qqj-avatar-aspect', String(draft.aspectRatio)); image.src = draft.source.objectUrl; image.alt = '';
     const applyPreview = () => {
+      frame.className = draft.cropping ? 'qqj-avatar-crop-frame' : 'qqj-avatar-preview-frame';
+      image.className = draft.cropping ? 'qqj-avatar-crop-image' : 'qqj-avatar-preview-image';
+      zoomLabel.hidden = !draft.cropping; zoom.disabled = !draft.cropping || draft.saving;
+      toggle.textContent = draft.cropping ? '显示完整图片' : '裁剪';
+      toggle.disabled = draft.saving;
+      panel.setAttribute('aria-busy', String(draft.saving));
+      if (!draft.cropping) {
+        if (image.style) for (const property of ['width', 'height', 'left', 'top']) image.style[property] = '';
+        return;
+      }
       const layout = avatarCropLayout({ naturalWidth: draft.source.image.naturalWidth, naturalHeight: draft.source.image.naturalHeight, frameWidth: 240, frameHeight: 240 / draft.aspectRatio, zoom: draft.zoom, offsetX: draft.offsetX, offsetY: draft.offsetY });
       draft.zoom = layout.zoom; draft.offsetX = layout.offsetX; draft.offsetY = layout.offsetY;
       if (image.style) { image.style.width = `${layout.width}px`; image.style.height = `${layout.height}px`; image.style.left = `${layout.left}px`; image.style.top = `${layout.top}px`; }
     };
     let pointer = null;
-    frame.addEventListener('pointerdown', event => { if (draft.saving) return; pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, offsetX: draft.offsetX, offsetY: draft.offsetY }; frame.setPointerCapture?.(event.pointerId); });
+    frame.addEventListener('pointerdown', event => { if (!draft.cropping || draft.saving) return; pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, offsetX: draft.offsetX, offsetY: draft.offsetY }; frame.setPointerCapture?.(event.pointerId); });
     frame.addEventListener('pointermove', event => { if (!pointer || event.pointerId !== pointer.id) return; event.preventDefault?.(); draft.offsetX = pointer.offsetX + event.clientX - pointer.x; draft.offsetY = pointer.offsetY + event.clientY - pointer.y; applyPreview(); });
     const endPointer = event => { if (!pointer || (event.pointerId !== undefined && event.pointerId !== pointer.id)) return; frame.releasePointerCapture?.(pointer.id); pointer = null; };
-    frame.addEventListener('pointerup', endPointer); frame.addEventListener('pointercancel', endPointer); frame.append(image); applyPreview(); panel.append(frame);
+    frame.addEventListener('pointerup', endPointer); frame.addEventListener('pointercancel', endPointer); frame.append(image); panel.append(frame);
+    const actions = element('div', 'qqj-editor-inline-actions');
+    const toggle = element('button', 'secondary-action', '裁剪'); toggle.type = 'button';
+    toggle.addEventListener('click', () => { if (draft.saving) return; pointer = null; draft.cropping = !draft.cropping; applyPreview(); });
+    const download = element('a', 'secondary-action', '保存原图'); download.href = draft.source.objectUrl;
+    download.download = `头像原图.${draft.source.mimeType === 'image/jpeg' ? 'jpg' : draft.source.mimeType.split('/')[1]}`;
+    actions.append(toggle, download); panel.append(actions);
     const zoomLabel = element('label', 'qqj-avatar-zoom'); zoomLabel.append(element('span', '', '缩放'));
     const zoom = element('input', 'settings-input'); zoom.type = 'range'; zoom.min = '1'; zoom.max = '3'; zoom.step = '0.01'; zoom.value = String(draft.zoom); zoom.disabled = draft.saving;
-    zoom.addEventListener('input', () => { draft.zoom = Number(zoom.value); applyPreview(); }); zoomLabel.append(zoom); panel.append(zoomLabel);
+    zoom.addEventListener('input', () => { draft.zoom = Number(zoom.value); applyPreview(); }); zoomLabel.append(zoom); panel.append(zoomLabel); applyPreview();
+    const status = element('p', 'sp-dialog-note'); status.hidden = true; status.setAttribute('aria-live', 'polite'); panel.append(status);
     const submit = async () => {
-      let dataUrl;
-      dataUrl = cropAvatarDataUrl({ image: draft.source.image, aspectRatio: draft.aspectRatio, zoom: draft.zoom, offsetX: draft.offsetX, offsetY: draft.offsetY, canvas: documentRef.createElement('canvas') });
       const token = { chatId, entityId: person.entityId, draft }; draft.saving = true;
+      status.hidden = false; status.textContent = '正在处理头像…'; applyPreview();
       try {
-        await runtime.saveAvatar(person.entityId, dataUrl);
+        // 先让本弹窗的忙态完成一帧绘制，再进行同步图片编码。
+        const owner = documentRef.defaultView ?? globalThis;
+        await new Promise(resolve => {
+          if (typeof owner.requestAnimationFrame === 'function') owner.requestAnimationFrame(() => owner.requestAnimationFrame(resolve));
+          else setTimeout(resolve, 0);
+        });
+        if (cropDraft !== draft || !draft.dialogOpen) return false;
+        const dataUrl = draft.cropping
+          ? cropAvatarDataUrl({ image: draft.source.image, aspectRatio: draft.aspectRatio, zoom: draft.zoom, offsetX: draft.offsetX, offsetY: draft.offsetY, canvas: documentRef.createElement('canvas') })
+          : fitAvatarDataUrl({ image: draft.source.image, canvas: documentRef.createElement('canvas') });
+        status.textContent = '正在保存头像…';
+        await runtime.saveAvatar(person.entityId, dataUrl, { originalFile: draft.source.blob, originalRef: draft.originalRef, generated: draft.generated,
+          crop: draft.cropping ? { aspectRatio: draft.aspectRatio, zoom: draft.zoom, offsetX: draft.offsetX, offsetY: draft.offsetY } : null,
+          onOriginalUploaded: value => { draft.originalRef = value; } });
         if (chatId !== token.chatId || cropDraft !== token.draft || currentEntityId !== token.entityId) throw new Error('页面已切换，本次头像没有应用到当前页面。');
         return true;
-      } finally { draft.saving = false; }
+      } finally { draft.saving = false; status.hidden = true; status.textContent = ''; if (cropDraft === draft) applyPreview(); }
     };
     return Object.freeze({ content: panel, submit });
+  }
+  function viewAvatar(person) {
+    if (!dialog?.custom) { feedback = '当前环境无法打开头像。'; render(state); return; }
+    closeCrop();
+    const content = element('section', 'qqj-avatar-crop-panel'), frame = element('div', 'qqj-avatar-preview-frame');
+    const image = element('img', 'qqj-avatar-preview-image'), status = element('p', 'sp-dialog-note', '正在读取图片…');
+    const path = person.avatarSource?.path ?? person.avatar;
+    const draft = { dialogOpen: true, source: { release() { image.onload = null; image.onerror = null; image.src = ''; } } };
+    cropDraft = draft;
+    image.alt = `${person.displayName || person.entityDisplayName}的头像`;
+    image.onload = () => { if (cropDraft === draft) { status.textContent = ''; status.hidden = true; } };
+    image.onerror = () => { if (cropDraft === draft) status.textContent = '图片暂时无法读取，请关闭后重试。'; };
+    image.src = path; frame.append(image); content.append(frame, status);
+    const download = element('a', 'secondary-action', person.avatarSource ? '保存原图' : '保存图片');
+    download.href = path; download.download = `头像.${person.avatarSource?.mimeType === 'image/jpeg' ? 'jpg' : person.avatarSource?.mimeType?.split('/')[1] || 'webp'}`; content.append(download);
+    void dialog.custom({ title: '头像大图', content, confirmText: '关闭', cancelText: '', submit: () => true,
+      onClose: () => { draft.dialogOpen = false; releaseCrop(draft); } });
   }
   function profilePanel(person) {
     const panel = element('section', 'qqj-profile-card');
@@ -331,14 +405,15 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const values = fieldsFrom(person), draft = drafts.has(person.entityId) ? profileDraft(person) : null;
     const header = element('header', 'qqj-profile-summary');
     const hasAlias = Boolean(values.aliases);
-    const mark = element('button', `qqj-profile-mark${hasAlias ? ' has-alias' : ''}`); mark.type = 'button'; mark.setAttribute?.('aria-label', person.avatar ? '替换头像' : '上传头像');
+    const mark = element('button', 'qqj-profile-mark'); mark.type = 'button'; mark.setAttribute?.('aria-label', person.avatar ? '查看头像大图' : '上传头像');
+    mark.disabled = busyExceptGeneration(state); busyControl(mark, () => busyExceptGeneration(state));
     if (person.avatar) { const avatar = element('img', 'qqj-profile-avatar'); avatar.src = person.avatar; avatar.alt = ''; mark.append(avatar); } else { mark.innerHTML = KNOT_ICON_SVG; }
     const file = element('input', 'qqj-avatar-file'); file.type = 'file'; file.accept = 'image/png,image/jpeg,image/webp'; file.addEventListener('change', event => { const selected = event.target?.files?.[0]; if (selected) void chooseAvatar(person, mark, selected); event.target.value = ''; });
-    mark.addEventListener('click', () => file.click?.());
+    mark.addEventListener('click', () => person.avatar ? viewAvatar(person) : file.click?.());
     const identity = element('div', 'qqj-profile-identity');
     const name = element('h2', '', values.name || person.displayName || person.entityDisplayName || '未命名人物');
     name.setAttribute?.('title', name.textContent); name.setAttribute?.('aria-label', `姓名：${name.textContent}`);
-    identity.append(name); if (hasAlias) identity.append(element('p', 'qqj-profile-alias', `别名 · ${values.aliases}`));
+    const titleRow = element('div', 'qqj-profile-title-row');
     const badges = element('div', 'qqj-profile-badges');
     badges.append(element('span', 'v3-memory-status', person.profiled ? '已建档' : '待建档'));
     {
@@ -348,12 +423,18 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       const edit = element('button', 'qqj-profile-menu-action', '编辑资料'); edit.type = 'button'; edit.disabled = busyExceptGeneration(state); busyControl(edit, () => busyExceptGeneration(state));
       edit.addEventListener('click', () => { void openProfileEditor(person); });
       const avatarAction = element('button', 'qqj-profile-menu-action', person.avatar ? '替换头像' : '上传头像'); avatarAction.type = 'button'; avatarAction.addEventListener('click', () => file.click?.());
+      avatarAction.disabled = busyExceptGeneration(state); busyControl(avatarAction, () => busyExceptGeneration(state));
+      const avatarGenerate = element('button', 'qqj-profile-menu-action', '生成头像'); avatarGenerate.type = 'button'; avatarGenerate.disabled = Boolean(state.active); busyControl(avatarGenerate, () => Boolean(state.active));
+      avatarGenerate.addEventListener('click', () => { void generateAvatar(person, mark); });
       const avatarRemove = person.avatar ? element('button', 'qqj-profile-menu-action danger', '移除头像') : null;
+      if (avatarRemove) { avatarRemove.disabled = busyExceptGeneration(state); busyControl(avatarRemove, () => busyExceptGeneration(state)); }
       avatarRemove?.addEventListener('click', () => { void run('移除头像', () => runtime.saveAvatar(person.entityId, null)); });
       const remove = selectionButton(person, state.selectedEntityIds); remove.className = `${remove.className} qqj-profile-menu-action danger`;
-      menuBody.append(personGenerationButton(person, 'qqj-profile-menu-action'), edit, avatarAction); if (avatarRemove) menuBody.append(avatarRemove); menuBody.append(element('span', 'qqj-profile-menu-separator'), remove, element('span', 'qqj-profile-menu-separator')); managementButtons(person, menuBody); menu.append(toggle, menuBody); badges.append(menu);
+      menuBody.append(personGenerationButton(person, 'qqj-profile-menu-action'), edit, avatarAction, avatarGenerate); if (avatarRemove) menuBody.append(avatarRemove); menuBody.append(element('span', 'qqj-profile-menu-separator'), remove, element('span', 'qqj-profile-menu-separator')); managementButtons(person, menuBody); menu.append(toggle, menuBody); badges.append(menu);
     }
-    header.append(mark, identity, badges);
+    titleRow.append(name, badges); identity.append(titleRow);
+    if (hasAlias) identity.append(element('p', 'qqj-profile-alias', `别名 · ${values.aliases}`));
+    header.append(mark, identity);
     panel.append(header, file);
     const body = element('div', 'qqj-profile-body');
     {

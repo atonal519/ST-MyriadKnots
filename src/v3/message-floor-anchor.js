@@ -1,3 +1,4 @@
+import { identityReadDiagnostic } from './preparation-diagnostic.js';
 import { isUuid } from '../identity.js';
 import { MESSAGE_MEMORY_EXCLUSION_KEY, isMemoryExcludedMessage } from './memory-exclusion.js';
 
@@ -162,7 +163,7 @@ export function messageFloorAnchorCandidateSnapshot(value) {
   });
 }
 
-export async function readTargetChat(target, { signal, fetchImpl = globalThis.fetch, allowMissingIdentity = false, allowedChatIds = null } = {}) {
+export async function readTargetChat(target, { signal, fetchImpl = globalThis.fetch, allowMissingIdentity = false, allowedChatIds = null, readPhase = 'readTargetChat' } = {}) {
   if (!target?.hostChatId || !target?.characterName || !target?.avatarUrl || !isUuid(target.chatId)) {
     throw fail('V3_MESSAGE_ANCHOR_TARGET_INVALID', '原聊天存档定位信息无效。');
   }
@@ -179,7 +180,19 @@ export async function readTargetChat(target, { signal, fetchImpl = globalThis.fe
   const acceptedIds = Array.isArray(allowedChatIds) ? allowedChatIds : [target.chatId];
   if (!Array.isArray(payload) || !payload[0] || !payload[0].chat_metadata
     || (persistedChatId ? !acceptedIds.includes(persistedChatId) : !allowMissingIdentity)) {
-    throw fail('V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH', '读取到的聊天身份与原目标不一致。');
+    const reason = !Array.isArray(payload) ? 'payloadNotArray' : !payload[0] ? 'headerMissing'
+      : !payload[0].chat_metadata ? 'metadataMissing' : !persistedChatId ? 'identityMissing' : 'identityDifferent';
+    const message = reason === 'identityDifferent' ? '读取到的聊天身份与原目标不一致。'
+      : reason === 'identityMissing' ? '读取到的聊天缺少千千结身份。' : '读取到的聊天头信息不完整。';
+    throw Object.assign(fail('V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH', `${message}请到“记忆管理”页复制状态诊断反馈。`), {
+      identityRead: identityReadDiagnostic({ reason, readPhase,
+        payloadType: payload === null ? 'null' : Array.isArray(payload) ? 'array' : typeof payload,
+        headerPresent: Boolean(payload?.[0]), metadataPresent: Boolean(payload?.[0]?.chat_metadata),
+        qqjPresent: Boolean(payload?.[0]?.chat_metadata?.qianqianjie),
+        qqjSchemaVersion: payload?.[0]?.chat_metadata?.qianqianjie?.schemaVersion,
+        expectedChatId: target.chatId, actualChatId: persistedChatId, actualIdentityPresent: Boolean(persistedChatId),
+        allowedChatIds: acceptedIds, allowMissingIdentity, target }),
+    });
   }
   return Object.freeze({ header: payload[0], chat: payload.slice(1) });
 }
@@ -508,7 +521,7 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
   let before;
   let create = false;
   try {
-    before = await readTargetChat(target, { signal, fetchImpl, allowMissingIdentity: true,
+    before = await readTargetChat(target, { signal, fetchImpl, readPhase: 'identityBeforeSave', allowMissingIdentity: true,
       allowedChatIds: [capturedQqjId, chatId].filter(Boolean) });
   } catch (error) {
     if (!(error?.missing === true || error?.status === 404)) throw error;
@@ -524,7 +537,7 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
     throw fail('V3_TARGET_CHAT_CHANGED', '聊天内容或千千结身份已变化，未保存身份。请确认当前聊天内容后，重新打开当前聊天。');
   }
   if (!create) {
-    const latest = await readTargetChat(target, { signal, fetchImpl, allowMissingIdentity: true,
+    const latest = await readTargetChat(target, { signal, fetchImpl, readPhase: 'identityBeforeCommit', allowMissingIdentity: true,
       allowedChatIds: [capturedQqjId, chatId].filter(Boolean) });
     if (!sameTargetBusiness(snapshot.chatMetadata, snapshot.chat, latest.header.chat_metadata ?? {}, latest.chat)) {
       throw fail('V3_TARGET_CHAT_CHANGED', '聊天内容或千千结身份已变化，未保存身份。请确认当前聊天内容后，重新打开当前聊天。');
@@ -547,7 +560,7 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
       chat: [header, ...before.chat], force: false }), signal,
   });
   if (!response?.ok) throw fail([400, 409].includes(response?.status) ? 'V3_TARGET_CHAT_CHANGED' : 'V3_TARGET_CHAT_SAVE_FAILED', '千千结身份未能保存到聊天。请确认当前聊天仍可正常保存，再重新打开当前聊天。');
-  const persisted = await readTargetChat(target, { signal, fetchImpl });
+  const persisted = await readTargetChat(target, { signal, fetchImpl, readPhase: 'identityVerify' });
   if (!sameQqjChatMetadata(header.chat_metadata, persisted.header.chat_metadata ?? {})
     || stableJson(before.chat.map(branchMessageBusinessProjection)) !== stableJson(persisted.chat.map(branchMessageBusinessProjection))) {
     throw fail('V3_TARGET_CHAT_VERIFY_FAILED', '保存后无法确认聊天身份已写入。请到“记忆管理”页点击“复制状态诊断”反馈。');

@@ -1,3 +1,4 @@
+import { auxiliaryStateSnapshotForPrompt } from './floor-variable-reference.js';
 import { sha256 } from '../identity.js';
 import { parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from '../json-symbol-repair.js';
 import { scanWorldInfo } from '../world-info-scanner.js';
@@ -5,6 +6,7 @@ import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
+import { projectCseSubjectDiagnostic } from './cse-failure-diagnostic.js';
 import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, isSupportedCseCalibrationVersion, stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
@@ -308,16 +310,6 @@ function authorialOtherStateContext(currentState, entities, previousSubjectIds) 
   }));
 }
 
-function auxiliaryStateSnapshotForPrompt(snapshot) {
-  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return snapshot;
-  const schema = snapshot.schema, statData = snapshot.stat_data;
-  const structuralSchema = schema && typeof schema === 'object' && !Array.isArray(schema)
-    && schema.type === 'object' && schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties);
-  if (!statData || typeof statData !== 'object' || Array.isArray(statData) || !structuralSchema) return snapshot;
-  // 仅将识别出的顶层 MVU schema 作为请求元数据省略；原变量快照和嵌套业务字段保持不变。
-  const { schema: _schema, ...snapshotWithoutSchema } = snapshot;
-  return snapshotWithoutSchema;
-}
 
 export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, identityDirectory = null, identityBriefTargets = [], requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null, userAdaptiveHistory = [] }) {
   const directory = identityDirectory ?? buildEntityIdentityDirectory({ entities });
@@ -592,11 +584,15 @@ function hasRecognizableCseResult(packet) {
   return Array.isArray(subjects) || Boolean(subjects && typeof subjects === 'object');
 }
 
-function bindingFor(value, bindings) {
+function matchingBindings(value, bindings) {
   const label = identityLabelKey(typeof value === 'string' ? value : field(value, ['subject', 'name', 'person', 'character', '主体', '人物', '姓名']));
-  if (!label) return null;
+  if (!label) return [];
   const userAlias = ['你', '主角', '用户', '{{user}}', 'user', 'player'].includes(label);
-  const matches = bindings.filter(binding => (userAlias && binding.specialRole === 'user') || binding.labels.some(candidate => identityLabelKey(candidate) === label));
+  return bindings.filter(binding => (userAlias && binding.specialRole === 'user') || binding.labels.some(candidate => identityLabelKey(candidate) === label));
+}
+
+function bindingFor(value, bindings) {
+  const matches = matchingBindings(value, bindings);
   return matches.length === 1 ? matches[0] : null;
 }
 
@@ -614,8 +610,9 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
     let towardEntityId = null;
     const towardRaw = category !== 'core' && typeof item === 'object' ? field(item, ['toward', 'target', 'object', '对谁', '对象']) : null;
     if (towardRaw !== undefined && towardRaw !== null && String(towardRaw).trim()) {
-      const toward = bindingFor(towardRaw, knownBindings);
-      if (!toward) { isolated.push({ field: category, index, code: 'V3_CSE_TOWARD_UNBOUND' }); continue; }
+      const matches = matchingBindings(towardRaw, knownBindings);
+      const toward = matches.length === 1 ? matches[0] : null;
+      if (!toward) { isolated.push({ field: category, index, code: 'V3_CSE_TOWARD_UNBOUND', label: towardRaw, matchCount: matches.length }); continue; }
       towardEntityId = toward.entityId;
     }
     const reason = typeof item === 'object' ? text(field(item, ['reason', 'because', '依据', '原因']), 4000) : '';
@@ -767,8 +764,9 @@ async function calibratedStateItem({ raw, category, binding, knownBindings, delt
   let towardEntityId = category === 'adaptive' ? original?.towardEntityId ?? null : null;
   const towardRaw = typeof raw === 'object' ? field(raw, ['toward', 'target', 'object', '对谁', '对象']) : null;
   if (category === 'adaptive' && towardRaw !== undefined && towardRaw !== null && String(towardRaw).trim()) {
-    const toward = bindingFor(towardRaw, knownBindings);
-    if (!toward) { isolated.push({ field: category, index, code: 'V3_CSE_TOWARD_UNBOUND' }); return null; }
+    const matches = matchingBindings(towardRaw, knownBindings);
+    const toward = matches.length === 1 ? matches[0] : null;
+    if (!toward) { isolated.push({ field: category, index, code: 'V3_CSE_TOWARD_UNBOUND', label: towardRaw, matchCount: matches.length }); return null; }
     towardEntityId = toward.entityId;
   }
   const visibilityRaw = typeof raw === 'object' ? field(raw, ['visibility', '可见性']) : null;
@@ -821,8 +819,9 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
     let towardEntityId;
     const towardRaw = field(review, ['toward', 'target', 'object', '对谁', '对象']);
     if (category === 'adaptive' && towardRaw !== undefined && towardRaw !== null && String(towardRaw).trim()) {
-      const toward = bindingFor(towardRaw, envelope.scope.knownBindings);
-      if (!toward) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_TOWARD_UNBOUND' }); continue; }
+      const matches = matchingBindings(towardRaw, envelope.scope.knownBindings);
+      const toward = matches.length === 1 ? matches[0] : null;
+      if (!toward) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_TOWARD_UNBOUND', label: towardRaw, matchCount: matches.length }); continue; }
       towardEntityId = toward.entityId;
     }
     const matches = original.filter(item => normalized(item.text) === normalized(previousText)
@@ -880,9 +879,12 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   const rawSubjects = list(selectSubjectResults(packet));
   const acceptedIntents = { count: 0 };
   for (const [subjectIndex, raw] of rawSubjects.slice(0, 80).entries()) {
-    const binding = bindingFor(raw, envelope.scope.trackedBindings);
-    if (!binding) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_UNBOUND' }); continue; }
-    if (compiled.has(binding.entityId)) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_DUPLICATE' }); continue; }
+    const matches = matchingBindings(raw, envelope.scope.trackedBindings);
+    const binding = matches.length === 1 ? matches[0] : null;
+    const subjectLabel = typeof raw === 'string' ? raw : field(raw, ['subject', 'name', 'person', 'character', '主体', '人物', '姓名']);
+    if (!binding) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_UNBOUND', label: subjectLabel, matchCount: matches.length }); continue; }
+    if (compiled.has(binding.entityId)) { isolated.push({ field: 'subjects', index: subjectIndex, code: 'V3_CSE_SUBJECT_DUPLICATE', label: subjectLabel, matchCount: matches.length }); continue; }
+    const isolationStart = isolated.length;
     const acceptedBeforeSubject = acceptedIntents.count;
     const previous = previousById.get(binding.entityId) ?? { core: [], adaptive: [], situational: [] };
     const hasCore = field(raw, categoryNames('core')) !== undefined;
@@ -911,8 +913,15 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
     compiled.set(binding.entityId, { subjectEntityId: binding.entityId, core, adaptive, situational, changeSummary: [], coreChallenges: [...new Set(challenges)].slice(0, 40) });
     if (acceptedIntents.count === acceptedBeforeSubject && !hasCore && !hasAdaptive && !hasSituational
       && calibratedCore === null && calibratedAdaptive === null) acceptedIntents.count += 1;
+    for (let index = isolationStart; index < isolated.length; index += 1) isolated[index].subjectIndex = subjectIndex;
   }
-  if (rawSubjects.length > 0 && acceptedIntents.count === 0 && isolated.length > 0) throw errorWith('V3_CSE_ALL_CANDIDATES_ISOLATED', 'CSE 返回的人物状态候选均未能有效处理，请重试。');
+  if (rawSubjects.length > 0 && acceptedIntents.count === 0 && isolated.length > 0) {
+    const error = errorWith('V3_CSE_ALL_CANDIDATES_ISOLATED', '本楼人物状态未保存：返回结果无法确认人物归属或未通过校验。请到设置 → 记忆管理 → 详细诊断，复制状态诊断反馈。');
+    error.cseDiagnostics = { subjectResolution: projectCseSubjectDiagnostic({
+      trackedSubjects: envelope.request.payload.trackedSubjects, knownPeople: envelope.request.payload.knownPeople, isolated,
+    }) };
+    throw error;
+  }
   let userCoreExtractionResult = null;
   if (userCoreExtraction) {
     const rawReview = field(packet, ['userCoreExtraction', '用户核心特质提取']);
@@ -972,6 +981,8 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   const stateIsolated = isolated.filter(item => item.field !== 'identityBriefUpdates' && !item.field.startsWith('identityBriefUpdates.'));
   const isolationCodes = [...new Set(stateIsolated.map(item => item.code).filter(code => CSE_ISOLATION_CODES.includes(code)))];
   const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: envelope.scope.chatId, narrativeGeneration: envelope.scope.narrativeGeneration, floorId: envelope.scope.floorId, floorMemoryId: envelope.scope.floorMemoryId, baselineId: envelope.scope.baselineId, previousCurrentStateId: previousCurrentState?.id ?? null, subjectSnapshots, fixedChanges, noMaterialChange, fingerprint, source: { promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, calibrationVersion: CSE_CALIBRATION_VERSION, ...(userCoreExtractionResult ? { userCoreExtraction: userCoreExtractionResult } : {}), ...(calibrationAudit.length ? { calibrationAudit } : {}), ...(stateIsolated.length ? { isolationSummary: { count: stateIsolated.length, codes: isolationCodes } } : {}) }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: envelope.scope.chatId });
+  // Successful runs keep their existing isolation record contract; labels belong only to failure hints.
+  for (const item of isolated) { delete item.label; delete item.matchCount; delete item.subjectIndex; }
   return Object.freeze({ delta, identityBriefUpdates: Object.freeze(identityBriefUpdates.map(update => Object.freeze(update))), isolated: Object.freeze(isolated) });
 }
 
@@ -1099,7 +1110,10 @@ export async function runCseRequest({ generateAnalysisTask, envelope, previousCu
       if (retryable && attempts < 3 && transportBudget.remaining > 0) continue;
       const failedAttempts = transportBudget.used || attempts;
       if (failedAttempts > 1) error.message = `已尝试 ${failedAttempts} 次仍失败：${error.message}`;
-      error.cseDiagnostics = { attempts, transportAttempts: transportBudget.used || error?.transportAttempts || null, metadata: sanitizeTaskMetadata(error?.taskMetadata ?? metadata), candidate: (() => { try { return JSON.stringify(candidate).slice(0, 24000); } catch { return null; } })(), providerError: sanitizeDiagnosticValue(error?.providerError ?? null) };
+      const subjectResolution = error?.cseDiagnostics?.subjectResolution ?? projectCseSubjectDiagnostic({
+        trackedSubjects: envelope.request.payload.trackedSubjects, knownPeople: envelope.request.payload.knownPeople,
+      });
+      error.cseDiagnostics = { attempts, transportAttempts: transportBudget.used || error?.transportAttempts || null, metadata: sanitizeTaskMetadata(error?.taskMetadata ?? metadata), candidate: (() => { try { return JSON.stringify(candidate).slice(0, 24000); } catch { return null; } })(), providerError: sanitizeDiagnosticValue(error?.providerError ?? null), subjectResolution };
       throw error;
     }
   }
