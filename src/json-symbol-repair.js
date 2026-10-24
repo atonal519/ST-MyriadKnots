@@ -25,6 +25,27 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
     return index - start;
   };
   const valueStart = char => char === '{' || char === '[' || char === '"' || char === '-' || /[0-9]/u.test(char ?? '') || char === 't' || char === 'f' || char === 'n';
+  const tokenStart = char => valueStart(char) || BARE_KEY_START.test(char ?? '');
+  const closesValueAt = at => {
+    let boundary = at + 1;
+    while (/\s/u.test(source[boundary] ?? '')) boundary += 1;
+    if (boundary === source.length || source[boundary] === '}' || source[boundary] === ']') return true;
+    if (source[boundary] === ',') {
+      // 逗号后若是正文（如中文）而非下一个键/值，这个引号仍属于字符串内容。
+      let next = boundary + 1;
+      while (/\s/u.test(source[next] ?? '')) next += 1;
+      return next === source.length || source[next] === '}' || source[next] === ']' || tokenStart(source[next]);
+    }
+    return boundary > at + 1 && tokenStart(source[boundary]);
+  };
+  const nextMemberKeyAfter = at => {
+    let boundary = at + 1;
+    while (/\s/u.test(source[boundary] ?? '')) boundary += 1;
+    if (source[boundary] !== ',') return false;
+    boundary += 1;
+    while (/\s/u.test(source[boundary] ?? '')) boundary += 1;
+    return inspectKey(boundary)?.colon === true;
+  };
 
   const stringToken = ({ value = false } = {}) => {
     if (source[index] !== '"') return null;
@@ -34,11 +55,14 @@ function scanner(source, { trailingCommasOnly = false, requireOperations = true 
       const char = source[index];
       if (char === '"') {
         if (value) {
-          let boundary = index + 1;
-          while (/\s/u.test(source[boundary] ?? '')) boundary += 1;
-          const separatedNextToken = boundary > index + 1 && (valueStart(source[boundary]) || BARE_KEY_START.test(source[boundary] ?? ''));
-          const closesValue = boundary === source.length || [',', '}', ']'].includes(source[boundary]) || separatedNextToken;
-          if (!closesValue) {
+          // 台词以引号收尾时会紧贴字段的收尾引号；只有后面明确接着下一个 "键": 才认，`""}` 仍视为歧义。
+          if (source[index + 1] === '"' && nextMemberKeyAfter(index + 1)) {
+            addOperation('escape-string-quote', index, '\\');
+            raw += '\\"';
+            index += 1;
+            continue;
+          }
+          if (!closesValueAt(index)) {
             let paired = index + 1;
             while (paired < source.length) {
               if (source[paired] === '\\') { paired += 2; continue; }
