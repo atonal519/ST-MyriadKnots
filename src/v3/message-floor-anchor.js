@@ -1,4 +1,4 @@
-import { identityReadDiagnostic } from './preparation-diagnostic.js';
+import { branchTargetDifferenceDiagnostic, identityReadDiagnostic } from './preparation-diagnostic.js';
 import { isUuid } from '../identity.js';
 import { MESSAGE_MEMORY_EXCLUSION_KEY, isMemoryExcludedMessage } from './memory-exclusion.js';
 
@@ -24,6 +24,20 @@ const ownValue = (object, key) => Object.hasOwn(object ?? {}, key)
   ? Object.freeze({ present: true, value: object[key] }) : Object.freeze({ present: false });
 const qqjMessageMetadataProjection = extra => Object.freeze(Object.fromEntries(BRANCH_QQJ_MESSAGE_KEYS
   .filter(key => Object.hasOwn(extra ?? {}, key)).map(key => [key, extra[key]])));
+export const sameQqjMessageMetadata = (left, right) => stableJson(qqjMessageMetadataProjection(left)) === stableJson(qqjMessageMetadataProjection(right));
+
+// Rendering may fill empty swipe containers and mirror the selected outer extra.
+// Keep distinct per-swipe ownership; omit only that exact host-created mirror.
+function swipeMetadataProjection(message, keys = BRANCH_QQJ_MESSAGE_KEYS) {
+  const selectedIndex = Number.isSafeInteger(message?.swipe_id) ? message.swipe_id : 0;
+  const projected = Array.isArray(message?.swipe_info) ? message.swipe_info.map((swipe, index) => Object.fromEntries(keys
+    .filter(key => Object.hasOwn(swipe?.extra ?? {}, key)
+      && !(index === selectedIndex && Object.hasOwn(message?.extra ?? {}, key)
+        && stableJson(swipe.extra[key]) === stableJson(message.extra[key])))
+    .map(key => [key, swipe.extra[key]]))) : [];
+  while (projected.length && Object.keys(projected.at(-1)).length === 0) projected.pop();
+  return projected;
+}
 // Identity preparation checks message business and QQJ ownership, ignores display metadata, and writes only QQJ identity on the latest host-file base.
 export function sameQqjChatMetadata(left, right, { includePrequel = false } = {}) {
   const keys = includePrequel ? ['qianqianjie', 'qianqianjiePrequel'] : ['qianqianjie'];
@@ -38,13 +52,15 @@ const sameTargetBusiness = (capturedMetadata, capturedChat, persistedMetadata, p
 function branchQqjMessageProjection(chat) {
   return chat.map(message => ({
     extra: qqjMessageMetadataProjection(message?.extra),
-    swipeInfo: Array.isArray(message?.swipe_info) ? message.swipe_info.map(swipe => qqjMessageMetadataProjection(swipe?.extra)) : null,
+    swipeInfo: swipeMetadataProjection(message),
   }));
 }
 
 export function branchMessageCoreProjection(message) {
   const hasSwipes = Array.isArray(message?.swipes);
   const selectedIndex = hasSwipes ? (Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0) : null;
+  const defaultReply = typeof message?.mes === 'string' && (!hasSwipes
+    || (message.swipes.length === 1 && selectedIndex === 0 && message.swipes[0] === message.mes));
   return Object.freeze({
     isUser: ownValue(message, 'is_user'),
     isSystem: ownValue(message, 'is_system'),
@@ -52,9 +68,9 @@ export function branchMessageCoreProjection(message) {
     mes: ownValue(message, 'mes'),
     messageType: ownValue(message?.extra, 'type'),
     selectedReply: Object.freeze({
-      hasSwipes,
-      selectedIndex,
-      value: hasSwipes ? ownValue(message.swipes, String(selectedIndex)) : ownValue(message, 'mes'),
+      hasSwipes: hasSwipes && !defaultReply,
+      selectedIndex: defaultReply ? null : selectedIndex,
+      value: hasSwipes && !defaultReply ? ownValue(message.swipes, String(selectedIndex)) : ownValue(message, 'mes'),
     }),
   });
 }
@@ -65,8 +81,7 @@ export function branchMessageBusinessProjection(message) {
     ownership: Object.freeze({
       outer: ownValue(message?.extra, MESSAGE_FLOOR_ANCHOR_KEY),
       memoryExcluded: ownValue(message?.extra, MESSAGE_MEMORY_EXCLUSION_KEY),
-      swipes: Array.isArray(message?.swipe_info)
-        ? message.swipe_info.map(swipe => ownValue(swipe?.extra, MESSAGE_FLOOR_ANCHOR_KEY)) : [],
+      swipes: swipeMetadataProjection(message, [MESSAGE_FLOOR_ANCHOR_KEY]).map(extra => ownValue(extra, MESSAGE_FLOOR_ANCHOR_KEY)),
     }),
   });
 }
@@ -74,7 +89,7 @@ export function branchMessageBusinessProjection(message) {
 export function messageCoreAndQqjDataProjection(message) {
   return { core: branchMessageCoreProjection(message), qqj: {
     outer: qqjMessageMetadataProjection(message?.extra),
-    swipes: Array.isArray(message?.swipe_info) ? message.swipe_info.map(swipe => qqjMessageMetadataProjection(swipe?.extra)) : null,
+    swipes: swipeMetadataProjection(message),
   } };
 }
 
@@ -123,12 +138,27 @@ export function assertCapturedBranchTargetMatches(snapshot, targetFile, sourceCh
       )).every(Boolean);
     if (coreMatches && ownershipMatches) continue;
     const fields = [];
-    if (!coreMatches) fields.push('core');
+    for (const field of ['isUser', 'isSystem', 'name', 'mes', 'messageType']) {
+      if (stableJson(captured.core[field]) !== stableJson(persisted.core[field])) fields.push(field);
+    }
+    for (const [key, field] of [['hasSwipes', 'hasSwipes'], ['selectedIndex', 'selectedIndex'], ['value', 'selectedValue']]) {
+      if (stableJson(captured.core.selectedReply[key]) !== stableJson(persisted.core.selectedReply[key])) fields.push(field);
+    }
     if (!ownershipMatches) fields.push('ownership');
-    throw fail('V3_BRANCH_TARGET_CHANGED', `分支输入捕获后，固定目标消息的业务内容或记忆归属已改变（${index}:${fields.join(',')}）。`);
+    const labels = { isUser: '发言者信息', name: '发言者信息', isSystem: '消息类型或隐藏状态', messageType: '消息类型或隐藏状态',
+      mes: '正文', hasSwipes: '选中回复', selectedIndex: '选中回复',
+      selectedValue: captured.core.selectedReply.hasSwipes || persisted.core.selectedReply.hasSwipes ? '选中回复' : '正文', ownership: '记忆归属' };
+    const changed = [...new Set(fields.map(field => labels[field]))].join('、');
+    throw Object.assign(fail('V3_BRANCH_TARGET_CHANGED', `分支页面与保存文件的第 ${index + 1} 条消息的${changed}不同。请到“记忆管理”点击“刷新状态”；仍失败时复制状态诊断反馈。`), {
+      branchTargetDifference: branchTargetDifferenceDiagnostic({ reason: 'message', messageIndex: index,
+        capturedCount: capturedChat.length, persistedCount: persistedChat.length, fields }),
+    });
   }
   if (capturedChat.length !== persistedChat.length) {
-    throw fail('V3_BRANCH_TARGET_CHANGED', `分支输入捕获后，固定目标消息数量已改变（${length}:messageCount）。`);
+    throw Object.assign(fail('V3_BRANCH_TARGET_CHANGED', '分支页面与保存文件的消息数量不同。请到“记忆管理”点击“刷新状态”；仍失败时复制状态诊断反馈。'), {
+      branchTargetDifference: branchTargetDifferenceDiagnostic({ reason: 'messageCount', messageIndex: length,
+        capturedCount: capturedChat.length, persistedCount: persistedChat.length, fields: ['messageCount'] }),
+    });
   }
   const persistedQqj = targetFile.header?.chat_metadata?.qianqianjie ?? {};
   if (![sourceChatId, targetChatId].includes(persistedQqj.chatId)) {
@@ -432,7 +462,7 @@ export async function persistBranchedMessageMetadata({
   const targetChat = structuredClone(before.chat);
 
   // Branch copies invalidate recall receipts and rehome only retained floor anchors and this plugin's hide markers.
-  const rewriteExtra = (extra, forcedFloorId = null) => {
+  const rewriteExtra = (extra, forcedFloorId = null, retainedMessageFloorId = forcedFloorId) => {
     const object = extra && typeof extra === 'object' && !Array.isArray(extra);
     const hasReceipt = object && Object.hasOwn(extra, RECALL_RECEIPT_KEY);
     const hasAnchor = object && Object.hasOwn(extra, MESSAGE_FLOOR_ANCHOR_KEY);
@@ -445,7 +475,8 @@ export async function persistBranchedMessageMetadata({
       next[MESSAGE_FLOOR_ANCHOR_KEY] = { schemaVersion: MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION, chatId: targetChatId, floorId: forcedFloorId };
     } else if (hasAnchor) {
       const inspected = inspectMessageFloorAnchor({ extra }, '');
-      if (inspected.status === 'valid' && [sourceChatId, targetChatId].includes(inspected.anchor.chatId) && allowedFloors.has(inspected.anchor.floorId)) {
+      if (inspected.status === 'valid' && [sourceChatId, targetChatId].includes(inspected.anchor.chatId)
+        && inspected.anchor.floorId === retainedMessageFloorId) {
         next[MESSAGE_FLOOR_ANCHOR_KEY] = { ...inspected.anchor, chatId: targetChatId };
       } else {
         delete next[MESSAGE_FLOOR_ANCHOR_KEY];
@@ -459,7 +490,7 @@ export async function persistBranchedMessageMetadata({
     const nextExtra = rewriteExtra(message.extra, forcedByMessage.get(messageIndex) ?? null);
     let swipeChanged = false;
     const nextSwipeInfo = Array.isArray(message.swipe_info) ? message.swipe_info.map(swipe => {
-      const next = rewriteExtra(swipe?.extra);
+      const next = rewriteExtra(swipe?.extra, null, forcedByMessage.get(messageIndex) ?? null);
       if (!next) return swipe;
       swipeChanged = true;
       return { ...swipe, extra: next };

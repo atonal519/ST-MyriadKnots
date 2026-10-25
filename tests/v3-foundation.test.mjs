@@ -3048,3 +3048,30 @@ test('只读冷核验以实际Promise发出开始结束活动，且不伪造写�
   assert.equal(activity.at(-1).busy, false);
   unsubscribe();
 });
+
+test('fresh inspect读取中清旧错误且此前错误仍强制fresh，不走缓存快捷成功', async () => {
+  const h = harness([assistant('已保存的一楼'), user('确认正文')], { modernAnchors: true }); await h.runtime.start();
+  h.backend.setBeforeGet(({ key }) => { if (key === 'v3-root') throw new Error('上次读取失败'); });
+  assert.equal((await h.runtime.inspect('firstFailure', { allowCached: false })).status, 'error');
+  let release, startedResolve; const started = new Promise(resolve => { startedResolve = resolve; });
+  h.backend.setBeforeGet(async ({ key }) => { if (key === 'v3-root') { startedResolve(); await new Promise(resolve => { release = resolve; }); } });
+  const before = h.backend.calls.length;
+  const reading = h.runtime.inspect('retryWithCacheAllowed', { allowCached: true }); await started;
+  assert.equal(h.runtime.getState().lastError, null); assert.equal(h.runtime.getState().status, 'running');
+  assert.deepEqual(h.runtime.getActivityState(), { busy: true, phase: 'inspecting' });
+  h.backend.setBeforeGet(null); release(); await reading;
+  assert.equal(h.runtime.getState().status, 'ready'); assert.equal(h.runtime.getState().lastError, null);
+  assert.ok(h.backend.calls.slice(before).some(call => call[0] === 'get' && call[2] !== 'v3-root'), '此前有错跳过缓存和只核root快捷路，重新确认整图');
+});
+
+test('固定目标管理刷新外层在真实root读取中清旧错误并发布进行中', async () => {
+  const h = harness([assistant('已保存的一楼'), user('确认正文')], { modernAnchors: true }); await h.runtime.start();
+  h.backend.setBeforeGet(({ key }) => { if (key === 'v3-root') throw new Error('上轮外层读取失败'); });
+  await h.runtime.inspect('outerFailure', { allowCached: false });
+  let release, startedResolve; const started = new Promise(resolve => { startedResolve = resolve; });
+  h.backend.setBeforeGet(async ({ key }) => { if (key === 'v3-root') { startedResolve(); await new Promise(resolve => { release = resolve; }); } });
+  const reading = h.runtime.recoverOrphanTailAnchor(); await started;
+  assert.equal(h.runtime.getState().lastError, null); assert.equal(h.runtime.getState().status, 'running');
+  h.backend.setBeforeGet(null); release(); await reading;
+  assert.equal(h.runtime.getState().status, 'ready'); assert.equal(h.runtime.getState().lastError, null);
+});

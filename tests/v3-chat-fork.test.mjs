@@ -14,7 +14,8 @@ import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import { createChatIdentityCoordinator, CHAT_IDENTITY_COLLECTION } from '../src/chat-identity.js';
 import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
-import { deterministicUuid } from '../src/v3/foundation-domain.js';
+import { deterministicUuid, scanAssistantCandidates } from '../src/v3/foundation-domain.js';
+import { createTimeStore } from '../src/v3/time-runtime.js';
 import { createVectorIndex, VECTOR_INDEX_ID } from '../src/v3/vector-index.js';
 import { projectVectorSources } from '../src/v3/vector-source.js';
 import { selectRecallMemories } from '../src/v3/recall-source.js';
@@ -173,6 +174,89 @@ async function waitFor(predicate, message) {
 function chatRecords(records, chatId) {
   return JSON.stringify([...records.entries()].filter(([key]) => key.startsWith(`chat-${chatId}/`)).sort(([left], [right]) => left.localeCompare(right)));
 }
+
+test('普通分支合法楼ID也核选中正文，原文相同仅清洗变化仍保留共同楼', async () => {
+  for (const hostKind of ['SillyTavern', 'Luker']) {
+    const backend = backendHarness();
+    const sourceContext = context(`body-source-${hostKind}`, SOURCE, [assistant('共同正文。<note>补充说明。</note>'), user('继续'), assistant('源线回复。'), user('之后')]);
+    const sourceIdentity = identity(sourceContext.chatId, SOURCE);
+    const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity });
+    const sourceAdapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => sourceContext } } });
+    const sourceRuntime = createFoundationRuntime({ store: sourceStore, hostAdapter: sourceAdapter, contextProvider: () => sourceContext,
+      now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    await sourceRuntime.start();
+    const source = await sourceStore.readReachable();
+    const sourceBefore = chatRecords(backend.records, SOURCE);
+    const targetContext = context(`body-target-${hostKind}`, SOURCE, structuredClone(sourceContext.chat));
+    const targetId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, targetContext.chatId, 'character.png']);
+    for (let index = 0; index < 2; index++) targetContext.chat[index * 2].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: SOURCE, floorId: source.floors[index].id } };
+    targetContext.chat[2].swipes.push('分支另一条回复。');
+    targetContext.chat[2].swipe_id = 1;
+    targetContext.chat[2].mes = '分支另一条回复。';
+    const adapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => targetContext } } });
+    const api = targetChatApi(targetContext);
+    const initializer = createChatBranchInitializer({ client: backend.client, hostAdapter: adapter,
+      now: () => new Date(NOW), fetchImpl: api.fetch });
+    const initialize = () => initializer({ raw: targetContext, host: { hostChatId: targetContext.chatId,
+      characterAvatar: 'character.png', personaAvatar: 'persona.png' }, sourceChatId: SOURCE, targetChatId: targetId,
+      taskInputs: { chat: structuredClone(targetContext.chat), chatMetadata: structuredClone(targetContext.chatMetadata),
+        target: captureTargetChatDescriptor(adapter.snapshot(), identity(targetContext.chatId, targetId)), sanitizerOptions: { keepTags: ['note'] } } });
+    const changedCleaning = await scanAssistantCandidates(targetContext.chat, { chatId: SOURCE, sanitizerOptions: { keepTags: ['note'] } });
+    assert.equal(changedCleaning[0].rawFingerprint, source.floors[0].content.rawFingerprint);
+    assert.notEqual(changedCleaning[0].canonicalFingerprint, source.floors[0].content.canonicalFingerprint);
+    const result = await initialize();
+    assert.equal(result.inheritedFloors, 1, '合法ID不能让源线不同回复通过正文核对');
+    const target = await createFoundationStore({ client: backend.client, contextProvider: () => identity(targetContext.chatId, targetId) }).readReachable();
+    assert.deepEqual(target.floors.map(floor => floor.id), [source.floors[0].id], '原文相同只改清洗设置仍可继承');
+    assert.equal(targetContext.chat[2].extra.qianqianjie_floor, undefined);
+    assert.equal((await initialize()).inheritedFloors, 1, '已有ready目标沿相同共同前文重入');
+    const beforeMismatch = chatRecords(backend.records, targetId);
+    targetContext.chat[0].mes = targetContext.chat[0].swipes[0] = '已提交目标后来人工修改。';
+    api.reloadFromContext();
+    await assert.rejects(initialize(), error => {
+      assert.equal(error.code, 'V3_BRANCH_TARGET_MISMATCH');
+      assert.equal(error.branchMatch.reason, 'bodyMismatch');
+      assert.equal(error.branchMatch.messageIndex, 0); assert.equal(error.branchMatch.inheritedFloors, 0);
+      return true;
+    });
+    assert.equal(chatRecords(backend.records, targetId), beforeMismatch, '已提交目标正文变化仍按原目标不一致合同停止');
+    assert.equal(chatRecords(backend.records, SOURCE), sourceBefore);
+  }
+});
+
+test('分支不能对应的楼保留生产匹配原因与具体消息楼', async () => {
+  const backend = backendHarness();
+  const sourceContext = context('diagnostic-source', SOURCE, [assistant('共同楼一。'), user('继续一'), assistant('共同楼二。'), user('继续二')]);
+  const sourceIdentity = identity(sourceContext.chatId, SOURCE);
+  const store = createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity });
+  const sourceAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => sourceContext } } });
+  await createFoundationRuntime({ store, hostAdapter: sourceAdapter, contextProvider: () => sourceContext,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } }).start();
+  const source = await store.readReachable();
+  const sourceBefore = chatRecords(backend.records, SOURCE);
+  for (const kind of ['foreign', 'floorOrder']) {
+    const raw = context(`diagnostic-${kind}`, SOURCE, structuredClone(sourceContext.chat));
+    const targetId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, raw.chatId, 'character.png']);
+    const marker = { schemaVersion: 1, chatId: kind === 'foreign' ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : SOURCE,
+      floorId: source.floors[kind === 'floorOrder' ? 0 : 1].id };
+    raw.chat[2].extra = { qianqianjie_floor: marker };
+    backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${targetId}`, { revision: 1, data: {
+      schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: targetId,
+      owner: { hostChatId: raw.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' },
+      state: 'preparing', sourceChatId: SOURCE, createdAt: NOW, updatedAt: NOW } });
+    raw.chatMetadata.qianqianjie.chatId = targetId;
+    const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } }), api = targetChatApi(raw);
+    const initializeBranch = createChatBranchInitializer({ client: backend.client, hostAdapter: adapter, now: () => new Date(NOW), fetchImpl: api.fetch });
+    const session = createChatSession({ contextProvider: () => raw,
+      identityCoordinator: createChatIdentityCoordinator({ client: backend.client, initializeBranch, now: () => new Date(NOW) }) });
+    await assert.rejects(session.prepare({ entryPoint: 'startup' }));
+    assert.deepEqual(session.getState().preparationFailure.branchMatch, { reason: kind === 'foreign' ? 'markerRejected' : 'floorOrder',
+      candidateIndex: 1, floorIndex: 1, assistantSeq: 2, messageIndex: 2, inheritedFloors: 1,
+      sourceFloorCount: 2, candidateCount: 2, markerStatus: kind === 'foreign' ? 'foreign' : 'valid' });
+    assert.equal(api.saves, 0); assert.equal(backend.records.has(`chat-${targetId}/v3-root`), false);
+    assert.equal(chatRecords(backend.records, SOURCE), sourceBefore);
+  }
+});
 
 test('一键搬家为B独立复制完整冻结图，保留A字节并让B正常foundation读取归档前缀', async () => {
   const backend = backendHarness();
@@ -612,7 +696,10 @@ test('普通分支 prepare经native/Luker正式入口保存后继承前缀向量
 
     const targetHostChatId = `vector-target-${hostKind}`;
     const targetChatId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, targetHostChatId, 'character.png']);
-    const targetChat = structuredClone(sourceChat.slice(0, 3));
+    const targetChat = structuredClone(sourceChat);
+    targetChat[3].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: SOURCE, floorId: sourceReachable.floors[1].id } };
+    targetChat[3].swipes.push('分支独有烘焙结果。');
+    targetChat[3].swipe_id = 1; targetChat[3].mes = targetChat[3].swipes[1];
     const targetContext = context(targetHostChatId, targetChatId, targetChat);
     const targetOwner = { hostChatId: targetHostChatId, characterLocator: 'character.png', personaLocator: 'persona.png' };
     backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${targetChatId}`, { revision: 1,
@@ -751,8 +838,97 @@ test('native/Luker普通分支从冻结历史接续，只继承实际C前缀并�
     await sourceMemory.analyzeNextState();
     const sourceReachable = await sourceStore.readReachable({ mode: 'full' });
     assert.equal(sourceReachable.floors.length, 4, '图含2个冻结归档楼和2个真实C楼');
+    const branchTime = createTimeStore({ client: backend.client });
+    const sourceTimeIds = [];
+    for (const floor of sourceReachable.floors) {
+      const id = `time-branch-${floor.id}`; sourceTimeIds.push(id);
+      await branchTime.putBatch(sourceId, { schemaVersion: 1, id, chatId: sourceId, cutoffFloorId: floor.id,
+        dependencies: [{ floorId: floor.id }], changes: [], currentTime: NOW });
+    }
+    await branchTime.putHead(sourceId, { schemaVersion: 1, chatId: sourceId, batchIds: sourceTimeIds,
+      bodyStart: { floorId: sourceReachable.floors.at(-1).id } }, 0);
     const sourceBefore = chatRecords(backend.records, sourceId);
     const sourceChatBefore = structuredClone(sourceContext.chat);
+
+    for (const tailKind of ['stale', 'validDifferentReply']) {
+      const forkHostId = `branch-common-prefix-${tailKind}-${hostKind}`;
+      const forkId = await deterministicUuid(['qqj-chat-independent-v2', sourceId, forkHostId, 'character.png']);
+      const forkChat = structuredClone(sourceChat);
+      const divergence = forkChat[4];
+      const original = divergence.mes;
+      divergence.swipes = [original, '分支选中的另一条回复。'];
+      divergence.swipe_id = 1;
+      divergence.mes = divergence.swipes[1];
+      for (let tailIndex = 0; tailIndex < 9; tailIndex += 1) {
+        const message = tailIndex ? assistant(`分支后续正文${tailIndex}。`) : divergence;
+        const floorId = tailKind === 'validDifferentReply' && tailIndex === 0
+          ? sourceReachable.floors[3].id : tailKind === 'validDifferentReply' && tailIndex === 8
+            ? sourceReachable.floors[2].id : await deterministicUuid(['old-branch-tail', hostKind, tailKind, tailIndex]);
+        message.extra = { ...(message.extra ?? {}), otherPlugin: { retained: tailIndex },
+          qianqianjie_floor: { schemaVersion: 1, chatId: sourceId, floorId }, qqj_v3_recall_receipt: { old: true } };
+        message.swipe_info = message.swipes.map(() => ({ extra: { otherSwipe: tailIndex,
+          qianqianjie_floor: { schemaVersion: 1, chatId: sourceId, floorId } } }));
+        if (tailIndex) forkChat.push(message, user(`分支继续${tailIndex}`));
+      }
+      const originalFork = structuredClone(forkChat);
+      const forkContext = context(forkHostId, forkId, forkChat);
+      backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${forkId}`, { revision: 1, data: {
+        schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: forkId,
+        owner: { hostChatId: forkHostId, characterLocator: 'character.png', personaLocator: 'persona.png' },
+        state: 'preparing', sourceChatId: sourceId, createdAt: NOW, updatedAt: NOW } });
+      const forkAdapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => forkContext } } });
+      const forkApi = targetChatApi(forkContext);
+      let vectorFloors;
+      const forkInitializer = createChatBranchInitializer({ client: backend.client, hostAdapter: forkAdapter,
+        now: () => new Date(NOW), fetchImpl: forkApi.fetch,
+        vectorRuntimeProvider: () => ({ copyPrefix: async (_from, _to, _generation, _source, options) => {
+          vectorFloors = options.retainedFloorIds;
+          assert.deepEqual(options.targetReachable.floors.map(floor => floor.id), vectorFloors);
+        } }) });
+      const forkSession = createChatSession({ contextProvider: () => forkContext,
+        identityCoordinator: createChatIdentityCoordinator({ client: backend.client, now: () => new Date(NOW), initializeBranch: forkInitializer }) });
+      assert.equal((await forkSession.prepare()).status, 'ready', `${hostKind} ${tailKind}: 已核共同前文应继承`);
+      const forkStore = createFoundationStore({ client: backend.client, contextProvider: () => identity(forkHostId, forkId) });
+      const inherited = await forkStore.readReachable({ mode: 'full' });
+      const retained = sourceReachable.floors.slice(0, 3).map(floor => floor.id);
+      assert.deepEqual(inherited.floors.map(floor => floor.id), retained, '两冻结楼+一共同live楼；不同回复不得携入源摘要');
+      assert.deepEqual(inherited.floorMemories.map(memory => memory.floorId), retained);
+      assert.deepEqual(inherited.stateDeltas.map(delta => delta.floorId), retained);
+      assert.equal(inherited.currentStates[0].headFloorId, retained.at(-1));
+      assert.deepEqual(vectorFloors, retained, '向量复制仅接收共同前文');
+      const copiedTime = await branchTime.read(forkId);
+      assert.deepEqual(copiedTime.head.batchIds, sourceTimeIds.slice(0, 3), '时间只随共同前文复制');
+      assert.equal(copiedTime.head.bodyStart, undefined, '源尾段时间起点不进入分支');
+      assert.deepEqual(inherited.migrationDescriptor.frozenFloorIds, archive.floors.map(floor => floor.id));
+      assert.equal(inherited.migrationDescriptor.carriedAliases.length, 1);
+      assert.equal((await archivePeople.read(identity(forkHostId, forkId))).data.profilesByEntityId[archiveCharacterId].name, '归档人物手工名');
+      const persisted = (await (await forkApi.fetch('/api/chats/get')).json()).slice(1);
+      const withoutOwned = messages => messages.map(message => {
+        const value = structuredClone(message);
+        for (const extra of [value.extra, ...(value.swipe_info ?? []).map(swipe => swipe.extra)]) {
+          if (extra) { delete extra.qianqianjie_floor; delete extra.qqj_v3_recall_receipt; }
+        }
+        if (value.extra && !Object.keys(value.extra).length) delete value.extra;
+        return value;
+      });
+      assert.deepEqual(withoutOwned(persisted), withoutOwned(originalFork), '正文、选中回复、swipes和其它插件字段逐字保留');
+      assert.equal(persisted[2].extra.qianqianjie_floor.chatId, forkId);
+      for (const [index, message] of persisted.entries()) {
+        if (index < 4 || message.is_user) continue;
+        assert.equal(message.extra.qianqianjie_floor, undefined, '未继承尾段外层旧锚清除');
+        for (const swipe of message.swipe_info) assert.equal(swipe.extra.qianqianjie_floor, undefined, '未继承尾段swipe旧锚清除');
+      }
+      assert.equal(forkApi.saves, 1);
+      assert.equal(chatRecords(backend.records, sourceId), sourceBefore);
+      assert.deepEqual(sourceContext.chat, sourceChatBefore);
+      const continued = createFoundationRuntime({ hostAdapter: forkAdapter, store: forkStore, contextProvider: () => forkContext,
+        now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+      assert.equal((await continued.start()).status, 'ready');
+      assert.equal(continued.getReachable().floors.length, 12, '旧尾锚清理后九楼沿现有foundation补齐');
+      assert.equal(continued.getReachable().floorMemories.length, 3, '补齐前未借用源不同回复的摘要');
+      assert.equal(continued.getReachable().floors[3].content.canonicalContent, divergence.mes);
+      assert.equal(chatRecords(backend.records, sourceId), sourceBefore);
+    }
 
     const targetHostChatId = `branch-from-frozen-${hostKind}`;
     const targetId = await deterministicUuid(['qqj-chat-independent-v2', sourceId, targetHostChatId, 'character.png']);
@@ -1447,7 +1623,7 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   assert.equal(detachedPeople.data.profilesByEntityId[charEntity.id].name, '裴晚生最新版', '源档后续修改不能影响目标人物资料');
 });
 
-test('分支半成品无 root 且精确 marker 前缀已编辑时改用新目标完整继承', async () => {
+test('分支半成品无 root 且尾楼正文已编辑时沿原CAS换目标仅继承共同前文', async () => {
   const backend = backendHarness();
   let activeContext = context('原聊天', SOURCE, [assistant('公共 A'), user('继续 A'), assistant('公共 B'), user('继续 B')]);
   backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${SOURCE}`, {
@@ -1505,7 +1681,7 @@ test('分支半成品无 root 且精确 marker 前缀已编辑时改用新目标
     .map(([key, value]) => [key, structuredClone(value)]));
   assert.ok(oldFloors.size >= 1, '首次失败必须真实留下至少一个 floor 半成品');
 
-  activeContext.chat[0].mes = activeContext.chat[0].swipes[0] = '公共 A（分支内人工编辑）';
+  activeContext.chat[2].mes = activeContext.chat[2].swipes[0] = '公共 B（分支内人工编辑）';
   targetApi.reloadFromContext();
   failPartial = false;
   session.invalidate();
@@ -1517,7 +1693,10 @@ test('分支半成品无 root 且精确 marker 前缀已编辑时改用新目标
   assert.equal(activeContext.chatMetadata.qianqianjie.chatId, freshTarget);
   assert.equal(backend.records.has(`chat-${oldTarget}/v3-root`), false, '旧半成品不得补 root 或被当作源');
   for (const [key, value] of oldFloors) assert.deepEqual(backend.records.get(key), value, '旧目标已写 floor 不得覆盖');
-  assert.equal((await createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', freshTarget) }).readReachable()).status, 'ready');
+  const inherited = await createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', freshTarget) }).readReachable();
+  assert.equal(inherited.status, 'ready');
+  assert.deepEqual(inherited.floors.map(floor => floor.id), [source.floors[0].id], '合法marker尾楼正文不同，只保留共同首楼');
+  assert.equal(activeContext.chat[2].extra.qianqianjie_floor, undefined);
   assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${freshTarget}`).data.sourceChatId, SOURCE);
   assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${freshTarget}`).data.state, 'ready');
   assert.equal(chatRecords(backend.records, SOURCE), sourceBefore, '恢复不得修改源聊天记录');
@@ -1686,4 +1865,31 @@ test('复制到不同角色卡也只建独立身份，不读旧卡记忆', async
   assert.notEqual(result.identity.chatId, SOURCE);
   assert.equal(backend.records.get(`${CHAT_IDENTITY_COLLECTION}/binding-${result.identity.chatId}`).data.owner.characterLocator, 'new-character.png');
   assert.equal(backend.records.has(`chat-${result.identity.chatId}/v3-root`), false);
+});
+
+
+test('分支实际入口接纳单回复及多回复仅缺info的宿主补齐，live镜像重绑且保存原文件结构', async () => {
+  for (const multi of [false, true]) {
+    const backend = backendHarness(), sourceContext = context('hydration-source', SOURCE, [assistant('共同正文。'), user('继续')]);
+    const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => identity(sourceContext.chatId, SOURCE) });
+    const sourceAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => sourceContext } } });
+    const source = createFoundationRuntime({ store: sourceStore, hostAdapter: sourceAdapter, contextProvider: () => sourceContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    assert.equal((await source.start()).status, 'ready'); const floor = (await sourceStore.readReachable()).floors[0];
+    const fileMessage = { is_user: false, is_system: false, mes: '共同正文。', extra: { otherPlugin: { retained: true }, qianqianjie_floor: { schemaVersion: 1, chatId: SOURCE, floorId: floor.id } } };
+    if (multi) { fileMessage.swipes = [fileMessage.mes, '未选回复。']; fileMessage.swipe_id = 0; }
+    const target = context('hydration-target', SOURCE, [structuredClone(fileMessage)]), api = targetChatApi(target);
+    const selected = target.chat[0]; selected.swipes ??= [selected.mes]; selected.swipe_id ??= 0;
+    selected.swipe_info = selected.swipes.map((_, index) => ({ extra: index === 0 ? { ...structuredClone(selected.extra), otherSwipe: '保留' } : { otherSwipe: '未选保留' } }));
+    const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => target } } });
+    const initialize = createChatBranchInitializer({ client: backend.client, hostAdapter: adapter, fetchImpl: api.fetch, now: () => new Date(NOW) });
+    const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const result = await initialize({ raw: target, host: { hostChatId: target.chatId, characterAvatar: 'character.png', personaAvatar: 'persona.png' }, sourceChatId: SOURCE, targetChatId: targetId });
+    assert.equal(result.inheritedFloors, 1); assert.equal(api.saves, 1);
+    assert.equal(selected.extra.qianqianjie_floor.chatId, targetId); assert.equal(selected.swipe_info[0].extra.qianqianjie_floor.chatId, targetId);
+    assert.deepEqual(selected.extra.otherPlugin, { retained: true }); assert.equal(selected.swipe_info[0].extra.otherSwipe, '保留');
+    if (multi) assert.deepEqual(selected.swipe_info[1].extra, { otherSwipe: '未选保留' });
+    const saved = (await api.fetch('/api/chats/get')).json(); const persisted = (await saved)[1];
+    assert.deepEqual(persisted.swipes, fileMessage.swipes); assert.equal(persisted.swipe_info, undefined);
+    assert.deepEqual(persisted.extra.otherPlugin, fileMessage.extra.otherPlugin);
+  }
 });

@@ -47,10 +47,27 @@ export function identityReadDiagnostic(value) {
   });
 }
 
+const BRANCH_TARGET_FIELDS = new Set(['isUser', 'isSystem', 'name', 'mes', 'messageType', 'hasSwipes', 'selectedIndex', 'selectedValue', 'ownership', 'messageCount']);
+export function branchTargetDifferenceDiagnostic(value) {
+  if (!['message', 'messageCount'].includes(value?.reason)) return null;
+  const count = key => Number.isSafeInteger(value[key]) && value[key] >= 0 ? value[key] : null;
+  return Object.freeze({ reason: value.reason, messageIndex: count('messageIndex'),
+    capturedCount: count('capturedCount'), persistedCount: count('persistedCount'),
+    fields: Object.freeze([...new Set((Array.isArray(value.fields) ? value.fields : []).filter(field => BRANCH_TARGET_FIELDS.has(field)))].slice(0, 10)) });
+}
+
 export function preparationContextDiagnostic(value) {
   const entryPoint = PREPARATION_ENTRIES.has(value?.entryPoint) ? value.entryPoint : null;
   const identityRead = identityReadDiagnostic(value?.identityRead);
-  return { ...(entryPoint ? { entryPoint } : {}), ...(identityRead ? { identityRead } : {}) };
+  const match = value?.branchMatch;
+  const branchMatch = ['markerRejected', 'archiveFloorMissing', 'floorOrder', 'markerConflict', 'bodyMismatch', 'candidateExhausted', 'sourceExhausted'].includes(match?.reason)
+    ? Object.freeze({ reason: match.reason,
+      ...Object.fromEntries(['candidateIndex', 'floorIndex', 'assistantSeq', 'messageIndex', 'inheritedFloors', 'sourceFloorCount', 'candidateCount']
+        .map(key => [key, Number.isSafeInteger(match[key]) && match[key] >= 0 ? match[key] : null])),
+      markerStatus: ['none', 'valid', 'invalid', 'foreign', 'archive'].includes(match.markerStatus) ? match.markerStatus : null }) : null;
+  const branchTargetDifference = branchTargetDifferenceDiagnostic(value?.branchTargetDifference);
+  return { ...(entryPoint ? { entryPoint } : {}), ...(identityRead ? { identityRead } : {}), ...(branchMatch ? { branchMatch } : {}),
+    ...(branchTargetDifference ? { branchTargetDifference } : {}) };
 }
 
 export function markPreparationFailure(error, step, entryPoint = null) {
@@ -104,7 +121,8 @@ export function preparationFailureDiagnostic(error, fallbackStep = null) {
   const code = safeErrorCode(error?.code);
   const status = error?.httpStatus ?? error?.status;
   return Object.freeze({
-    ...preparationContextDiagnostic({ entryPoint: failureSteps.get(error)?.entryPoint, identityRead: error?.identityRead }),
+    ...preparationContextDiagnostic({ entryPoint: failureSteps.get(error)?.entryPoint, identityRead: error?.identityRead,
+      branchMatch: error?.branchMatch, branchTargetDifference: error?.branchTargetDifference }),
     prepareStep: preparationStepFor(error) ?? normalizePreparationStep(fallbackStep),
     name,
     code,

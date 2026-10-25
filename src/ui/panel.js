@@ -1,5 +1,6 @@
 import html from './panel.html?raw';
 import css from './panel.css?inline';
+import { scrollbarCss } from './scrollbar-style.js';
 import { createPanelGeometryController } from './layout.js';
 import { createAppearanceController } from './appearance.js';
 import { createSettingsDrawer, createSettingsDrawerState } from './settings-drawer.js';
@@ -79,7 +80,7 @@ export function createPanel({
   host.hidden = true;
   host.setAttribute('aria-hidden', 'true');
   const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `<style>${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
+  root.innerHTML = `<style>${scrollbarCss}\n${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
   const panel = root.querySelector('.panel');
   const setActivity = value => {
     panel?.setAttribute?.('aria-busy', String(value.busy === true));

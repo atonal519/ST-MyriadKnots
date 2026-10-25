@@ -1094,18 +1094,22 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const stillCurrent = () => expectedEpoch === epoch && expectedChatId === currentHostChatId();
     if (!recoveryRequested && !stillCurrent()) return getState();
     if (stillCurrent()) {
+      if (lastFailure?.floorId === null && ['load', 'foundation'].includes(lastFailure.phase)) lastFailure = null;
       memorySyncStatus = 'syncing';
       memorySyncError = null;
       if (!reachable) memorySnapshotStatus = 'syncing';
-      notify();
     }
-    let foundation = recoveryRequested
-      ? await foundationRuntime.recoverOrphanTailAnchor(recoveryTarget)
+    const foundationRead = recoveryRequested
+      ? foundationRuntime.recoverOrphanTailAnchor(recoveryTarget)
       : !recoverTailDeletion && reconcileFoundation && typeof foundationRuntime.refreshStatus === 'function'
-      ? await foundationRuntime.refreshStatus('manualRefresh', { verifyRoot: true })
+      ? foundationRuntime.refreshStatus('manualRefresh', { verifyRoot: true })
       : typeof foundationRuntime.inspect === 'function'
-      ? await foundationRuntime.inspect('memoryRefresh', { allowCached: preferCached })
-      : await foundationRuntime.refreshStatus();
+      ? foundationRuntime.inspect('memoryRefresh', { allowCached: preferCached })
+      : foundationRuntime.refreshStatus();
+    // inspect enters its existing queue in a microtask before this projection.
+    await Promise.resolve();
+    if (stillCurrent()) notify();
+    let foundation = await foundationRead;
     if (recoverTailDeletion && reconcileFoundation && foundation.status === 'error') {
       if (!stillCurrent()) return getState();
       memorySyncStatus = 'error';

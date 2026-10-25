@@ -53,3 +53,27 @@ test('旧失败记录恢复数字 code 或 Error 名，新增位置仅接受插�
   assert.equal(safari.location, 'dist/qqj-app.js:1:678');
   assert.equal(storedPreparationDiagnostic({ location: '/home/admin/src/v3/memory-runtime.js:1:2?secret' }).location, null);
 });
+
+test('分支共同前文失败保留具体楼和已确认范围，存储投影仅保定长字段', () => {
+  const branchMatch = { reason: 'floorOrder', candidateIndex: 3, floorIndex: 3, assistantSeq: 4,
+    messageIndex: 8, markerStatus: 'valid', inheritedFloors: 3, sourceFloorCount: 6, candidateCount: 8 };
+  const error = Object.assign(new Error('SECRET'), { code: 'V3_BRANCH_NOT_PREFIX', branchMatch: { ...branchMatch, content: 'SECRET' } });
+  markPreparationFailure(error, 'identityDirectory', 'startup');
+  const live = preparationFailureDiagnostic(error);
+  assert.deepEqual(live.branchMatch, branchMatch);
+  assert.deepEqual(storedPreparationDiagnostic({ ...live, branchMatch: { ...live.branchMatch, raw: 'SECRET' } }).branchMatch, branchMatch);
+  assert.doesNotMatch(JSON.stringify(storedPreparationDiagnostic(live)), /SECRET/u);
+  assert.equal(storedPreparationDiagnostic({ branchMatch: { reason: 'SECRET' } }).branchMatch, undefined);
+});
+
+test('目标差异诊断固定枚举与数量上限，任意文本和旧记录缺字段均保原边界', () => {
+  const error = Object.assign(new Error('SECRET_BODY'), { code: 'V3_BRANCH_TARGET_CHANGED', branchTargetDifference: {
+    reason: 'message', messageIndex: 725, capturedCount: 740, persistedCount: 740,
+    fields: ['mes', 'SECRET_NAME', 'selectedValue', 'mes', ...Array(100).fill('ownership')], projection: { mes: 'SECRET_BODY' } } });
+  const diagnostic = preparationFailureDiagnostic(error);
+  assert.deepEqual(diagnostic.branchTargetDifference, { reason: 'message', messageIndex: 725, capturedCount: 740, persistedCount: 740,
+    fields: ['mes', 'selectedValue', 'ownership'] });
+  assert.deepEqual(storedPreparationDiagnostic(diagnostic).branchTargetDifference, diagnostic.branchTargetDifference);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|projection/u);
+  assert.equal(storedPreparationDiagnostic({ code: 'V3_BRANCH_TARGET_CHANGED' }).branchTargetDifference, undefined, '旧错误缺差异字段照常兼容');
+});

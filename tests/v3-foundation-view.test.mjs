@@ -1,5 +1,9 @@
+import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
+import { createFoundationStore } from '../src/v3/foundation-store.js';
+import { createHostAdapter } from '../src/v3/host-adapter.js';
+import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 import { createChatSession } from '../src/chat-session.js';
-import { readTargetChat } from '../src/v3/message-floor-anchor.js';
+import { assertCapturedBranchTargetMatches, readTargetChat } from '../src/v3/message-floor-anchor.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -3875,4 +3879,142 @@ test('真实身份读回失败在设置复制诊断保留有限头部与入口�
   assert.deepEqual(parsed.pluginLifecycle.failure.identityRead, parsed.identity.preparationFailure.identityRead);
   assert.doesNotMatch(copied, /SECRET|Authorization|privatePlugin|chat_metadata|mes"/u);
   view.deactivate();
+});
+
+test('分支失败具体楼经真实session进入设置复制状态诊断', async () => {
+  const branchMatch = { reason: 'floorOrder', candidateIndex: 3, floorIndex: 3, assistantSeq: 4,
+    messageIndex: 8, markerStatus: 'valid', inheritedFloors: 3, sourceFloorCount: 6, candidateCount: 8 };
+  const raw = { chatId: '合成分支', characterId: 0, characters: [{ name: '人物', avatar: 'person.png' }], userAvatar: 'user.png', chat: [],
+    chatMetadata: { qianqianjie: { chatId: '123e4567-e89b-42d3-a456-426614174000' } } };
+  const session = createChatSession({ contextProvider: () => raw, identityCoordinator: { prepare() {
+    throw Object.assign(new Error('SECRET'), { code: 'V3_BRANCH_NOT_PREFIX', branchMatch: { ...branchMatch, body: 'SECRET' } });
+  } } });
+  await assert.rejects(session.prepare({ entryPoint: 'startup' }));
+  const state = { status: 'idle', pluginEnabled: false, floors: [] }; let copied;
+  const view = createV3FoundationView({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state }, documentRef,
+    sessionStateProvider: session.getState, pluginDiagnosticProvider: () => ({ phase: 'startup', failure: session.getState().preparationFailure }),
+    navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  const container = new Node('main'); view.mount(container);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  const result = JSON.parse(copied);
+  assert.deepEqual(result.identity.preparationFailure.branchMatch, branchMatch);
+  assert.deepEqual(result.pluginLifecycle.failure.branchMatch, branchMatch);
+  assert.doesNotMatch(copied, /SECRET/u); view.deactivate();
+});
+
+test('新轮准备经真实foundation和memory清旧页面错误，合并操作保进度且本轮新错仍显示', async () => {
+  const chatId = '123e4567-e89b-42d3-a456-426614174000';
+  const raw = { chatId: '合成读取反馈', characterId: 0, characters: [{ name: '人物', avatar: 'person.png' }], userAvatar: 'user.png',
+    chatMetadata: { qianqianjie: { schemaVersion: 2, chatId } }, chat: [{ is_user: false, is_system: false, mes: '中性正文。' }, { is_user: true, mes: '继续', send_date: 'confirmed' }] };
+  const records = new Map();
+  const client = {
+    async get(collection, key) { const record = records.get(`${collection}/${key}`); if (!record) throw Object.assign(new Error('not found'), { status: 404 }); return structuredClone(record); },
+    async put(collection, key, data, expectedRevision) { const mapKey = `${collection}/${key}`, previous = records.get(mapKey);
+      assert.equal(previous?.revision ?? 0, expectedRevision); const result = { data: structuredClone(data), revision: expectedRevision + 1 };
+      records.set(mapKey, result); return structuredClone(result); },
+  };
+  const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } });
+  const store = createFoundationStore({ client, contextProvider: () => ({ hostChatId: raw.chatId, chatId, characterLocator: 'person.png', personaLocator: 'user.png' }) });
+  let prepared = 0, release, modelCalls = 0, uuid = 10;
+  const foundation = createFoundationRuntime({ store, hostAdapter: adapter, contextProvider: () => raw,
+    now: () => new Date('2026-10-25T12:00:00.000Z'), newUuid: () => `${(++uuid).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`, logger: { warn() {} },
+    prepareSession: async () => { const round = ++prepared; if (round === 1) throw new Error('上轮读取失败');
+      if (round <= 3) await new Promise(resolve => { release = resolve; });
+      if (round === 2) throw new Error('本轮读取失败'); return { status: 'ready' }; } });
+  const rejectModel = async () => { modelCalls++; throw new Error('读取反馈不调用模型'); };
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: adapter,
+    automationSettings: () => ({ enabled: false }), generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} } });
+  assert.equal((await foundation.start()).status, 'error');
+  const container = new Node('main'), view = createV3FoundationView({ runtime: memory, documentRef }); view.mount(container, { page: 'management' });
+  const health = () => flatten(container).find(node => node.className.includes('qqj-page-health'));
+  const feedback = () => flatten(container).find(node => node.className.includes('v3-foundation-feedback'));
+  assert.match(feedback().textContent, /上轮读取失败/); assert.match(health().className, /error/);
+  const retry = foundation.refreshStatus(); view.render(memory.getState());
+  assert.equal(foundation.getState().activeRun.phase, 'capturing'); assert.equal(memory.getState().lastError, null);
+  assert.doesNotMatch(feedback().textContent, /上轮读取失败/); assert.doesNotMatch(health().className, /error/); assert.match(health().textContent, /正在/);
+  release(); await retry; view.render(memory.getState());
+  assert.match(feedback().textContent, /本轮读取失败/); assert.match(health().className, /error/);
+  const success = foundation.refreshStatus(), operationId = foundation.getState().activeRun.id;
+  view.render(memory.getState()); assert.doesNotMatch(feedback().textContent, /本轮读取失败/);
+  const merged = foundation.refreshStatus();
+  assert.equal(foundation.getState().activeRun.id, operationId); assert.equal(prepared, 3, '合并现有operation时不制造新的开始');
+  release(); await success; await merged;
+  // Inspect already waits for the original dirty-operation follow-up.
+  await foundation.inspect('feedbackSettled', { allowCached: false });
+  assert.equal(foundation.getState().status, 'ready', JSON.stringify({ state: foundation.getState(), recordKeys: [...records.keys()] }));
+  await memory.refreshStatus({ preferCached: true }); view.render(memory.getState());
+  assert.equal(foundation.getState().status, 'ready'); assert.equal(memory.getState().lastError, null);
+  assert.doesNotMatch(health().className, /error/); assert.match(health().textContent, /已记忆/);
+  assert.doesNotMatch(feedback().textContent, /读取失败/); assert.equal(modelCalls, 0);
+  view.deactivate();
+});
+
+test('真实分支目标差异进入设置复制诊断，仅保首楼与固定差异枚举', async () => {
+  const chatId = '123e4567-e89b-42d3-a456-426614174000', targetId = '223e4567-e89b-42d3-a456-426614174000';
+  const raw = { chatId: '合成差异反馈', characterId: 0, characters: [{ name: '人物', avatar: 'person.png' }], userAvatar: 'user.png',
+    chatMetadata: { qianqianjie: { schemaVersion: 2, chatId } }, chat: [{ is_user: false, mes: 'SECRET_BODY', name: 'SECRET_NAME' }] };
+  const persisted = structuredClone(raw.chat); persisted[0].mes = 'SECRET_NEW_BODY';
+  const session = createChatSession({ contextProvider: () => raw, identityCoordinator: { prepare() {
+    assertCapturedBranchTargetMatches({ chat: raw.chat, chatMetadata: raw.chatMetadata },
+      { chat: persisted, header: { chat_metadata: raw.chatMetadata } }, chatId, targetId);
+  } } });
+  await assert.rejects(session.prepare({ entryPoint: 'sourcePrepare' }));
+  let copied;
+  const state = { status: 'idle', pluginEnabled: false, floors: [] };
+  const view = createV3FoundationView({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state }, documentRef, sessionStateProvider: session.getState,
+    pluginDiagnosticProvider: () => ({ phase: 'identityPrepare', failure: session.getState().preparationFailure }),
+    navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  const container = new Node('main'); view.mount(container);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /第 1 条消息的正文不同/u);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  const result = JSON.parse(copied), difference = { reason: 'message', messageIndex: 0, capturedCount: 1, persistedCount: 1, fields: ['mes', 'selectedValue'] };
+  assert.deepEqual(result.identity.preparationFailure.branchTargetDifference, difference);
+  assert.deepEqual(result.pluginLifecycle.failure.branchTargetDifference, difference);
+  assert.doesNotMatch(copied, /SECRET|swipes/u); view.deactivate();
+});
+
+
+test('管理页真实打开与固定目标刷新在读取中清全局旧错，零模型与零额外写入', { timeout: 15000 }, async () => {
+  for (const entry of ['open', 'refresh']) {
+    const chatId = '123e4567-e89b-42d3-a456-426614174000';
+    const raw = { chatId: '合成管理读取', characterId: 0, characters: [{ name: '人物', avatar: 'person.png' }], userAvatar: 'user.png',
+      chatMetadata: { qianqianjie: { schemaVersion: 2, chatId } }, chat: [{ is_user: false, is_system: false, mes: '中性正文。' }, { is_user: true, mes: '继续', send_date: 'confirmed' }] };
+    const records = new Map(); let writes = 0, rootFailure = false, onRoot = null, failCoverage = true, modelCalls = 0;
+    const client = {
+      async get(collection, key) { if (key === 'v3-root') { if (rootFailure) throw new Error('旧全局foundation读取失败'); await onRoot?.(); }
+        const value = records.get(`${collection}/${key}`); if (!value) throw Object.assign(new Error('not found'), { status: 404 }); return structuredClone(value); },
+      async put(collection, key, data, revision) { writes++; const result = { data: structuredClone(data), revision: revision + 1 }; records.set(`${collection}/${key}`, result); return structuredClone(result); },
+    };
+    const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } });
+    const store = createFoundationStore({ client, contextProvider: () => ({ hostChatId: raw.chatId, chatId, characterLocator: 'person.png', personaLocator: 'user.png' }) });
+    const foundation = createFoundationRuntime({ store, hostAdapter: adapter, contextProvider: () => raw, logger: { warn() {} } });
+    assert.equal((await foundation.start()).status, 'ready');
+    const rejectModel = async () => { modelCalls++; throw new Error('管理读取不调用模型'); };
+    const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: adapter, automationSettings: () => ({ enabled: false }),
+      generateAnalysisTask: rejectModel, generateUtilityTask: rejectModel, logger: { warn() {} }, sanitizerOptions: () => {
+        if (failCoverage) { failCoverage = false; throw new Error('旧全局memory读取失败'); } return {};
+      } });
+    await memory.start(); assert.equal(memory.getState().lastExtractorError.phase, 'load');
+    rootFailure = true; assert.equal((await foundation.inspect('failedRead', { allowCached: false })).status, 'error'); rootFailure = false;
+    const container = new Node('main'), view = createV3FoundationView({ runtime: memory, documentRef }); view.mount(container, { page: 'management' });
+    assert.match(flatten(container).map(node => node.textContent).join('|'), /旧全局/);
+    let release, markStarted; const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { markStarted = resolve; });
+    onRoot = async () => { markStarted(); await gate; };
+    const beforeWrites = writes;
+    const operation = entry === 'open' ? view.activate() : flatten(container).find(node => node.textContent === '刷新状态').click();
+    await started;
+    const during = memory.getState();
+    assert.equal(during.memorySyncStatus, 'syncing'); assert.equal(during.lastError, null); assert.equal(during.lastExtractorError, null);
+    assert.equal(foundation.getState().status, 'running');
+    assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /旧全局/);
+    assert.match(flatten(container).find(node => node.className.includes('qqj-page-health')).textContent, /正在/);
+    let stopSettled; const settled = new Promise(resolve => { stopSettled = memory.subscribe(state => { if (state.memorySyncStatus !== 'syncing') resolve(); }); });
+    onRoot = null; release(); await operation; await settled; stopSettled();
+    assert.equal(memory.getState().memorySyncStatus, 'idle'); assert.equal(memory.getState().lastError, null); assert.equal(memory.getState().lastExtractorError, null);
+    assert.equal(writes, beforeWrites); assert.equal(modelCalls, 0);
+    rootFailure = true; await view.activate();
+    assert.equal(memory.getState().memorySyncStatus, 'error');
+    assert.match(flatten(container).map(node => node.textContent).join('|'), /旧全局foundation读取失败/);
+    assert.equal(writes, beforeWrites); assert.equal(modelCalls, 0); view.deactivate();
+  }
 });

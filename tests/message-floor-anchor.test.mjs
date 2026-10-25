@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clearExactMessageFloorAnchor, inspectMessageFloorAnchor, persistBranchedMessageMetadata, persistMessageFloorAnchors } from '../src/v3/message-floor-anchor.js';
+import { assertCapturedBranchTargetMatches, clearExactMessageFloorAnchor, inspectMessageFloorAnchor, persistBranchedMessageMetadata, persistMessageFloorAnchors, persistTargetChatIdentity, sameBranchMessageCore, sameMessageCoreAndQqjData, snapshotChatCoreAndQqjData, sameChatCoreAndQqjDataSnapshot } from '../src/v3/message-floor-anchor.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const FLOOR = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -192,4 +192,95 @@ test('已确认副本会换绑外层和可达 swipe marker/自动隐藏标记，
   assert.deepEqual(result.chat[0].swipe_info[0].extra, { swipeKept: 1, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET }, qianqianjie_floor: { schemaVersion: 1, chatId: TARGET, floorId: FLOOR } });
   assert.deepEqual(result.chat[0].swipe_info[1].extra, { swipeKept: 2, qianqianjieAutoHide: { schemaVersion: 1, chatId: TARGET } });
   assert.equal(result.header.chat_metadata.qianqianjie.chatId, TARGET);
+});
+
+test('固定分支比较按实际首差异反馈正文回复类型归属与数量，不推断改变时间', () => {
+  const message = { is_user: false, is_system: false, name: 'SECRET_NAME', mes: 'SECRET_BODY', swipes: ['SECRET_BODY', 'SECRET_ALT'], swipe_id: 0,
+    extra: { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: FLOOR } } };
+  const captured = { chat: [structuredClone(message)], chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT } } };
+  const header = { chat_metadata: structuredClone(captured.chatMetadata) };
+  for (const [key, mutate, expectedFields, copy] of [
+    ['mes', value => { value.mes = 'SECRET_NEW'; }, ['mes'], '正文'],
+    ['reply', value => { value.swipe_id = 1; }, ['selectedIndex', 'selectedValue'], '选中回复'],
+    ['selectedValue', value => { value.swipes[0] = 'SECRET_CHANGED_SELECTED'; }, ['selectedValue'], '选中回复'],
+    ['hasSwipes', value => { delete value.swipes; }, ['hasSwipes', 'selectedIndex'], '选中回复'],
+    ['hidden', value => { value.is_system = true; }, ['isSystem'], '隐藏状态'],
+    ['type', value => { value.extra.type = 'narrator'; }, ['messageType'], '消息类型'],
+    ['speaker', value => { value.is_user = true; }, ['isUser'], '发言者'],
+    ['name', value => { value.name = 'SECRET_OTHER_NAME'; }, ['name'], '发言者'],
+    ['ownership', value => { value.extra.qianqianjie_floor.floorId = DANGLING; }, ['ownership'], '记忆归属'],
+    ['presence', value => { delete value.is_system; }, ['isSystem'], '隐藏状态'],
+  ]) {
+    const persisted = structuredClone(message); mutate(persisted);
+    assert.throws(() => assertCapturedBranchTargetMatches(captured, { header, chat: [persisted] }, CHAT, TARGET), error => {
+      assert.equal(error.code, 'V3_BRANCH_TARGET_CHANGED', key); assert.match(error.message, new RegExp(copy));
+      assert.doesNotMatch(error.message, /捕获后|已改变|core|ownership|SECRET/u);
+      assert.deepEqual(error.branchTargetDifference.fields, expectedFields);
+      assert.equal(error.branchTargetDifference.messageIndex, 0);
+      assert.doesNotMatch(JSON.stringify(error.branchTargetDifference), /SECRET|floorId|swipes/u); return true;
+    });
+  }
+  assert.throws(() => assertCapturedBranchTargetMatches(captured, { header, chat: [message, structuredClone(message)] }, CHAT, TARGET), error => {
+    assert.match(error.message, /消息数量不同/u);
+    assert.deepEqual(error.branchTargetDifference, { reason: 'messageCount', messageIndex: 1, capturedCount: 1, persistedCount: 2, fields: ['messageCount'] }); return true;
+  });
+  const ignored = structuredClone(message); ignored.swipes[1] = 'UNSELECTED_CHANGE'; ignored.extra.otherPlugin = 'DISPLAY';
+  assert.doesNotThrow(() => assertCapturedBranchTargetMatches(captured, { header, chat: [ignored] }, CHAT, TARGET), '不变更未选回复和其它插件的原接纳规则');
+});
+
+test('正常宿主单回复补齐在共用比较与固定保存入口等价，真实回复和不同楼归属仍拒绝', async () => {
+  const base = { is_user: false, is_system: false, mes: '共同正文。', name: '人物', extra: { otherPlugin: { retained: true },
+    qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: FLOOR } } };
+  const hydrated = structuredClone(base); hydrated.swipes = [base.mes]; hydrated.swipe_id = 0;
+  hydrated.swipe_info = [{ extra: structuredClone(base.extra) }];
+  const metadata = { qianqianjie: { schemaVersion: 2, chatId: CHAT }, otherPlugin: { header: true } };
+  const header = { chat_metadata: metadata };
+  assert.doesNotThrow(() => assertCapturedBranchTargetMatches({ chat: [hydrated], chatMetadata: metadata }, { header, chat: [base] }, CHAT, TARGET));
+  assert.equal(sameBranchMessageCore(base, hydrated), true);
+  assert.equal(sameMessageCoreAndQqjData(base, hydrated), true);
+  assert.equal(sameChatCoreAndQqjDataSnapshot(snapshotChatCoreAndQqjData([base]), [hydrated]), true);
+  const emptyInfo = { ...structuredClone(hydrated), swipe_info: [{ extra: {} }] };
+  assert.doesNotThrow(() => assertCapturedBranchTargetMatches({ chat: [hydrated], chatMetadata: metadata }, { header, chat: [emptyInfo] }, CHAT, TARGET));
+  for (const mutate of [m => { m.mes = '真实修改正文。'; }, m => { m.swipes = ['其它选中回复。']; },
+    m => { m.swipes.push('其它回复。'); m.swipe_id = 1; }, m => { m.swipe_info[0].extra.qianqianjie_floor.floorId = DANGLING; }]) {
+    const changed = structuredClone(hydrated); mutate(changed);
+    assert.throws(() => assertCapturedBranchTargetMatches({ chat: [hydrated], chatMetadata: metadata }, { header, chat: [changed] }, CHAT, TARGET), { code: 'V3_BRANCH_TARGET_CHANGED' });
+  }
+  const multi = { ...structuredClone(hydrated), swipes: [base.mes, base.mes], swipe_info: [{ extra: structuredClone(base.extra) }, { extra: {} }] };
+  const selectedChanged = { ...structuredClone(multi), swipe_id: 1 };
+  assert.throws(() => assertCapturedBranchTargetMatches({ chat: [multi], chatMetadata: metadata }, { header, chat: [selectedChanged] }, CHAT, TARGET), error => {
+    assert.ok(error.branchTargetDifference.fields.includes('selectedIndex')); return true;
+  });
+  for (const marker of [{ schemaVersion: 1, chatId: CHAT, floorId: DANGLING },
+    { schemaVersion: 1, chatId: DANGLING, floorId: FLOOR }, { schemaVersion: 9, chatId: CHAT, floorId: FLOOR }, null]) {
+    const inactive = structuredClone(multi); inactive.swipe_info[1].extra.qianqianjie_floor = marker;
+    assert.throws(() => assertCapturedBranchTargetMatches({ chat: [multi], chatMetadata: metadata }, { header, chat: [inactive] }, CHAT, TARGET), error => {
+      assert.deepEqual(error.branchTargetDifference.fields, ['ownership']); return true;
+    });
+    assert.equal(sameMessageCoreAndQqjData(multi, inactive), false);
+  }
+  for (const key of ['qianqianjie_memory_excluded', 'qqj_v3_recall_receipt', 'qianqianjieAutoHide']) {
+    const changed = structuredClone(hydrated); changed.extra[key] = { schemaVersion: 1, changed: true };
+    assert.equal(sameMessageCoreAndQqjData(hydrated, changed), false, `${key} 的真实变化保留`);
+    assert.equal(sameChatCoreAndQqjDataSnapshot(snapshotChatCoreAndQqjData([hydrated]), [changed]), false);
+  }
+  const boolChanged = structuredClone(base); delete boolChanged.is_system;
+  assert.equal(sameBranchMessageCore(base, boolChanged), false, '缺省 bool 未获宿主补全证据，保持存在性严格');
+  for (const mode of ['branch', 'identity']) {
+    let saved = { header: structuredClone(header), chat: [structuredClone(base)] }, writes = 0;
+    const fetchImpl = async (url, init = {}) => {
+      if (url === '/api/chats/save') { const body = JSON.parse(init.body); writes++; saved = { header: body.chat[0], chat: body.chat.slice(1) }; }
+      return { ok: true, json: async () => [structuredClone(saved.header), ...structuredClone(saved.chat)] };
+    };
+    const target = { chatId: TARGET, hostChatId: '合成分支', characterName: '人物', avatarUrl: 'person.png', requestHeaders: {} };
+    const result = mode === 'branch'
+      ? await persistBranchedMessageMetadata({ target, chat: [hydrated], chatMetadata: metadata, sourceChatId: CHAT, targetChatId: TARGET,
+        bindings: [{ messageIndex: 0, floorId: FLOOR }], retainedFloorIds: [FLOOR], fetchImpl })
+      : await persistTargetChatIdentity({ coordinates: target, raw: {}, snapshot: { chat: [hydrated], chatMetadata: metadata }, chatId: TARGET, fetchImpl });
+    assert.equal(writes, 1); assert.equal(saved.header.chat_metadata.qianqianjie.chatId, TARGET);
+    assert.deepEqual(saved.chat[0].otherPlugin, base.otherPlugin);
+    assert.deepEqual(saved.chat[0].extra.otherPlugin, base.extra.otherPlugin);
+    assert.equal(saved.chat[0].swipes, undefined, '固定文件仍作原保存基底，不写宿主生成的回复容器');
+    assert.equal(result.status, mode === 'branch' ? 'persisted' : 'persisted');
+  }
 });

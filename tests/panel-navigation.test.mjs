@@ -6,6 +6,7 @@ import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { applyPluginEnabledImmediately } from '../src/settings.js';
 import { openHelpGuide } from '../src/ui/help-guide.js';
 import { publicErrorMessage } from '../src/public-error.js';
+import { scrollbarCss } from '../src/ui/scrollbar-style.js';
 import { createVectorIndex } from '../src/v3/vector-index.js';
 
 class Node {
@@ -62,6 +63,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const modules = {
     './plugin-updates-view.js': { createPluginUpdatesView: () => ({ controls: new Node(), noticeRow: new Node(), feedback: new Node(), dispose() {} }) },
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
+    './scrollbar-style.js': { scrollbarCss },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
     './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {}, fontReady: Promise.resolve() }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
     './font-scale.js': { scaleCssFontSizes: css => css },

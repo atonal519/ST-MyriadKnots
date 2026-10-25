@@ -618,13 +618,16 @@ export function createFoundationRuntime({
   async function performInspect(reason = 'inspect', { allowCached = false } = {}) {
     if (!enabled()) return publish('disabled');
     const inspectEpoch = sessionEpoch;
+    const hadError = Boolean(lastError);
     let captured = null;
     try {
       captured = capture();
+      lastError = null;
+      if (hadError || !allowCached) publish('running');
       projectedChatId = captured.identity.chatId;
       let candidates = await scanGraphCandidates(captured.host.chat, captured.identity.chatId);
       if (inspectEpoch !== sessionEpoch) return publicState;
-      if (allowCached && !lastError && cacheMatchesCandidates(candidates)) {
+      if (allowCached && !hadError && cacheMatchesCandidates(candidates)) {
         inspectedStableCount = cache.floors.length;
         updateCandidateProjection(candidates, cache.floors, inspectedStableCount);
         if (cache.status === 'needsReseal') {
@@ -633,7 +636,8 @@ export function createFoundationRuntime({
         }
         return publish('ready');
       }
-      if (!allowCached && cache?.status !== 'needsReseal' && !lastError && cacheMatchesCandidates(candidates)
+      if (publicState.status !== 'running') publish('running');
+      if (!allowCached && cache?.status !== 'needsReseal' && !hadError && cacheMatchesCandidates(candidates)
         && typeof store.readRoot === 'function') {
         const rootResult = await store.readRoot();
         if (inspectEpoch !== sessionEpoch) return publicState;
@@ -1028,6 +1032,7 @@ export function createFoundationRuntime({
         publish(targetState.status);
         return result;
       };
+      if (sameCapturedTarget()) { lastError = null; publish('running'); }
       const inspected = await fixedRuntime.inspect('orphanTailRecovery', { allowCached: false });
       if (inspected.status !== 'needsReview' || inspected.reviewReason?.code !== 'markerMismatch'
         || inspected.reviewReason?.bindingIssue !== 'markerConflict') {
@@ -1330,6 +1335,7 @@ export function createFoundationRuntime({
       manualConfirmation: Array.isArray(manualConfirmation) ? Object.freeze(manualConfirmation.map(item => Object.freeze({ ...item }))) : null,
     };
     activeOperation = operation;
+    lastError = null;
     publishOperation(operation, 'running');
     let settledPublicState = null;
     const runPromise = (async () => {

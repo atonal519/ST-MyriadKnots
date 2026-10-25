@@ -1,6 +1,8 @@
+import { scrollbarCss } from './scrollbar-style.js';
+
 // Dependency-closed subset copied from ST-SevenDaysCal/style.css @ fb93e5466c14fa28158004454790100a0f284f53.
 // QQJ-only palette bridge is isolated in .sp-root and keeps sheet/input surfaces opaque.
-export const gouhuaDialogCss = `
+export const gouhuaDialogCss = `${scrollbarCss}
 :host{position:fixed;top:0;left:0;width:100vw;width:100dvw;height:100vh;height:100dvh;z-index:2000003;display:block;overflow:hidden;pointer-events:none}
 *{box-sizing:border-box}
 .sp-root{
