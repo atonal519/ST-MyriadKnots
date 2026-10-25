@@ -1,3 +1,4 @@
+import { validateIdentityBriefSource, identityFactsText } from './identity-brief.js';
 import { isUuid, sha256 } from '../identity.js';
 import { validateFoundationGraph } from './foundation-schema.js';
 import { copyFloorVariableReference } from './floor-variable-reference.js';
@@ -319,10 +320,15 @@ export function memorySourceFloorIds(memory) {
 export function validateEntityRecord(input, { expectedChatId } = {}) {
   const value = clone(input);
   const hasIdentityBrief = Object.hasOwn(value, 'identityBrief');
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'entityType', 'displayName', 'aliases', 'specialRole', 'firstSeenFloorId', 'lastSeenFloorId', 'status', 'mergedIntoEntityId', 'mergeEvidenceRefs', 'baselineClaimIds', ...(hasIdentityBrief ? ['identityBrief'] : []), 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_ENTITY_INVALID');
+  const hasIdentityBriefSource = Object.hasOwn(value, 'identityBriefSource');
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'entityType', 'displayName', 'aliases', 'specialRole', 'firstSeenFloorId', 'lastSeenFloorId', 'status', 'mergedIntoEntityId', 'mergeEvidenceRefs', 'baselineClaimIds', ...(hasIdentityBrief ? ['identityBrief'] : []), ...(hasIdentityBriefSource ? ['identityBriefSource'] : []), 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_ENTITY_INVALID');
   common(value, 'entity', expectedChatId);
   enumValue(value.entityType, [...ENTITY_TYPES], 'V3_ENTITY_INVALID', 'entityType'); text(value.displayName, 'V3_ENTITY_INVALID', 'displayName', { max: 500 }); enumValue(value.specialRole, ['char', 'user', 'none'], 'V3_ENTITY_INVALID', 'specialRole');
   if (hasIdentityBrief) text(value.identityBrief, 'V3_ENTITY_INVALID', 'identityBrief', { max: 400 });
+  if (hasIdentityBriefSource) {
+    validateIdentityBriefSource(value.identityBriefSource);
+    if (!hasIdentityBrief || identityFactsText(value.identityBriefSource.facts) !== value.identityBrief) fail('V3_ENTITY_INVALID', 'identityBriefSource');
+  }
   uuid(value.firstSeenFloorId, 'V3_ENTITY_INVALID', 'firstSeenFloorId', { nullable: true }); uuid(value.lastSeenFloorId, 'V3_ENTITY_INVALID', 'lastSeenFloorId', { nullable: true }); enumValue(value.status, ['provisional', 'established', 'merged', 'invalidated'], 'V3_ENTITY_INVALID', 'status'); uuid(value.mergedIntoEntityId, 'V3_ENTITY_INVALID', 'mergedIntoEntityId', { nullable: true });
   boundedArray(value.aliases, 'V3_ENTITY_INVALID', 'aliases', 80).forEach((alias, index) => { const path = `aliases[${index}]`; exact(alias, ['name', 'normalized', 'kind', 'evidenceRefs', 'baselineClaimIds'], 'V3_ENTITY_INVALID', path); text(alias.name, 'V3_ENTITY_INVALID', `${path}.name`, { max: 500 }); text(alias.normalized, 'V3_ENTITY_INVALID', `${path}.normalized`, { max: 500 }); enumValue(alias.kind, ['canonical', 'nickname', 'title', 'disguise', 'uncertain'], 'V3_ENTITY_INVALID', `${path}.kind`); boundedArray(alias.evidenceRefs, 'V3_ENTITY_INVALID', `${path}.evidenceRefs`, 40).forEach((evidence, evidenceIndex) => validateEvidenceRef(evidence, { path: `${path}.evidenceRefs[${evidenceIndex}]` })); boundedArray(alias.baselineClaimIds, 'V3_ENTITY_INVALID', `${path}.baselineClaimIds`, 40).forEach((id, idIndex) => uuid(id, 'V3_ENTITY_INVALID', `${path}.baselineClaimIds[${idIndex}]`)); });
   boundedArray(value.mergeEvidenceRefs, 'V3_ENTITY_INVALID', 'mergeEvidenceRefs', 40).forEach((evidence, index) => validateEvidenceRef(evidence, { path: `mergeEvidenceRefs[${index}]` })); boundedArray(value.baselineClaimIds, 'V3_ENTITY_INVALID', 'baselineClaimIds', 40).forEach((id, index) => uuid(id, 'V3_ENTITY_INVALID', `baselineClaimIds[${index}]`));

@@ -1,4 +1,5 @@
 import { isUuid } from '../identity.js';
+import { recordWriteBatches } from '../backend-client.js';
 import {
   validateFoundationCheckpoint,
   validateFoundationFloor,
@@ -416,6 +417,71 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       }
     }, identityOverride);
   }
+  function putRecords(records, { signal, onProgress } = {}, identityOverride = null) {
+    return execute(async (current, operation) => {
+      if (!Array.isArray(records) || records.length < 1 || records.length > 64) fail('V3_STORE_BATCH_INVALID');
+      const prepared = [];
+      for (const record of records) {
+        const validator = validatorFor(record?.recordType), safe = validator(record, { expectedChatId: current.chatId });
+        if (safe.recordType === 'floor') await validateFoundationFloorContent(safe, { expectedChatId: current.chatId });
+        prepared.push({ recordId: recordKey(safe), data: safe, expectedRevision: 0, validator });
+      }
+      if (new Set(prepared.map(item => item.recordId)).size !== prepared.length) fail('V3_STORE_BATCH_INVALID');
+      const byId = new Map(prepared.map(item => [item.recordId, item])), results = [];
+      let completed = 0;
+      for (const group of recordWriteBatches(prepared.map(({ validator, ...item }) => item))) {
+        const response = !group.single && typeof client.putMany === 'function'
+          ? await client.putMany(collection(current), group.records, { signal }) : null;
+        const batchResults = new Array(group.records.length); let firstError = null;
+        if (response === null) {
+          let cursor = 0;
+          await Promise.all(Array.from({ length: Math.min(4, group.records.length) }, async () => {
+            while (!firstError) {
+              const index = cursor++; if (index >= group.records.length) return;
+              try { batchResults[index] = await putRecord(group.records[index].data, { signal }, current); }
+              catch (error) { firstError ??= error; }
+            }
+          }));
+        } else {
+          if (!Array.isArray(response) || response.length !== group.records.length) fail('V3_STORE_BATCH_RESPONSE_INVALID');
+          // Retain every acknowledged success before processing any conflict or failure.
+          for (let index = 0; index < response.length; index++) {
+            const item = response[index], expected = group.records[index];
+            try {
+              if (item?.recordId !== expected.recordId) fail('V3_STORE_BATCH_RESPONSE_INVALID');
+              if (item.status !== 200) continue;
+              const saved = validateEnvelope(item.envelope, byId.get(item.recordId).validator, current.chatId);
+              if (!sameJson(saved.data, expected.data)) fail('V3_STORE_RESPONSE_MISMATCH');
+              const result = { status: 'saved', ...saved, recordId: item.recordId };
+              rememberConfirmed(current, { ...result, status: 'ready' });
+              stageCoreRecord(current, item.recordId, saved.data.recordType, saved.rawEnvelope, operation.cacheScope);
+              batchResults[index] = result;
+            } catch (error) { firstError ??= error; }
+          }
+          for (let index = 0; index < response.length; index++) {
+            const item = response[index]; if (item?.status === 200) continue;
+            try {
+              const expected = group.records[index];
+              if (item?.recordId !== expected.recordId) fail('V3_STORE_BATCH_RESPONSE_INVALID');
+              if (item.status !== 409) throw Object.assign(new Error('分支记忆保存失败，请到“记忆管理”页复制状态诊断反馈。'), { status: item.status });
+              const winner = await read(current, item.recordId, byId.get(item.recordId).validator);
+              if (winner.status === 'ready' && sameFoundationRecordContent(winner.data, expected.data)) {
+                stageCoreRecord(current, item.recordId, expected.data.recordType, winner.rawEnvelope, operation.cacheScope);
+                batchResults[index] = { ...winner, status: 'reused', recordId: item.recordId };
+              } else batchResults[index] = { status: 'conflict', recordId: item.recordId };
+            } catch (error) { firstError ??= error; }
+          }
+        }
+        completed += batchResults.filter(item => ['saved', 'reused'].includes(item?.status)).length;
+        onProgress?.({ completed, total: records.length });
+        if (firstError) throw firstError;
+        await new Promise(resolve => setTimeout(resolve, 0));
+        results.push(...batchResults);
+        if (batchResults.some(item => item.status === 'conflict')) break;
+      }
+      return results;
+    }, identityOverride);
+  }
   function replaceRecord(record, expectedRevision, { signal } = {}, identityOverride = null) {
     return execute(async current => {
       const validator = validatorFor(record?.recordType);
@@ -779,6 +845,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       readRecord: (recordType, idOrKey) => readRecord(recordType, idOrKey, fixedIdentity),
       readReachable: (options = {}) => readReachable({ ...options, identity: fixedIdentity }),
       putRecord: (record, options = {}) => putRecord(record, options, fixedIdentity),
+      putRecords: (records, options = {}) => putRecords(records, options, fixedIdentity),
       replaceRecord: (record, revision, options = {}) => replaceRecord(record, revision, options, fixedIdentity),
       settleRun: (record, revision) => settleRun(record, revision, fixedIdentity),
       commitRoot: (root, revision, options = {}) => commitRoot(root, revision, options, fixedIdentity),
@@ -791,6 +858,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     readRecord,
     readReachable,
     putRecord,
+    putRecords,
     replaceRecord,
     settleRun,
     commitRoot,

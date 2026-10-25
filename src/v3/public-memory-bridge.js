@@ -1,3 +1,4 @@
+import { identityBriefFields } from './identity-brief.js';
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from './recall-source.js';
 import { PEOPLE_PROFILE_FIELDS } from './people-profile-fields.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -237,6 +238,7 @@ function publicPeopleSnapshot(value, chatId) {
       displayName: person.displayName,
       entityDisplayName: person.entityDisplayName,
       aliases: person.aliases ?? [],
+      ...identityBriefFields(person),
       specialRole: person.specialRole ?? null,
       selected: person.selected === true,
       profiled: person.profiled === true,

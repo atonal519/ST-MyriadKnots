@@ -1,4 +1,5 @@
 import { replaceCseSourceMacros } from '../cse-source-selection.js';
+import { identityBriefSourceForRecord } from './identity-brief.js';
 
 const labelKey = value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase();
 
@@ -20,10 +21,15 @@ export function entitiesThroughFloorIds(entities = [], floorIds = null, identity
   const userEntityId = identityProjection?.userEntityId;
   const scoped = [];
   for (const entity of entities) {
-    if (inFloorPrefix(entity, allowed)) scoped.push(entity);
+    if (inFloorPrefix(entity, allowed)) {
+      if (allowed && entity.identityBriefSource?.sourceFloorId && !allowed.has(entity.identityBriefSource.sourceFloorId)) {
+        const { identityBrief, identityBriefSource, ...identity } = entity;
+        scoped.push(identity);
+      } else scoped.push(entity);
+    }
     else if (userEntityId ? entity.id === userEntityId : entity.specialRole === 'user') {
       // Only carry the role identity into an earlier floor, not its later story brief.
-      const { identityBrief, ...identity } = entity;
+      const { identityBrief, identityBriefSource, ...identity } = entity;
       scoped.push(identity);
     }
   }
@@ -262,7 +268,7 @@ export function projectCseStateIdentityReferences(state, projection = {}) {
     core: Object.freeze(subject.core), adaptive: Object.freeze(subject.adaptive), situational: Object.freeze(subject.situational) }))) });
 }
 
-export function buildEntityIdentityDirectory({ entities = [], floorIds = null, identityProjection = null, identityRedirectsByEntityId = null, deletedEntityIds = null } = {}) {
+export function buildEntityIdentityDirectory({ entities = [], floorIds = null, floorOrder = null, identityProjection = null, identityRedirectsByEntityId = null, deletedEntityIds = null } = {}) {
   const supplied = identityProjection ?? { identityRedirectsByEntityId, deletedEntityIds };
   const projection = Object.hasOwn(supplied, 'userEntityId') ? normalizeIdentityProjection(supplied)
     : deriveUserIdentityProjection({ entities, identityProjection: supplied });
@@ -294,7 +300,10 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, i
       const prior = identityBriefRecords.get(target.id);
       const priorTime = Date.parse(prior?.updatedAt ?? prior?.createdAt ?? '') || 0;
       const nextTime = Date.parse(aliasEntity.updatedAt ?? aliasEntity.createdAt ?? '') || 0;
-      if (!prior || nextTime > priorTime || nextTime === priorTime && aliasEntity.id.localeCompare(prior.id) > 0) identityBriefRecords.set(target.id, aliasEntity);
+      const priorFloor = floorOrder?.get(prior?.identityBriefSource?.sourceFloorId ?? prior?.firstSeenFloorId) ?? -1;
+      const nextFloor = floorOrder?.get(aliasEntity.identityBriefSource?.sourceFloorId ?? aliasEntity.firstSeenFloorId) ?? -1;
+      const byStory = floorOrder instanceof Map ? nextFloor - priorFloor : 0;
+      if (!prior || byStory > 0 || byStory === 0 && (nextTime > priorTime || nextTime === priorTime && aliasEntity.id.localeCompare(prior.id) > 0)) identityBriefRecords.set(target.id, aliasEntity);
     }
   }
   return Object.freeze(canonical.map(entity => {
@@ -324,7 +333,8 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, i
       ...(displayName !== entity.displayName ? { originalDisplayName: entity.displayName } : {}),
       aliases,
       labels: Object.freeze(labels),
-      ...(identityBriefRecords.has(entity.id) ? { identityBrief: identityBriefRecords.get(entity.id).identityBrief } : {}),
+      ...(identityBriefRecords.has(entity.id) ? { identityBrief: identityBriefRecords.get(entity.id).identityBrief,
+        identityBriefSource: Object.freeze(identityBriefSourceForRecord(identityBriefRecords.get(entity.id))) } : {}),
     });
   }));
 }

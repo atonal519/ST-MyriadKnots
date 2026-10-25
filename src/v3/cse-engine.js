@@ -10,9 +10,10 @@ import { projectCseSubjectDiagnostic } from './cse-failure-diagnostic.js';
 import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, isSupportedCseCalibrationVersion, stateFingerprint, validateBaselineRecord, validateCurrentStateRecord, validateStateDeltaRecord } from './cse-schema.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
+import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-41';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-18';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-42';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-19';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
@@ -37,7 +38,9 @@ previousState 按 subject 分列各人的 ownState，只说明对应人物自身
 只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
 
 【可选 NPC 身份简介】
-identityBriefTargets 列出本楼识别到、但不一定进入状态追踪的人物。简介只写人物是谁：稳定身份、职业及用于识别人物的稳定关系，不写活动流水或近况。已有简介只作身份对照并保留仍有效的身份事实，不是本楼新证据，也不证明目标在场、知情或有本楼状态；无旧简介时可按本楼或 evidenceSourceCatalog 明确支持的稳定身份首次填写，已有简介只在明确支持身份新增或纠正时写完整句更新，不照抄其中的临时内容。简介不得包含、替换或追加本楼临时行为，包括动作、服务过程、情绪、穿着、位置或具体事件；单次行为不证明职业或长期职责。没有稳定身份变化就省略更新，临时信息仍由本楼事件及状态字段记录。不得从 knownPeople、userPersona 或其他人物设定推断。简介是独立检查：即使 subjects 为空也检查；有依据时在同一响应中返回 identityBriefUpdates，无新信息时省略。每项形如 {"targetKey":"目标的 key","identityBrief":"不超过 400 字的一句话","evidence":[{"source":"证据来源","quote":"逐字原文"}]}；targetKey 必须逐字复制 identityBriefTargets[].key，source 必须来自 evidenceSourceCatalog。程序单独校验简介，坏项只忽略该简介，不影响状态结果。
+identityBriefTargets 列出本楼识别到的 NPC，不代表在场、知情或需要状态追踪。只记录稳定身份 identity、职业/职责 occupation、用于识别的稳定关系 relation；活动过程、单次服务、病情、衣着、位置与人物评价留给原事件/状态，不能从单次行为推职业。
+同一响应可返回 identityBriefUpdates:[{targetKey:"目标key",identityFacts:[{kind:"occupation",text:"稳定身份短句",evidence:[{source:"来源键",quote:"逐字原文"}]}]}]。targetKey 逐字用该目标key，source 逐字用 evidenceSourceCatalog；不得凭 knownPeople、userPersona、其它人物设定或用户Adaptive历史补身份。列表是完整当前稳定身份，最多20条、整份合计20条引用、拼成简介总长不超过400字。
+保留旧的有效条目时仅回 {existingKey:"该目标实际提供的原key"}，不重抄旧引文，不借用别人的key；纠正或新增条目必须有当前材料逐字依据。没更新就省略，空列表不清旧。旧裸identityBrief只作身份对照，不是证据；本次有明确稳定身份依据即可建立有据列表，即使身份没改变，也不要照抄旧临时内容。兼容旧identityBrief+evidence返回，只有简介专属依据可定位才接受；新列表存在时按新列表处理。完整列表任一条坏则只忽略本次整份简介更新，不影响摘要/CSE状态；即使subjects为空也独立检查简介。
 
 判断每条候选信息时，在内部依次问三个问题：第一，这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
 
@@ -283,7 +286,8 @@ function cseEvidenceSources({ floor, baseline, currentUserInput, requestSources 
     { source: 'userPersona', kind: 'authorialSetting', subjectEntityId: baseline.userPersona.entityId, contents: [userPersona.description] },
     // 角色卡可包含多人设定，具体人物归属由正文语义判断，不固定归给卡名对应实体。
     { source: 'characterCard', kind: 'authorialSetting', subjectEntityId: null, contents: [characterCard.description, characterCard.personality, characterCard.scenario] },
-    ...worldInfoSources.map((entry, index) => ({ source: `worldbook:${index + 1}`, kind: 'authorialSetting', subjectEntityId: null, contents: [entry.content] })),
+    ...worldInfoSources.map((entry, index) => ({ source: `worldbook:${index + 1}`, kind: 'authorialSetting', subjectEntityId: null, contents: [entry.content],
+      ...(entry.locator ? { locator: entry.locator } : {}), ...(entry.fingerprint ? { fingerprint: entry.fingerprint } : {}) })),
   ];
   if (requestSources.authorNote?.content) sources.push({ source: 'authorNote', kind: 'authorialReference', subjectEntityId: null, contents: [requestSources.authorNote.content] });
   const userInputContents = Array.isArray(currentUserInput?.messages)
@@ -311,8 +315,8 @@ function authorialOtherStateContext(currentState, entities, previousSubjectIds) 
 }
 
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, identityDirectory = null, identityBriefTargets = [], requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null, userAdaptiveHistory = [] }) {
-  const directory = identityDirectory ?? buildEntityIdentityDirectory({ entities });
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, floorOrder = null, identityDirectory = null, identityBriefTargets = [], requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null, userAdaptiveHistory = [] }) {
+  const directory = identityDirectory ?? buildEntityIdentityDirectory({ entities, floorOrder });
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
   const activeKnownEntities = directory.filter(entry => entry.entityType === 'person' || entry.specialRole !== 'none');
@@ -357,6 +361,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
     if (!entry || entry.entityType !== 'person' || entry.specialRole !== 'none' || baselineEntityIds.has(entry.entityId)) return [];
     return [{ key: `npc-${index + 1}`, entityId: entry.entityId, name: target.name ?? entry.displayName,
       aliases: target.labels ?? entry.labels,
+      identityBriefSource: entry.identityBriefSource,
       ...((target.identityBrief ?? entry.identityBrief) ? { identityBrief: target.identityBrief ?? entry.identityBrief } : {}) }];
   }).slice(0, 80);
   return Object.freeze({
@@ -385,7 +390,8 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
         source: `userAdaptiveHistory:${entry.floorId}`, floorId: entry.floorId,
         assistantSeq: entry.assistantSeq, content: entry.content,
       })) } : {}),
-      ...(briefTargets.length ? { identityBriefTargets: briefTargets.map(({ key, name, aliases, identityBrief }) => ({ key, name, aliases, ...(identityBrief ? { identityBrief } : {}) })) } : {}),
+      ...(briefTargets.length ? { identityBriefTargets: briefTargets.map(({ key, name, aliases, identityBrief, identityBriefSource }) => ({ key, name, aliases,
+        ...(identityBrief && !identityBriefSource?.facts?.length ? { identityBrief } : {}), ...(identityBriefSource?.facts?.length ? { identityFacts: identityFactsForPrompt(identityBriefSource, key) } : {}) })) } : {}),
       evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind,
         ...(source.subjectEntityId ? { subject: nameForSubjectId(source.subjectEntityId) }
           : source.kind === 'authorialSetting' ? { subjectScope: '按来源原文明确描述的人物' } : {}) })),
@@ -399,7 +405,8 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       floorId: floor.id, floorMemoryId: floorMemory.id, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, baselineId: baseline.id,
       trackedBindings: trackedSubjects.map(entity => ({ entityId: entity.id, labels: labelsFor(entity), specialRole: entity.specialRole })),
       knownBindings: activeKnownEntities.map(entry => ({ entityId: entry.entityId, labels: entry.labels, specialRole: entry.specialRole })),
-      identityBriefBindings: briefTargets.map(({ key, entityId, identityBrief }) => ({ key, entityId, identityBrief: identityBrief ?? null })),
+      identityBriefBindings: briefTargets.map(({ key, entityId, identityBrief, identityBriefSource }) => ({ key, entityId, identityBrief: identityBrief ?? null,
+        identityFacts: identityBriefSource?.facts ?? [], existingFacts: identityFactBindings(identityBriefSource, key) })),
       evidenceSources,
       sourceSnapshotFingerprint: typeof effectiveSources.fingerprint === 'string' ? effectiveSources.fingerprint : null,
       coreUserEditedSubjectEntityIds: [...coreUserEdited],
@@ -694,7 +701,9 @@ function calibratedEvidence(raw, { envelope, binding, category, index, isolated 
       isolated.push({ field: path, code: 'V3_CSE_EVIDENCE_SUBJECT_MISMATCH' });
       continue;
     }
-    evidence.push({ source: source.source, kind: source.kind, quote: locatedQuote });
+    evidence.push({ source: source.source, kind: source.kind, quote: locatedQuote,
+      ...(category === 'identityBriefUpdates' ? { floorId: envelope.scope.floorId,
+        ...(source.locator ? { locator: source.locator } : {}), ...(source.fingerprint ? { fingerprint: source.fingerprint } : {}) } : {}) });
   }
   return Object.freeze(evidence);
 }
@@ -707,7 +716,7 @@ function calibratedMutationAllowed({ category, evidence, manualCore }) {
   return evidence.some(item => item.kind === 'authorialSetting' || item.source === 'currentUserInput');
 }
 
-function compileIdentityBriefUpdates(packet, envelope, isolated) {
+function compileIdentityBriefUpdates(packet, envelope, isolated, deltaId) {
   const bindings = envelope.scope.identityBriefBindings ?? [];
   if (!bindings.length) return [];
   const bindingByKey = new Map(bindings.map(binding => [binding.key, binding]));
@@ -725,29 +734,35 @@ function compileIdentityBriefUpdates(packet, envelope, isolated) {
   const updates = [];
   for (const [key, items] of grouped) {
     const binding = bindingByKey.get(key), validBriefs = new Map();
+    let invalid = false;
     for (const { raw, index } of items) {
-      const briefValue = field(raw, ['identityBrief', 'brief', '简介']);
-      const brief = typeof briefValue === 'string' ? briefValue.trim() : '';
-      if (!brief || brief.length > 400) {
+      try {
+        const brief = field(raw, ['identityBrief', 'brief', '简介']);
+        if (!Object.hasOwn(raw, 'identityFacts') && (typeof brief !== 'string' || !brief.trim() || brief.length > 400)) throw new TypeError('identityBrief');
+        const facts = compileIdentityFacts({ raw: { ...raw, identityBrief: brief }, existingFacts: binding.existingFacts,
+          legacyEvidence: field(raw, ['evidence', '依据']), compileEvidence(refs) {
+            if (!Array.isArray(refs) || !refs.length || refs.length > 20) throw new TypeError('identityFacts.evidence');
+            if (refs.some(ref => typeof field(ref, ['quote', '引用']) !== 'string' || field(ref, ['quote', '引用']).length > 2000)) throw new TypeError('identityFacts.quote');
+            const evidence = calibratedEvidence({ evidence: refs }, { envelope, binding, category: 'identityBriefUpdates', index, isolated });
+            if (evidence.length !== refs.length || evidence.some(item => item.source === 'userPersona' || item.kind === 'userAdaptiveHistory')) throw new TypeError('identityFacts.evidence');
+            return evidence.map(({ quote, ...ref }) => ({ ...ref, quotedText: quote }));
+          } });
+        if (!facts) continue;
+        const meaning = JSON.stringify(facts);
+        const matching = validBriefs.get(meaning) ?? { facts, indexes: [] };
+        matching.indexes.push(index); validBriefs.set(meaning, matching);
+      } catch {
+        invalid = true;
         isolated.push({ field: 'identityBriefUpdates', index, code: 'V3_CSE_IDENTITY_BRIEF_INVALID' });
-        continue;
       }
-      const evidence = calibratedEvidence(raw, { envelope, binding, category: 'identityBriefUpdates', index, isolated });
-      if (!evidence.length || evidence.some(item => item.source === 'userPersona' || item.kind === 'userAdaptiveHistory')) {
-        isolated.push({ field: 'identityBriefUpdates', index, code: 'V3_CSE_IDENTITY_BRIEF_EVIDENCE_INSUFFICIENT' });
-        continue;
-      }
-      const normalizedBrief = normalized(brief);
-      const matching = validBriefs.get(normalizedBrief) ?? { brief, indexes: [] };
-      matching.indexes.push(index);
-      validBriefs.set(normalizedBrief, matching);
     }
     if (validBriefs.size > 1) {
       for (const { indexes } of validBriefs.values()) for (const index of indexes) isolated.push({ field: 'identityBriefUpdates', index, code: 'V3_CSE_IDENTITY_BRIEF_TARGET_AMBIGUOUS' });
       continue;
     }
     const [candidate] = validBriefs.values();
-    if (candidate && normalized(candidate.brief) !== normalized(binding.identityBrief)) updates.push({ entityId: binding.entityId, identityBrief: candidate.brief });
+    if (!invalid && candidate && !sameIdentityFacts(candidate.facts, binding.identityFacts)) updates.push({ entityId: binding.entityId, identityBrief: identityFactsText(candidate.facts),
+      identityBriefSource: { sourceFloorId: envelope.scope.floorId, origin: 'cse', sourceDeltaId: deltaId, facts: candidate.facts } });
   }
   return updates;
 }
@@ -872,7 +887,7 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
   const packet = parsePacket(response, { finishReason, compareUserCoreExtraction: Boolean(userCoreExtraction) });
   if (!hasRecognizableCseResult(packet)) throw errorWith('V3_CSE_FORMAT_INVALID', 'CSE 返回不含可识别的人物状态结果。');
   const isolated = [];
-  const identityBriefUpdates = compileIdentityBriefUpdates(packet, envelope, isolated);
+  const identityBriefUpdates = compileIdentityBriefUpdates(packet, envelope, isolated, deltaId);
   const previousById = new Map((previousCurrentState?.subjects ?? []).map(subject => [subject.subjectEntityId, subject]));
   const compiled = new Map();
   const calibrationAudit = [];

@@ -86,6 +86,8 @@ if (result.status === 'ready' && result.people.status === 'ready') {
 
 顶层返回 `status`、`identity` 和 `people`。`people` 沿用 `getSnapshot().people` 的结构和人物合并结果。人物工作区尚未加载时，其分区为 `not-ready`；读取失败时顶层为 `error`。
 
+人物可带独立的 `identityBrief` 和 `identityBriefSource`，不改变 `profiled`。出处包含胜出实体修订 `entityRecordId`、已知 `sourceFloorId`、`origin` 及逐条稳定身份 `facts`；新保存条目的 `evidence` 保留本次已定位原句和必要来源，世界书定位仅在当时记录过时提供，不附整份材料。旧简介标记 `legacy: true`、`facts: []`，表示未记录引文，不从当前世界书补造。简介是作者侧 AI 记忆，不证明人物在场或知情；完整 `profile` 的人工字段（含明确清空）优先，不可用简介补回。`people.revision` 仍只是人物工作区版本，不是全部简介的版本。
+
 ### `getPeopleAvatars(entityIds)`
 
 按稳定 `entityId` 批量读取当前已加载人物工作区里的头像，不读取完整记忆图、不刷新人物资料，也不调用后端或模型。此方法只返回请求的人物 ID，不会把头像加入 `getPeopleSnapshot()` 或 `getSnapshot()`。
@@ -125,6 +127,8 @@ const result = await bridge.readContext({
 ```
 
 结果包含 `identity`、`anchor`、`routerText`、`actors` 和 `coverage`。`routerText` 是明确标注的作者侧背景，供调度参考，不表示房间人物都已知；每个 actor 的 `profileText`、`stateText` 和 `memoryText` 只包含该人物可归属的资料。私密认知只给本人，信息转移只给明确接收者；承诺和计划保留未履行状态。人物身份沿用现有合并与删除映射，不按显示名猜测。
+
+没有实质档案材料的 NPC 可在原 `profileText` 预算内返回独立轻简介及来源标记，仅修改姓名或别名也保留这项参考；有实质档案材料或其它人工字段（含空）时只用其档案，不用 AI 简介补空。人工字段明确标注，人工空值保留“已明确清空，不补填”的含义。旧无引文简介另标历史来源；这些内容均占原有总预算，不增加额度。
 
 本方法使用千千结已有的轻量 BM25 纯排序挑选本地候选，属于按题筛选，不是完整语义或向量召回。`coverage.partial` 标记输出预算是否省略资料，`coverage.cseStatus` 单独报告人物状态资料是否已就绪；未准备好时返回 `not-ready`，当前没有有效资料时可以返回空文本，不表示调用失败。
 

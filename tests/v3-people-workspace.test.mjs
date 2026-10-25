@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { processingTransport } from './fixtures/processing-transport.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { copyLatestPeople } from '../src/v3/chat-branch-inheritance.js';
@@ -353,12 +354,12 @@ test('人物来源：人工Core保人工身份和真实楼层，不自动当成�
   assert.deepEqual(request.people[0].cseCoreTraits, [{ text: '人工纠正的边界', source: 'manual', sourceFloor: 1 }]);
 });
 
-test('人物资料业务指导可替换，固定合同与基础处理层始终恰好一次', () => {
+test('人物资料业务指导可替换且准备期仅保留固定任务合同', () => {
   const builtIn = buildPeopleProfileSystemPrompt();
   assert.match(builtIn, new RegExp(DEFAULT_PROFILE_GUIDANCE.slice(0, 20)));
   assert.match(builtIn, /人物卡和世界书属于明确设定/);
   assert.match(builtIn, /appearance 只填写无法归入细分外貌字段/); assert.match(builtIn, /不写来源说明、整理过程、核验过程/);
-  assert.equal(builtIn.split(BASE_PROCESSING_PROMPT).length - 1, 1);
+  assert.equal(builtIn.split(BASE_PROCESSING_PROMPT).length - 1, 0);
   const custom = buildPeopleProfileSystemPrompt('用户自定人物整理风格');
   assert.match(custom, /用户自定人物整理风格/);
   assert.doesNotMatch(custom, /人物卡和世界书属于明确设定/);
@@ -380,7 +381,7 @@ test('人物资料业务指导可替换，固定合同与基础处理层始终�
   assert.equal(PEOPLE_PROFILE_FIELDS.length, 27);
   assert.deepEqual(Object.keys(PEOPLE_PROFILE_DEFINITIONS), PEOPLE_PROFILE_FIELDS);
   assert.ok(PEOPLE_PROFILE_FIELDS.every(field => PEOPLE_PROFILE_LABELS[field] && PEOPLE_PROFILE_DEFINITIONS[field]));
-  assert.equal(custom.split(BASE_PROCESSING_PROMPT).length - 1, 1);
+  assert.equal(custom.split(BASE_PROCESSING_PROMPT).length - 1, 0);
 });
 
 test('v1/v2 人工资料与头像无损归一到 v3，只有旧人工六字段获得保护', () => {
@@ -660,20 +661,20 @@ test('年度人物资料只投影当前有效人物，不读取失联旧人物�
   assert.deepEqual(projectAnnualPeople(reachable, workspace).map(person => person.entityId).sort(), [currentId, unselectedId].sort());
 });
 
-test('人物资料运行时冻结本次业务与破限提示词，设置变化只在下一次整理生效', async () => {
+test('人物资料固定本次业务指导，实际transport读取最新共享破限且留空回默认', async () => {
   let guidance = '第一版人物资料要求';
   let processing = '  第一版破限\n';
   let processingReads = 0;
   const prompts = [];
+  const transport=processingTransport({processingPrompt:()=>processing,respond:async options=>{
+    prompts.push(transport.bodies.at(-1).messages[0].content);
+    if(prompts.length===1){guidance='第二版人物资料要求';processing='第二版破限';}
+    const request=JSON.parse(options.taskMessages[0].content);return{jsonData:{profiles:request.people.map(person=>({personKey:person.personKey,name:person.currentName,aliases:[],background:'',appearance:'',personality:'',notes:''}))}};
+  }});
   const h = harness({
     profilePromptGuidance: () => guidance,
     processingPrompt: () => { processingReads += 1; return processing; },
-    generate: async options => {
-      prompts.push(options.systemPrompt);
-      if (prompts.length === 1) { guidance = '第二版人物资料要求'; processing = '第二版破限'; }
-      const request = JSON.parse(options.taskMessages[0].content);
-      return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, name: person.currentName, aliases: [], background: '', appearance: '', personality: '', notes: '' })) } };
-    },
+    generate: options=>transport.generate(options),
   });
   await h.runtime.refresh();
   await h.runtime.setSelectedEntityIds([h.peopleEntities[0].id]);
@@ -690,7 +691,7 @@ test('人物资料运行时冻结本次业务与破限提示词，设置变化�
   assert.equal(prompts[2].split(BASE_PROCESSING_PROMPT).length - 1, 1);
   assert.ok(prompts.every(prompt => prompt.includes(PROFILE_FIXED_CONTRACT)));
   assert.ok(prompts.every(prompt => /未执行的条件原文/u.test(prompt)));
-  assert.equal(processingReads, 3);
+  assert.equal(processingReads, 3);assert.equal(transport.prefixReads(),3);
   assert.equal(Object.keys(h.runtime.getState().profilesByEntityId).length, 3, '设置变化不得使已保存人物资料撤销或自动重算');
 });
 
@@ -863,7 +864,7 @@ test('缺档整理只覆盖未建档人物，原文保留并使用本次 personK
   assert.equal(JSON.stringify(request).includes('EXCLUDED'), false); assert.equal(JSON.stringify(request).includes('DROP'), true); assert.equal(JSON.stringify(request).includes('ALLOWED'), true);
   assert.deepEqual(h.sourceTrace.map(item => item[0]), ['scan', 'candidates', 'filter']);
   assert.equal(h.sourceTrace[0][2].complete, true); assert.equal(h.sourceTrace[0][2].strict, true);
-  assert.equal(systemPrompt.split(BASE_PROCESSING_PROMPT).length - 1, 1, '人物资料任务只携带一次基础处理层');
+  assert.equal(systemPrompt.split(BASE_PROCESSING_PROMPT).length - 1, 0, '准备期只保留任务合同，基础层由最终transport单次注入');
   assert.match(systemPrompt, /personKey 必须逐字使用/); assert.doesNotMatch(systemPrompt, /sanctuary_override_directive/);
   const state = h.runtime.getState(); assert.equal(state.profilesByEntityId[first.id].source, 'manual'); assert.equal(state.profilesByEntityId[second.id].source, 'generated');
   assert.deepEqual(state.selectedEntityIds, [first.id, second.id], '生成与选择保存必须分离');

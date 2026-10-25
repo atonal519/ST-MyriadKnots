@@ -14,6 +14,59 @@ import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+test('batch foundation without capability retains four single writes and oversized content stays whole', async () => {
+  const source = harness([assistant('甲'.repeat(400000)), assistant('B'), assistant('C'), assistant('D'), assistant('E'), assistant('F')]);
+  await source.runtime.start(); const records = [...source.backend.records.values()].map(item => item.data).filter(item => item.recordType === 'floor').sort((left, right) => left.assistantSeq - right.assistantSeq);
+  assert.equal(records[0].content.canonicalContent.length, 400000);
+  assert.ok(Buffer.byteLength(JSON.stringify(records[0])) > 1048576);
+  const target = backendHarness(); let active = 0, maxActive = 0, batchCalls = 0;
+  const put = target.client.put;
+  target.client.put = async (...args) => { active++; maxActive = Math.max(maxActive, active); try { await new Promise(resolve => setTimeout(resolve, 2)); return await put(...args); } finally { active--; } };
+  target.client.putMany = async (_collection, writes) => { batchCalls++; assert.ok(Buffer.byteLength(JSON.stringify({ records: writes })) <= 1048576); return null; };
+  const store = createFoundationStore({ client: target.client, contextProvider: () => ({ chatId: CHAT }) });
+  const saved = await store.putRecords(records); assert.equal(saved.length, records.length); assert.ok(saved.every(item => item.status === 'saved'));
+  assert.ok(maxActive <= 4); assert.ok(maxActive > 1); assert.equal(batchCalls, 1, '超大首条跳过批接口，其余原单写');
+  assert.equal(target.records.get(`chat-${CHAT}/${store.recordKey(records[0])}`).data.content.canonicalContent, records[0].content.canonicalContent);
+});
+test('batch foundation keeps acknowledged successes before a same-package failure and stages their cache', async () => {
+  const source = harness(); await source.runtime.start();
+  const sourceRecords = [...source.backend.records.values()].map(item => item.data);
+  const root = sourceRecords.find(item => item.recordType === 'root');
+  const checkpoint = sourceRecords.find(item => item.recordType === 'checkpoint' && item.id === root.headCheckpointId);
+  const records = sourceRecords.filter(item => !['root', 'checkpoint'].includes(item.recordType));
+  const failed = records.find(item => item.recordType === 'floor'), target = backendHarness();
+  let published = [];
+  const store = createFoundationStore({ client: target.client, contextProvider: () => ({ chatId: CHAT }), coreRecordCache: {
+    scopeFor: async () => ({}), captureIdentityVersion: () => 0, publish: async (_scope, _witness, staged) => { published = staged; },
+  } });
+  target.client.putMany = async (collection, writes) => Promise.all(writes.map(async item => item.data.id === failed.id
+    ? { recordId: item.recordId, status: 500, error: 'storage_error', message: 'Unable to save record' }
+    : { recordId: item.recordId, status: 200, envelope: await target.client.put(collection, item.recordId, item.data, 0) }));
+  await assert.rejects(store.putRecords(records), error => error.status === 500);
+  await store.putRecord(checkpoint);
+  target.calls.length = 0;
+  assert.equal(target.records.has(`chat-${CHAT}/v3-root`), false);
+  await store.putRecord(failed); const committed = await store.commitRoot(root, 0);
+  for (const floor of records.filter(item => item.recordType === 'floor' && item.id !== failed.id)) assert.equal(target.calls.some(call => call[0] === 'get' && call[2] === store.recordKey(floor)), false, '其它已确认floor不回读');
+  assert.equal(committed.status, 'saved'); assert.equal(published.filter(item => item.envelope.data.recordType === 'floor').length, checkpoint.producedRefs.floors.length);
+});
+
+test('batch foundation confirms each byte-sized package before a later HTTP failure', async () => {
+  const source = harness([assistant('甲'.repeat(200000)), assistant('乙'.repeat(200000)), assistant('尾楼')]); await source.runtime.start();
+  const all = [...source.backend.records.values()].map(item => item.data), root = all.find(item => item.recordType === 'root');
+  const floors = all.filter(item => item.recordType === 'floor'), target = backendHarness(); let batches = 0;
+  const store = createFoundationStore({ client: target.client, contextProvider: () => ({ chatId: CHAT }) });
+  target.client.putMany = async (collection, writes) => {
+    assert.ok(Buffer.byteLength(JSON.stringify({ records: writes })) <= 1048576); batches++;
+    if (batches === 2) throw Object.assign(new Error('HTTP503'), { status: 503 });
+    return Promise.all(writes.map(async item => ({ recordId: item.recordId, status: 200, envelope: await target.client.put(collection, item.recordId, item.data, 0) })));
+  };
+  await assert.rejects(store.putRecords(floors), error => error.status === 503); assert.equal(batches, 2);
+  for (const item of all.filter(item => !['floor', 'root'].includes(item.recordType))) await store.putRecord(item);
+  target.calls.length = 0; await assert.rejects(store.commitRoot(root, 0));
+  assert.equal(target.calls.some(call => call[0] === 'get' && call[2] === store.recordKey(floors[0])), false);
+  assert.equal(target.records.has(`chat-${CHAT}/v3-root`), false);
+});
 const assistant = (mes, extra = {}) => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0, extra, ...extra });
 const hiddenAssistant = mes => ({ ...assistant(mes), is_system: true, extra: {} });
 const user = mes => ({ is_user: true, is_system: false, mes, send_date: `test-user:${mes}` });

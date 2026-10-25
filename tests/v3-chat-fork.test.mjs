@@ -18,9 +18,70 @@ import { deterministicUuid } from '../src/v3/foundation-domain.js';
 import { createVectorIndex, VECTOR_INDEX_ID } from '../src/v3/vector-index.js';
 import { projectVectorSources } from '../src/v3/vector-source.js';
 import { selectRecallMemories } from '../src/v3/recall-source.js';
+import { createBackendClient } from '../src/backend-client.js';
+import { createExtractorEnvelope, normalizeExtractorResponse } from '../src/v3/extractor.js';
+import { createPluginActivity } from '../src/plugin-activity.js';
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
+test('批写普通分支经实际能力协商逐包保存完整floor与memory并更新活动数量', async () => {
+  const count = 3963, backend = backendHarness(), chat = [];
+  for (let index = 0; index < count; index++) chat.push(assistant(`第${index + 1}份中性资料。`), user(`继续${index + 1}`));
+  const sourceContext = context('batch-source', SOURCE, chat), sourceIdentity = identity('batch-source', SOURCE);
+  const sourceAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => sourceContext } } });
+  const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => sourceIdentity });
+  const sourceRuntime = createFoundationRuntime({ store: sourceStore, hostAdapter: sourceAdapter, contextProvider: () => sourceContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await sourceRuntime.start()).status, 'ready');
+  const source = await sourceStore.readReachable(), memoryIds = [], memories = [];
+  for (const floor of source.floors) {
+    const envelope = await createExtractorEnvelope({ batchId: floor.id, chatId: SOURCE, narrativeGeneration: source.root.narrativeGeneration, checkpointId: source.checkpoint.id, floor });
+    const compiled = await normalizeExtractorResponse({ envelope, floor, response: { summary: `摘要${floor.assistantSeq}` }, existingEntities: [], now: NOW, expectedScope: envelope.scope });
+    memoryIds.push(compiled.memory.id); memories.push(compiled.memory); await backend.client.put(`chat-${SOURCE}`, `v3-floor-memory-${compiled.memory.id}`, compiled.memory, 0);
+  }
+  backend.records.get(`chat-${SOURCE}/v3-checkpoint-${source.checkpoint.id}`).data.producedRefs.floorMemories = memoryIds;
+  backend.records.get(`chat-${SOURCE}/v3-checkpoint-${source.checkpoint.id}`).data.capabilities.memoryReady = true;
+  backend.records.get(`chat-${SOURCE}/v3-root`).data.capabilities.memoryReady = true;
+  const targetContext = context('batch-target', SOURCE, structuredClone(chat));
+  const targetId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, targetContext.chatId, 'character.png']);
+  targetContext.chatMetadata.qianqianjie.chatId = targetId;
+  const targetOwner = { hostChatId: targetContext.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' };
+  backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${targetId}`, { revision: 1, data: { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: targetId, owner: targetOwner, state: 'preparing', sourceChatId: SOURCE, createdAt: NOW, updatedAt: NOW } });
+  let inFlight = 0, maxInFlight = 0, packets = 0, health = 0; const events = [];
+  const client = createBackendClient({ fetchImpl: async (url, options = {}) => {
+    const path = url.split('/v1/')[1].split('/').map(decodeURIComponent), body = options.body ? JSON.parse(options.body) : {};
+    try {
+      if (path[0] === 'health') { health++; return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordBatchWrite: true } }); }
+      const collection = path[2], key = path[3];
+      if (path[0] === 'record-batch') {
+        if (options.method === 'POST') return Response.json(await Promise.all(body.recordIds.map(async recordId => {
+          try { return { recordId, status: 200, envelope: await backend.client.get(collection, recordId) }; }
+          catch (error) { return { recordId, status: error.status, error: 'not_found', message: 'Record not found' }; }
+        })));
+        packets++; inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+        try {
+          assert.ok(Buffer.byteLength(options.body) <= 1048576); assert.ok(body.records.length <= 64);
+          const saved = []; for (const item of body.records) saved.push({ recordId: item.recordId, status: 200, envelope: await backend.client.put(collection, item.recordId, item.data, item.expectedRevision) });
+          events.push('batch'); return Response.json(saved);
+        } finally { inFlight--; }
+      }
+      if (options.method === 'PUT') { if (collection === `chat-${targetId}` && key === 'v3-root') events.push('root'); if (collection === CHAT_IDENTITY_COLLECTION && body.data?.state === 'ready') events.push('ready'); return Response.json(await backend.client.put(collection, key, body.data, body.expectedRevision)); }
+      return Response.json(await backend.client.get(collection, key));
+    } catch (error) { return Response.json({}, { status: error.status ?? 500 }); }
+  } });
+  const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => targetContext } } }), targetApi = targetChatApi(targetContext);
+  const initializer = createChatBranchInitializer({ client, hostAdapter: adapter, now: () => new Date(NOW), fetchImpl: targetApi.fetch });
+  const coordinator = createChatIdentityCoordinator({ client, initializeBranch: initializer, now: () => new Date(NOW) });
+  const session = createChatSession({ contextProvider: () => targetContext, identityCoordinator: coordinator });
+  const activity = createPluginActivity([session]), copies = []; activity.subscribe(value => copies.push(value.copy));
+  const result = await session.prepare(); assert.equal(result.status, 'ready'); assert.equal(maxInFlight, 1); assert.ok(packets > 1); assert.equal(health, 1);
+  const target = await createFoundationStore({ client, contextProvider: () => identity(targetContext.chatId, targetId) }).readReachable();
+  assert.equal(target.floors.length, count); assert.equal(target.floorMemories.length, count);
+  assert.deepEqual(target.floorMemories.map(({ chatId, narrativeGeneration, ...rest }) => rest), memories.map(({ chatId, narrativeGeneration, ...rest }) => rest));
+  assert.deepEqual(target.floors.map(item => item.content), source.floors.map(item => item.content));
+  assert.ok(copies.some(copy => /正在复制分支记忆.*\d+\/\d+/u.test(copy))); assert.ok(copies.length < count, '每批更新文本，不逐项刷新');
+  assert.ok(events.lastIndexOf('batch') < events.indexOf('root')); assert.ok(events.indexOf('root') < events.indexOf('ready')); assert.equal(activity.getState().busy, false); activity.dispose();
+  console.log(JSON.stringify({ branchBatchFixture: { floors: count, memories: count, packets, maxInflightBatch: maxInFlight, healthRequests: health, activityChanges: copies.length } }));
+});
 const assistant = mes => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0 });
 const user = mes => ({ is_user: true, is_system: false, mes, send_date: `test-user:${mes}` });
 const uuidFactory = () => { let value = 1000; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };

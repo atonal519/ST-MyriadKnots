@@ -2,7 +2,7 @@ import { selectRecallMemories } from './recall-source.js';
 import { rankRecallDocuments } from './recall-ranking.js';
 import { buildEntityIdentityDirectory, deriveUserIdentityProjection, resolveIdentityEntityId } from './entity-identity.js';
 import { memorySourceFloorIds } from './memory-schema.js';
-import { PEOPLE_PROFILE_FIELDS } from './people-profile-fields.js';
+import { PEOPLE_PROFILE_FIELDS, hasPeopleProfileMaterial } from './people-profile-fields.js';
 
 const clean = (value, limit = 12000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
 const effectiveSummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText ?? '' : memory?.summary?.aiText ?? '';
@@ -56,7 +56,7 @@ export function buildPublicContext({ reachable, peopleState, currentStates, iden
   }
   const limit = Number.isFinite(Number(maxCharacters)) ? Math.max(0, Math.min(40000, Math.floor(Number(maxCharacters)))) : 12000;
   const projection = deriveUserIdentityProjection({ ...reachable, identityProjection: peopleState });
-  const directory = buildEntityIdentityDirectory({ entities: reachable.entities ?? [], identityProjection: projection });
+  const directory = buildEntityIdentityDirectory({ entities: reachable.entities ?? [], floorOrder: new Map(reachable.floors.map((floor, index) => [floor.id, index])), identityProjection: projection });
   const peopleById = new Map(directory.filter(entry => entry.entityType === 'person').map(entry => [entry.entityId, entry]));
   const selected = [...new Set((entityIds ?? []).map(id => resolveIdentityEntityId(id, projection)).filter(id => peopleById.has(id)))];
   const profilesById = new Map((peopleState?.people ?? []).map(person => [resolveIdentityEntityId(person.entityId, projection), person]));
@@ -87,7 +87,16 @@ export function buildPublicContext({ reachable, peopleState, currentStates, iden
     const manualFields = new Set(profile?.manualFields ?? []);
     const fields = [...PEOPLE_PROFILE_FIELDS].sort((a, b) => Number(manualFields.has(b)) - Number(manualFields.has(a)));
     const effectiveFields = { ...profile, aliases: peopleById.get(entityId).aliases.join('、') };
-    const profileLines = fields.map(field => clean(effectiveFields[field]) ? `- ${field}：${clean(effectiveFields[field])}` : '').filter(Boolean);
+    const profileLines = profile ? fields.map(field => manualFields.has(field)
+      ? `- ${field}（人工决定）：${clean(effectiveFields[field]) || '已明确清空，不补填'}`
+      : clean(effectiveFields[field]) ? `- ${field}：${clean(effectiveFields[field])}` : '').filter(Boolean) : [];
+    const hasProtectedProfile = hasPeopleProfileMaterial(profile) || [...manualFields].some(field => field !== 'name' && field !== 'aliases');
+    if (!hasProtectedProfile && peopleById.get(entityId).identityBrief) {
+      const entry = peopleById.get(entityId), source = entry.identityBriefSource;
+      const label = source?.legacy ? '历史简介，未记录引文' : '有据身份简介';
+      const seq = floorById.get(source?.sourceFloorId)?.assistantSeq;
+      profileLines.push(`- ${label}${seq ? `（AI #${seq}）` : ''}：${clean(entry.identityBrief, 400)}（作者侧记忆，不代表在场或知情）`);
+    }
     const profileFit = fitLines(profileLines, Math.floor(actorBudget * 0.4));
     const state = stateSubjects.get(entityId), stateLines = [];
     for (const [label, items] of [['核心', state?.core], ['经历变化', state?.adaptive], ['当前情境', state?.situational]]) for (const item of items ?? []) {

@@ -1,4 +1,5 @@
 const COPIES = Object.freeze({
+  readingBranch: '正在读取分支资料', preparingBranch: '正在整理分支资料', copyingBranch: '正在复制分支记忆', copyingPeople: '正在复制人物资料', copyingTime: '正在复制时间资料', readingVectors: '正在读取向量索引', copyingVectors: '正在复制向量索引', committingBranch: '正在保存分支入口', savingBranchChat: '正在保存分支聊天',
   preparing: '正在准备记忆', migrating: '正在搬家', capturing: '正在读取资料', loading: '正在读取资料', source: '正在读取资料',
   inspecting: '正在核验记忆', validating: '正在核验记忆', reconciling: '正在同步楼层', syncing: '正在同步记忆',
   extracting: '正在提取摘要', analyzingCse: '正在分析人物状态', analyzing: '正在分析人物状态',
@@ -24,12 +25,14 @@ export function createPluginActivity(sources = []) {
   const read = () => {
     const states = sources.map(source => source.getActivityState?.()).filter(state => state?.busy === true);
     const phase = states[0]?.phase ?? null;
-    return Object.freeze({ busy: states.length > 0, phase, copy: states.length ? COPIES[phase] ?? '千千结正在处理' : '' });
+    let copy = states.length ? COPIES[phase] ?? '千千结正在处理' : '';
+    if (['copyingBranch', 'copyingVectors'].includes(phase) && Number.isSafeInteger(states[0].completed) && Number.isSafeInteger(states[0].total)) copy += `：${states[0].completed}/${states[0].total} ${phase === 'copyingBranch' ? '份资料' : '份'}`;
+    return Object.freeze({ busy: states.length > 0, phase, copy });
   };
   let state = read();
   const publish = () => {
     const next = read();
-    if (next.busy === state.busy && next.phase === state.phase) return;
+    if (next.busy === state.busy && next.phase === state.phase && next.copy === state.copy) return;
     state = next;
     for (const listener of listeners) try { listener(state); } catch { /* display only */ }
   };

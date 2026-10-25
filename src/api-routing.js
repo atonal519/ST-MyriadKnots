@@ -21,6 +21,7 @@ const taskMetadata = (route, finishReason = '', transportAttempts = null) => ({
 const withTaskMetadata = (result, route) => {
   const finishReason = result?.taskMetadata?.finishReason || result?.finishReason;
   const metadata = taskMetadata(route, finishReason, result?.taskMetadata?.transportAttempts);
+  for (const key of ['processingPromptFingerprint', 'systemPromptFingerprint']) if (/^sha256:[a-f0-9]{64}$/i.test(result?.taskMetadata?.[key] ?? '')) metadata[key] = result.taskMetadata[key];
   if (result && typeof result === 'object' && !Array.isArray(result) && (Object.hasOwn(result, 'jsonData') || Object.hasOwn(result, 'textData'))) return { ...result, taskMetadata: metadata };
   return { jsonData: result, taskMetadata: metadata };
 };

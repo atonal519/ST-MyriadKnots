@@ -56,8 +56,8 @@ test('破限提示词仅用 trim 判断空白，自定义值逐字替换默认�
   assert.equal(resolveProcessingPrompt(''), BASE_PROCESSING_PROMPT);
   assert.equal(resolveProcessingPrompt(' \n\t '), BASE_PROCESSING_PROMPT);
   assert.equal(resolveProcessingPrompt(custom), custom);
-  assert.equal(withBaseProcessingPrompt('业务与机器合同', custom), `${custom}\n\n业务与机器合同`);
-  assert.equal(withBaseProcessingPrompt('业务与机器合同', ' \n '), `${BASE_PROCESSING_PROMPT}\n\n业务与机器合同`);
+  assert.equal(withBaseProcessingPrompt('业务与机器合同', custom), '业务与机器合同');
+  assert.equal(withBaseProcessingPrompt('业务与机器合同', ' \n '), '业务与机器合同');
 });
 
 test('未注入 fetch 时在请求发生时读取宿主最新实现，显式注入不受全局替换影响', async () => {
@@ -93,10 +93,10 @@ test('Base URL 规范化且独立请求只含紧凑 system/user、schema 与代�
 });
 
 test('任务可注入独立 system 文案并显式传递 maxTokens，默认任务 system 保持中性', async () => {
-  const bodies = []; const client = createCompactApiClient({ fetchImpl: async (_path, options) => { bodies.push(JSON.parse(options.body)); return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
+  const bodies = []; const client = createCompactApiClient({ processingPrompt:()=>'', fetchImpl: async (_path, options) => { bodies.push(JSON.parse(options.body)); return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });
   await client.generateTask({ config: config(), systemPrompt: 'RELATION SYSTEM {{user}} {{char}}', taskMessages: [{ role: 'user', content: 'x' }], maxTokens: 16000 });
   await client.generateTask({ config: config(), taskMessages: [{ role: 'user', content: 'x' }] });
-  assert.equal(bodies[0].messages[0].content, 'RELATION SYSTEM {{user}} {{char}}'); assert.equal(bodies[0].max_tokens, 16000);
+  assert.equal(bodies[0].messages[0].content, BASE_PROCESSING_PROMPT+'\n\nRELATION SYSTEM {{user}} {{char}}'); assert.equal(bodies[0].max_tokens, 16000);
   assert.match(bodies[1].messages[0].content, /supplied task input/i);
 });
 
@@ -403,33 +403,33 @@ test('同一任务的运输重试复用启动时提示词快照', async () => {
   await client.generateTask({ config: config(), systemPrompt: promptSnapshot, taskMessages: [{ role: 'user', content: '{}' }] });
   assert.equal(selected, '摘要指导第二版');
   assert.equal(bodies.length, 2);
-  assert.deepEqual(bodies.map(body => body.messages[0].content), [promptSnapshot, promptSnapshot]);
+  assert.deepEqual(bodies.map(body => body.messages[0].content), [BASE_PROCESSING_PROMPT+'\n\n'+promptSnapshot, BASE_PROCESSING_PROMPT+'\n\n'+promptSnapshot]);
   assert.deepEqual(bodies.map(body => body.messages[0].content.split(BASE_PROCESSING_PROMPT).length - 1), [1, 1]);
   assert.doesNotMatch(bodies[1].messages[0].content, /摘要指导第二版/);
 });
 
 test('统一 request 忙灯覆盖并发、运输重试、失败和取消，最后一个请求结束才熄灭', async () => {
-  const busy = [], resolvers = [];
+  const busy = [], resolvers = new Map();let startedResolve;const started=new Promise(resolve=>{startedResolve=resolve;});
   const concurrent = createCompactApiClient({
     onBusyChange: value => busy.push(value),
-    fetchImpl: async () => new Promise(resolve => resolvers.push(resolve)),
+    fetchImpl: async (_path,options) => new Promise(resolve => {resolvers.set(JSON.parse(options.body).messages[1].content,resolve);if(resolvers.size===2)startedResolve();}),
   });
-  const first = concurrent.generateTask({ config: config(), taskMessages: [] });
-  const second = concurrent.generateTask({ config: config(), taskMessages: [] });
-  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(busy, [true]);
-  resolvers[0](jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] })); await first; assert.deepEqual(busy, [true]);
-  resolvers[1](jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] })); await second; assert.deepEqual(busy, [true, false]);
+  const first = concurrent.generateTask({ config: config(), taskMessages: [{role:'user',content:'first'}] });
+  const second = concurrent.generateTask({ config: config(), taskMessages: [{role:'user',content:'second'}] });
+  await started; assert.deepEqual(busy, [true]);
+  resolvers.get('first')(jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] })); await first; assert.deepEqual(busy, [true]);
+  resolvers.get('second')(jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] })); await second; assert.deepEqual(busy, [true, false]);
 
-  const streamBusy = []; let releaseStream, reads = 0; const encoder = new TextEncoder();
+  const streamBusy = []; let readingResolve;const reading=new Promise(resolve=>{readingResolve=resolve;});let releaseStream, reads = 0; const encoder = new TextEncoder();
   const streaming = createCompactApiClient({
     onBusyChange: value => streamBusy.push(value),
     fetchImpl: async () => ({ ok: true, status: 200, body: { getReader: () => ({ read: async () => {
-      if (reads++ === 0) await new Promise(resolve => { releaseStream = resolve; });
+      if (reads++ === 0) await new Promise(resolve => { releaseStream = resolve;readingResolve(); });
       return reads === 1 ? { done: false, value: encoder.encode('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"},"finish_reason":"stop"}]}\n\n') } : { done: true };
     } }) } }),
   });
   const streamResult = streaming.generateTask({ config: config({ stream: true }), taskMessages: [] });
-  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(streamBusy, [true], '收到响应头但 SSE 正文未完成时仍须保持忙灯');
+  await reading; assert.deepEqual(streamBusy, [true], '收到响应头但 SSE 正文未完成时仍须保持忙灯');
   releaseStream(); assert.deepEqual((await streamResult).jsonData, { ok: true }); assert.deepEqual(streamBusy, [true, false]);
 
   const retryBusy = []; let attempts = 0;
@@ -543,7 +543,7 @@ test('测试连接沿用流式配置并拼接纯文本，空回、截断和认�
 test('全局破限文本连接测试取最新值且保留纯文本确认，不影响模型列表', async () => {
   let processing = '连接共用第一版';
   const sent = [];
-  const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+  const client = createCompactApiClient({ processingPrompt:()=>processing, fetchImpl: async (_path, options) => {
     const body = JSON.parse(options.body); sent.push(body);
     return _path.endsWith('/status') ? jsonResponse({ data: [{ id: 'test-model' }] }) : jsonResponse({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] });
   } });

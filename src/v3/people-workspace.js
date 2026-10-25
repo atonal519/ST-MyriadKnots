@@ -1,3 +1,4 @@
+import { identityBriefFields } from './identity-brief.js';
 import { collectPeopleHistory, compactPeopleHistory, createPeopleEvidenceProjection, peopleMaterialSignature as materialSignature, splitProfileSource, yieldProfileWork } from './people-profile-material.js';
 import { isUuid } from '../host-context.js';
 import { normalizeAvatarSource } from '../avatar-image-store.js';
@@ -6,7 +7,7 @@ import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { replaceCseSourceMacros } from '../cse-source-selection.js';
 import {
   LEGACY_PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_DEFINITIONS, PEOPLE_PROFILE_FIELDS,
-  PEOPLE_PROFILE_FIELD_SET, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields,
+  PEOPLE_PROFILE_FIELD_SET, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields, hasPeopleProfileMaterial as hasProfileMaterial,
 } from './people-profile-fields.js';
 import {
   buildEntityIdentityDirectory, identityProjectionMembers, isIdentityDeleted,
@@ -20,7 +21,6 @@ import { migrationPartition } from './migration-prefix.js';
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
 export const PEOPLE_PROFILE_INPUT_CHAR_BUDGET = 24000;
-const PEOPLE_PROFILE_MATERIAL_FIELDS = PEOPLE_PROFILE_FIELDS.filter(field => field !== 'name' && field !== 'aliases');
 
 export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员，只整理有明确依据、适合长期建档的目标人物资料。
 人物卡和世界书属于明确设定；CSE Core 是人物分析，不自动等同作者设定。来源冲突时不拼凑或替作者裁决，只整理能明确归属的稳定资料。
@@ -72,9 +72,6 @@ function profileFields(value = {}) {
   const result = emptyPeopleProfileFields();
   for (const field of PEOPLE_PROFILE_FIELDS) result[field] = field === 'aliases' ? aliasesText(value[field]) : clean(value[field]);
   return Object.freeze(result);
-}
-function hasProfileMaterial(profile) {
-  return PEOPLE_PROFILE_MATERIAL_FIELDS.some(field => String(profile?.[field] ?? '').trim().length > 0);
 }
 function macrosFor(reachable) {
   return Object.freeze({ user: clean(reachable?.baseline?.userPersona?.name, 500), char: clean(reachable?.baseline?.characterCard?.name, 500) });
@@ -313,7 +310,7 @@ export function projectAnnualPeople(reachable, workspace) {
   return [...people.values()];
 }
 function activePersonDirectory(reachable, workspace) {
-  return buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: normalizeIdentityProjection(workspace ?? {}, macrosFor(reachable)) })
+  return buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], floorOrder: new Map((reachable?.floors ?? []).map((floor, index) => [floor.id, index])), identityProjection: normalizeIdentityProjection(workspace ?? {}, macrosFor(reachable)) })
     .filter(entry => entry.entityType === 'person' && entry.entity.specialRole !== 'user');
 }
 function activePersonEntities(reachable, workspace) {
@@ -356,6 +353,7 @@ function candidateProjection(reachable, memoryState, workspace) {
     return Object.freeze({
       entityId: entity.id, displayName: profile?.name || macroText(entity.displayName, macros),
       entityDisplayName: macroText(entry.originalDisplayName ?? entity.displayName, macros), aliases: Object.freeze(entry.aliases.map(alias => macroText(alias, macros)).filter(Boolean)),
+      ...identityBriefFields(entry),
       specialRole: entity.specialRole, selected: selected.has(entity.id), profiled: Boolean(profile), profile, avatar: workspace?.avatarsByEntityId?.[entity.id] ?? null,
       ...(workspace?.avatarSourcesByEntityId?.[entity.id] ? { avatarSource: workspace.avatarSourcesByEntityId[entity.id] } : {}),
       appearanceCount, cse,

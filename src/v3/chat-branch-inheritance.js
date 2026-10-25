@@ -27,7 +27,6 @@ import { assertCapturedBranchTargetMatches, persistBranchedMessageMetadata, read
 import { captureTargetChatDescriptor } from './host-adapter.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
-const BRANCH_WRITE_CONCURRENCY = 4;
 const emptyIndexManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
 const nowIso = now => {
   const value = now()?.toISOString?.() ?? String(now());
@@ -192,24 +191,12 @@ export async function copyLatestPeople({ peopleStore, sourceIdentity, targetIden
   }
 }
 
-async function saveRecords(store, records, signal) {
-  let cursor = 0;
-  let firstError = null;
-  async function worker() {
-    while (firstError === null) {
-      const index = cursor;
-      if (index >= records.length) return;
-      cursor += 1;
-      try {
-        const result = await store.putRecord(records[index], { signal });
-        if (!['saved', 'reused'].includes(result.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
-      } catch (error) {
-        firstError ??= error;
-      }
-    }
+async function saveRecords(store, records, signal, report) {
+  for (let offset = 0; offset < records.length; offset += 64) {
+    const results = await store.putRecords(records.slice(offset, offset + 64), { signal,
+      onProgress: value => report({ phase: 'copyingBranch', completed: offset + value.completed, total: records.length }) });
+    if (results.some(result => !['saved', 'reused'].includes(result.status))) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
   }
-  await Promise.all(Array.from({ length: Math.min(BRANCH_WRITE_CONCURRENCY, records.length) }, () => worker()));
-  if (firstError) throw firstError;
 }
 
 export function createChatBranchInitializer({
@@ -221,8 +208,10 @@ export function createChatBranchInitializer({
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!client?.get || !client?.put || !hostAdapter?.snapshot) throw new TypeError('聊天分支初始化依赖无效');
-  return async function initializeBranch({ raw, host, sourceChatId, targetChatId, createdAt: initializationTime, signal, taskInputs = null } = {}) {
+  return async function initializeBranch({ raw, host, sourceChatId, targetChatId, createdAt: initializationTime, signal, taskInputs = null, onProgress = null } = {}) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const report = value => { try { onProgress?.(value); } catch { /* Display callbacks do not own saving. */ } };
+    report({ phase: 'readingBranch' });
     const sourceIdentity = identity(host, sourceChatId);
     const targetIdentity = identity(host, targetChatId);
     const liveSnapshot = taskInputs ? null : hostAdapter.snapshot();
@@ -264,8 +253,8 @@ export function createChatBranchInitializer({
             throw fail('QQJ_PEOPLE_SNAPSHOT_MISSING', '分支已提交的人物归档快照缺失，未完成恢复。');
           }
         }
-      } else await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: target.entities,
-        now: initializationTime ?? nowIso(now), signal });
+      } else { report({ phase: 'copyingPeople' }); await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: target.entities,
+        now: initializationTime ?? nowIso(now), signal }); }
     } else if (target.status === 'uninitialized') {
       const source = await sourceStore.readReachable();
       sourceReachable = source;
@@ -278,6 +267,7 @@ export function createChatBranchInitializer({
           const branchBindings = prefix.floors.flatMap((floor, index) => prefix.candidates[index]?.archiveCandidate
             ? [] : [{ messageIndex: prefix.candidates[index].hostLocator.messageIndex, floorId: floor.id }]);
           assertCapturedBranchTargetMatches(snapshot, targetFile, sourceChatId, targetChatId, { expectedBindings: branchBindings });
+          report({ phase: 'preparingBranch' });
           const createdAt = initializationTime ?? nowIso(now);
           const descriptorId = source.migrationDescriptor
             ? await deterministicUuid(['branch-migration-descriptor-v1', targetChatId, source.migrationDescriptor.id,
@@ -308,8 +298,10 @@ export function createChatBranchInitializer({
           const projected = await projectFoundationPrefix({ source: rehomedSource, floors, chatId: targetChatId, narrativeGeneration, now: createdAt, currentStateId });
           const indexes = await buildFoundationIndexes({ chatId: targetChatId, narrativeGeneration, checkpointId, floors, candidates: prefix.candidates, now: createdAt });
           const indexKeys = indexes.map(record => targetStore.recordKey(record));
+          if (source.migrationDescriptor) report({ phase: 'copyingTime' });
           const copiedTimeBatchIds = source.migrationDescriptor
             ? await timeStore.copyPrefix(sourceChatId, targetChatId, floors, signal) : [];
+          if (source.migrationDescriptor) report({ phase: 'copyingPeople' });
           const peopleCopy = source.migrationDescriptor
             ? await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: projected.entities, now: createdAt, signal,
               snapshotSourceIds: source.migrationDescriptor.recordRefs.peopleSnapshotIds }) : null;
@@ -345,7 +337,8 @@ export function createChatBranchInitializer({
           const descriptor = descriptorId ? branchMigrationDescriptor({ source, targetChatId, descriptorId,
             retainedFloors: floors, projected, indexKeys, timeBatchIds: copiedTimeBatchIds, peopleCopy, partitioned, createdAt }) : null;
           await validateCseGraph({ root, checkpoint, run, floors, floorMemories: projected.floorMemories, entities: projected.entities, indexes, indexKeys, baseline: projected.baseline, stateDeltas: projected.stateDeltas, currentStates: projected.currentState ? [projected.currentState] : [] });
-          await saveRecords(targetStore, [run, ...floors, ...projected.floorMemories, ...projected.entities, ...(projected.baseline ? [projected.baseline] : []), ...projected.stateDeltas, ...(projected.currentState ? [projected.currentState] : []), ...indexes, ...(descriptor ? [descriptor] : [])], signal);
+          await saveRecords(targetStore, [run, ...floors, ...projected.floorMemories, ...projected.entities, ...(projected.baseline ? [projected.baseline] : []), ...projected.stateDeltas, ...(projected.currentState ? [projected.currentState] : []), ...indexes, ...(descriptor ? [descriptor] : [])], signal, report);
+          report({ phase: 'committingBranch' });
           const checkpointResult = await targetStore.putRecord(checkpoint, { signal });
           if (!['saved', 'reused'].includes(checkpointResult.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
           const committed = await targetStore.commitRoot(root, 0, { signal });
@@ -355,6 +348,7 @@ export function createChatBranchInitializer({
           } else target = committed.reachable;
           bindings = branchBindings;
           retainedFloorIds = floorIds;
+          report({ phase: 'copyingPeople' });
           await copyLatestPeople({ peopleStore, sourceIdentity, targetIdentity, entities: projected.entities, now: createdAt, signal });
         }
       } else if (source.status !== 'uninitialized') {
@@ -364,8 +358,10 @@ export function createChatBranchInitializer({
       throw fail('V3_BRANCH_TARGET_UNAVAILABLE', '分支目标记忆暂时无法读取。');
     }
 
+    report({ phase: 'copyingTime' });
     await timeStore.copyPrefix(sourceChatId, targetChatId, target.floors ?? [], signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    report({ phase: 'savingBranchChat' });
     const savedMessages = await persistBranchedMessageMetadata({ target: fixedTarget, chat: snapshot.chat, chatMetadata: snapshot.chatMetadata, sourceChatId, targetChatId, bindings, retainedFloorIds, signal, fetchImpl });
     projectSavedBranchMetadata(raw, hostAdapter, host.hostChatId, snapshot.chat, savedMessages, targetChatId);
     if (retainedFloorIds.length && target.status === 'ready') {
@@ -379,7 +375,7 @@ export function createChatBranchInitializer({
         }
         if (sourceReachable?.status === 'ready') {
           await vectorRuntimeProvider()?.copyPrefix?.(sourceIdentity, targetIdentity, target.root.narrativeGeneration,
-            sourceReachable, { retainedFloorIds, targetReachable: target });
+            sourceReachable, { retainedFloorIds, targetReachable: target, onProgress: report });
         }
       } catch { /* Vector indexes are derived caches; their failure must not block branch readiness. */ }
     }

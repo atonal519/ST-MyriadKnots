@@ -18,6 +18,8 @@ import { projectCseStateIdentityReferences } from '../src/v3/entity-identity.js'
 import { buildEntityIdentityDirectory, deriveUserIdentityProjection, entitiesThroughFloorIds, resolveIdentityEntityId, reuseIdentityProjection } from '../src/v3/entity-identity.js';
 import { createCseRuntime, selectUserAdaptiveHistory } from '../src/v3/cse-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
+import { createPeopleWorkspaceRuntime, createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
+import { createPublicMemoryBridge } from '../src/v3/public-memory-bridge.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = '22222222-2222-4222-8222-222222222222';
@@ -610,7 +612,8 @@ test('本楼CSE可在无状态变化时为未追踪NPC保存有来源依据的�
         const payload = JSON.parse(options.taskMessages[0].content).payload;
         const oldIdentityEvidence = payload.canonicalContent === oldFloorText;
         return { jsonData: { summary: payload.canonicalContent, people: [
-          { name: '阿青', presence: 'mentioned', ...(oldIdentityEvidence ? { identityBrief: contaminatedBrief } : {}) },
+          { name: '阿青', presence: 'mentioned', ...(oldIdentityEvidence ? { identityBrief: contaminatedBrief,
+            identityBriefEvidence: [{ quoteSegments: [oldFloorText], supports: '旧返回中的身份专属依据', evidenceMode: 'explicit', sourceMentionKey: null }] } : {}) },
           { name: '裴晚生', presence: 'mentioned' },
         ] } };
       },
@@ -642,8 +645,9 @@ test('本楼CSE可在无状态变化时为未追踪NPC保存有来源依据的�
     assert.ok(Array.isArray(npcTargets), 'CSE 应提供本楼身份简介目标，即使 NPC 不在 trackedSubjects');
     const npcTarget = npcTargets.find(item => item.name === '阿青');
     assert.ok(npcTarget, '本楼已识别NPC应进入单独简介目标');
-    assert.equal(npcTarget.identityBrief, contaminatedCase ? contaminatedBrief : undefined, '请求只把已有简介作为对照，不把临时活动当作新证据');
-    assert.match(finalCseRequest.systemPrompt, /简介只写人物是谁.*不得包含、替换或追加本楼临时行为/su, '固定utility请求应实际收到禁止追加临时行为的规则');
+    assert.equal(npcTarget.identityBrief, undefined);
+    assert.equal(npcTarget.identityFacts?.[0]?.text, contaminatedCase ? contaminatedBrief : undefined, '有据条目只给短对照，不重复派生全文');
+    assert.match(finalCseRequest.systemPrompt, /identityFacts.*列表是完整当前稳定身份/su, '正式CSE请求使用逐条稳定身份与依据合同');
     assert.ok(!npcTargets.some(item => item.name === '裴晚生'), 'baseline 主角色即使以普通人物参与者出现，也不应进入 NPC 简介目标');
     assert.ok(!request.payload.trackedSubjects.some(item => item.name === '阿青'), '首次普通提及不会被提升为状态追踪对象');
     assert.ok(request.payload.evidenceSourceCatalog.some(item => item.source === 'worldbook:1'));
@@ -658,10 +662,93 @@ test('本楼CSE可在无状态变化时为未追踪NPC保存有来源依据的�
 
     await h.runtime.retryStateAnalysis(result.floors.at(-1).floorId);
     const retriedRequest = JSON.parse(h.calls.filter(call => call.testRoute === 'analysis').at(-1).taskMessages[0].content);
-    assert.equal(retriedRequest.payload.identityBriefTargets.find(item => item.name === '阿青')?.identityBrief, '北城图书馆管理员。', '后续本楼分析会携带已合并简介');
+    assert.equal(retriedRequest.payload.identityBriefTargets.find(item => item.name === '阿青')?.identityFacts?.[0]?.text, '北城图书馆管理员。', '后续本楼分析会携带已合并简介');
     const retried = await h.store.readReachable({ mode: 'runtime' });
     assert.equal(retried.entities.filter(entity => entity.status === 'merged' && entity.mergedIntoEntityId === npc?.id && entity.identityBrief).length, 1, '相同简介不会重复新增修订');
   }
+});
+
+test('有据简介实际runtime：提交后直接公开快照，冷读同源且人工清空不被补回', async () => {
+  for (const host of ['official', 'luker']) {
+    const quote = '沈禾是北城图书馆管理员。';
+    const h = runtimeHarness({ host, npcWorldInfoContent: quote,
+      chat: [user('继续'), assistant('沈禾递来一本新书。'), user('记录这一楼。')],
+      extractor: () => ({ jsonData: { summary: '沈禾递来一本书。', people: [{ name: '沈禾', presence: 'mentioned' }] } }),
+      cse: options => {
+        const target = JSON.parse(options.taskMessages[0].content).payload.identityBriefTargets.find(item => item.name === '沈禾');
+        return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [], identityBriefUpdates: [{ targetKey: target.key,
+          identityFacts: [{ kind: 'occupation', text: '北城图书馆管理员。', evidence: [{ source: 'worldbook:1', quote }] }] }] } };
+      } });
+    await h.runtime.start();
+    const identity = { hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' };
+    const makePeople = harness => createPeopleWorkspaceRuntime({ store: createPeopleWorkspaceStore({ client: h.backend.client }),
+      session: { identity: () => identity }, foundationRuntime: harness.foundationRuntime, memoryRuntime: harness.runtime,
+      generateUtilityTask: async () => { throw new Error('未选择NPC，不应生成完整档案'); }, contextProvider: () => harness.context,
+      sourcePermissions: { filterCandidates: ({ candidates }) => candidates, filterWorldInfoSources: sources => sources }, now: () => new Date(NOW), logger: { warn() {} } });
+    const people = makePeople(h);
+    await people.refresh({ refreshMemory: false });
+    const revision = people.getState().revision;
+    const bridge = createPublicMemoryBridge({ session: { identity: () => identity, getState: () => ({ status: 'ready', identity }) },
+      store: h.store, hostAdapter: h.hostAdapter, foundationRuntime: h.foundationRuntime, memoryRuntime: h.runtime, peopleRuntime: people });
+    await h.runtime.extractNext();
+    const snapshot = bridge.getPeopleSnapshot(), npc = snapshot.people.items.find(person => person.displayName === '沈禾');
+    const expectedSource = structuredClone(npc.identityBriefSource);
+    assert.equal(npc.identityBrief, '北城图书馆管理员。');
+    assert.equal(npc.identityBriefSource.origin, 'cse');
+    assert.equal(npc.identityBriefSource.facts[0].evidence[0].locator, '当前书:1');
+    assert.equal(npc.identityBriefSource.facts[0].evidence[0].quotedText, quote);
+    assert.equal(npc.profiled, false); assert.equal(npc.profile, null);
+    assert.equal(people.getState().revision, revision, '简介更新不写人物工作区抬版本');
+    const beforeReads = h.backend.getCalls.length;
+    snapshot.people.items.find(person => person.entityId === npc.entityId).identityBriefSource.facts[0].text = '外部更改';
+    assert.equal(bridge.getSnapshot().people.items.find(person => person.entityId === npc.entityId).identityBriefSource.facts[0].text, '北城图书馆管理员。');
+    assert.equal(h.backend.getCalls.length, beforeReads, '同步公开快照不新增读取');
+    const context = await bridge.readContext({ entityIds: [npc.entityId], maxCharacters: 1200 });
+    assert.match(context.actors[0].profileText, /有据身份简介/u);
+    assert.equal(h.calls.length, 2, '摘要与CSE各一次，不另发简介请求');
+    const cold = runtimeHarness({ host, sharedBackend: h.backend, chat: h.context.chat });
+    await cold.runtime.start();
+    const coldPeople = makePeople(cold); await coldPeople.refresh({ refreshMemory: false });
+    const coldPerson = coldPeople.getState().people.find(person => person.entityId === npc.entityId);
+    assert.deepEqual(coldPerson.identityBriefSource, expectedSource);
+    await people.saveProfile(npc.entityId, { name: '沈禾', occupation: '资料员' });
+    await people.saveProfile(npc.entityId, { occupation: '' }, { manualFields: ['occupation'] });
+    const manual = await bridge.readContext({ entityIds: [npc.entityId], maxCharacters: 1200 });
+    assert.match(manual.actors[0].profileText, /occupation（人工决定）：已明确清空，不补填/u);
+    assert.doesNotMatch(manual.actors[0].profileText, /管理员/u);
+    assert.equal(h.calls.length, 2); assert.equal(cold.calls.length, 0);
+    people.destroy(); coldPeople.destroy();
+  }
+});
+
+test('有据简介旧楼补提：真实提交与公开上下文按剧情顺序保留后楼身份', async () => {
+  let offset = 0;
+  const early = '沈禾是图书馆学徒。', later = '沈禾已担任图书馆管理员。';
+  const h = runtimeHarness({ clock: () => new Date(Date.parse(NOW) + offset), chat: [user('记录'), assistant(early), user('继续'), assistant(later), user('确认')],
+    extractor: options => {
+      const payload = JSON.parse(options.taskMessages[0].content).payload;
+      const target = payload.knownPeople.find(person => person.displayName === '沈禾');
+      return { jsonData: { summary: payload.canonicalContent, people: [{ name: '沈禾', ...(target ? { sameAsEntityKey: target.entityKey } : {}),
+        identityFacts: [{ kind: 'occupation', text: payload.canonicalContent === early ? '图书馆学徒。' : '图书馆管理员。', evidence: [{
+          quoteSegments: [payload.canonicalContent], supports: '正文明确职业', evidenceMode: 'explicit', sourceMentionKey: null }] }] }] } };
+    }, cse: () => ({ jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [] } }) });
+  await h.runtime.start(); await h.runtime.extractNext(); offset += 1000; await h.runtime.extractNext();
+  let saved = await h.store.readReachable({ mode: 'runtime' });
+  const first = saved.floors[0].id, second = saved.floors[1].id;
+  const npc = saved.entities.find(entity => entity.displayName === '沈禾' && entity.status !== 'merged');
+  offset += 1000; await h.runtime.extractFloor(first, { analyzeState: false });
+  saved = await h.store.readReachable({ mode: 'runtime' });
+  const directory = buildEntityIdentityDirectory({ entities: saved.entities, floorOrder: new Map(saved.floors.map((floor, index) => [floor.id, index])) });
+  const entry = directory.find(entry => entry.entityId === npc.id);
+  assert.equal(entry.identityBrief, '图书馆管理员。');
+  assert.equal(entry.identityBriefSource.sourceFloorId, second);
+  const identity = { hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' };
+  const bridge = createPublicMemoryBridge({ session: { identity: () => identity, getState: () => ({ status: 'ready', identity }) }, store: h.store,
+    hostAdapter: h.hostAdapter, foundationRuntime: h.foundationRuntime, memoryRuntime: h.runtime });
+  const context = await bridge.readContext({ entityIds: [npc.id], maxCharacters: 1200 });
+  assert.match(context.actors[0].profileText, /图书馆管理员/u); assert.doesNotMatch(context.actors[0].profileText, /学徒/u);
+  assert.equal(h.calls.filter(call => call.testRoute === 'utility').length, 3);
+  assert.equal(h.calls.filter(call => call.testRoute === 'analysis').length, 2);
 });
 
 test('CSE mixed tracked 首次预算优先缺记录人物，并能用合并旧名命中前情', async () => {
@@ -1232,7 +1319,7 @@ test('NPC身份简介相同项去重、冲突只隔离简介而保留本轮结�
   const duplicate = await compileCseResponse({ response: { noMaterialChange: true, identityBriefUpdates: [update, structuredClone(update)] },
     envelope, previousCurrentState: null, now: NOW, deltaId: '18181818-1111-4111-8111-181818181818' });
   assert.equal(duplicate.delta.noMaterialChange, true);
-  assert.deepEqual(duplicate.identityBriefUpdates, [{ entityId: B, identityBrief: '作者事实中的稳定身份。' }], '同目标同简介只生成一项更新');
+  assert.deepEqual(duplicate.identityBriefUpdates.map(({ entityId, identityBrief }) => ({ entityId, identityBrief })), [{ entityId: B, identityBrief: '作者事实中的稳定身份。' }], '同目标同简介只生成一项更新');
 
   const conflict = await compileCseResponse({ response: { noMaterialChange: true, identityBriefUpdates: [update,
     { ...update, identityBrief: '相冲突的另一简介。' }, { targetKey: 'unknown-target', identityBrief: '不应写入。' },
@@ -1261,12 +1348,12 @@ test('NPC简介坏引用、未知目标或缺字段不丢状态结果，正文�
     return { result, targetKey, entity };
   };
   const body = await compile({ content: '乙是林岚的同事。乙正在核对资料。', updates: key => [{ targetKey: key, identityBrief: '林岚的同事。', evidence: [{ source: 'canonicalContent', quote: '乙是林岚的同事' }] }] });
-  assert.deepEqual(body.result.identityBriefUpdates, [{ entityId: B, identityBrief: '林岚的同事。' }], '正文明确身份可成为简介证据');
+  assert.deepEqual(body.result.identityBriefUpdates.map(({ entityId, identityBrief }) => ({ entityId, identityBrief })), [{ entityId: B, identityBrief: '林岚的同事。' }], '正文明确身份可成为简介证据');
 
   const cardBaseline = { ...baseline, characterCard: { ...baseline.characterCard, description: '乙是北城图书馆管理员。' } };
   const card = await compile({ name: '乙', entity: entities[2], content: '乙正在核对资料。', baseline: cardBaseline,
     updates: key => [{ targetKey: key, identityBrief: '北城图书馆管理员。', evidence: [{ source: 'characterCard', quote: '乙是北城图书馆管理员' }] }] });
-  assert.deepEqual(card.result.identityBriefUpdates, [{ entityId: B, identityBrief: '北城图书馆管理员。' }], '角色卡明确描述另一NPC时可成为简介证据');
+  assert.deepEqual(card.result.identityBriefUpdates.map(({ entityId, identityBrief }) => ({ entityId, identityBrief })), [{ entityId: B, identityBrief: '北城图书馆管理员。' }], '角色卡明确描述另一NPC时可成为简介证据');
 
   const roleBaseline = { ...baseline, userPersona: { ...baseline.userPersona, entityId: B } };
   const protectedRoles = createCseEnvelope({ floor: floor(FLOOR1, '甲与乙正在核对资料。'), floorMemory: memory(MEMORY1), baseline: roleBaseline,
@@ -1943,12 +2030,12 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-41');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-18');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-42');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-19');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
-  assert.match(CSE_SYSTEM_PROMPT, /已有简介只作身份对照并保留仍有效的身份事实/);
-  assert.match(CSE_SYSTEM_PROMPT, /不得包含、替换或追加本楼临时行为/);
+  assert.match(CSE_SYSTEM_PROMPT, /旧裸identityBrief只作身份对照，不是证据/);
+  assert.match(CSE_SYSTEM_PROMPT, /活动过程、单次服务.*原事件\/状态/);
   assert.match(CSE_SYSTEM_PROMPT, /这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人/);
   assert.match(CSE_SYSTEM_PROMPT, /另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象/);
   assert.match(CSE_SYSTEM_PROMPT, /两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述/);

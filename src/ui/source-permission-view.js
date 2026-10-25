@@ -27,7 +27,7 @@ export function createSourcePermissionView({ permissions, documentRef = globalTh
     const row = element('label', 'source-toggle-row');
     const input = element('input'); input.type = 'checkbox'; input.checked = checked;
     input.addEventListener('change', onChange);
-    const copy = element('span'); copy.append(element('strong', '', label));
+    const copy = element('span', '', label);
     row.append(input, copy);
     return { row, input };
   };

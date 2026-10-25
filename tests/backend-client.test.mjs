@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
 import { API_BASE } from '../src/constants.js';
 import { createBackendClient } from '../src/backend-client.js';
+import * as backendModule from '../src/backend-client.js';
 import { publicErrorMessage } from '../src/public-error.js';
 
 function withGlobals(values, callback) {
@@ -20,6 +21,55 @@ function withGlobals(values, callback) {
 }
 
 const asBytes = body => typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
+
+test('batch PUT sends one acknowledged package and uses only cached capability', async () => {
+  const calls = []; let active = 0, maxActive = 0;
+  const client = createBackendClient({ fetchImpl: async (url, options) => {
+    calls.push([url, options]); active++; maxActive = Math.max(maxActive, active);
+    try {
+      if (url.endsWith('/health')) return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchWrite: true } });
+      const { records } = JSON.parse(options.body); assert.ok(Buffer.byteLength(options.body) <= 1048576);
+      return Response.json(records.map(item => ({ recordId: item.recordId, status: 200, envelope: { revision: 1, data: item.data } })));
+    } finally { active--; }
+  } });
+  const records = Array.from({ length: 64 }, (_, index) => ({ recordId: `r-${index}`, data: { text: `完整材料${index}` }, expectedRevision: 0 }));
+  assert.equal(await client.putMany('chat', records), null); assert.equal(calls.length, 0, '不为批写新增健康探测');
+  await client.health();
+  const result = await client.putMany('chat', records);
+  assert.deepEqual(result.map(item => item.envelope.data), records.map(item => item.data));
+  assert.equal(calls.length, 2); assert.equal(calls[1][1].method, 'PUT'); assert.match(calls[1][0], /record-batch/); assert.equal(maxActive, 1);
+  await assert.rejects(client.putMany('chat', [...records, records[0]])); assert.equal(calls.length, 2);
+});
+
+test('batch package iterator is UTF8-bounded, keeps order and sends oversized records singly', () => {
+  assert.equal(typeof backendModule.recordWriteBatches, 'function');
+  const entries = Array.from({ length: 129 }, (_, index) => ({ recordId: `r-${index}`, data: '字'.repeat(index === 64 ? 360000 : 6000), expectedRevision: 0 }));
+  const seen = []; let single = 0, packets = 0;
+  for (const group of backendModule.recordWriteBatches(entries)) {
+    assert.ok(group.records.length <= 64);
+    if (group.single) { single++; assert.equal(group.records.length, 1); assert.equal(group.records[0], entries[64]); }
+    else { packets++; assert.ok(Buffer.byteLength(JSON.stringify({ records: group.records })) <= 1048576); }
+    seen.push(...group.records);
+  }
+  assert.equal(single, 1); assert.ok(packets >= 4); assert.deepEqual(seen, entries);
+  let consumed = 0;
+  const lazy = backendModule.recordWriteBatches((function* () { for (let index = 0; index < 6400; index++) { consumed++; yield { recordId: `lazy-${index}`, data: {}, expectedRevision: 0 }; } })());
+  assert.equal(lazy.next().value.records.length, 64); assert.equal(consumed, 65, '只生成当前包和下一条，不预制全部包字符串');
+});
+
+test('batch PUT HTTP or result errors never trigger a resend or single-write fallback', async () => {
+  for (const mode of ['http', 'order', 'json']) {
+    let writes = 0;
+    const client = createBackendClient({ fetchImpl: async (url, options) => {
+      if (url.endsWith('/health')) return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchWrite: true } });
+      writes++; assert.equal(options.method, 'PUT');
+      if (mode === 'http') return Response.json({}, { status: 500 });
+      if (mode === 'json') return new Response('{');
+      return Response.json([{ recordId: 'wrong', status: 200, envelope: { revision: 1, data: {} } }]);
+    } });
+    await client.health(); await assert.rejects(client.putMany('chat', [{ recordId: 'one', data: {}, expectedRevision: 0 }])); assert.equal(writes, 1);
+  }
+});
 
 test('backend GET 超时会退出且不自动重试', async () => {
   let calls = 0;

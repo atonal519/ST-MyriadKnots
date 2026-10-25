@@ -34,5 +34,6 @@ export function sanitizeTaskMetadata(value) {
     httpStatus: Number.isSafeInteger(value?.httpStatus) && value.httpStatus >= 0 ? value.httpStatus : null,
     formatStage: metadataText(value?.formatStage, '', 80),
     sourceStage: metadataText(value?.sourceStage, '', 80),
+    ...Object.fromEntries(['processingPromptFingerprint', 'systemPromptFingerprint'].flatMap(key => /^sha256:[a-f0-9]{64}$/i.test(value?.[key] ?? '') ? [[key, value[key]]] : [])),
   });
 }

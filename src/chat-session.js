@@ -23,7 +23,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
   if (captureTaskInputs !== null && typeof captureTaskInputs !== 'function') throw new TypeError('session captureTaskInputs 无效');
 
   let active = null;
-  const activity = createActivitySignal(() => ({ busy: active !== null, phase: active ? 'preparing' : null }));
+  const activity = createActivitySignal(() => ({ busy: active !== null, phase: active ? active.progress?.phase ?? 'preparing' : null, ...(active?.progress ?? {}) }));
   let suspension = null;
   let state = Object.freeze({ status: 'idle' });
   const failPreparation = (error, step, entryPoint) => {
@@ -109,7 +109,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     operation.promise = (async () => {
       try {
         const chatId = identityCoordinator
-          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, taskInputs })
+          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, taskInputs, onProgress: value => { operation.progress = value; activity.notifyActivity(); } })
           : await ensureChatId(context.raw, context.host);
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
         if (!isUuid(chatId)) throw new ChatSessionError('聊天身份保存后无法确认。请到“记忆管理”页点击“复制状态诊断”反馈。', 'CHAT_SESSION_PERSIST_FAILED');

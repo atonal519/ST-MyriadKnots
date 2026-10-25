@@ -223,13 +223,13 @@ export function createApiSettings({
     if (vectorChanged) vectorIndex?.abortAll();
     return true;
   };
-  const save = button('保存设置', 'primary-action', () => {
+  const save = button('保存', 'primary-action', () => {
     if (!saveDraft()) return;
     result.textContent = 'API 设置已保存。'; result.className = 'settings-result success';
     fill();
     scrollManualEditorToTop(drawer);
   });
-  const create = button('另存为预设', 'secondary-action', async () => {
+  const create = button('另存为', 'secondary-action', async () => {
     if (!validAdditional()) return;
     if (!validTemperature()) {
       result.textContent = '温度须在 0–2 之间，并按 0.01 递增。'; result.className = 'settings-result error';
@@ -243,7 +243,7 @@ export function createApiSettings({
     else settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: id });
     rerender?.();
   });
-  remove = button('删除当前预设', 'secondary-action', async () => {
+  remove = button('删除', 'secondary-action', async () => {
     const target = editingTarget();
     if (!target.presetId) {
       result.textContent = '主配置不能删除。'; result.className = 'settings-result error';
@@ -286,7 +286,7 @@ export function createApiSettings({
     result.textContent = `已删除预设「${target.config.name}」。`; result.className = 'settings-result success';
     rerender?.();
   });
-  const test = button('测试连接', 'secondary-action', async () => {
+  const test = button('测试', 'secondary-action', async () => {
     if (!validAdditional()) return;
     if (test.disabled) return;
     if (!validTemperature()) {

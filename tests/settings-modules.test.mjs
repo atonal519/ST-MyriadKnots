@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { BASE_PROCESSING_PROMPT, resolveSharedProcessingPrompt } from '../src/shared-processing-prompt.js';
 import { createPromptsSettings } from '../src/ui/settings/prompts-settings.js';
 import { createAppearanceSettings } from '../src/ui/settings/appearance-settings.js';
 import { resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
@@ -35,6 +36,7 @@ class Node {
   findAll(predicate) { return this.descendants().filter(predicate); }
 }
 const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
+const promptSettings=settings=>({...settings,processingPrompt:settings.processingPrompt??(()=>settings.get().processingPrompt??'')});
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const fieldControl = (node, label) => node.find(n => n.tagName === 'label' && n.children[0]?.textContent === label)?.children[1];
 const inlineTrigger = control => control.find(n => n.className.split(' ').includes('qqj-inline-select-trigger'));
@@ -58,17 +60,17 @@ test('附加参数随 API 角色回填，非法 JSON 阻止保存、另存和测
   assert.equal(field.value, '');
   field.value = '{bad}';
   const before = saves;
-  for (const text of ['保存设置', '另存为预设', '测试连接']) await node.find(n => n.tagName === 'button' && n.textContent === text).fire('click');
+  for (const text of ['保存', '另存为', '测试']) await node.find(n => n.tagName === 'button' && n.textContent === text).fire('click');
   assert.equal(saves, before); assert.equal(calls, 0); assert.equal(prompts, 0);
   assert.match(node.find(n => n.className.includes('settings-result')).textContent, /JSON 对象/u);
   field.value = disabled;
-  await node.find(n => n.tagName === 'button' && n.textContent === '保存设置').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
   assert.equal(settings.mainConfig().qqjAdditionalParams, disabled);
   assert.equal(field.value, disabled);
   await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
   assert.equal(field.value, disabled);
   field.value = '';
-  await node.find(n => n.tagName === 'button' && n.textContent === '保存设置').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
   assert.equal(settings.sharedPresets()[0].qqjAdditionalParams, undefined);
   assert.equal(settings.mainConfig().qqjAdditionalParams, disabled, '独立召回保存不影响主配置');
   await focusInline(fieldControl(node, '分析API（建议高质模型）'));
@@ -78,7 +80,7 @@ test('附加参数随 API 角色回填，非法 JSON 阻止保存、另存和测
 test('提示词模块字段 change 即持久化', () => {
   const patches = [];
   const settings = { get: () => ({}), wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers: patch => patches.push(patch), update: patch => { patches.push(patch); return patch; } };
-  const { node } = createPromptsSettings({ settings, documentRef });
+  const { node } = createPromptsSettings({ settings:promptSettings(settings), documentRef });
   const wrappers = node.find(n => n.id === 'qqj-settings-wrappers');
   assert.ok(wrappers); assert.equal(wrappers.open, false);
   assert.equal(wrappers.children[0].textContent, '包裹符');
@@ -93,11 +95,11 @@ test('提示词模块字段 change 即持久化', () => {
 });
 
 test('包裹面板只保存编辑字段，宿主保存回显保留正在输入内容并在销毁时释放', async () => {
-  const ext = { qianqianjie: { sourceKeepTags: 'content' }, 'schedule-planner': { extraTags: 'think' } };
+  const ext = { qianqianjie: { sourceKeepTags: 'content' }, 'schedule-planner': { extraTags: 'think', processingPrompt:'' } };
   let saves = 0;
   const settings = createSettingsStore({ extensionSettings: ext, save() { saves++; } });
   const listeners = new Set();
-  const view = createPromptsSettings({ settings, documentRef, subscribeSettingsChange: listener => { listeners.add(listener); return () => listeners.delete(listener); } });
+  const view = createPromptsSettings({ settings:promptSettings(settings), documentRef, subscribeSettingsChange: listener => { listeners.add(listener); return () => listeners.delete(listener); } });
   const keep = fieldControl(view.node, '保留包裹符'), extra = fieldControl(view.node, '清洗包裹符');
   assert.equal(keep.value, 'content'); assert.equal(extra.value, 'think');
   assert.equal(view.node.find(n => n.id === 'qqj-settings-wrappers').children[1].children[0].textContent, '白鳥系列插件全部共享');
@@ -118,7 +120,7 @@ test('长提示词从编辑入口打开草稿弹窗，取消不写设置', async
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', processingPrompt: '原文本' };
   const patches = [], opened = [];
   const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { patches.push(patch); Object.assign(current, patch); } };
-  const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { opened.push(options); return Promise.resolve(true); } });
+  const { node } = createPromptsSettings({ settings:promptSettings(settings), documentRef, customImpl: options => { opened.push(options); return Promise.resolve(true); } });
   const edit = node.find(n => n.tagName === 'button' && n.textContent === '编辑破限提示词');
   assert.ok(edit, '长提示词应由明确编辑入口打开');
   await edit.fire('click');
@@ -130,11 +132,31 @@ test('长提示词从编辑入口打开草稿弹窗，取消不写设置', async
   assert.deepEqual(patches, [], '取消不得写入设置');
 });
 
+test('共享破限草稿：取消与恢复不写，保存纯空白后实际使用默认', async () => {
+  const ext = { qianqianjie: {}, 'schedule-planner': { processingPrompt: '  自定义\n' } };
+  let saves = 0, active;
+  const settings = createSettingsStore({ extensionSettings: ext, save() { saves++; } });
+  const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); } });
+  const drawer = node.find(n => n.id === 'qqj-settings-processing-prompt');
+  const open = () => drawer.find(n => n.tagName === 'button' && n.textContent === '编辑破限提示词').fire('click');
+  const before = saves;
+  await open();
+  await active.content.find(n => n.tagName === 'button' && n.textContent === '恢复默认').fire('click');
+  assert.equal(active.content.find(n => n.tagName === 'textarea').value, '');
+  await active.onClose?.(); assert.equal(saves, before); assert.equal(settings.processingPrompt(), '  自定义\n');
+  await open(); active.content.find(n => n.tagName === 'textarea').value = ' \n\t ';
+  await active.submit();
+  assert.equal(settings.processingPrompt(), ' \n\t '); assert.equal(resolveSharedProcessingPrompt(settings.processingPrompt()), BASE_PROCESSING_PROMPT); assert.equal(saves, before + 1);
+  await open();
+  assert.equal(active.content.find(n => n.tagName === 'textarea').value, ' \n\t ', '重开保留已保存空白草稿，实际默认仍由消费者解析');
+  assert.equal(drawer.children[1].children.length, 2, '抽屉只保留说明和编辑按钮');
+});
+
 test('提示词模块提供时间戳开关、独立参考标签与保存后生效的时间戳编辑弹窗', async () => {
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', storyClockReferenceTags: '' };
   const patches = [], refreshes = []; let active = null;
   const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
-  const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); }, onStoryClockChange: options => { refreshes.push(options ?? {}); return { label: current.storyClockPrompt ? '使用自定义时间戳提示词' : '已调用千千结时间戳' }; } });
+  const { node } = createPromptsSettings({ settings:promptSettings(settings), documentRef, customImpl: options => { active = options; return Promise.resolve(true); }, onStoryClockChange: options => { refreshes.push(options ?? {}); return { label: current.storyClockPrompt ? '使用自定义时间戳提示词' : '已调用千千结时间戳' }; } });
   assert.equal(node.find(n => n.id === 'qqj-story-clock-status').textContent, '已调用千千结时间戳');
   const referenceTags = fieldControl(node, '正文时间参考标签');
   assert.equal(referenceTags.value, '');
@@ -172,7 +194,7 @@ test('破限、摘要、CSE、人物资料与头像提示词在弹窗保存后�
   const current = { sourceKeepTags: 'content', sourceExtraTags: '', storyClockEnabled: true, storyClockPrompt: '', processingPrompt: '', summaryPrompt: '', csePrompt: '', profilePrompt: '', avatarPrompt: '' };
   const patches = []; let active = null;
   const settings = { wrappers: () => ({ keepTags: 'content', extraTags: '' }), updateWrappers() {}, get: () => ({ ...current }), update: patch => { Object.assign(current, patch); patches.push(patch); return { ...current }; } };
-  const { node } = createPromptsSettings({ settings, documentRef, customImpl: options => { active = options; return Promise.resolve(true); } });
+  const { node } = createPromptsSettings({ settings:promptSettings(settings), documentRef, customImpl: options => { active = options; return Promise.resolve(true); } });
   const processingDrawer = node.find(n => n.id === 'qqj-settings-processing-prompt');
   const summaryDrawer = node.find(n => n.id === 'qqj-settings-summary-prompt');
   const cseDrawer = node.find(n => n.id === 'qqj-settings-cse-prompt');
@@ -191,6 +213,8 @@ test('破限、摘要、CSE、人物资料与头像提示词在弹窗保存后�
     const textarea = active.content.find(n => n.tagName === 'textarea'); textarea.value = value;
     assert.equal(current[key], '', '输入不立即写设置');
     await active.submit(); active = null; savedTextareas.push(textarea);
+    assert.equal(drawer.children[1].children.length, 2, '同类提示词抽屉只保留说明和编辑按钮');
+    assert.equal(drawer.textContent.includes(value), false, '保存后不在抽屉显示当前内容预览');
   }
   assert.deepEqual(patches.slice(-prompts.length),prompts.map(([, ,key,value])=>({[key]:value})));
 
@@ -288,7 +312,7 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   url.value = 'https://fast-draft.test/v1'; model.value = 'fast-draft-model'; key.value = ''; temperature.value = '0.31';
   const fetchBtn = node.find(n => n.tagName === 'button' && n.textContent === '拉取模型');
   await fetchBtn.fire('click'); await flush();
-  await node.find(n => n.tagName === 'button' && n.textContent === '测试连接').fire('click'); await flush();
+  await node.find(n => n.tagName === 'button' && n.textContent === '测试').fire('click'); await flush();
   assert.deepEqual(toolCalls.map(([kind, selection]) => [kind, selection.config.url, selection.config.key, selection.config.model]), [
     ['models', 'https://fast-draft.test/v1', 'FAST_KEY', 'fast-draft-model'],
     ['test', 'https://fast-draft.test/v1', 'FAST_KEY', 'fast-draft-model'],
@@ -303,7 +327,7 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
   await modelSection.find(n => n.tagName === 'button' && n.className.includes('qqj-model-list-item')).fire('click');
   assert.equal(model.value, 'gpt-y'); assert.match(modelSection.find(n => n.tagName === 'button' && n.className.includes('qqj-model-list-item')).className, /active/);
   model.value = 'fast-draft-model'; await model.fire('input');
-  const save = node.find(n => n.tagName === 'button' && n.textContent === '保存设置');
+  const save = node.find(n => n.tagName === 'button' && n.textContent === '保存');
   await save.fire('click');
   assert.equal(scroller.scrollTop, 120, 'API 保存并刷新字段后回到配置抽屉顶部');
   assert.equal(presets.find(item => item.id === 'fast').url, 'https://fast-draft.test/v1');
@@ -329,15 +353,15 @@ test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调�
 
   const saveCountBeforePrompt = saves.length;
   temperature.value = '2.001';
-  await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '另存为').fire('click');
   assert.equal(promptCalls.length, 0, '非法温度不得打开另存预设流程');
   assert.equal(saves.length, saveCountBeforePrompt, '非法温度不得写入共享预设');
   assert.match(node.find(n => n.className.includes('settings-result')).textContent, /温度须在 0–2/u);
   temperature.value = '0';
-  await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '另存为').fire('click');
   assert.equal(saves.length, saveCountBeforePrompt, '取消另存输入不得创建预设'); assert.equal(rerenders, 0);
   promptResponse = '摘要专用新预设';
-  await node.find(n => n.tagName === 'button' && n.textContent === '另存为预设').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '另存为').fire('click');
   assert.equal(promptCalls[1].title, '另存为预设');
   assert.equal(utilityPresetId, 'summary-new');
   assert.equal(presets.find(item => item.id === 'summary-new').name, '摘要专用新预设');
@@ -410,7 +434,7 @@ test('召回跟随链编辑真实目标，另存与删除只切召回角色', as
   assert.equal(fieldControl(node, 'URL').value, 'https://summary.test/v1');
   assert.match(node.textContent, /召回 API 跟随摘要.*保存会更新当前摘要配置/u);
   fieldControl(node, 'URL').value = 'https://summary-edited.test/v1';
-  await node.find(n => n.textContent === '保存设置').fire('click');
+  await node.find(n => n.textContent === '保存').fire('click');
   assert.equal(settings.sharedPresets().find(item => item.id === 'summary').url, 'https://summary-edited.test/v1');
   assert.equal(settings.mainConfig().url, 'https://main.test/v1');
   await chooseInline(fieldControl(node, '摘要API（建议快速模型）'), '');
@@ -420,7 +444,7 @@ test('召回跟随链编辑真实目标，另存与删除只切召回角色', as
   await chooseInline(fieldControl(node, '摘要API（建议快速模型）'), 'summary');
   await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
   fieldControl(node, 'URL').value = 'https://recall.test/v1';
-  await node.find(n => n.textContent === '另存为预设').fire('click');
+  await node.find(n => n.textContent === '另存为').fire('click');
   const recallId = settings.get().recallPresetId;
   assert.ok(recallId);
   assert.equal(settings.summaryPresetId(), 'summary');
@@ -428,7 +452,7 @@ test('召回跟随链编辑真实目标，另存与删除只切召回角色', as
   node = mount();
   await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
   assert.equal(fieldControl(node, 'URL').value, 'https://recall.test/v1');
-  await node.find(n => n.textContent === '删除当前预设').fire('click');
+  await node.find(n => n.textContent === '删除').fire('click');
   assert.equal(settings.get().recallPresetId, '');
   assert.equal(settings.summaryPresetId(), 'summary');
   assert.match(confirmations[0].note, /召回 API 将改为跟随摘要/u);
@@ -469,10 +493,10 @@ test('API 预设删除按当前编辑角色清理引用，取消/主配置/失�
     if (role === 'summary') focusInline(fieldControl(view, '摘要API（建议快速模型）'));
     return { view, current, get utility() { return utility; }, get presets() { return presets; }, updates, confirmations, get rerenders() { return rerenders; } };
   };
-  const remove = state => state.view.find(n => n.tagName === 'button' && n.textContent === '删除当前预设').fire('click');
+  const remove = state => state.view.find(n => n.tagName === 'button' && n.textContent === '删除').fire('click');
 
   const main = mount({ analysisId: '', utilityId: '' });
-  assert.equal(main.view.find(n => n.textContent === '删除当前预设').disabled, true);
+  assert.equal(main.view.find(n => n.textContent === '删除').disabled, true);
   await remove(main); assert.equal(main.confirmations.length, 0); assert.equal(main.presets.length, 2);
 
   const cancelled = mount({ confirmImpl: () => false });
@@ -518,7 +542,7 @@ test('API 显式失效预设保存时不谎报成功，也不写入任何配置'
   };
   const { node } = createApiSettings({ settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({}) }, documentRef });
   assert.equal(fieldControl(node, '分析API（建议高质模型）').value, 'missing');
-  await node.find(n => n.tagName === 'button' && n.textContent === '保存设置').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
   const result = node.find(n => n.className.includes('settings-result'));
   assert.match(result.textContent, /预设已失效.*重新选择或另存/);
   assert.match(result.className, /error/);
@@ -590,7 +614,7 @@ test('独立向量区开关靠右，默认地址模型直接回填，只保存�
   assert.equal(editor.children.at(-1), vector, '向量区放在聊天 API 编辑区之后');
   assert.equal(fieldControl(node, '向量API'), undefined, '向量不再混入聊天 API 的角色预设');
   assert.equal(vector.find(n => n.className.includes('qqj-inline-select')), undefined);
-  assert.equal(vector.find(n => n.tagName === 'button' && n.textContent === '另存为预设'), undefined);
+  assert.equal(vector.find(n => n.tagName === 'button' && n.textContent === '另存为'), undefined);
   const enabled = vector.find(n => n.attributes['aria-label'] === '开启向量召回');
   assert.equal(enabled.checked, false);
   assert.deepEqual(enabled.parentNode.children.map(n => n.tagName), ['span', 'input']);
@@ -609,7 +633,7 @@ test('独立向量区开关靠右，默认地址模型直接回填，只保存�
   fieldControl(vector, 'URL').value = VECTOR_DEFAULT_URL;
   await fieldControl(vector, 'URL').fire('input');
   const build = vector.find(n => n.tagName === 'button' && n.textContent === '建立索引');
-  const testConnection = vector.find(n => n.tagName === 'button' && n.textContent === '测试连接');
+  const testConnection = vector.find(n => n.tagName === 'button' && n.textContent === '测试');
   assert.equal(build.disabled, true); assert.equal(testConnection.disabled, true);
   await build.fire('click'); await testConnection.fire('click'); assert.deepEqual(calls, []); assert.equal(builds, 0);
   enabled.checked = true; await enabled.fire('change');
@@ -683,9 +707,9 @@ test('向量区显示小字进度与取消，编辑其他 API 时进度保留，
   assert.equal(node.find(n => n.className === 'settings-result').textContent, '');
   await cancel.fire('click'); await building;
   assert.equal(build.disabled, false); assert.equal(cancel.hidden, true); assert.equal(typeof listener, 'function');
-  const testing = vector.find(n => n.tagName === 'button' && n.textContent === '测试连接').fire('click'); await flush();
+  const testing = vector.find(n => n.tagName === 'button' && n.textContent === '测试').fire('click'); await flush();
   await focusInline(fieldControl(node, '摘要API（建议快速模型）'));
-  await node.find(n => n.tagName === 'button' && n.textContent === '测试连接').fire('click');
+  await node.find(n => n.tagName === 'button' && n.textContent === '测试').fire('click');
   const mainResult = node.find(n => n.className === 'settings-result success');
   assert.equal(mainResult.textContent, '连接成功 · chat-model');
   endTest([]); await testing;

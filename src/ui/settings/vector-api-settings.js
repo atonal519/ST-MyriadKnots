@@ -43,7 +43,7 @@ export function createVectorApiSettings({ settings, vectorApi, vectorIndex, docu
   const save = button('保存', 'secondary-action', () => {
     saveConfig(); result.textContent = '向量设置已保存'; result.className = 'settings-result success';
   });
-  const test = button('测试连接', 'secondary-action', async () => {
+  const test = button('测试', 'secondary-action', async () => {
     if (test.disabled) return;
     testing = true; sync(); result.textContent = '正在测试…'; result.className = 'settings-result';
     try { await vectorApi.embed(normalizeVectorConfig(draft()), ['连接测试']); result.textContent = '连接成功'; result.className = 'settings-result success'; }

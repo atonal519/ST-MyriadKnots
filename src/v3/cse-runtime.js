@@ -105,12 +105,14 @@ async function dependencySnapshot(value, floorId, entities, previousState, coreU
   const deltas = filterReachableDeltas({ floors: value.floors, floorMemories: value.floorMemories ?? [], stateDeltas: value.stateDeltas ?? [] });
   const deltaByFloor = new Map(deltas.map(delta => [delta.floorId, delta.id]));
   const identityBriefTargets = new Set(identityBriefTargetIds);
-  const identityDirectory = buildEntityIdentityDirectory({ entities, floorIds, identityProjection }).map(entry => ({
+  const floorOrder = new Map(floors.map((floor, index) => [floor.id, index]));
+  const identityDirectory = buildEntityIdentityDirectory({ entities, floorIds, floorOrder, identityProjection }).map(entry => ({
     entityId: entry.entityId,
     entityType: entry.entityType,
     specialRole: entry.specialRole,
     displayName: entry.displayName,
     identityBrief: identityBriefTargets.has(entry.entityId) ? entry.identityBrief ?? null : null,
+    identityBriefSource: identityBriefTargets.has(entry.entityId) ? entry.identityBriefSource ?? null : null,
     labels: [...entry.labels].map(label => [identityLabelKey(label), label]).sort((left, right) => left[0].localeCompare(right[0]) || left[1].localeCompare(right[1])),
   })).sort((left, right) => left.entityId.localeCompare(right.entityId));
   return {
@@ -575,11 +577,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     for (const update of result.identityBriefUpdates ?? []) {
       const target = entitiesById.get(update.entityId);
       if (!target || target.entityType !== 'person' || target.specialRole !== 'none' || typeof update.identityBrief !== 'string' || !update.identityBrief.trim()) continue;
-      const entityId = await deterministicUuid(['v3-cse-entity-identity-update', target.id, floor.id, result.delta.id, update.identityBrief]);
+      const entityId = await deterministicUuid(['v3-cse-entity-identity-update', target.id, floor.id, result.delta.id, update.identityBriefSource]);
       const identityBriefUpdatedAt = nowIso(now);
       const revision = validateEntityRecord({ schemaVersion: 3, recordType: 'entity', id: entityId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration,
         entityType: target.entityType, displayName: target.displayName, aliases: [], specialRole: target.specialRole,
-        firstSeenFloorId: floor.id, lastSeenFloorId: floor.id, identityBrief: update.identityBrief,
+        firstSeenFloorId: floor.id, lastSeenFloorId: floor.id, identityBrief: update.identityBrief, identityBriefSource: update.identityBriefSource,
         status: 'merged', mergedIntoEntityId: target.id, mergeEvidenceRefs: [], baselineClaimIds: [],
         createdAt: identityBriefUpdatedAt, updatedAt: identityBriefUpdatedAt, recordStatus: 'active', supersedes: null }, { expectedChatId: floor.chatId });
       if (!entitiesById.has(revision.id)) entitiesById.set(revision.id, revision);
@@ -631,7 +633,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const precedingFloors = value.floors.slice(0, targetIndex);
       const precedingFloorIds = new Set(precedingFloors.map(item => item.id));
       const trackedFloorIds = new Set(value.floors.slice(0, targetIndex + 1).map(item => item.id));
-      const scopedDirectory = buildEntityIdentityDirectory({ entities: entitiesThroughFloorIds(entities, trackedFloorIds, identityProjection), identityProjection });
+      const floorOrder = new Map(value.floors.slice(0, targetIndex + 1).map((item, index) => [item.id, index]));
+      const scopedDirectory = buildEntityIdentityDirectory({ entities: entitiesThroughFloorIds(entities, trackedFloorIds, identityProjection), floorOrder, identityProjection });
       const scopedEntities = scopedDirectory.map(entry => entry.entity);
       const precedingMemories = value.floorMemories.filter(item => precedingFloorIds.has(item.floorId) && item.recordStatus === 'active');
       const precedingDeltas = filterReachableDeltas({ floors: precedingFloors, floorMemories: precedingMemories, stateDeltas: value.stateDeltas });

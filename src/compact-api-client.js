@@ -1,5 +1,7 @@
 import { createActivitySignal } from './plugin-activity.js';
 import { withBaseProcessingPrompt } from './internal-processing-prompt.js';
+import { getSharedProcessingPrompt, prependProcessingPrompt, resolveSharedProcessingPrompt } from './shared-processing-prompt.js';
+import { sha256 } from './identity.js';
 import { normalizeFinishReason, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
 import { parseAdditionalParams } from './settings.js';
 
@@ -314,7 +316,7 @@ function linkedController(signal, timeoutSec, timeoutMs) {
   return { controller, timedOut: () => timedOut, cleanup: () => { clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); } };
 }
 
-export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000, onBusyChange = () => {} } = {}) {
+export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000, onBusyChange = () => {}, processingPrompt = () => getSharedProcessingPrompt((globalThis.SillyTavern ?? globalThis.Luker)?.getContext?.()?.extensionSettings) } = {}) {
   if (fetchImpl !== undefined && typeof fetchImpl !== 'function') throw new Error('fetch 不可用');
   let activeRequests = 0;
   const activity = createActivitySignal(() => ({ busy: activeRequests > 0, phase: activeRequests > 0 ? 'request' : null }));
@@ -387,6 +389,10 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
         : 'Process only the supplied task input. Return only JSON matching the requested schema.' },
       ...(Array.isArray(taskMessages) ? taskMessages : []).filter(message => ['system', 'user'].includes(message?.role) && typeof message.content === 'string').map(message => ({ role: message.role, content: message.content })),
     ];
+    const prefix = resolveSharedProcessingPrompt(processingPrompt());
+    compactMessages[0].content = prependProcessingPrompt(compactMessages[0].content, prefix);
+    const processingPromptFingerprint = `sha256:${await sha256(prefix)}`;
+    const systemPromptFingerprint = `sha256:${await sha256(compactMessages[0].content)}`;
     const configuredValue = config?.qqjTemperature;
     const configuredTemperature = configuredValue === null || configuredValue === undefined || typeof configuredValue === 'string' && configuredValue.trim() === ''
       ? null : typeof configuredValue === 'number' || typeof configuredValue === 'string' ? Number(configuredValue) : NaN;
@@ -423,7 +429,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     const payload = parseMode === 'semantic'
       ? { textData: completion.text }
       : { jsonData: parseJsonOutput(completion.text, { finishReason: completion.finishReason }) };
-    return { ...payload, taskMetadata: { ...(completion.finishReason ? { finishReason: completion.finishReason } : {}), ...(transportBudget ? { transportAttempts: transportBudget.used } : {}) } };
+    return { ...payload, taskMetadata: { processingPromptFingerprint, systemPromptFingerprint, ...(completion.finishReason ? { finishReason: completion.finishReason } : {}), ...(transportBudget ? { transportAttempts: transportBudget.used } : {}) } };
   };
   const testConnection = async ({ config, signal, processingPrompt = '' } = {}) => {
     await generateTask({ config, systemPrompt: withBaseProcessingPrompt('This is a plain-text connection check. Reply with a short confirmation.', processingPrompt), taskMessages: [{ role: 'user', content: 'Reply with OK.' }], signal, temperature: 0, parseMode: 'semantic' });

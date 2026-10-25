@@ -2,13 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { applyPluginEnabledImmediately, createSettingsStore, DEFAULT_SETTINGS, normalizeAutoHideKeepAiCount, normalizeAutoMemoryBatchSize } from '../src/settings.js';
+import { BASE_PROCESSING_PROMPT } from '../src/shared-processing-prompt.js';
 import { createApiResolver, createApiTools, createTaskRouter } from '../src/api-routing.js';
 
 const configured = (name, id, key = 'TEST_KEY') => ({ id, name, url: 'https://api.example.test/v1', key, model: 'test-model', excludeParams: [], timeoutSec: 30, stream: false });
 const setup = extensionSettings => {
   let saves = 0;
   const settings = createSettingsStore({ extensionSettings, save: () => { saves += 1; }, now: () => 1, random: () => 0.5 });
-  return { settings, saves: () => saves };
+  // Other setting tests count writes after the one-time shared initialization.
+  const initializationSaves=saves;
+  return { settings, saves: () => saves-initializationSaves };
 };
 
 test('附加参数按主配置或共享预设保存，角色跟随与在途快照保持；清空恢复默认', async () => {
@@ -173,11 +176,11 @@ test('时间戳功能默认开启，参考标签独立规范化，五类自定�
   const { settings } = setup(extensionSettings);
   assert.equal(settings.get().storyClockEnabled, true); assert.equal(settings.get().storyClockPrompt, '');
   assert.equal(settings.get().storyClockReferenceTags, '');
-  assert.equal(settings.get().processingPrompt, ''); assert.equal(settings.get().summaryPrompt, ''); assert.equal(settings.get().csePrompt, ''); assert.equal(settings.get().profilePrompt, '');
+  assert.equal(settings.processingPrompt(), BASE_PROCESSING_PROMPT); assert.equal(settings.get().summaryPrompt, ''); assert.equal(settings.get().csePrompt, ''); assert.equal(settings.get().profilePrompt, '');
   settings.update({ storyClockEnabled: false, storyClockPrompt: '  原样换行\n', storyClockReferenceTags: ' TI，时标\nti\n[[...]] ', processingPrompt: '  破限原样\n', summaryPrompt: '  摘要要求\n', csePrompt: '  CSE 要求\n', profilePrompt: '  人物资料要求\n' });
   assert.equal(settings.get().storyClockEnabled, false); assert.equal(settings.get().storyClockPrompt, '  原样换行\n');
   assert.equal(settings.get().storyClockReferenceTags, 'TI,时标');
-  assert.equal(settings.get().processingPrompt, '  破限原样\n'); assert.equal(settings.get().summaryPrompt, '  摘要要求\n'); assert.equal(settings.get().csePrompt, '  CSE 要求\n'); assert.equal(settings.get().profilePrompt, '  人物资料要求\n');
+  assert.equal(settings.processingPrompt(), '  破限原样\n'); assert.equal(settings.get().summaryPrompt, '  摘要要求\n'); assert.equal(settings.get().csePrompt, '  CSE 要求\n'); assert.equal(settings.get().profilePrompt, '  人物资料要求\n');
 });
 
 test('悬浮球偏好默认显示并独立持久化', () => {
@@ -253,6 +256,7 @@ test('总开关快速连续切换与面板重建共用顺序，最后选择获�
 
 test('总开关可检测的同步保存调度失败会恢复原值，不谎报已保存', async () => {
   const extensionSettings = {};
+  extensionSettings['schedule-planner']={processingPrompt:''};
   const settings = createSettingsStore({ extensionSettings, save: () => { throw new Error('宿主保存调度失败'); } });
   assert.equal(settings.isEnabled(), true);
   await assert.rejects(applyPluginEnabledImmediately({ settings, enabled: false }), /宿主保存调度失败/);
@@ -319,6 +323,7 @@ test('只双向共享 schedule-planner 预设池；千千结主配置与两边�
   const source = await readFile(new URL('../../ST-SevenDaysCal/runtime/settings.js', import.meta.url), 'utf8');
   globalThis.__QQJ_SEVEN_TEST_SETTINGS__ = extensionSettings; globalThis.__QQJ_SEVEN_TEST_SAVES__ = 0;
   const executable = source
+    .replace("'../utils/shared-processing-prompt.js'", JSON.stringify(new URL('../../ST-SevenDaysCal/utils/shared-processing-prompt.js', import.meta.url).href))
     .replace("'../utils/shared-body-wrappers.js'", JSON.stringify(new URL('../../ST-SevenDaysCal/utils/shared-body-wrappers.js', import.meta.url).href))
     .replace("import { extension_settings } from '../../../../extensions.js';", 'const extension_settings = globalThis.__QQJ_SEVEN_TEST_SETTINGS__;')
     .replace("import { saveSettingsDebounced } from '../../../../../script.js';", 'const saveSettingsDebounced = () => { globalThis.__QQJ_SEVEN_TEST_SAVES__ += 1; };');
@@ -697,3 +702,5 @@ test('副任务沿用统一 disabled 与 external signal 守卫', async () => {
   assert.equal(calls, 1);
   assert.equal(router.getActiveCount(), 0);
 });
+
+test('共享破限缺键只初始化一次，显式空值保持原样且旧局部自定义不再回灌',()=>{const extensionSettings={qianqianjie:{processingPrompt:'旧QQJ生效全文'},'schedule-planner':{unknown:true}};let saves=0;const settings=createSettingsStore({extensionSettings,save(){saves++;}});assert.equal(saves,1);assert.equal(settings.processingPrompt(),'旧QQJ生效全文');settings.update({processingPrompt:''});assert.equal(extensionSettings['schedule-planner'].processingPrompt,'');extensionSettings.qianqianjie.processingPrompt='旧值不回灌';const reloaded=createSettingsStore({extensionSettings,save(){saves++;}});assert.equal(reloaded.processingPrompt(),'');assert.equal(extensionSettings['schedule-planner'].unknown,true);assert.equal(saves,2);assert.ok(BASE_PROCESSING_PROMPT);});

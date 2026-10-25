@@ -1,4 +1,5 @@
 import { sha256 } from '../identity.js';
+import { recordWriteBatches } from '../backend-client.js';
 import { normalizeVector } from '../vector-api.js';
 import { rawWitnessShape, rawWitnessValid, vectorWitnessShape } from './vector-source.js';
 import { createRawSourceLookup, projectVectorSources, rawSourceKey } from './vector-source.js';
@@ -483,6 +484,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
   }
 
   async function copyPrefix(sourceIdentity, targetIdentity, targetNarrativeGeneration, sourceReachable, options = null) {
+    const report = value => { try { options?.onProgress?.(value); } catch { /* Display only. */ } };
     const config = configProvider();
     if (!config || !sourceIdentity?.chatId || !targetIdentity?.chatId || sourceIdentity.chatId === targetIdentity.chatId
       || typeof targetNarrativeGeneration !== 'string' || sourceReachable?.root?.chatId !== sourceIdentity.chatId
@@ -498,6 +500,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     const sourceManifest = await readRecord(sourceCollection, VECTOR_INDEX_ID);
     if (!sourceManifest || !vectorRecordOwned(sourceManifest) || sourceManifest.data.modelKey !== modelKey
       || ownerKey(sourceManifest.data, modelKey) !== ownerKey(sourceReachable.root, modelKey)) return Object.freeze([]);
+    report({ phase: 'readingVectors' });
     let rawSources;
     if (branchPrefix) {
       const retained = new Set(options.retainedFloorIds);
@@ -534,9 +537,10 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     }
     if (!rows.length) return Object.freeze([]);
     const shardIds = [];
-    for (let start = 0; start < rows.length; start += BATCH * COPY_BATCH) {
+    const totalShards = Math.ceil(rows.length / BATCH);
+    for (let start = 0; start < rows.length; start += BATCH * 64) {
       const work = [];
-      for (let offset = start; offset < Math.min(rows.length, start + BATCH * COPY_BATCH); offset += BATCH) {
+      for (let offset = start; offset < Math.min(rows.length, start + BATCH * 64); offset += BATCH) {
         const copiedRows = rows.slice(offset, offset + BATCH).map(row => ({ ...row, witness: orderedRawWitness(row.witness) }));
         const witnesses = copiedRows.map(row => row.witness);
         const id = `${VECTOR_SHARD_PREFIX}${(await sha256(JSON.stringify([targetNarrativeGeneration, modelKey, witnesses]))).slice(0, 40)}`;
@@ -550,18 +554,43 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
         if (savedShard) return Object.freeze([]);
         pending.push(item);
       }
-      const written = await Promise.all(pending.map(async item => {
-        try {
-          await client.put(targetCollection, item.id, { schemaVersion: SCHEMA, recordType: 'vectorCache',
-            chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey, rows: item.copiedRows }, 0);
-          return true;
-        } catch {
-          const persisted = await readRecord(targetCollection, item.id);
-          return Boolean(await validSavedBatch(persisted, target, modelKey, item.copiedRows, item.witnesses,
-            item.id, sourceManifest.data.dimensions));
+      const pendingById = new Map(pending.map(item => [item.id, item]));
+      let completed = shardIds.length + work.length - pending.length;
+      if (!pending.length) report({ phase: 'copyingVectors', completed, total: totalShards });
+      const writes = pending.map(item => ({ recordId: item.id, data: { schemaVersion: SCHEMA, recordType: 'vectorCache',
+        chatId: targetIdentity.chatId, narrativeGeneration: targetNarrativeGeneration, modelKey, rows: item.copiedRows }, expectedRevision: 0 }));
+      for (const group of recordWriteBatches(writes)) {
+        let response = null;
+        if (!group.single && typeof client.putMany === 'function') {
+          try { response = await client.putMany(targetCollection, group.records); }
+          catch {
+            // Keep the existing vector read-back contract without resending the failed write.
+            const persisted = await readRecords(targetCollection, group.records.map(item => item.recordId));
+            response = persisted.map((record, index) => ({ recordId: group.records[index].recordId, status: record ? 200 : 500, envelope: record }));
+          }
         }
-      }));
-      if (written.some(value => !value)) return Object.freeze([]);
+        const written = new Array(group.records.length); let cursor = 0;
+        await Promise.all(Array.from({ length: Math.min(4, group.records.length) }, async () => {
+          while (true) {
+            const index = cursor++; if (index >= group.records.length) return;
+            const entry = group.records[index], item = pendingById.get(entry.recordId);
+            let persisted;
+            if (response === null) {
+              try { persisted = { ...await client.put(targetCollection, item.id, entry.data, 0), recordId: item.id }; }
+              catch { persisted = await readRecord(targetCollection, item.id); }
+            } else {
+              const result = response[index];
+              if (result?.recordId !== item.id) { written[index] = false; continue; }
+              persisted = result.status === 200 ? { ...result.envelope, recordId: item.id } : await readRecord(targetCollection, item.id);
+            }
+            written[index] = Boolean(await validSavedBatch(persisted, target, modelKey, item.copiedRows, item.witnesses, item.id, sourceManifest.data.dimensions));
+          }
+        }));
+        completed += written.filter(Boolean).length;
+        report({ phase: 'copyingVectors', completed, total: totalShards });
+        if (written.some(value => !value)) return Object.freeze([]);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
       shardIds.push(...work.map(item => item.id));
     }
     const manifest = { schemaVersion: SCHEMA, recordType: 'vectorCache',

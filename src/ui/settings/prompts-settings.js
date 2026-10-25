@@ -22,7 +22,6 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
   const storyClockStatus = element('p', 'settings-result', onStoryClockChange?.({ readOnly: true })?.label ?? '时间戳状态会在下一次正文生成前刷新。');
   storyClockStatus.id = 'qqj-story-clock-status';
   const { drawer: storyClockDrawer, body: storyClockBody } = subDrawer({ title: '时间戳提示词', id: 'qqj-settings-story-clock' });
-  const summaryPrompt = current.summaryPrompt ?? '', csePrompt = current.csePrompt ?? '', profilePrompt = current.profilePrompt ?? '', processingPrompt = current.processingPrompt ?? '';
   const { drawer: processingDrawer, body: processingBody } = subDrawer({ title: '破限提示词', id: 'qqj-settings-processing-prompt' });
   const { drawer: summaryDrawer, body: summaryBody } = subDrawer({ title: '摘要内容指导', id: 'qqj-settings-summary-prompt' });
   const { drawer: cseDrawer, body: cseBody } = subDrawer({ title: 'CSE 内容指导', id: 'qqj-settings-cse-prompt' });
@@ -56,11 +55,8 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
     group.append(input, actions); panel.append(group);
     void customImpl({ title: `编辑${title}`, content: panel, confirmText: '保存', cancelText: '取消', submit: async () => { await onSave(input.value); return true; } });
   };
-  const promptButton = (bodyNode, title, key, value, defaultText, onSave) => {
-    const status = element('p', 'settings-hint');
-    const refresh = next => { const copy = String(next || '使用内置默认'); status.textContent = `当前${title}：${copy.slice(0, 100)}${copy.length > 100 ? '…' : ''}`; };
-    refresh(value); bodyNode.append(status);
-    bodyNode.append(button(`编辑${title}`, 'secondary-action', () => promptDialog(title, settings.get()[key] ?? '', defaultText, async text => { await onSave(text); refresh(text); })));
+  const promptButton = (bodyNode, title, key, defaultText, onSave) => {
+    bodyNode.append(button(`编辑${title}`, 'secondary-action', () => promptDialog(title, key === 'processingPrompt' ? settings.processingPrompt() : settings.get()[key] ?? '', defaultText, onSave)));
   };
   const clockToggle = element('label', 'setting-switch'); clockToggle.append(storyClockEnabled, element('span', '', '启用正文时间戳'));
   storyClockBody.append(
@@ -73,15 +69,15 @@ export function createPromptsSettings({ settings, documentRef = globalThis.docum
     button('编辑时间戳提示词', 'secondary-action', () => promptDialog('时间戳提示词', settings.get().storyClockPrompt ?? '', DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, async value => { settings.update({ storyClockPrompt: value }); refreshClock(); })),
   );
 
-  const promptEditor = ({ body: editorBody, value, key, defaultText, label, hint = '这里只改内容要求；输出结构、人物绑定和信息范围由程序维护。恢复默认会使用内置文本。' }) => {
+  const promptEditor = ({ body: editorBody, key, defaultText, label, hint = '这里只改内容要求；输出结构、人物绑定和信息范围由程序维护。恢复默认会使用内置文本。' }) => {
     editorBody.append(element('p', 'settings-hint', hint));
-    promptButton(editorBody, label, key, value, defaultText, async text => settings.update({ [key]: text }));
+    promptButton(editorBody, label, key, defaultText, async text => settings.update({ [key]: text }));
   };
-  promptEditor({ body: processingBody, value: processingPrompt, key: 'processingPrompt', defaultText: BASE_PROCESSING_PROMPT, label: '破限提示词', hint: '所有文本模型任务共用，包括摘要、双丝网、人物、召回选材、千事、时间与连接测试。保存后供后续请求使用；留空用默认，自定义文本替换默认。' });
-  promptEditor({ body: summaryBody, value: summaryPrompt, key: 'summaryPrompt', defaultText: DEFAULT_EXTRACTOR_GUIDANCE, label: '摘要内容指导' });
-  promptEditor({ body: cseBody, value: csePrompt, key: 'csePrompt', defaultText: DEFAULT_CSE_GUIDANCE, label: 'CSE 内容指导' });
-  promptEditor({ body: profileBody, value: profilePrompt, key: 'profilePrompt', defaultText: DEFAULT_PROFILE_GUIDANCE, label: '人物资料内容指导' });
-  promptEditor({ body: avatarBody, value: current.avatarPrompt ?? '', key: 'avatarPrompt', defaultText: DEFAULT_AVATAR_PROMPT, label: '头像生图提示词', hint: '单人头像构图，人物外貌来自柏宝绘角色库。保存后供后续生成使用；留空使用默认。' });
+  promptEditor({ body: processingBody, key: 'processingPrompt', defaultText: BASE_PROCESSING_PROMPT, label: '破限提示词', hint: '白鳥系列文字模型请求共用，保存后供下一次请求使用；留空使用内置默认；恢复默认清空草稿，保存后生效。' });
+  promptEditor({ body: summaryBody, key: 'summaryPrompt', defaultText: DEFAULT_EXTRACTOR_GUIDANCE, label: '摘要内容指导' });
+  promptEditor({ body: cseBody, key: 'csePrompt', defaultText: DEFAULT_CSE_GUIDANCE, label: 'CSE 内容指导' });
+  promptEditor({ body: profileBody, key: 'profilePrompt', defaultText: DEFAULT_PROFILE_GUIDANCE, label: '人物资料内容指导' });
+  promptEditor({ body: avatarBody, key: 'avatarPrompt', defaultText: DEFAULT_AVATAR_PROMPT, label: '头像生图提示词', hint: '单人头像构图，人物外貌来自柏宝绘角色库。保存后供后续生成使用；留空使用默认。' });
 
   wrapperBody.append(element('p', 'settings-hint', '白鳥系列插件全部共享'), field('保留包裹符', keepTags), field('清洗包裹符', extraTags));
   body.append(

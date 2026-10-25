@@ -116,9 +116,10 @@ const clearPluginLifecycleFailure = () => { pluginLifecycleFailureRevision += 1;
 const clearPluginLifecycleFailureIfUnchanged = revision => {
   if (pluginLifecycleFailureRevision === revision) clearPluginLifecycleFailure();
 };
-const processingPrompt = () => settings.get().processingPrompt;
+const processingPrompt = () => settings.processingPrompt();
 const compactClient = createCompactApiClient({
   headers: () => hostContext()?.getRequestHeaders?.() ?? {},
+  processingPrompt,
 });
 const apiResolver = createApiResolver({ settings });
 const taskRouter = createTaskRouter({

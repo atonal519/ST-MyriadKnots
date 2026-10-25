@@ -17,6 +17,66 @@ import { projectPrivateRecallDiagnostic } from '../src/private-recall-diagnostic
 const hash = async text => `sha256:${await sha256(text)}`;
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const config = { url: 'https://vector.invalid/v1', model: 'mock-embedding', key: 'test-key', dimensions: null };
+test('向量分支逐包保存768维分片、保留四片源读取且最后发布manifest', async () => {
+  const count = 12000, graph = await branchVectorFixture('batch-vector-source', 'batch-vector-generation', count);
+  const projection = await projectVectorSources(selectRecallMemories(graph).activeMemories, graph.floors, { includeSummaries: false });
+  const source = { status: 'ready', chatId: graph.root.chatId, narrativeGeneration: graph.root.narrativeGeneration, rawSources: projection.rawSources };
+  const backend = vectorBackend(); let embeddings = 0;
+  const api = { embed: async (_config, texts) => { embeddings++; return texts.map(() => Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0)); } };
+  // Build one real cache row group, then prepare an existing-cache fixture without another full embedding task.
+  const seedSource = { ...source, rawSources: source.rawSources.slice(0, 16) };
+  const initial = createVectorIndex({ client: backend.client, api, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => seedSource });
+  assert.equal((await initial.build()).status, 'ready'); const beforeEmbeddings = embeddings;
+  const seedManifest = backend.records.get(`chat-${source.chatId}/${VECTOR_INDEX_ID}`).data;
+  const vector = backend.records.get(`chat-${source.chatId}/${seedManifest.shardIds[0]}`).data.rows[0].vector;
+  const shardIds = []; let currentRows = [];
+  for (const chunk of rawSourceChunks(source)) {
+    currentRows.push({ witness: { ...chunk.witness, textFingerprint: await hash(chunk.text) }, vector });
+    if (currentRows.length === 16) {
+      const id = VECTOR_SHARD_PREFIX + (await sha256(`persisted-fixture-${shardIds.length}`)).slice(0, 40);
+      backend.records.set(`chat-${source.chatId}/${id}`, { revision: 1, data: { schemaVersion: 1, recordType: 'vectorCache', chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey: seedManifest.modelKey, rows: currentRows } });
+      shardIds.push(id); currentRows = [];
+    }
+  }
+  assert.equal(currentRows.length, 0);
+  const sourceManifest = { ...seedManifest, shardIds, chunkCount: count };
+  backend.records.set(`chat-${source.chatId}/${VECTOR_INDEX_ID}`, { revision: 1, data: sourceManifest });
+  console.log(JSON.stringify({ vectorFixtureSourceReady: { shards: shardIds.length, rows: count, dimensions: 768 } }));
+  let active = 0, maxActive = 0, packets = 0, sourceReadMax = 0; const events = [], progress = [];
+  const targetId = 'batch-vector-target';
+  const client = createBackendClient({ fetchImpl: async (url, options = {}) => {
+    const path = url.split('/v1/')[1].split('/').map(decodeURIComponent), body = options.body ? JSON.parse(options.body) : {};
+    try {
+      if (path[0] === 'health') return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordBatchWrite: true } });
+      const collection = path[2], key = path[3];
+      if (path[0] === 'record-batch' && options.method === 'POST') {
+        if (collection === `chat-${source.chatId}`) sourceReadMax = Math.max(sourceReadMax, body.recordIds.length);
+        return Response.json(await Promise.all(body.recordIds.map(async recordId => {
+          try { return { recordId, status: 200, envelope: await backend.client.get(collection, recordId) }; }
+          catch (error) { return { recordId, status: error.status, error: 'not_found', message: 'Record not found' }; }
+        })));
+      }
+      if (path[0] === 'record-batch') {
+        packets++; active++; maxActive = Math.max(maxActive, active);
+        try { assert.ok(body.records.length <= 64); assert.ok(Buffer.byteLength(options.body) <= 1048576);
+          const saved = []; for (const item of body.records) saved.push({ recordId: item.recordId, status: 200, envelope: await backend.client.put(collection, item.recordId, item.data, 0) });
+          events.push('batch'); return Response.json(saved);
+        } finally { active--; }
+      }
+      if (options.method === 'PUT') { if (key === VECTOR_INDEX_ID) events.push('manifest'); return Response.json(await backend.client.put(collection, key, body.data, body.expectedRevision)); }
+      return Response.json(await backend.client.get(collection, key));
+    } catch (error) { return Response.json({}, { status: error.status ?? 500 }); }
+  } });
+  await client.health();
+  const index = createVectorIndex({ client, api, configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+  const copied = await index.copyPrefix({ chatId: source.chatId }, { chatId: targetId }, 'target-generation', graph, { onProgress: value => progress.push(value) });
+  assert.equal(copied.length, sourceManifest.shardIds.length); assert.equal(maxActive, 1); assert.ok(packets > 0); assert.ok(sourceReadMax <= 4); assert.equal(embeddings, beforeEmbeddings);
+  const manifest = backend.records.get(`chat-${targetId}/${VECTOR_INDEX_ID}`).data;
+  assert.equal(manifest.chunkCount, count); assert.equal(manifest.dimensions, 768); assert.equal(events.at(-1), 'manifest');
+  assert.ok(progress.some(value => value.completed === copied.length && value.total === copied.length));
+  for (let i = 0; i < copied.length; i++) assert.deepEqual(backend.records.get(`chat-${targetId}/${copied[i]}`).data.rows, backend.records.get(`chat-${source.chatId}/${sourceManifest.shardIds[i]}`).data.rows);
+  console.log(JSON.stringify({ vectorBatchFixture: { shards: copied.length, rows: count, dimensions: 768, packets, maxInflightBatch: maxActive, sourceReadMax, extraEmbeddingCalls: embeddings - beforeEmbeddings } }));
+});
 const vectors = texts => texts.map(text => text.includes('苹果') ? [1, 0] : [0, 1]);
 async function sourceFixture() {
   const floorMemories = Array.from({ length: 8 }, (_, i) => ({

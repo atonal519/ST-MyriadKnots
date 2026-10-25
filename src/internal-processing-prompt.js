@@ -12,7 +12,6 @@ export function resolveProcessingPrompt(processingPrompt = '') {
 }
 
 export function withBaseProcessingPrompt(taskPrompt = '', processingPrompt = '') {
-  const task = typeof taskPrompt === 'string' ? taskPrompt : '';
-  const processing = resolveProcessingPrompt(processingPrompt);
-  return task ? `${processing}\n\n${task}` : processing;
+  // Preparation may outlive a settings edit; the transport adds the shared prefix at dispatch.
+  return typeof taskPrompt === 'string' ? taskPrompt : '';
 }

@@ -1,5 +1,6 @@
 import { createActivitySignal } from '../plugin-activity.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
+import { resolveSharedProcessingPrompt } from '../shared-processing-prompt.js';
 import { describePrefixDifference, safePrefixDifference } from './memory-prefix-diagnostic.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { projectCseSubjectDiagnostic } from './cse-failure-diagnostic.js';
@@ -2005,7 +2006,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const floorIndex = source.floors.findIndex(item => item.id === floor.id);
       prepareStep = 'identityDirectory';
       const identityProjectionSnapshot = await readIdentityProjection(null, source);
-      const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(source.floors.slice(0, floorIndex + 1).map(item => item.id)), identityProjectionSnapshot);
+      const prefixFloors = source.floors.slice(0, floorIndex + 1);
+      const floorOrder = new Map(prefixFloors.map((item, index) => [item.id, index]));
+      const scopedEntities = entitiesThroughFloorIds(source.entities, new Set(floorOrder.keys()), identityProjectionSnapshot);
       let previousStoryClock = null;
       prepareStep = 'timeSources';
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) {
@@ -2026,7 +2029,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         ? qianshiCandidateIndex.prepare(candidateSource, candidateOptions)
         : qianshiCandidatePreparer(candidateSource, candidateOptions);
       prepareStep = 'extractorEnvelope';
-      const envelope = await createExtractorEnvelope({ ...expectedScope, floor: liveFloor,
+      const envelope = await createExtractorEnvelope({ ...expectedScope, floor: liveFloor, floorOrder,
         ...(!aggregate && Object.hasOwn(sourceFloors[0], 'locationReference') ? { locationReference: sourceFloors[0].locationReference } : {}),
         sourceFloors: aggregate ? sourceFloors.map(entry => ({ floor: { ...entry.floor, content: { ...entry.floor.content, rawFingerprint: entry.rawFingerprint } }, sourceUserInputSnapshot: entry.sourceUserInputSnapshot, storyClock: entry.storyClockEvidence.clock, storyClockSignature: entry.storyClockEvidence.signature,
           ...(Object.hasOwn(entry, 'locationReference') ? { locationReference: entry.locationReference } : {}) })) : null,
@@ -2083,11 +2086,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!prepared) return getState();
     const { source, floor, oldMemory, sourceRawFingerprint, sourceClock, userIdentity, promptGuidanceSnapshot, processingPromptSnapshot, dependencySnapshot, expectedScope, scopedEntities, envelope, semanticInputFingerprint: preparedSemanticInputFingerprint, qianshiDependency } = prepared;
     aggregate ||= prepared.aggregate === true;
+    const currentProcessing = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
+    const currentProcessingFingerprint = `sha256:${await sha256(resolveSharedProcessingPrompt(currentProcessing))}`;
     let pending = pendingResults.get(floor.id) ?? null;
     if (pending && (!sameExtractorDependency(pending.dependencySnapshot, dependencySnapshot)
       || pending.chatId !== source.root.chatId || pending.narrativeGeneration !== source.root.narrativeGeneration
       || pending.sourceRawFingerprint !== sourceRawFingerprint
-      || pending.processingPrompt !== String(processingPromptSnapshot ?? ''))) {
+      || (pending.processingPromptFingerprint ? pending.processingPromptFingerprint !== currentProcessingFingerprint : pending.processingPrompt !== String(currentProcessing ?? '')))) {
       pendingResults.delete(floor.id);
       pending = null;
     }
@@ -2115,7 +2120,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '后端数据在提取期间发生变化，本次结果已作废。');
       if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '聊天或正文已变化，迟到响应已丢弃。');
       operation.phase = 'committing'; notify();
-      await commitRevision(operation, { oldReachable: source, replacement, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: replacement.extractorVersion, promptVersion: EXTRACTOR_PROMPT_VERSION, promptGuidanceFingerprint: `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`, systemPromptFingerprint: `sha256:${await sha256((aggregate ? buildHighFloorExtractorSystemPrompt : buildExtractorSystemPrompt)(promptGuidanceSnapshot, processingPromptSnapshot))}`, userIdentityFingerprint: `sha256:${await sha256(JSON.stringify(userIdentity ?? null))}`, semanticInputFingerprint, preflightTiming: operation.preflightTiming, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
+      await commitRevision(operation, { oldReachable: source, replacement, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: replacement.extractorVersion, promptVersion: EXTRACTOR_PROMPT_VERSION, promptGuidanceFingerprint: `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`, systemPromptFingerprint: result.metadata?.systemPromptFingerprint ?? `sha256:${await sha256((aggregate ? buildHighFloorExtractorSystemPrompt : buildExtractorSystemPrompt)(promptGuidanceSnapshot, processingPromptSnapshot))}`, userIdentityFingerprint: `sha256:${await sha256(JSON.stringify(userIdentity ?? null))}`, semanticInputFingerprint, preflightTiming: operation.preflightTiming, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
       summaryCommitted = true;
       if (analyzeState && !operation.controller.signal.aborted && operation.epoch === epoch) {
         operation.phase = 'analyzingCse';
@@ -2125,7 +2130,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
     } catch (error) {
       if (result && !summaryCommitted && error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) {
-        rememberPendingResult(floor.id, { chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, sourceRawFingerprint, processingPrompt: String(processingPromptSnapshot ?? ''), dependencySnapshot, runId: operation.runId, startedAt: operation.startedAt, commitTimestamp: operation.commitTimestamp, commitTimestampVersionKey: operation.commitTimestampVersionKey, preflightTiming: operation.preflightTiming, semanticInputFingerprint: operation.semanticInputFingerprint, result });
+        rememberPendingResult(floor.id, { chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, sourceRawFingerprint, processingPromptFingerprint: result.metadata?.processingPromptFingerprint ?? currentProcessingFingerprint, dependencySnapshot, runId: operation.runId, startedAt: operation.startedAt, commitTimestamp: operation.commitTimestamp, commitTimestampVersionKey: operation.commitTimestampVersionKey, preflightTiming: operation.preflightTiming, semanticInputFingerprint: operation.semanticInputFingerprint, result });
       } else if (error?.name === 'AbortError' || STALE_MEMORY_CODES.has(error?.code)) pendingResults.delete(floor.id);
       if (error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) await persistFailure(operation, error, source);
       else {

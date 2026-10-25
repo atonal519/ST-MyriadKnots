@@ -1,6 +1,22 @@
 import { API_BASE, NAMESPACE } from './constants.js';
 import { createTauriBackendFetch, isTauriTavern } from './tauri-backend.js';
 
+const BATCH_WRITE_LIMIT = 64, BATCH_WRITE_BYTES = 1048576;
+// Only the current package is serialized while walking the caller's existing records.
+export function* recordWriteBatches(records) {
+  const encoder = new TextEncoder(), overhead = encoder.encode('{"records":[]}').length;
+  let group = [], size = overhead;
+  for (const item of records) {
+    const bytes = encoder.encode(JSON.stringify(item)).length;
+    if (group.length && (group.length === BATCH_WRITE_LIMIT || size + 1 + bytes > BATCH_WRITE_BYTES)) {
+      yield { records: group, single: false }; group = []; size = overhead;
+    }
+    if (overhead + bytes > BATCH_WRITE_BYTES) { yield { records: [item], single: true }; continue; }
+    size += bytes + (group.length ? 1 : 0); group.push(item);
+  }
+  if (group.length) yield { records: group, single: false };
+}
+
 const RECORD_TYPE_PREFIXES = Object.freeze([
   ['v3-floor-', 'floor'], ['v3-run-', 'run'], ['v3-checkpoint-', 'checkpoint'],
   ['v3-entity-', 'entity'], ['v3-baseline-', 'baseline'], ['v3-state-delta-', 'stateDelta'],
@@ -205,7 +221,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
     async health({ signal } = {}) {
       const result = await request('/v1/health', { signal });
       if (!result?.ok || result.api?.current !== 1 || !result.api?.supported?.includes(1) || result.capabilities?.records !== true || result.capabilities?.optimisticRevision !== true) throw new Error('后端能力不兼容');
-      capabilities = Object.freeze({ recordBatchRead: result.capabilities.recordBatchRead === true, recordIdList: result.capabilities.recordIdList === true });
+      capabilities = Object.freeze({ recordBatchRead: result.capabilities.recordBatchRead === true, recordBatchWrite: result.capabilities.recordBatchWrite === true, recordIdList: result.capabilities.recordIdList === true });
       return result;
     },
     async list(collection, { signal } = {}) { return request(collectionKey(collection), { signal }, { method: 'GET', recordType: 'collection' }, listTimeoutMs); },
@@ -250,6 +266,23 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       }
     },
     async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }, { method: 'PUT', recordType: recordTypeFromId(recordId) }); },
+    async putMany(collection, records, { signal } = {}) {
+      if (!Array.isArray(records) || records.length < 1 || records.length > BATCH_WRITE_LIMIT
+        || records.some(item => !item || typeof item.recordId !== 'string' || !Object.hasOwn(item, 'data') || !Number.isSafeInteger(item.expectedRevision) || item.expectedRevision < 0)
+        || new Set(records.map(item => item.recordId)).size !== records.length) throw new TypeError('批量保存参数无效');
+      const body = JSON.stringify({ records });
+      if (new TextEncoder().encode(body).length > BATCH_WRITE_BYTES) throw new TypeError('批量保存超过1MiB');
+      // Reading capability never starts a new probe or changes the native/custom transport.
+      if (capabilities?.recordBatchWrite !== true || useTauri) return null;
+      const result = await request(recordBatchKey(collection), { method: 'PUT', body, signal }, { method: 'PUT', recordType: 'collection' });
+      if (!Array.isArray(result) || result.length !== records.length) throw new Error('后端批量保存结果无效');
+      for (let index = 0; index < result.length; index++) {
+        const item = result[index];
+        if (!item || item.recordId !== records[index].recordId || ![200, 400, 409, 500].includes(item.status)
+          || (item.status === 200 ? !item.envelope || !Number.isSafeInteger(item.envelope.revision) || item.envelope.revision < 1 || !Object.hasOwn(item.envelope, 'data') : typeof item.error !== 'string' || typeof item.message !== 'string')) throw new Error('后端批量保存结果无效');
+      }
+      return result;
+    },
     async remove(collection, recordId, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
     async removePermanent(collection, recordId, expectedRevision, { signal } = {}) { return request(`${key(collection, recordId)}/permanent`, { method: 'DELETE', body: JSON.stringify({ expectedRevision }), signal }, { method: 'DELETE', recordType: recordTypeFromId(recordId) }); },
     async collectExpiredTrash(namespace = NAMESPACE, { limit = 32, cursor = null, signal } = {}) {

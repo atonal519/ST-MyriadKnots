@@ -1,3 +1,4 @@
+import { processingTransport } from './fixtures/processing-transport.mjs';
 import { describePrefixDifference } from '../src/v3/memory-prefix-diagnostic.js';
 import { planAutoHide } from '../src/v3/auto-hide.js';
 import test from 'node:test';
@@ -1654,6 +1655,7 @@ test('用户权威：摘要元信息保存使用当前canonical人物并保留�
 });
 
 test('NPC身份简介随正式people结果按变化写入本地实体，复用已有目录作对照且不新增请求', async () => {
+  const briefEvidence = quote => [{ quoteSegments: [quote], supports: '人物稳定身份专属依据', evidenceMode: 'explicit', sourceMentionKey: null }];
   const entityId = '99999999-9999-4999-8999-999999999801';
   const floorId = '11111111-1111-4111-8111-111111111111';
   const canonical = validateEntityRecord({ schemaVersion: 3, recordType: 'entity', id: entityId, chatId: CHAT, narrativeGeneration: GENERATION,
@@ -1667,7 +1669,7 @@ test('NPC身份简介随正式people结果按变化写入本地实体，复用�
   assert.deepEqual(envelope.request.payload.knownPeople, [{ entityKey: 'catalog-1', displayName: '裴晚生', aliases: [], entityKind: 'individual', specialRole: 'none', identityBrief: '药铺学徒，今早为邻居送来蔬菜。' }],
     '普通摘要请求应拿到现有合并目录中的简介作为身份对照');
 
-  const first = await normalizeExtractorResponse({ response: { summary: '裴晚生回到裴家药铺，介绍自己是这里的学徒。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '裴家药铺的学徒。' }] },
+  const first = await normalizeExtractorResponse({ response: { summary: '裴晚生回到裴家药铺，介绍自己是这里的学徒。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '裴家药铺的学徒。', identityBriefEvidence: briefEvidence(floor.content.canonicalContent) }] },
     envelope, floor, existingEntities: [canonical], now: '2026-09-02T00:00:00.000Z', expectedScope: envelope.scope });
   assert.equal(first.newEntities.length, 1);
   assert.equal(first.newEntities[0].identityBrief, '裴家药铺的学徒。');
@@ -1676,11 +1678,11 @@ test('NPC身份简介随正式people结果按变化写入本地实体，复用�
   let extractorCall;
   const promptedUpdate = await runExtractorRequest({ generateUtilityTask: async options => {
     extractorCall = options;
-    return { jsonData: { summary: '裴晚生回到裴家药铺，介绍自己是这里的学徒。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '裴家药铺的学徒。' }] } };
+    return { jsonData: { summary: '裴晚生回到裴家药铺，介绍自己是这里的学徒。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '裴家药铺的学徒。', identityBriefEvidence: briefEvidence(floor.content.canonicalContent) }] } };
   }, envelope, floor, existingEntities: [canonical], now: '2026-09-02T00:00:00.000Z', expectedScope: envelope.scope });
   const extractorPayload = JSON.parse(extractorCall.taskMessages[0].content).payload;
   assert.equal(extractorPayload.knownPeople[0].identityBrief, '药铺学徒，今早为邻居送来蔬菜。', '正式摘要请求仍把旧简介作为身份对照传入');
-  assert.match(extractorCall.systemPrompt, /只写人物是谁.*不得包含、替换或追加本楼临时行为/su, '固定utility请求应实际收到禁止追加临时行为的规则');
+  assert.match(extractorCall.systemPrompt, /people\[\]\.identityFacts 是可选的完整当前稳定身份列表/u, '正式摘要请求使用逐条身份与依据合同');
   assert.equal(promptedUpdate.newEntities[0].identityBrief, '裴家药铺的学徒。', '正式请求的正常解析仍保存正文明确支持的完整稳定身份');
 
   const aliasFloor = { ...floor, id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee01' };
@@ -1695,7 +1697,7 @@ test('NPC身份简介随正式people结果按变化写入本地实体，复用�
   const secondFloor = { ...floor, id: '33333333-3333-4333-8333-333333333333', assistantSeq: 3, content: { canonicalContent: '裴晚生接手裴家药铺。' } };
   const secondEnvelope = await createExtractorEnvelope({ batchId: '44444444-4444-4444-8444-444444444444', chatId: CHAT,
     narrativeGeneration: GENERATION, floor: secondFloor, entities: withFirst });
-  assert.equal(secondEnvelope.request.payload.knownPeople[0].identityBrief, '裴家药铺的学徒。', '对照值应取当前目录中较新的不可变修订而非canonical旧值');
+  assert.equal(secondEnvelope.request.payload.knownPeople[0].identityFacts[0].text, '裴家药铺的学徒。', '对照值应取当前目录中较新的不可变修订而非canonical旧值');
   const aggregateEnvelope = await createExtractorEnvelope({ batchId: '44444444-4444-4444-8444-444444444445', chatId: CHAT,
     narrativeGeneration: GENERATION,
     floor: { ...secondFloor, id: '44444444-4444-4444-8444-444444444447', assistantSeq: 4 }, entities: withFirst,
@@ -1703,9 +1705,9 @@ test('NPC身份简介随正式people结果按变化写入本地实体，复用�
       { floor: { ...secondFloor, id: '44444444-4444-4444-8444-444444444446', assistantSeq: 3 } },
       { floor: { ...secondFloor, id: '44444444-4444-4444-8444-444444444447', assistantSeq: 4 } },
     ] });
-  assert.equal(aggregateEnvelope.request.payload.knownPeople[0].identityBrief, '裴家药铺的学徒。', '聚合摘要复用同一已合并目录简介');
+  assert.equal(aggregateEnvelope.request.payload.knownPeople[0].identityFacts[0].text, '裴家药铺的学徒。', '聚合摘要复用同一已合并目录简介');
   assert.equal(aggregateEnvelope.request.payload.knownPeople.length, secondEnvelope.request.payload.knownPeople.length, '聚合入口不扩人物目录');
-  const second = await normalizeExtractorResponse({ response: { summary: '裴晚生接手药铺。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '现已负责药铺经营。' }] },
+  const second = await normalizeExtractorResponse({ response: { summary: '裴晚生接手药铺。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '现已负责药铺经营。', identityBriefEvidence: briefEvidence(secondFloor.content.canonicalContent) }] },
     envelope: secondEnvelope, floor: secondFloor, existingEntities: withFirst, now: '2026-09-03T00:00:00.000Z', expectedScope: secondEnvelope.scope });
   assert.equal(second.newEntities.length, 1, '简介发生变化时写入一条身份修订');
   const currentEntities = [...withFirst, ...second.newEntities];
@@ -1716,14 +1718,14 @@ test('NPC身份简介随正式people结果按变化写入本地实体，复用�
   const repeatFloor = { ...secondFloor, id: '55555555-5555-4555-8555-555555555555', assistantSeq: 4 };
   const repeatEnvelope = await createExtractorEnvelope({ batchId: '66666666-6666-4666-8666-666666666666', chatId: CHAT,
     narrativeGeneration: GENERATION, floor: repeatFloor, entities: reordered });
-  const repeat = await normalizeExtractorResponse({ response: { summary: '裴晚生继续经营药铺。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '现已负责药铺经营。' }] },
+  const repeat = await normalizeExtractorResponse({ response: { summary: '裴晚生继续经营药铺。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityFacts: [{ existingKey: repeatEnvelope.request.payload.knownPeople[0].identityFacts[0].existingKey }] }] },
     envelope: repeatEnvelope, floor: repeatFloor, existingEntities: reordered, now: '2026-09-04T00:00:00.000Z', expectedScope: repeatEnvelope.scope });
   assert.equal(repeat.newEntities.length, 0, '重复简介不新增身份修订');
 
-  const returnToFirstFloor = { ...secondFloor, assistantSeq: 3 };
+  const returnToFirstFloor = { ...secondFloor, assistantSeq: 3, content: { canonicalContent: '裴晚生回到裴家药铺的学徒岗位。' } };
   const returnToFirstEnvelope = await createExtractorEnvelope({ batchId: '77777777-7777-4777-8777-777777777777', chatId: CHAT,
     narrativeGeneration: GENERATION, floor: returnToFirstFloor, entities: reordered });
-  const returnToFirst = await normalizeExtractorResponse({ response: { summary: '裴晚生回到药铺学徒岗位。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '裴家药铺的学徒。' }] },
+  const returnToFirst = await normalizeExtractorResponse({ response: { summary: '裴晚生回到药铺学徒岗位。', people: [{ name: '裴晚生', sameAsEntityKey: 'catalog-1', identityBrief: '裴家药铺的学徒。', identityBriefEvidence: briefEvidence(returnToFirstFloor.content.canonicalContent) }] },
     envelope: returnToFirstEnvelope, floor: returnToFirstFloor, existingEntities: reordered, now: '2026-09-05T00:00:00.000Z', expectedScope: returnToFirstEnvelope.scope });
   assert.equal(returnToFirst.newEntities.length, 1, '回到旧简介值仍是一次新的业务修订');
   assert.equal(returnToFirst.newEntities[0].identityBrief, first.newEntities[0].identityBrief);
@@ -1732,7 +1734,7 @@ test('NPC身份简介随正式people结果按变化写入本地实体，复用�
   const backend = backendHarness();
   const runtimeHarness = harness({ sharedBackend: backend, initialChat: [assistant('裴晚生在药铺学徒。'), user('确认楼层'), assistant('下一楼提到裴晚生。'), user('确认第二楼'), assistant('尾楼。')],
     utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
-      ? { jsonData: { summary: '裴晚生在药铺学徒。', people: [{ name: '裴晚生', identityBrief: '药铺学徒。' }] } }
+      ? { jsonData: { summary: '裴晚生在药铺学徒。', people: [{ name: '裴晚生', identityBrief: '药铺学徒。', identityBriefEvidence: briefEvidence('裴晚生在药铺学徒。') }] } }
       : { jsonData: { noMaterialChange: true } } });
   await runtimeHarness.runtime.start();
   await runtimeHarness.runtime.extractNext();
@@ -1754,7 +1756,9 @@ test('NPC身份简介随正式people结果按变化写入本地实体，复用�
   const publicPerson = people.getState().people.find(person => person.entityId === savedPerson.id);
   assert.equal(publicPerson.profiled, false, 'NPC简介不使既有完整人物资料标记为已建立');
   assert.equal(publicPerson.profile, null);
-  assert.equal(Object.hasOwn(publicPerson, 'identityBrief'), false);
+  assert.equal(publicPerson.identityBrief, '药铺学徒。');
+  assert.equal(publicPerson.identityBriefSource.facts[0].evidence[0].quotedText, '裴晚生在药铺学徒。');
+  people.destroy();
 });
 
 test('新 user 实体在同批次保持确定，不同提取批次使用不同 ID', async () => {
@@ -2750,15 +2754,15 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(buildExtractorSystemPrompt('自定义偏好'), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
   assertQianshiLifecycleGuidance(buildExtractorSystemPrompt('用户自定义偏好'));
   assert.doesNotMatch(buildHighFloorExtractorSystemPrompt(), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-45');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-45/schema-3/semantic-compiler-19');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-46');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-46/schema-3/semantic-compiler-20');
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.aliases.maxItems, 20);
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.maxLength, 400);
-  assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /无旧简介且有明确稳定身份依据时首次填写.*不得包含、替换或追加本楼临时行为/su);
+  assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /identityBriefEvidence.*identityFacts/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /people\[\]\.identityBrief/u);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /knownPeople\.identityBrief 仅是身份对照，不是本楼新证据/u);
-  assert.match(EXTRACTOR_FIXED_CONTRACT, /无旧简介时.*有明确稳定身份依据就首次填写.*已有简介只保留仍有效的身份事实.*本楼明确支持身份新增或纠正时写完整句更新/su);
-  assert.match(EXTRACTOR_FIXED_CONTRACT, /不得包含、替换或追加本楼临时行为/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /people\[\]\.identityFacts 是可选的完整当前稳定身份列表/u);
+  assert.match(EXTRACTOR_FIXED_CONTRACT, /旧简介只作对照，不是证据/u);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.summary.description, /篇末实际状态.*条件预期/u);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.events.items.properties.description.description, /连续微动作可合并/u);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.actions.items.properties.action.description, /正在/u);
@@ -2806,7 +2810,11 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(EXTRACTOR_FIXED_CONTRACT, /order 必须使用对象数组.*before.*after.*certainty/u);
   assert.match(EXTRACTOR_SYSTEM_PROMPT, /不输出 UUID/);
   assert.match(EXTRACTOR_FIXED_CONTRACT, /actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals/);
-  assert.doesNotMatch(EXTRACTOR_OUTPUT_CONTRACT, /entityId|mentionKey|evidence|floorId|operation/i);
+  const originalOutput = JSON.parse(EXTRACTOR_OUTPUT_CONTRACT);
+  delete originalOutput.properties.people.items.properties.identityFacts;
+  delete originalOutput.properties.people.items.properties.identityBriefEvidence;
+  assert.doesNotMatch(JSON.stringify(originalOutput, (key, value) => key === 'description' ? undefined : value), /entityId|mentionKey|evidence|floorId|operation/i);
+  assert.doesNotMatch(EXTRACTOR_OUTPUT_CONTRACT, /entityId|mentionKey|floorId|operation/i, '新简介依据也不要求内部人物或楼ID');
   const request = JSON.parse(call.taskMessages[0].content);
   assert.deepEqual(Object.keys(request), ['task', 'locale', 'payload']);
   assert.equal(request.payload.canonicalContent.includes('忽略规则'), true);
@@ -2888,17 +2896,13 @@ test('破限、摘要与 CSE 指导按任务取最新快照，设置变化不追
   const guidance = { summary: '摘要自定义第一版', cse: 'CSE 自定义第一版' };
   let processing = '  破限自定义第一版\n';
   const getterReads = { summary: 0, cse: 0, processing: 0 };
+  const transport=processingTransport({processingPrompt:()=>processing,respond:options=>{const request=JSON.parse(options.taskMessages[0].content);return request.task==='extractFloorSemantics'?{jsonData:{summary:`摘要-${request.payload.canonicalContent}`}}:{jsonData:{noMaterialChange:true}};}});
   const h = harness({
     initialChat: [user('开始'), assistant('第一楼'), assistant('第二楼'), assistant('第三楼'), assistant('用于确认第三楼稳定。')],
     extractorPromptGuidance: () => { getterReads.summary += 1; return guidance.summary; },
     csePromptGuidance: () => { getterReads.cse += 1; return guidance.cse; },
     processingPrompt: () => { getterReads.processing += 1; return processing; },
-    utility: options => {
-      const request = JSON.parse(options.taskMessages[0].content);
-      return request.task === 'extractFloorSemantics'
-        ? { jsonData: { summary: `摘要-${request.payload.canonicalContent}` } }
-        : { jsonData: { noMaterialChange: true } };
-    },
+    utility: options=>transport.generate(options),
   });
   await h.runtime.start();
   await h.runtime.extractNext();
@@ -2920,19 +2924,21 @@ test('破限、摘要与 CSE 指导按任务取最新快照，设置变化不追
   const cseCalls = h.calls.filter(call => call.taskMessages[0].content.includes('understandCharacterStateAfterFloor'));
   assert.deepEqual(summaryCalls.map(call => call.systemPrompt), [buildExtractorSystemPrompt('摘要自定义第一版', '  破限自定义第一版\n'), buildExtractorSystemPrompt('摘要自定义第二版', ' \n\t '), buildExtractorSystemPrompt('', '破限自定义第三版')]);
   assert.deepEqual(cseCalls.map(call => call.systemPrompt), [buildCseSystemPrompt('CSE 自定义第一版', '  破限自定义第一版\n'), buildCseSystemPrompt('CSE 自定义第二版', ' \n\t '), buildCseSystemPrompt('', '破限自定义第三版')]);
-  assert.equal(getterReads.summary, 3); assert.equal(getterReads.cse, 3); assert.equal(getterReads.processing, 6);
+  assert.equal(getterReads.summary, 3); assert.equal(getterReads.cse, 3); assert.equal(getterReads.processing, 9);assert.equal(transport.prefixReads(),6);
   assert.doesNotMatch(summaryCalls[0].systemPrompt, new RegExp(DEFAULT_EXTRACTOR_GUIDANCE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(cseCalls[0].systemPrompt, new RegExp(DEFAULT_CSE_GUIDANCE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(summaryCalls[0].systemPrompt, /固定事实边界/); assert.ok(summaryCalls[0].systemPrompt.includes(EXTRACTOR_FIXED_CONTRACT));
   assert.match(cseCalls[0].systemPrompt, /固定事实与隐私边界/); assert.ok(cseCalls[0].systemPrompt.includes(CSE_FIXED_CONTRACT));
   assert.doesNotMatch(summaryCalls[0].systemPrompt, /CSE 自定义/); assert.doesNotMatch(cseCalls[0].systemPrompt, /摘要自定义/);
-  for (const call of [summaryCalls[0], cseCalls[0]]) {
+  const sent=transport.bodies.map(body=>({systemPrompt:body.messages[0].content,task:JSON.parse(body.messages[1].content).task}));
+  const summarySent=sent.filter(call=>call.task==='extractFloorSemantics'),cseSent=sent.filter(call=>call.task==='understandCharacterStateAfterFloor');
+  for (const call of [summarySent[0], cseSent[0]]) {
     assert.ok(call.systemPrompt.startsWith('  破限自定义第一版\n\n\n'), '自定义破限文本必须保留首尾空白并逐字置于系统提示开头');
     assert.equal(call.systemPrompt.split('破限自定义第一版').length - 1, 1);
     assert.equal(call.systemPrompt.includes(BASE_PROCESSING_PROMPT), false, '自定义破限文本必须替换内置默认');
   }
-  for (const call of [summaryCalls[1], cseCalls[1]]) assert.equal(call.systemPrompt.split(BASE_PROCESSING_PROMPT).length - 1, 1, '纯空白应回退到内置默认且只出现一次');
-  for (const call of [summaryCalls[2], cseCalls[2]]) {
+  for (const call of [summarySent[1], cseSent[1]]) assert.equal(call.systemPrompt.split(BASE_PROCESSING_PROMPT).length - 1, 1, '纯空白应回退到内置默认且只出现一次');
+  for (const call of [summarySent[2], cseSent[2]]) {
     assert.ok(call.systemPrompt.startsWith('破限自定义第三版\n\n'));
     assert.equal(call.systemPrompt.split('破限自定义第三版').length - 1, 1);
     assert.equal(call.systemPrompt.includes(BASE_PROCESSING_PROMPT), false);
@@ -12172,18 +12178,19 @@ test('既有目标快照无法对应时只带已知AI楼序穿过stale catch', a
 });
 
 
-test('全局破限独立千事补齐与重判按运行固定快照，保留事件与来源', async () => {
+test('全局破限独立千事补齐与重判在最终transport单次注入且保留事件与来源', async () => {
   for (const configured of ['千事共用第一版', '千事共用第二版', '  \n ']) {
     let processing = configured, mode = 'summary';
     const taskCalls = [];
-    const h = harness({ processingPrompt: () => processing, initialChat: [user('开始'), assistant('顾舟答应明日归还旧书。'), user('稳定')], utility: options => {
+    const transport=processingTransport({processingPrompt:()=>processing,respond:options=>{
       const request = JSON.parse(options.taskMessages[0].content);
       if (mode === 'summary') return { jsonData: { summary: '顾舟答应归还旧书。' } };
       taskCalls.push(options);
       processing = '在途变化';
       if (request.task === 'rejudgeStoredQianshiV1') return { jsonData: { qianshi: { events: request.records.map(record => ({ key: record.key, status: 'completed', actionStatus: 'completed', matter: false })), order: [] } } };
       return { jsonData: { floors: request.floors.map(row => ({ floorKey: row.floorKey, qianshi: { events: [{ key: 'return-book', title: '归还旧书', description: '顾舟答应明日归还旧书。', status: 'planned', matter: true }], order: [] } })) } };
-    } });
+    }});
+    const h=harness({processingPrompt:()=>processing,initialChat:[user('开始'),assistant('顾舟答应明日归还旧书。'),user('稳定')],utility:options=>transport.generate(options)});
     await h.runtime.start(); await h.runtime.extractNext({ analyzeState: false });
     const history = await h.runtime.prepareQianshiHistory(); mode = 'history';
     const saved = await h.runtime.startQianshiHistory(history.planId);
@@ -12195,7 +12202,8 @@ test('全局破限独立千事补齐与重判按运行固定快照，保留事�
     assert.equal(judged.status, 'completed', JSON.stringify(judged));
     assert.equal(taskCalls.length, 2);
     const prefix = configured.trim() ? configured : BASE_PROCESSING_PROMPT;
-    for (const call of taskCalls) { assert.ok(call.systemPrompt.startsWith(prefix+'\n\n')); assert.equal(call.systemPrompt.split(prefix).length - 1, 1); }
+    for (const body of transport.bodies.slice(1)) { const system=body.messages[0].content;assert.ok(system.startsWith(prefix+'\n\n'));assert.equal(system.split(prefix).length-1,1); }
+    for(const call of taskCalls)assert.equal(call.systemPrompt.includes(BASE_PROCESSING_PROMPT),false);
     const event = (await h.store.readReachable({ mode: 'runtime' })).floorMemories[0].qianshiDelta.events[0];
     assert.equal(event.id, old.id); assert.equal(event.sourceFloorId, old.sourceFloorId); assert.equal(event.status, 'completed');
   }
@@ -12344,7 +12352,7 @@ test('已知人物临时称呼只供本轮绑定，显式稳定别名与身份�
     entityType: 'person', displayName: '青禾', aliases: [], specialRole: 'none', firstSeenFloorId: null,
     lastSeenFloorId: null, status: 'established', recordStatus: 'active' };
   const temporary = await direct({ summary: '那个人递来地图。', people: [
-    { name: '那个人', sameAsEntityKey: 'catalog-1', identityBrief: '药铺学徒。' },
+    { name: '那个人', sameAsEntityKey: 'catalog-1', identityBrief: '药铺学徒。', identityBriefEvidence: [{ quoteSegments: ['那个人是药铺学徒'], supports: '明确职业', evidenceMode: 'explicit', sourceMentionKey: null }] },
   ], actions: [{ actor: '那个人', action: '递来地图' }] }, { entities: [known], content: '那个人是药铺学徒，递来地图。' });
   assert.equal(temporary.memory.actions[0].actorEntityId, known.id);
   const directory = buildEntityIdentityDirectory({ entities: [known, ...temporary.newEntities] });
@@ -12384,4 +12392,23 @@ test('同一已知人物多条临时称呼全部绑定但不变成长久别名',
   assert.equal(result.memory.observations[0].subjectEntityId, known.id);
   assert.equal(result.memory.participants.length, 1);
   assert.equal(result.newEntities.length, 0, '临时多称呼不产生永久alias修订');
+});
+
+test('实际派发破限指纹让A准备B派发的待存结果在B重用、改回A重新生成', async () => {
+  const {createCompactApiClient}=await import('../src/compact-api-client.js');
+  const {createTaskRouter}=await import('../src/api-routing.js');
+  for(const [dispatchedPrompt,retryPrompt,expected] of [['B','B',1],['B','A',2],['',BASE_PROCESSING_PROMPT,1],[BASE_PROCESSING_PROMPT,'',1]]) {
+    let processing='A',dispatches=0,actualSystem='';
+    const client=createCompactApiClient({processingPrompt:()=>processing,fetchImpl:async(_path,options)=>{dispatches++;actualSystem=JSON.parse(options.body).messages[0].content;return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({summary:'已完成的本楼摘要。'})},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}});}});
+    const router=createTaskRouter({resolver:{resolveUtility:()=>({kind:'independent',source:'test',config:{url:'https://fixture.invalid',key:'fixture',model:'fixture'}}),resolve:()=>({kind:'independent'})},compactClient:client});
+    let first=true;
+    const h=harness({processingPrompt:()=>processing,utility:options=>{if(first){first=false;processing=dispatchedPrompt;}return router.generateUtilityTask(options);}});
+    await h.runtime.start();const floorId=h.runtime.getState().floors[0].floorId;
+    let failOnce=true;h.backend.setBeforePut(({key})=>{if(failOnce&&key.startsWith('v3-index-')){failOnce=false;throw Object.assign(new Error('fixture save failure'),{status:504,code:'BACKEND_TIMEOUT'});}});
+    await h.runtime.extractFloor(floorId,{analyzeState:false});assert.equal(dispatches,1);
+    h.backend.setBeforePut(null);processing=retryPrompt;
+    const state=await h.runtime.extractFloor(floorId,{analyzeState:false});assert.equal(state.rememberedCount,1,JSON.stringify(state.lastExtractorError));assert.equal(dispatches,expected);
+    const provenance=h.foundationRuntime.getReachable().run.diagnostics.floorProvenance[floorId];
+    assert.equal(provenance.systemPromptFingerprint,`sha256:${createHash('sha256').update(actualSystem).digest('hex')}`);
+  }
 });

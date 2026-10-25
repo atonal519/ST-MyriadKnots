@@ -19,6 +19,10 @@ export const PEOPLE_PROFILE_FIELDS = Object.freeze(['name', 'aliases', ...PEOPLE
 export const LEGACY_PEOPLE_PROFILE_FIELDS = Object.freeze(['name', 'aliases', 'background', 'appearance', 'personality', 'notes']);
 export const PEOPLE_PROFILE_FIELD_SET = new Set(PEOPLE_PROFILE_FIELDS);
 
+export function hasPeopleProfileMaterial(profile) {
+  return PEOPLE_PROFILE_FIELDS.some(field => field !== 'name' && field !== 'aliases' && String(profile?.[field] ?? '').trim().length > 0);
+}
+
 export const PEOPLE_PROFILE_LABELS = Object.freeze(Object.fromEntries([
   ['name', '姓名'], ['aliases', '别名'], ...PEOPLE_PROFILE_GROUPS.flatMap(group => group.fields.map(([field, label]) => [field, label])),
 ]));
