@@ -282,13 +282,23 @@ export function createChatMemoryManagement({
     if (firstError) throw firstError;
 
     operation.phase = 'deletingBinding'; notify();
-    try {
-      const binding = await client.get(CHAT_IDENTITY_COLLECTION, `binding-${identity.chatId}`);
-      assertCurrent();
-      await removeEnvelope(CHAT_IDENTITY_COLLECTION, { ...binding, recordId: `binding-${identity.chatId}` }, controller.signal);
-      operation.deletedCount += 1;
-      assertCurrent();
-    } catch (error) { if (error?.status !== 404) throw error; }
+    let binding;
+    try { binding = await client.get(CHAT_IDENTITY_COLLECTION, `binding-${identity.chatId}`); }
+    catch (error) {
+      if (error?.name === 'AbortError' || controller.signal.aborted) throw error;
+      // Auxiliary directory cleanup does not block the saved file cleanup.
+    }
+    assertCurrent();
+    if (binding) {
+      try {
+        await removeEnvelope(CHAT_IDENTITY_COLLECTION, { ...binding, recordId: `binding-${identity.chatId}` }, controller.signal);
+        operation.deletedCount += 1;
+      } catch (error) {
+        if (error?.name === 'AbortError' || controller.signal.aborted) throw error;
+        // The directory is auxiliary to the graph and file.
+      }
+    }
+    assertCurrent();
 
     operation.phase = 'clearingHost'; notify();
     await persistTargetCleanup(identity, operation.target, initialTargetChat, operation.clearPrequel, operation.skipSessionResume);

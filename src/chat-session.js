@@ -101,15 +101,18 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
       state = Object.freeze({ status: 'ready', identity: publicIdentity(context.host) });
       return Promise.resolve(state);
     }
-    let taskInputs = null;
-    try { taskInputs = identityCoordinator ? captureTaskSnapshot(context) : null; }
-    catch (error) { return Promise.reject(failPreparation(error, 'snapshotClone', entryPoint)); }
+    let taskInputs;
+    const getTaskInputs = () => {
+      if (taskInputs) return taskInputs;
+      try { return taskInputs = captureTaskSnapshot(context); }
+      catch (error) { throw failPreparation(error, 'snapshotClone', entryPoint); }
+    };
     const operation = { host: context.host, controller: new AbortController() };
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
       try {
         const chatId = identityCoordinator
-          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, taskInputs, onProgress: value => { operation.progress = value; activity.notifyActivity(); } })
+          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, getTaskInputs, onProgress: value => { operation.progress = value; activity.notifyActivity(); } })
           : await ensureChatId(context.raw, context.host);
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
         if (!isUuid(chatId)) throw new ChatSessionError('聊天身份保存后无法确认。请到“记忆管理”页点击“复制状态诊断”反馈。', 'CHAT_SESSION_PERSIST_FAILED');

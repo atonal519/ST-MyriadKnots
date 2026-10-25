@@ -186,12 +186,12 @@ export async function runHistoricalRebuildTask({
     freshUuid: newUuid,
     persist: async (context, chatId) => {
       taskTarget.chatId = chatId;
-      context.chatMetadata.qianqianjie = { schemaVersion: 2, chatId };
+      context.chatMetadata.qianqianjie = { schemaVersion: 2, chatId, file: { characterLocator: identity.characterLocator, hostChatId: taskTarget.hostChatId } };
       await targetContext.saveChatMetadata();
       return true;
     },
   });
-  if (provisionalIdentity) targetContext.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: taskTarget.chatId };
+  if (provisionalIdentity) targetContext.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: taskTarget.chatId, file: { characterLocator: identity.characterLocator, hostChatId: taskTarget.hostChatId } };
   const targetSession = createChatSession({ contextProvider: () => targetContext, isEnabled, identityCoordinator: targetIdentityCoordinator });
   const store = createFoundationStore({ client, contextProvider: () => targetSession.identity(), isEnabled, coreRecordCache });
   const preparedState = await targetSession.prepare().then(state => {

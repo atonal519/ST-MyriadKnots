@@ -22,6 +22,7 @@ import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime } from '../src
 import { createPluginUpdates } from '../src/plugin-updates.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { sanitizeMemoryContent } from '../src/memory-content-sanitizer.js';
+import { createTauriBackendFetch } from '../src/tauri-backend.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
@@ -316,21 +317,23 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const seededSettings = wrapperSeed ? structuredClone(wrapperSeed) : { qianqianjie: {}, 'schedule-planner': {} };
   const eventRegistrations = new Map();
   const startupWarnings = [];
+  const fetchRequests = [];
   const testConsole = { ...console, warn(...args) { startupWarnings.push(args); } };
   const backendRecords = new Map();
   const ttRecords = new Map();
+  const ttReadKeys = [];
   let backendWriteCalls = 0;
   let saveMetadataCalls = 0;
   let chatSaveCalls = 0;
   const ttKey = ({ namespace, table = 'main', key }) => `${namespace}/${table}/${key}`;
   const ttStore = {
-    async tryGetJson(options) { const key = ttKey(options); return ttRecords.has(key) ? { found: true, value: structuredClone(ttRecords.get(key)) } : { found: false }; },
+    async tryGetJson(options) { const key = ttKey(options); ttReadKeys.push(key); return ttRecords.has(key) ? { found: true, value: structuredClone(ttRecords.get(key)) } : { found: false }; },
     async deleteJson(options) { ttRecords.delete(ttKey(options)); },
     async setJson(options) { ttRecords.set(ttKey(options), nativeJson(options.value)); },
     async listKeys({ namespace, table = 'main' }) { const prefix = `${namespace}/${table}/`; return [...ttRecords.keys()].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)); },
@@ -341,7 +344,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   let ai0BodyReads = 0;
   const ai0Text = '新聊天正在生成的 AI0 正文';
   const ai0Message = { is_user: false, is_system: false, get mes() { ai0BodyReads += 1; return ai0Text; }, swipes: [ai0Text], swipe_id: 0 };
-  const hostChat = locationReferenceChat ? [
+  const hostChat = firstIdentityChat ? structuredClone(firstIdentityChat.live) : locationReferenceChat ? [
     { is_user: false, is_system: false, mes: '明天继续讨论住处。<location>东区公寓·卧室</location>', swipes: ['明天继续讨论住处。<location>东区公寓·卧室</location>'], swipe_id: 0 },
     { is_user: true, is_system: false, mes: '接着说下去', send_date: '2026-09-13T00:00:00.000Z', extra: {} },
   ] : legacyReceiptUi ? [
@@ -350,14 +353,15 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
       swipes: [legacyReceiptPrequelBudget?.richCurrent ? '合成旧事：林岚在门口留下钥匙。' : legacyReceiptPrequelBudget ? '旧楼正文' : '昨晚讨论了住处和约定。'], swipe_id: 0 },
     { is_user: true, is_system: false, mes: legacyReceiptPrequelBudget ? '林岚，请继续 archive ledger 的归档说明。' : '继续刚才的话题。', send_date: '2026-09-13T00:00:00.000Z', extra: {} },
     ...(!legacyReceiptPrequelBudget ? [{ is_user: true, is_system: false, mes: '再接着说。', send_date: '2026-09-13T00:01:00.000Z', extra: {} }] : []),
-  ] : unstableAi0 ? [ai0Message] : initializeWithoutSubtle ? [
+  ] : unstableAi0 ? [ai0Message] : initializeWithoutSubtle || fileOwnedIdentity ? [
     { is_user: false, is_system: false, mes: '产物指纹🙂', swipes: ['产物指纹🙂'], swipe_id: 0 },
     { is_user: true, is_system: false, mes: '确认', send_date: '2026-09-13T00:00:00.000Z' },
   ] : [];
   const host = {
     characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png', name: '角色' }], userAvatar: 'me.png',
     chatMetadata: enabled ? {
-      qianqianjie: withoutQqjIdentity ? { schemaVersion: 1 } : { schemaVersion: 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      qianqianjie: withoutQqjIdentity ? { schemaVersion: 1 } : { schemaVersion: fileOwnedIdentity ? 2 : 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        ...(fileOwnedIdentity ? { file: { characterLocator: 'char.png', hostChatId: 'host-chat' } } : {}) },
       ...(legacyReceiptPrequelBudget ? { qianqianjiePrequel: legacyReceiptPrequelBudget.text } : {}),
       ...(metadataWithUncloneableField ? { otherPlugin: { label: '保留字段', transient: () => 'not stored' } } : {}),
     } : {},
@@ -369,7 +373,18 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     getRequestHeaders: () => ({}), eventTypes: { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
     eventSource: { once(name, callback) { assert.equal(name, 'app-ready'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); assert.equal(callback(), undefined, '已就绪宿主回放不等待QQJ准备'); }, on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
-  const readyRecords = locationReferenceChat || legacyReceiptUi ? await readyFoundationRecords(hostGlobalName, host, manualAliases) : null;
+  if (firstIdentityChat) host.chatMetadata = { otherPlugin: { header: '保留' } };
+  const readyRecords = locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? await readyFoundationRecords(hostGlobalName, host, manualAliases) : null;
+  if (tauri && readyRecords) {
+    const nativeFetch = createTauriBackendFetch({ globalRef: { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } }, crypto: globalThis.crypto } });
+    for (const [key, record] of readyRecords) {
+      const response = await nativeFetch(`/api/plugins/st-bainiaodata/v1/records/qianqianjie/${key}`, {
+        method: 'PUT', body: JSON.stringify({ expectedRevision: 0, data: record.data }),
+      });
+      assert.equal(response.ok, true, '正式TT适配器应保存离线ready图');
+    }
+    ttReadKeys.length = 0;
+  }
   if (legacyReceiptUi) {
     const receipt = legacyReceiptPrequelBudget
       ? (await generatedCurrentReceipt18({ hostGlobalName, chat: hostChat, userMessage: hostChat[1],
@@ -387,7 +402,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const historicalReceiptCheck = legacyReceiptUi
     ? await projectHistoricalRecallReceipt(hostChat[1], { chatId: host.chatMetadata.qianqianjie.chatId, userMessageIndex: 1 }) : null;
   if (metadataProxy) host.chatMetadata = new Proxy(host.chatMetadata, {});
-  let hostFile = { header: { chat_metadata: metadataWithUncloneableField ? JSON.parse(JSON.stringify(host.chatMetadata)) : structuredClone(host.chatMetadata) }, chat: structuredClone(host.chat) };
+  let hostFile = { header: { chat_metadata: metadataWithUncloneableField ? JSON.parse(JSON.stringify(host.chatMetadata)) : structuredClone(host.chatMetadata) }, chat: structuredClone(firstIdentityChat?.saved ?? host.chat) };
   const initialAi0BodyReads = ai0BodyReads;
   if ((initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi) && !withoutQqjIdentity) backendRecords.set('/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-identity-bindings/binding-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
     revision: 1,
@@ -397,12 +412,13 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
       state: 'ready', sourceChatId: null, createdAt: '2026-09-13T00:00:00.000Z', updatedAt: '2026-09-13T00:00:00.000Z',
     },
   });
-  if (locationReferenceChat || legacyReceiptUi) {
+  if (locationReferenceChat || legacyReceiptUi || fileOwnedIdentity) {
     for (const [key, record] of readyRecords) backendRecords.set(`/api/plugins/st-bainiaodata/v1/records/qianqianjie/${key}`, record);
   }
   let backendCalls = 0;
   let backendHealthCalls = 0;
-  let backendDataCalls = 0;
+  let backendDataCalls = 0, chatReadCalls = 0;
+  const backendDataRequestPaths = [];
   let backendTrashGcPostCalls = 0;
   let localForageCreateCalls = 0;
   let mesAppendCalls = 0;
@@ -432,9 +448,10 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     console: testConsole, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval,
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
-      if (String(url) === '/api/chats/get') return hostFile
+      fetchRequests.push({ url: String(url), method: options.method ?? 'GET' });
+      if (String(url) === '/api/chats/get') { chatReadCalls++; return hostFile
         ? { ok: true, status: 200, async json() { return [structuredClone(hostFile.header), ...structuredClone(hostFile.chat)]; } }
-        : { ok: true, status: 200, async json() { return { new_chat: true }; } };
+        : { ok: true, status: 200, async json() { return { new_chat: true }; } }; }
       if (String(url) === '/api/chats/save') {
         chatSaveCalls += 1;
         const body = JSON.parse(options.body), [header, ...chat] = body.chat;
@@ -452,7 +469,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
         }
         return { ok: false, status: 404, async json() { return {}; } };
       }
-      backendDataCalls += 1;
+      backendDataCalls += 1; backendDataRequestPaths.push(requestUrl);
       if (options.method === 'POST' && /\/v1\/trash\/[^/]+\/collect-expired(?:\?|$)/u.test(requestUrl)) backendTrashGcPostCalls += 1;
       if (privateDiagnostics && String(url).endsWith('/diagnostics.local.json')) return { ok: true, json: async () => ({ enabled: true }) };
       if (privateDiagnostics && String(url).includes('/private-diagnostics/')) {
@@ -464,7 +481,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
         const value = privateRecords.get(String(url));
         return value ? { ok: true, json: async () => structuredClone(value) } : { ok: false, status: 404 };
       }
-      if (initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi) {
+      if (initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi || fileOwnedIdentity) {
         if (allowIdentityWrites && options.method === 'PUT' && String(url).includes('/chat-identity-bindings/')) {
           const body = JSON.parse(options.body), record = { revision: body.expectedRevision + 1, data: body.data };
           backendRecords.set(String(url), record);
@@ -472,7 +489,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
         }
         const record = backendRecords.get(String(url));
         return record
-          ? { ok: true, status: 200, async json() { return locationReferenceChat || legacyReceiptUi ? vmJson(record) : structuredClone(record); } }
+          ? { ok: true, status: 200, async json() { return locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? vmJson(record) : structuredClone(record); } }
           : { ok: false, status: 404, async json() { return {}; } };
       }
       if (enabled) return { ok: false, status: 404, async json() { return {}; } };
@@ -516,20 +533,23 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
-  if (tauri && enabled) {
-    for (let attempt = 0; attempt < 100 && ttRecords.size === 0; attempt += 1) {
-      await new Promise(resolvePromise => setTimeout(resolvePromise, 5));
-    }
-    assert.ok(ttRecords.size > 0, 'TT bundle must write through the native store');
-    assert.ok([...ttRecords.values()].some(value => {
-      const slot = value.format === 'qqj-tt-json-v2' ? JSON.parse(value.serialized) : value;
-      return slot.current?.data?.kind === 'qqj-chat-identity-binding';
-    }));
-  }
   if (initializeWithoutSubtle) {
     for (let attempt = 0; attempt < 200 && hostShaCalls === 0; attempt += 1) {
       await new Promise(resolvePromise => setImmediate(resolvePromise));
     }
+  }
+  if (fileOwnedIdentity) {
+    // APP_READY starts the original asynchronous load without awaiting it.
+    // Observe its real public terminal state without issuing another read.
+    let snapshot;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      snapshot = context.qqj_v3_public_bridge_v1?.getSnapshot?.();
+      if (snapshot?.memory?.status === 'ready' && snapshot.memory.syncStatus === 'idle') break;
+      await new Promise(resolvePromise => setImmediate(resolvePromise));
+    }
+    assert.equal(snapshot?.identity?.qqjChatId, host.chatMetadata.qianqianjie.chatId);
+    assert.equal(snapshot?.memory?.status, 'ready', JSON.stringify({ snapshot, startupWarnings, backendDataRequestPaths }));
+    assert.equal(snapshot.memory.syncStatus, 'idle');
   }
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
   let locationReferenceResult = null;
@@ -572,7 +592,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
+  return { status: entry.status, fetchRequests, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
 }
 
 test('生产bundle首次合并旧包裹规则，已有共享空值不从旧配置回灌', async () => {
@@ -607,30 +627,44 @@ test('实际生产包无需打开面板或保存聊天，私有通道自动记�
   assert.doesNotMatch(JSON.stringify(records), /host-chat|char\.png|injectionText|apiKey/u);
 });
 
-test('TT production bundle boots and persists chat identity through native store without BaiNiao HTTP', async () => {
-  const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true });
+test('TT production bundle reads the file identity graph through native store without BaiNiao HTTP', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true, fileOwnedIdentity: true });
   assert.equal(result.status, 'evaluated');
+  assert.equal(result.startupWarnings.length, 0);
+  const rootSlot = [...result.ttRecords].find(([, value]) => {
+    const slot = value.format === 'qqj-tt-json-v2' ? JSON.parse(value.serialized) : value;
+    return slot.collection === `chat-${result.finalQqjMetadata.chatId}` && slot.recordId === 'v3-root';
+  });
+  assert.ok(rootSlot && result.ttReadKeys.includes(rootSlot[0]), 'TT启动必须实际读取当前文件ID的正式root');
+  assert.equal(result.getPublicSnapshot().memory.status, 'ready');
+  assert.equal(result.chatReadCalls, 0);
+  assert.equal(result.chatSaveCalls, 0);
+  assert.equal([...result.ttRecords.values()].some(value => (value.format === 'qqj-tt-json-v2' ? JSON.parse(value.serialized) : value).collection === 'chat-identity-bindings'), false);
   assert.equal(result.backendCalls, 0);
   assert.equal(result.localForageCreateCalls, 0, 'TT生产入口始终不创建浏览器cache实例');
   assert.equal(result.interceptorType, 'function');
 });
 
-test('实际生产 bundle 缺少 crypto.subtle 时经宿主 SHA 完成身份认领与地基指纹扫描', async () => {
+test('实际生产 bundle 缺少 crypto.subtle 时经宿主 SHA 读取文件身份并完成地基指纹扫描', async () => {
   const result = await isolateBundle('SillyTavern', { enabled: true, initializeWithoutSubtle: true });
   const bindings = [...result.backendRecords.values()].filter(record => record.data?.kind === 'qqj-chat-identity-binding');
   assert.equal(result.status, 'evaluated');
   assert.equal(result.hostShaCalls > 0, true, '实际 bundle 内部没有调用宿主 SHA 接口');
-  assert.equal(bindings.length, 1, '实际 bundle 没有完成聊天身份认领');
+  assert.equal(bindings.length, 1, '读取沿用既有辅助记录，不新增认领');
+  assert.equal(result.backendWriteCalls, 0);
+  assert.equal(result.finalQqjMetadata.chatId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   assert.equal(result.hostShaInputs.some(bytes => new TextDecoder().decode(bytes) === '产物指纹🙂'), true, '实际地基扫描没有计算正文指纹');
 });
 
 test('实际生产入口把只有 AI0 正文的新聊天留在待记录状态，不报身份尚未建立错误', async () => {
   for (const hostName of ['SillyTavern', 'Luker']) {
-    const result = await isolateBundle(hostName, { enabled: true, initializeWithoutSubtle: true, unstableAi0: true });
+    const result = await isolateBundle(hostName, { enabled: true, initializeWithoutSubtle: true, unstableAi0: true, withoutQqjIdentity: true, allowIdentityWrites: true });
     const bindings = [...result.backendRecords.values()].filter(record => record.data?.kind === 'qqj-chat-identity-binding');
     assert.equal(result.status, 'evaluated');
     assert.equal(result.startupWarnings.length, 0, `${hostName} 的正常待记录状态不能记为启动故障`);
-    assert.equal(bindings.length, 1, `${hostName} 已有聊天名时仍应完成真实 QQJ 身份准备`);
+    assert.equal(bindings.length, 0, `${hostName} 新文件身份无需ready目录认领`);
+    assert.ok(result.finalQqjMetadata?.chatId); assert.equal(result.chatSaveCalls, 1);
+    assert.deepEqual(result.finalQqjMetadata.file, { characterLocator: 'char.png', hostChatId: 'host-chat' });
     assert.ok(result.ai0BodyReadCount > 0, `${hostName} 生产入口应实际读取未稳定 AI0 正文`);
   }
 });
@@ -640,13 +674,40 @@ test('实际生产入口为新卡正常准备身份，未稳定 AI0 仍不误报
     const result = await isolateBundle(hostName, { enabled: true, initializeWithoutSubtle: true, allowIdentityWrites: true, unstableAi0: true, withoutQqjIdentity: true });
     assert.equal(result.status, 'evaluated');
     assert.equal(result.startupWarnings.length, 0, `${hostName} 后端完成既有身份准备后不应留下读取错误`);
-    assert.ok(result.backendWriteCalls > 0, `${hostName} 正常新卡流程应保存身份绑定`);
+    assert.equal(result.backendWriteCalls, 0, `${hostName} 正常新卡身份直接保存到文件`);
     assert.ok(result.chatSaveCalls > 0, `${hostName} 正常新卡流程应通过宿主聊天保存入口写入身份`);
-    assert.equal([...result.backendRecords.values()].filter(record => record.data?.kind === 'qqj-chat-identity-binding').length, 1);
+    assert.equal([...result.backendRecords.values()].filter(record => record.data?.kind === 'qqj-chat-identity-binding').length, 0);
     assert.ok(result.finalQqjMetadata?.chatId, `${hostName} 已有宿主聊天后应按既有合同准备 QQJ 身份`);
     assert.ok(result.ai0BodyReadCount > 0, `${hostName} 生产扫描会读取正文但不把未稳定 AI0 封存`);
   }
 });
+
+for (const hostName of ['SillyTavern', 'Luker']) {
+  for (const [caseName, savedText, liveText] of [
+    ['空开场', null, null],
+    ['普通AI0', '相同开场白', '相同开场白'],
+    ['宏开场', '你好，{{user}}。', '你好，测试用户。'],
+  ]) test(`实际生产入口首次身份保留固定文件与页面正文：${hostName} ${caseName}`, async () => {
+    const saved = savedText === null ? [] : [{ is_user: false, is_system: false, mes: savedText, extra: { otherPlugin: { message: '保留' } } }];
+    const live = liveText === null ? [] : [{ is_user: false, is_system: false, mes: liveText, extra: { otherPlugin: { message: '保留' } } }];
+    const result = await isolateBundle(hostName, { enabled: true, firstIdentityChat: { saved, live } });
+    assert.equal(result.status, 'evaluated');
+    assert.equal(result.startupWarnings.length, 0);
+    assert.equal(result.chatReadCalls, 3); assert.equal(result.chatSaveCalls, 1);
+    assert.equal(result.backendWriteCalls, 0); assert.equal(result.saveMetadataCalls, 0);
+    assert.deepEqual(result.hostFile.chat, saved, '首次编号保存保留文件原正文和其它插件字段');
+    assert.deepEqual(result.hostChat, live, '编号投影保留宿主渲染后的页面消息');
+    assert.deepEqual(result.hostFile.header.chat_metadata.otherPlugin, { header: '保留' });
+    assert.match(result.finalQqjMetadata?.chatId ?? '', /^[0-9a-f-]{36}$/u);
+    assert.deepEqual(result.finalQqjMetadata.file, { characterLocator: 'char.png', hostChatId: 'host-chat' });
+    assert.deepEqual(result.hostFile.header.chat_metadata.qianqianjie, result.finalQqjMetadata);
+    const snapshot = result.getPublicSnapshot();
+    assert.equal(snapshot.identity.qqjChatId, result.finalQqjMetadata.chatId);
+    assert.equal(snapshot.memory.floors.length, 0);
+    assert.equal(result.fetchRequests.some(request => /generate|completion|openai/iu.test(request.url)), false);
+    assert.equal(result.fetchRequests.some(request => request.url.includes('/chat-identity-bindings/')), false);
+  });
+}
 
 test('实际生产 bundle 原生与 Luker 启动均能捕获含其他插件临时字段的宿主元数据', async () => {
   for (const hostGlobalName of ['SillyTavern', 'Luker']) {
@@ -668,7 +729,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.9.6');
+  assert.equal(manifest.version, '0.9.7');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -1288,22 +1349,30 @@ test('生产 bundle 在 Luker-only 兼容全局下也可隔离加载，关闭时
   assert.equal(result.backendDataCalls, 0);
 });
 
-test('生产 bundle 在 Luker-only 且插件启用时真实进入身份绑定与旧 V3 root 核对路径', async () => {
-  const result = await isolateBundle('Luker', { enabled: true });
+test('生产 bundle 在 Luker-only 且插件启用时按文件身份读取旧 V3 root', async () => {
+  const result = await isolateBundle('Luker', { enabled: true, fileOwnedIdentity: true });
   assert.equal(result.status, 'evaluated');
-  assert.equal(result.backendDataCalls, 3, '依次读取绑定、核对旧 root，并尝试 CAS 认领');
+  assert.ok(result.backendDataRequestPaths.some(path => path.endsWith('/v3-root')), '实际读取文件ID对应的V3 root');
+  assert.equal(result.backendDataRequestPaths.some(path => path.includes('/chat-identity-bindings/')), false, '普通有归属文件不读目录');
+  assert.equal(result.chatReadCalls, 0, '普通有归属文件不重读整聊天');
+  assert.equal(result.startupWarnings.length, 0);
   assert.equal(result.backendHealthCalls, 1, '旧后端 capability 只核对一次');
   assert.equal(result.backendTrashGcPostCalls, 0, '旧后端不支持时不能提交回收站清理请求');
-  assert.equal(result.backendWriteCalls, 1, '仍只尝试一次身份 CAS');
+  assert.equal(result.backendWriteCalls, 0, '普通文件读取不认领新身份');
+  console.log(JSON.stringify({ host: 'Luker', fileId: result.finalQqjMetadata.chatId, backendPaths: result.backendDataRequestPaths, chatGets: result.chatReadCalls, bindingWrites: result.backendWriteCalls }));
 });
 
-test('生产 bundle 在 official-only 且插件启用时真实进入身份绑定与旧 V3 root 核对路径', async () => {
-  const result = await isolateBundle('SillyTavern', { enabled: true });
+test('生产 bundle 在 official-only 且插件启用时按文件身份读取旧 V3 root', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, fileOwnedIdentity: true });
   assert.equal(result.status, 'evaluated');
-  assert.equal(result.backendDataCalls, 3, '依次读取绑定、核对旧 root，并尝试 CAS 认领');
+  assert.ok(result.backendDataRequestPaths.some(path => path.endsWith('/v3-root')), '实际读取文件ID对应的V3 root');
+  assert.equal(result.backendDataRequestPaths.some(path => path.includes('/chat-identity-bindings/')), false, '普通有归属文件不读目录');
+  assert.equal(result.chatReadCalls, 0, '普通有归属文件不重读整聊天');
+  assert.equal(result.startupWarnings.length, 0);
   assert.equal(result.backendHealthCalls, 1, '旧后端 capability 只核对一次');
   assert.equal(result.backendTrashGcPostCalls, 0, '旧后端不支持时不能提交回收站清理请求');
-  assert.equal(result.backendWriteCalls, 1, '仍只尝试一次身份 CAS');
+  assert.equal(result.backendWriteCalls, 0, '普通文件读取不认领新身份');
+  console.log(JSON.stringify({ host: 'SillyTavern', fileId: result.finalQqjMetadata.chatId, backendPaths: result.backendDataRequestPaths, chatGets: result.chatReadCalls, bindingWrites: result.backendWriteCalls }));
   const clockCalls = result.promptCalls.filter(call => call[0] === 'myknots_story_clock');
   assert.deepEqual(clockCalls[0], ['myknots_story_clock', '']);
   assert.equal(clockCalls.length, 2);
@@ -1312,15 +1381,18 @@ test('生产 bundle 在 official-only 且插件启用时真实进入身份绑定
   assert.deepEqual(clockCalls[1].slice(2), [17, 0, false, 29]);
 });
 
-test('生产dist在原生SillyTavern与Luker关闭缓存后不创建IndexedDB实例，正式身份存储入口仍运行', async () => {
+test('生产dist在原生SillyTavern与Luker关闭缓存后不创建IndexedDB实例，仍读取文件ID对应的V3图', async () => {
   for (const host of ['SillyTavern', 'Luker']) {
-    const result = await isolateBundle(host, { enabled: true, coreCacheEnabled: false });
+    const result = await isolateBundle(host, { enabled: true, coreCacheEnabled: false, fileOwnedIdentity: true });
     assert.equal(result.status, 'evaluated', `${host}生产包应正常启动`);
     assert.equal(result.localForageCreateCalls, 0, `${host}关闭设置不得创建localForage实例`);
-    assert.equal(result.backendDataCalls, 3, `${host}正式身份/地基存储请求仍沿后端执行`);
+    assert.equal(result.startupWarnings.length, 0);
+    assert.ok(result.backendDataRequestPaths.some(path => path.endsWith('/v3-root')));
+    assert.equal(result.backendDataRequestPaths.some(path => path.includes('/chat-identity-bindings/')), false);
+    assert.equal(result.chatReadCalls, 0);
     assert.equal(result.backendHealthCalls, 1, `${host}旧后端 capability 只核对一次`);
     assert.equal(result.backendTrashGcPostCalls, 0, `${host}旧后端不提交回收站清理请求`);
-    assert.equal(result.backendWriteCalls, 1, `${host}正式身份存储仍只尝试一次 CAS`);
+    assert.equal(result.backendWriteCalls, 0, `${host}读取文件身份无需目录CAS`);
   }
 });
 
@@ -1361,6 +1433,7 @@ test('生产 bundle 的 native 与 Luker 入口将未清理正文中的地点标
     assert.match(prompt[1], /东区公寓·卧室/u, `${hostGlobalName} 真实提示应包含来源地点参考（result=${JSON.stringify(result.locationReferenceResult)}，warnings=${JSON.stringify(result.startupWarnings.map(item => String(item[1]?.stack ?? item[1])))}，prompt=${JSON.stringify(prompt[1])}，receipt=${JSON.stringify(result.hostChat[1]?.extra?.qqj_v3_recall_receipt)}，backend=${result.backendDataCalls}/${result.backendWriteCalls}）`);
     const receipt = result.hostChat[1]?.extra?.qqj_v3_recall_receipt;
     assert.equal(receipt?.schemaVersion, 18, `${hostGlobalName} 应保存新版地点参考回执`);
+    assert.equal(receipt.pluginVersion, JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8')).version, `${hostGlobalName} 运行包版本应与发布清单一致`);
     assert.ok(result.chatSaveCalls > 0, `${hostGlobalName} 应通过宿主保存入口持久化回执`);
     assert.ok(receipt?.selectedLocationReferences?.some(value => value.text === '东区公寓·卧室'), `${hostGlobalName} 回执应记录选中的地点参考`);
     assert.equal(receipt.injectionText, prompt[1], `${hostGlobalName} 已保存回执应与实际提示全文一致`);

@@ -220,7 +220,7 @@ export function createChatMemoryMigration({ client, session, hostAdapter, source
         sourceTimeHeadSnapshots,
         sanitizerOptions: sanitizerOptions(), now, newUuid: freshUuid });
 
-      const header = { chat_metadata: { qianqianjie: { schemaVersion: 2, chatId: targetChatId },
+      const header = { chat_metadata: { qianqianjie: { schemaVersion: 2, chatId: targetChatId, file: { characterLocator: identity.characterLocator, hostChatId: targetHostChatId } },
         ...(capturedPrequel === null ? {} : { qianqianjiePrequel: capturedPrequel }) },
         user_name: capturedUserName, character_name: host.characterName };
       const expected = [header, ...targetChat];
@@ -237,7 +237,8 @@ export function createChatMemoryMigration({ client, session, hostAdapter, source
       const binding = { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: targetChatId,
         owner: { hostChatId: targetHostChatId, characterLocator: identity.characterLocator, personaLocator: identity.personaLocator },
         state: 'ready', sourceChatId: identity.chatId, createdAt, updatedAt: createdAt };
-      await client.put(CHAT_IDENTITY_COLLECTION, `binding-${targetChatId}`, binding, 0);
+      try { await client.put(CHAT_IDENTITY_COLLECTION, `binding-${targetChatId}`, binding, 0); }
+      catch { /* The saved file and graph publish the migration; the directory is auxiliary. */ }
       let opened = false;
       try {
         const current = hostAdapter.snapshot();

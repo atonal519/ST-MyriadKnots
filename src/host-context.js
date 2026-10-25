@@ -71,21 +71,44 @@ export function createHostChatList({ fetchImpl = globalThis.fetch, headers = () 
   };
 }
 
+export const chatFileFromHost = host => Object.freeze({
+  characterLocator: String(host.characterAvatar ?? host.characterLocator ?? ''),
+  hostChatId: String(host.hostChatId ?? ''),
+});
+
+// File ownership is auxiliary metadata. Native ST saves the whole chat through
+// saveMetadata, so let its next normal save carry this small addition instead.
+export async function persistChatFile(raw, host) {
+  const metadata = raw.chatMetadata ??= {};
+  const qqj = metadata.qianqianjie;
+  if (!isUuid(qqj?.chatId)) return false;
+  const file = chatFileFromHost(host);
+  if (qqj.file?.hostChatId === file.hostChatId && qqj.file?.characterLocator === file.characterLocator && qqj.schemaVersion === 2) return false;
+  metadata.qianqianjie = { ...qqj, schemaVersion: 2, file };
+  if (typeof raw.saveChatMetadata === 'function') {
+    const saved = await raw.saveChatMetadata();
+    if (saved === false) throw new Error('聊天文件归属未能保存。');
+  }
+  return true;
+}
+
 export async function persistChatId(ctx, chatId) {
-  const metadata = ctx.chatMetadata ?? {};
-  if (metadata.qianqianjie?.chatId === chatId && metadata.qianqianjie.schemaVersion === 2) return false;
+  const metadata = ctx.chatMetadata ??= {};
+  const host = readHostState(ctx);
+  const file = host.ok ? chatFileFromHost(host) : null;
+  if (metadata.qianqianjie?.chatId === chatId && metadata.qianqianjie.schemaVersion === 2) {
+    if (file) await persistChatFile(ctx, host);
+    return false;
+  }
   if (typeof ctx.saveMetadata !== 'function' && typeof ctx.saveChatMetadata !== 'function') throw new Error('宿主不支持聊天元数据保存');
   const previous = metadata.qianqianjie;
-  metadata.qianqianjie = { schemaVersion: 2, chatId };
+  metadata.qianqianjie = { ...previous, schemaVersion: 2, chatId, ...(file ? { file } : {}) };
   try {
     if (typeof ctx.saveChatMetadata === 'function') {
       const saved = await ctx.saveChatMetadata();
       if (saved !== true) throw new Error('聊天元数据未能持久化');
-    } else {
-      await ctx.saveMetadata();
-    }
-  }
-  catch (error) { if (previous === undefined) delete metadata.qianqianjie; else metadata.qianqianjie = previous; throw error; }
+    } else await ctx.saveMetadata();
+  } catch (error) { if (previous === undefined) delete metadata.qianqianjie; else metadata.qianqianjie = previous; throw error; }
   return true;
 }
 

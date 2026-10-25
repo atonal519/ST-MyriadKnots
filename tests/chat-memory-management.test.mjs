@@ -20,7 +20,7 @@ import { projectTime } from '../src/v3/time-engine.js';
 const CHAT_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OTHER_ID = '223e4567-e89b-42d3-a456-426614174000';
 
-function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, prepareHook = null, removeHook = null, afterHostSaveHook = null, rebuildHook = null, migrationPrefix = false, memoryMigration = null } = {}) {
+function fixture({ failBinding = false, failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, prepareHook = null, removeHook = null, afterHostSaveHook = null, rebuildHook = null, migrationPrefix = false, memoryMigration = null } = {}) {
   const records = new Map([
     [`chat-${CHAT_ID}/floor-a`, { recordId: 'floor-a', revision: 2, data: { kind: 'floor' } }],
     [`chat-${CHAT_ID}/orphan-old`, { recordId: 'orphan-old', revision: 5, data: { kind: 'old-version' } }],
@@ -35,7 +35,7 @@ function fixture({ failRemove = null, holdRemove = null, failSaveChat = false, s
   let removeFailure = failRemove, saveChatFailure = failSaveChat, saveMetadataFailure = failSaveMetadata;
   const client = {
     async list(collection) { calls.push(['list', collection]); return [...records.entries()].filter(([key]) => key.startsWith(`${collection}/`)).map(([, value]) => structuredClone(value)); },
-    async get(collection, recordId) { calls.push(['get', collection, recordId]); const value = records.get(`${collection}/${recordId}`); if (!value) throw Object.assign(new Error('missing'), { status: 404 }); return structuredClone(value); },
+    async get(collection, recordId) { calls.push(['get', collection, recordId]); if (failBinding && collection === 'chat-identity-bindings') throw new Error('辅助目录读取失败'); const value = records.get(`${collection}/${recordId}`); if (!value) throw Object.assign(new Error('missing'), { status: 404 }); return structuredClone(value); },
     async remove(collection, recordId, revision) {
       calls.push(['remove', collection, recordId, revision]);
       await removeHook?.(collection, recordId);
@@ -647,4 +647,15 @@ test('真实历史重构完整完成与暂停续跑均接回A身份、消息锚�
   assert.deepEqual(extractorPayload.precedingUserInput.map(item => item.content), ['原隐藏 USER'], '恢复后的 USER 必须重新进入前置输入来源');
   assert.ok(records.has(`chat-${nextId}/v3-root`), '删除旧标识后新身份可从保留正文正常初始化，不再落入 foreign marker');
  }
+});
+
+
+test('辅助目录失败不阻断已完成图删除与文件QQJ字段清理', async () => {
+  const f = fixture({ failBinding: true });
+  const result = await f.manager.deleteCurrent();
+  assert.equal(result.status, 'completed');
+  assert.equal(f.readPersistedHost()[0].chat_metadata.qianqianjie, undefined);
+  assert.equal([...f.records.keys()].some(key => key.startsWith(`chat-${CHAT_ID}/`)), false);
+  assert.ok(f.records.has(`chat-${OTHER_ID}/v3-root`));
+  assert.deepEqual(f.context.chatMetadata.otherPlugin, { keep: true });
 });

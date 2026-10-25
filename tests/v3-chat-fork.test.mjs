@@ -22,6 +22,7 @@ import { selectRecallMemories } from '../src/v3/recall-source.js';
 import { createBackendClient } from '../src/backend-client.js';
 import { createExtractorEnvelope, normalizeExtractorResponse } from '../src/v3/extractor.js';
 import { createPluginActivity } from '../src/plugin-activity.js';
+import { readTargetChatFile } from '../src/v3/message-floor-anchor.js';
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
@@ -1308,6 +1309,7 @@ test('携父身份的同名新分支不复用历史ready目标，继承37楼并�
   const freshTarget = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const makeBranch = chat => {
     const raw = context(targetHostChatId, SOURCE, chat);
+    raw.chatMetadata = structuredClone(sourceContext.chatMetadata);
     const api = targetChatApi(raw);
     const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } });
     const initializeBranch = createChatBranchInitializer({ client: backend.client, hostAdapter: adapter,
@@ -1892,4 +1894,49 @@ test('分支实际入口接纳单回复及多回复仅缺info的宿主补齐，l
     assert.deepEqual(persisted.swipes, fileMessage.swipes); assert.equal(persisted.swipe_info, undefined);
     assert.deepEqual(persisted.extra.otherPlugin, fileMessage.extra.otherPlugin);
   }
+});
+
+
+test('文件身份：ST和Luker分支及Checkpoint经真实initializer继承，已准备重开零目录零全文', async () => {
+  const costs = [];
+  for (const hostName of ['SillyTavern', 'Luker']) for (const kind of ['Branch', 'Checkpoint']) for (const captureShape of ['current', 'stale', 'legacy', 'preparing']) {
+    const staleCapture = captureShape === 'stale';
+    const backend = backendHarness(), sourceContext = context('父文件', SOURCE, [assistant('中性共同正文。'), user('继续')]);
+    sourceContext.chatMetadata.qianqianjie.file = { characterLocator: 'character.png', hostChatId: sourceContext.chatId };
+    const sourceStore = createFoundationStore({ client: backend.client, contextProvider: () => identity(sourceContext.chatId, SOURCE) });
+    const sourceAdapter = createHostAdapter({ globalRef: { [hostName]: { getContext: () => sourceContext } } });
+    const sourceFoundation = createFoundationRuntime({ store: sourceStore, hostAdapter: sourceAdapter, contextProvider: () => sourceContext, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    assert.equal((await sourceFoundation.start()).status, 'ready');
+    const raw = context(`父文件 - ${kind} #1`, SOURCE, [structuredClone(sourceContext.chat[0])]);
+    raw.chatMetadata = { ...structuredClone(sourceContext.chatMetadata), main_chat: sourceContext.chatId };
+    if (captureShape === 'legacy') {
+      delete raw.chatMetadata.qianqianjie.file;
+      backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${SOURCE}`, { revision: 1, data: { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: SOURCE,
+        owner: { hostChatId: sourceContext.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' }, state: 'ready', sourceChatId: null, createdAt: NOW, updatedAt: NOW } });
+    }
+    if (captureShape === 'preparing') {
+      const pendingId = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, raw.chatId, 'character.png']);
+      raw.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: pendingId };
+      backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${pendingId}`, { revision: 1, data: { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: pendingId,
+        owner: { hostChatId: raw.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' }, state: 'preparing', sourceChatId: SOURCE, createdAt: NOW, updatedAt: NOW } });
+    }
+    const api = targetChatApi(raw); let reads = 0, captures = 0;
+    const fetchImpl = async (...args) => { if (args[0] === '/api/chats/get') reads++; return api.fetch(...args); };
+    if (staleCapture) raw.chatMetadata.qianqianjie = { schemaVersion: 1, chatId: '64334d9f-1111-4111-8111-111111111111' };
+    const adapter = createHostAdapter({ globalRef: { [hostName]: { getContext: () => raw } } });
+    const initializer = createChatBranchInitializer({ client: backend.client, hostAdapter: adapter, now: () => new Date(NOW), fetchImpl });
+    const createSession = () => createChatSession({ contextProvider: () => raw, captureTaskInputs: ({ host }) => {
+      captures++; return { target: captureTargetChatDescriptor(adapter.snapshot(), { ...identity(raw.chatId, SOURCE) }), chat: structuredClone(raw.chat), chatMetadata: structuredClone(raw.chatMetadata), sanitizerOptions: {} };
+    }, identityCoordinator: createChatIdentityCoordinator({ client: backend.client, initializeBranch: initializer, now: () => new Date(NOW),
+      listHostChats: async () => [sourceContext.chatId, raw.chatId], readTargetFile: () => readTargetChatFile({ hostChatId: raw.chatId, characterName: raw.name2, avatarUrl: 'character.png' }, { fetchImpl }) }) });
+    const session = createSession(), result = await session.prepare();
+    assert.equal(result.status, 'ready'); assert.notEqual(result.identity.chatId, SOURCE); assert.equal(session.identity().chatId, result.identity.chatId);
+    const inherited = await createFoundationStore({ client: backend.client, contextProvider: () => identity(raw.chatId, result.identity.chatId) }).readReachable();
+    assert.equal(inherited.floors.length, 1); assert.equal(reads, 3, '固定首读复用于initializer，没有新增全文GET'); assert.equal(captures, 1); assert.equal(api.saves, 1);
+    assert.deepEqual(raw.chatMetadata.qianqianjie.file, { characterLocator: 'character.png', hostChatId: raw.chatId });
+    const before = backend.calls.length; await createSession().prepare();
+    assert.equal(backend.calls.length, before); assert.equal(reads, 3); assert.equal(captures, 1); assert.equal(api.saves, 1);
+    costs.push({ host: hostName, kind, captureShape, chatGets: reads, chatSaves: api.saves, fullCaptures: captures, reopenBindingIo: 0, reopenChatGets: 0, reopenFullCaptures: 0 });
+  }
+  console.log(JSON.stringify({ fileIdentityBranchCosts: costs }));
 });

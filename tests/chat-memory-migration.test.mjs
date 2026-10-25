@@ -264,3 +264,15 @@ test('搬家读回忽略宿主显示元数据，但继续核对正文与已完�
     assert.equal(JSON.stringify([...h.records].filter(([key]) => key.startsWith(`chat-${A}/`))), sourceBefore, '所有读回结果都不改写A来源图');
   });
 });
+
+
+test('辅助目录发布失败不否定已读回的搬家文件和独立图', async () => {
+  const h = await fixture([user('中性问题'), assistant('中性回复'), user('继续')]);
+  const put = h.client.put;
+  h.client.put = async (collection, ...args) => { if (collection === CHAT_IDENTITY_COLLECTION) throw new Error('辅助目录发布失败'); return put(collection, ...args); };
+  const result = await h.migration.migrateCurrent();
+  assert.equal(result.status, 'completed'); assert.ok(h.files.has(result.hostChatId));
+  const qqj = h.files.get(result.hostChatId)[0].chat_metadata.qianqianjie;
+  assert.equal(qqj.chatId, result.chatId); assert.deepEqual(qqj.file, { characterLocator: 'character.png', hostChatId: result.hostChatId });
+  assert.ok(h.records.has(`chat-${result.chatId}/v3-root`)); assert.deepEqual(h.opened, [result.hostChatId]);
+});

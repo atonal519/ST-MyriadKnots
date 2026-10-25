@@ -169,6 +169,7 @@ function projectSavedBranchMetadata(raw, hostAdapter, hostChatId, capturedChat, 
     ? { ...raw.chatMetadata.qianqianjie } : {};
   qianqianjie.schemaVersion = 2;
   qianqianjie.chatId = targetChatId;
+  qianqianjie.file = { ...savedFile.header.chat_metadata.qianqianjie.file };
   raw.chatMetadata.qianqianjie = qianqianjie;
   const savedMetadata = savedFile.header?.chat_metadata;
   if (savedMetadata && Object.hasOwn(savedMetadata, 'integrity')) raw.chatMetadata.integrity = savedMetadata.integrity;
@@ -252,7 +253,7 @@ export function createChatBranchInitializer({
       throw fail('V3_BRANCH_TARGET_INVALID', '分支目标快照无效。');
     }
     const fixedTarget = { ...snapshot.target, chatId: targetChatId };
-    const targetFile = await readTargetChat(fixedTarget, { signal, fetchImpl, allowedChatIds: [sourceChatId, targetChatId] });
+    const targetFile = snapshot.initialTargetFile ?? await readTargetChat(fixedTarget, { signal, fetchImpl, allowedChatIds: [sourceChatId, targetChatId] });
     assertCapturedBranchTargetMatches(snapshot, targetFile, sourceChatId, targetChatId, { deferNewTargetAnchors: true });
     const sourceStore = createFoundationStore({ client, contextProvider: () => sourceIdentity });
     const targetStore = createFoundationStore({ client, contextProvider: () => targetIdentity });

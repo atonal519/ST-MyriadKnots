@@ -2,7 +2,7 @@
 
 `ST-MyriadKnots` 是 SillyTavern 的长期记忆扩展，界面中文名为“千千结”。项目仓库：[github.com/atonal519/ST-MyriadKnots](https://github.com/atonal519/ST-MyriadKnots)。
 
-当前版本 **0.9.6**，完整改动见[更新说明](CHANGELOG.md)。
+当前版本 **0.9.7**，完整改动见[更新说明](CHANGELOG.md)。
 
 ## 当前功能
 
@@ -36,7 +36,14 @@
 
 常见问题可先看应用内“设置 → 教程与配置文件 → 教程文档”；完整排查步骤见[排障手册](docs/troubleshooting.md)。
 
-本次版本的完整改动说明见[0.9.6更新说明](CHANGELOG.md)。
+本次版本的完整改动说明见[0.9.7更新说明](CHANGELOG.md)。
+
+## 0.9.7
+
+- **聊天读取**：简化身份识别，修复部分聊天与分支读取失败，减少重复读取。
+- **新卡开场**：修复带 `{{user}}` 等占位符的开场白无法开始记录。
+
+更新后刷新酒馆即可使用。
 
 ## 0.9.6
 

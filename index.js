@@ -37,7 +37,7 @@ import { createV3MemoryRuntime } from './src/v3/memory-runtime.js';
 import { preparationFailureDiagnostic } from './src/v3/preparation-diagnostic.js';
 import { runHistoricalRebuildTask } from './src/v3/historical-rebuild-task.js';
 import { captureHistoricalRebuildSources as captureRebuildSources } from './src/v3/historical-rebuild-sources.js';
-import { persistMessageFloorAnchors, persistTargetChatIdentity } from './src/v3/message-floor-anchor.js';
+import { persistMessageFloorAnchors, persistTargetChatIdentity, readTargetChatFile } from './src/v3/message-floor-anchor.js';
 import { createV3RecallRuntime } from './src/v3/recall-runtime.js';
 import { createAutoHideController } from './src/v3/auto-hide.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, projectAnnualPeople } from './src/v3/people-workspace.js';
@@ -131,6 +131,9 @@ const apiTools = createApiTools({ resolver: apiResolver, compactClient, processi
 const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, vectorRuntimeProvider: () => vectorIndex, sanitizerOptions });
 const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch,
+  readTargetFile: (raw, host, { signal }) => readTargetChatFile(captureTargetChatCoordinates({ context: raw, chatId: host.hostChatId }, {
+    hostChatId: host.hostChatId, characterLocator: host.characterAvatar,
+  }), { signal, readPhase: 'identityBeforeSave' }),
   persist: (raw, chatId, taskInputs, signal) => {
     if (!taskInputs?.target) throw Object.assign(new Error('固定聊天保存坐标不可用。'), { code: 'QQJ_TARGET_CHAT_DESCRIPTOR_REQUIRED' });
     return persistTargetChatIdentity({ coordinates: taskInputs.target, raw, snapshot: taskInputs, chatId, listHostChats, signal });

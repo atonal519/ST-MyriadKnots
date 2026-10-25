@@ -18,7 +18,6 @@ export function createPluginLifecycle({
   };
   let prepareEpoch = 0;
   let bound = false;
-  let renameTransition = null;
 
   const prepareCurrent = mine => mine === prepareEpoch && enabled();
 
@@ -76,67 +75,27 @@ export function createPluginLifecycle({
   }
 
   function onChatChanged() {
-    const previous = session.getState?.();
-    const transition = previous?.status === 'ready' && previous.identity
-      ? { previousIdentity: Object.freeze({ ...previous.identity }), preparePromise: null }
-      : null;
     try { invalidate({ cancelBusiness: false }); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
-    const preparePromise = scheduleIdentityPrepare('chatChanged');
-    if (transition) {
-      transition.preparePromise = preparePromise;
-      renameTransition = Object.freeze(transition);
-    } else {
-      renameTransition = null;
-    }
+    return scheduleIdentityPrepare('chatChanged');
   }
 
   function onIdentityChange() {
-    renameTransition = null;
     try { invalidate(); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
     scheduleIdentityPrepare('personaChanged');
   }
 
+  // Hosts reload the renamed file before CHAT_RENAMED. Its ordinary prepare
+  // already preserves the file identity; the trailing event has no recovery work.
   async function onChatRenamed(event) {
-    const transition = renameTransition;
     if (!enabled()) return { status: 'disabled' };
-    if (!transition?.previousIdentity) return { status: 'ignored' };
-    const eventOld = String(event?.oldFileName ?? '').trim().replace(/\.jsonl$/i, '');
-    if (!eventOld || eventOld !== transition.previousIdentity.hostChatId) return { status: 'ignored' };
-    if (typeof session.rename !== 'function') {
-      logger?.warn?.('[qianqianjie] 聊天改名缺少连续身份凭据，已保持当前独立档案');
-      return { status: 'unverified' };
-    }
-    const prepared = await transition.preparePromise;
-    if (renameTransition !== transition || prepared?.status !== 'ready' || !prepared.identity) {
-      logger?.warn?.('[qianqianjie] 聊天改名期间身份已经变化，已保持当前独立档案');
-      return { status: 'stale' };
-    }
-    if (prepared.identity.chatId === transition.previousIdentity.chatId) {
-      renameTransition = null;
-      return prepared;
-    }
-    const eventNew = String(event?.newFileName ?? '').trim().replace(/\.jsonl$/i, '');
-    if (!eventNew || eventNew !== prepared.identity.hostChatId) return { status: 'ignored' };
-    renameTransition = null;
-    try { invalidate(); }
-    catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
-    const mine = ++prepareEpoch;
-    try {
-      const result = await session.rename(event, transition.previousIdentity, prepared.identity);
-      if (!prepareCurrent(mine)) return { status: enabled() ? 'stale' : 'disabled' };
-      continuePrepared(result, mine);
-      await getUi()?.refresh?.();
-      return result;
-    } catch (error) {
-      logger?.warn?.('[qianqianjie] 聊天改名身份恢复失败', { code: error?.code ?? error?.name ?? 'QQJ_CHAT_RENAME_FAILED' });
-      return { status: 'error', error };
-    }
+    const state = session.getState?.();
+    const name = String(event?.newFileName ?? '').replace(/\.jsonl$/i, '');
+    return state?.status === 'ready' && state.identity?.hostChatId === name ? state : { status: 'ignored' };
   }
 
   async function onCharacterRenamed(oldLocator, newLocator) {
-    renameTransition = null;
     try { invalidate(); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
     if (typeof session.renameCharacter !== 'function') {
