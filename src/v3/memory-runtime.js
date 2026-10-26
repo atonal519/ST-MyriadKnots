@@ -384,6 +384,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let active = null;
   let reachable = null;
   let lastFailure = null;
+  let lastExtractorRequest = null;
+  const requestSnapshot = (value, attempts = value?.attempts) => {
+    if (!value) return null;
+    const end = value.endedAt ?? Date.now();
+    return { phase: value.phase, outcome: value.outcome, attempts, startedAt: value.startedAt, endedAt: value.endedAt ?? null,
+      elapsedMs: Math.max(0, end - value.startedAt), phaseElapsedMs: Math.max(0, end - value.phaseStartedAt),
+      attemptElapsedMs: value.attemptStartedAt == null ? 0 : Math.max(0, (value.attemptEndedAt ?? end) - value.attemptStartedAt),
+      timeoutMs: value.timeoutMs ?? null, fromAssistantSeq: value.fromAssistantSeq, toAssistantSeq: value.toAssistantSeq,
+      error: value.error ?? null, lastAttemptError: value.lastAttemptError ? { ...value.lastAttemptError } : null };
+  };
   let bound = false;
   let awaitingFoundation = false;
   let foundationReload = null;
@@ -753,7 +763,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = ({ deletedChatId = null } = {}) => { if (deletedChatId) clearChatFailures(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = ({ deletedChatId = null } = {}) => { lastExtractorRequest = null; if (deletedChatId) clearChatFailures(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(state => notify(state));
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
@@ -936,6 +946,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       memoryWorkBusy: workRun !== null,
       activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
       activeExtraction: active ? Object.freeze({ floorId: active.floorId, floorIds: Object.freeze([...(active.floorIds ?? [active.floorId])].filter(Boolean)), runId: active.runId, phase: active.phase }) : null,
+      extractorRequest: requestSnapshot(active?.transportBudget?.diagnostic ?? lastExtractorRequest, active?.transportBudget?.used ?? lastExtractorRequest?.attempts),
       activeCse: cse.activeCse ?? null,
       activeAutoMemory: workRun?.kind === 'auto' ? Object.freeze({ reason: workRun.reason, phase: workPhase, mode: workRun.mode ?? 'realtime', aggregateHistorical: workRun.aggregateHistorical === true, cseBlocked: workRun.cseBlocked === true, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
       qianshiHistoryActive: qianshiHistoryRun !== null,
@@ -2108,6 +2119,11 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && JSON.stringify(currentUserIdentity() ?? null) === JSON.stringify(userIdentity ?? null);
     if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求前已经变化，本次请求未发送。');
     const operation = { floorId: floor.id, floorIds: [...prepared.sourceFloorIds], aggregate, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: pending?.startedAt ?? timingWork.startedAt, commitTimestamp: pending?.commitTimestamp ?? null, commitTimestampVersionKey: pending?.commitTimestampVersionKey ?? null, phase: pending ? 'committing' : 'extracting', dependencySnapshot, qianshiDependency, semanticInputFingerprint, preflightTiming: pending?.preflightTiming ?? Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
+    lastExtractorRequest = null;
+    if (!pending) operation.transportBudget = { remaining: 3, used: 0, diagnostic: {
+      phase: 'preparing', startedAt: Date.now(), phaseStartedAt: Date.now(), outcome: 'running',
+      fromAssistantSeq: source.floors.find(item => item.id === prepared.sourceFloorIds[0])?.assistantSeq,
+      toAssistantSeq: floor.assistantSeq, lastAttemptError: null } };
     const releaseConfirmation = foundationRuntime.holdExtractionConfirmation?.(floor.id, runId) ?? null;
     active = operation; handedToExtractor = true; notify();
     let result = null;
@@ -2117,15 +2133,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       operation.dependencyBoundaryMessageIndex = Math.max(...operation.dependencySnapshot.floorDependencies
         .map(item => item.hostLocator.messageIndex));
       operation.hostIdentity = generationIdentity(hostAdapter.snapshot());
-      result = pending?.result ?? await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: scopedEntities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, processingPrompt: processingPromptSnapshot, aggregate, signal: operation.controller.signal });
+      result = pending?.result ?? await runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities: scopedEntities, now: nowIso(now), supersedes: oldMemory?.id ?? null, preservedSummary: oldMemory?.summary?.effectiveSource === 'user' ? oldMemory.summary : null, expectedScope, promptGuidance: promptGuidanceSnapshot, processingPrompt: processingPromptSnapshot, aggregate, signal: operation.controller.signal, transportBudget: operation.transportBudget });
       const replacement = validateFloorMemory({ ...result.memory, sourceStoryClockSignature: sourceClock.signature }, { expectedChatId: source.root.chatId });
       operation.phase = 'validating'; notify();
+      if (operation.transportBudget) Object.assign(operation.transportBudget.diagnostic, { phase: 'validating', phaseStartedAt: Date.now() });
       const foundationAfter = await foundationRuntime.refreshStatus();
       if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '后端数据在提取期间发生变化，本次结果已作废。');
       if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '聊天或正文已变化，迟到响应已丢弃。');
       operation.phase = 'committing'; notify();
+      if (operation.transportBudget) Object.assign(operation.transportBudget.diagnostic, { phase: 'saving', phaseStartedAt: Date.now() });
       await commitRevision(operation, { oldReachable: source, replacement, newEntities: result.newEntities, provenanceEntry: { api: result.metadata, attempts: result.attempts, transportAttempts: result.transportAttempts, responseFingerprint: result.responseFingerprint, extractorVersion: replacement.extractorVersion, promptVersion: EXTRACTOR_PROMPT_VERSION, promptGuidanceFingerprint: `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`, systemPromptFingerprint: result.metadata?.systemPromptFingerprint ?? `sha256:${await sha256((aggregate ? buildHighFloorExtractorSystemPrompt : buildExtractorSystemPrompt)(promptGuidanceSnapshot, processingPromptSnapshot))}`, userIdentityFingerprint: `sha256:${await sha256(JSON.stringify(userIdentity ?? null))}`, semanticInputFingerprint, preflightTiming: operation.preflightTiming, needsReview: result.needsReview, rawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature }, action: oldMemory ? 'reextract' : 'extract', validationErrors: result.validationErrors });
       summaryCommitted = true;
+      if (operation.transportBudget) Object.assign(operation.transportBudget.diagnostic, { outcome: 'completed', endedAt: Date.now() });
       if (analyzeState && !operation.controller.signal.aborted && operation.epoch === epoch) {
         operation.phase = 'analyzingCse';
         if (manualWork) manualWork.phase = 'analyzingCse';
@@ -2144,6 +2163,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       logger?.warn?.('[qianqianjie] V3 extractor failed', { code: error?.code ?? error?.name ?? 'V3_EXTRACTOR_FAILED' });
     } finally {
       releaseConfirmation?.();
+      if (active === operation && operation.transportBudget) {
+        const diagnostic = operation.transportBudget.diagnostic;
+        diagnostic.endedAt ??= Date.now();
+        diagnostic.outcome = summaryCommitted ? 'completed' : operation.controller.signal.aborted ? 'cancelled' : 'failed';
+        lastExtractorRequest = { ...diagnostic, attempts: operation.transportBudget.used };
+      }
       if (active === operation) active = null;
       if (suffixGenerationContext?.runId === operation.runId) suffixGenerationContext = null;
     }
@@ -3338,7 +3363,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         lastFailure = null;
         sessionCandidates.clear();
         pendingResults.clear();
-        if (name === 'CHAT_CHANGED') cseRuntime.clearView?.();
+        if (name === 'CHAT_CHANGED') { lastExtractorRequest = null; cseRuntime.clearView?.(); }
         else cseRuntime.invalidate();
         awaitingFoundation = true;
         if (!['MESSAGE_SENT', 'MESSAGE_RECEIVED'].includes(name)) { emptyRealtimeOrigin = null; lastAutomaticInputKey = null; lastNoticeKey = null; }

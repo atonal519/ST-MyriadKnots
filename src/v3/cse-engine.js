@@ -1105,8 +1105,7 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
   return Object.freeze({ status: 'ready', delta });
 }
 
-export async function runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', processingPrompt = '', signal }) {
-  const transportBudget = { remaining: 3, used: 0 };
+export async function runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', processingPrompt = '', signal, transportBudget = { remaining: 3, used: 0 } }) {
   const systemPrompt = buildCseSystemPrompt(promptGuidance, processingPrompt);
   const taskMessages = [{ role: 'user', content: JSON.stringify(envelope.request) }];
   for (let attempts = 1; attempts <= 3; attempts += 1) {
@@ -1114,6 +1113,7 @@ export async function runCseRequest({ generateAnalysisTask, envelope, previousCu
     try {
       const result = await generateAnalysisTask({ systemPrompt, taskMessages, maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
       receivedResult = true;
+      if (transportBudget.diagnostic) Object.assign(transportBudget.diagnostic, { phase: 'compile', phaseStartedAt: Date.now(), attemptEndedAt: Date.now(), outcome: 'running', endedAt: null });
       candidate = result?.jsonData ?? result?.textData ?? result;
       metadata = sanitizeTaskMetadata(result?.taskMetadata);
       const compiled = await compileCseResponse({ response: candidate, finishReason: result?.taskMetadata?.finishReason, envelope, previousCurrentState, now, deltaId, userCoreExtraction: envelope.scope.userCoreExtraction });
@@ -1121,6 +1121,16 @@ export async function runCseRequest({ generateAnalysisTask, envelope, previousCu
     } catch (error) {
       if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (error?.name === 'AbortError') throw error;
+      if (transportBudget.diagnostic) {
+        const code = /^(?:QQJ|V3)_[A-Z0-9_]{1,80}$/.test(error?.code ?? '') ? error.code : null;
+        const name = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'TimeoutError'].includes(error?.name) ? error.name : null;
+        const status = error?.httpStatus ?? error?.status;
+        if (receivedResult || transportBudget.diagnostic.lastAttemptError?.attempt !== transportBudget.used || transportBudget.diagnostic.lastAttemptError?.code !== code) {
+          transportBudget.diagnostic.lastAttemptError = { code, name, httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null, at: Date.now(), attempt: transportBudget.used, phase: transportBudget.diagnostic.phase };
+        }
+        const failure = transportBudget.diagnostic.lastAttemptError;
+        Object.assign(transportBudget.diagnostic, { outcome: 'failed', error: { code: failure.code, name: failure.name, httpStatus: failure.httpStatus, at: failure.at }, endedAt: Date.now() });
+      }
       const retryable = receivedResult || error?.retryableRecognitionFormat === true || ['QQJ_TIMEOUT', 'QQJ_EMPTY'].includes(error?.code);
       if (retryable && attempts < 3 && transportBudget.remaining > 0) continue;
       const failedAttempts = transportBudget.used || attempts;

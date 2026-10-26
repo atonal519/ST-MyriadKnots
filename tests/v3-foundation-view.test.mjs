@@ -1123,6 +1123,74 @@ test('复制状态诊断区分基础空闲与独立历史owner，安全摘要读
   view.deactivate();
 });
 
+test('管理页激活等旧回执时runtime已通知收尾，迟到回执不得回画旧重建中状态', async () => {
+  const rebuilding = { status: 'ready', pluginEnabled: true, chatId: 'stale-activation', foundationStatus: 'ready',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', stableCount: 40, rememberedCount: 30,
+    rebuildStatus: 'rebuilding', rebuildCompletedCount: 30, rebuildTotalCount: 40, rebuildHasActionableWork: true,
+    memoryWorkBusy: true, activeMemoryWork: { kind: 'auto', phase: 'extracting' },
+    activeAutoMemory: { mode: 'historical', phase: 'extracting' }, activeExtraction: { phase: 'extracting' },
+    activeCse: null, cseRebuildStatus: 'idle', floors: [] };
+  let state = rebuilding, releaseReceipt, listener;
+  const receipt = new Promise(resolve => { releaseReceipt = resolve; });
+  const runtime = { getState: () => state, refreshStatus: async () => rebuilding, confirmLatest: async () => state,
+    startHistoricalRebuild: async () => state, pauseHistoricalRebuild: async () => { throw new Error('本例不点击暂停'); },
+    subscribe(value) { listener = value; return () => { listener = null; }; } };
+  const recallRuntime = { getState: () => ({ recallStatus: 'idle' }), restorePersistedReceipt: () => receipt };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, recallRuntime, documentRef });
+  view.setPage('management'); view.mount(container);
+  const activation = view.activate();
+  await new Promise(resolve => setImmediate(resolve));
+  state = { ...rebuilding, rebuildStatus: 'partial', memoryWorkBusy: false, activeMemoryWork: null,
+    activeAutoMemory: null, activeExtraction: null, lastExtractorError: { code: 'V3_MEMORY_STALE', phase: 'stale', message: '操作已取消' } };
+  listener(state);
+  assert.equal(flatten(container).some(node => node.textContent === '暂停补齐'), false, 'runtime最新通知已将页面从重建中收尾');
+  assert.equal(flatten(container).find(node => node.textContent === '继续补齐').disabled, false);
+  releaseReceipt();
+  await activation;
+  assert.equal(runtime.getState().memoryWorkBusy, false);
+  assert.equal(flatten(container).some(node => node.textContent === '暂停补齐'), false, '迟到旧回执不得把已空闲页面回画成重建中');
+  assert.equal(flatten(container).find(node => node.textContent === '继续补齐').disabled, false);
+  view.deactivate();
+});
+
+test('等待诊断复制摘要CSE各自阶段与时间失败码范围，旧记录未知且敏感材料不导出', async () => {
+  const request = { phase: 'responseBody', outcome: 'cancelled', elapsedMs: 200, phaseElapsedMs: 80, attemptElapsedMs: 90,
+    attempts: 2, timeoutMs: 100, fromAssistantSeq: 31, toAssistantSeq: 40,
+    lastAttemptError: { code: 'QQJ_TIMEOUT', name: 'Error', httpStatus: 504, attempt: 1, message: 'PRIVATE_WAIT' },
+    body: 'PRIVATE_WAIT', url: 'https://PRIVATE_WAIT', key: 'PRIVATE_WAIT', model: 'PRIVATE_WAIT' };
+  const state = { status: 'ready', pluginEnabled: true, chatId: 'wait', floors: [], extractorRequest: request,
+    cseRequest: { ...request, phase: 'sseBody', fromAssistantSeq: 21, toAssistantSeq: 30 } };
+  let time = { status: 'partial', active: false, last: { status: 'partial', failedBatchCount: 1,
+    failedBodyAttempts: [{ fromAssistantSeq: 1, toAssistantSeq: 20, failure: { phase: 'compile', code: 'QQJ_TIME_INVALID', name: 'Error', message: 'PRIVATE_WAIT' } }] } }, copied;
+  const view = createV3FoundationView({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state },
+    timeRuntime: { getState: () => time }, documentRef, navigatorRef: { clipboard: { writeText: async text => { copied = text; } } } });
+  const container = new Node('main'); view.mount(container);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  let value = JSON.parse(copied);
+  assert.equal(value.memory.request.phase, 'responseBody'); assert.equal(value.memory.request.attempts, 2);
+  assert.equal(value.memory.request.lastAttemptError.code, 'QQJ_TIMEOUT');
+  assert.equal(value.cse.request.phase, 'sseBody');
+  assert.equal(value.time.last.batchFailures[0].phase, 'compile');
+  assert.deepEqual([value.time.last.batchFailures[0].fromAssistantSeq, value.time.last.batchFailures[0].toAssistantSeq], [1, 20]);
+  assert.doesNotMatch(copied, /PRIVATE_WAIT/u);
+  time = { ...time, last: { status: 'partial', failedBatchCount: 4 } };
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  value = JSON.parse(copied); assert.equal(value.time.last.failureDetails, 'unknown');
+  time = { ...time, last: { status: 'failed', failedBodyAttempts: [{ cutoffAssistantSeq: 20 }],
+    failure: { phase: 'saving', code: 'QQJ_TIME_CONFLICT', httpStatus: 409, at: 200, message: 'PRIVATE_WAIT' } } };
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  value = JSON.parse(copied); assert.equal(value.time.last.error.phase, 'saving');
+  assert.equal(value.time.last.error.httpStatus, 409); assert.equal(value.time.last.error.at, 200);
+  assert.equal(value.time.last.failureDetails, 'recorded'); assert.doesNotMatch(copied, /PRIVATE_WAIT/u);
+  time = { ...time, last: { status: 'partial', failedBatchCount: 2, failedBodyAttempts: [{ cutoffAssistantSeq: 20 }],
+    failureDiagnostics: [{ currentReview: false, fromAssistantSeq: 1, toAssistantSeq: 20, failure: { phase: 'compilePartial' } },
+      { currentReview: true, cutoffAssistantSeq: 20, failure: { phase: 'request', code: 'QQJ_EMPTY', at: 300 } }] } };
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  value = JSON.parse(copied); assert.equal(value.time.last.batchFailures.length, 2);
+  assert.equal(value.time.last.batchFailures[1].currentReview, true); assert.equal(value.time.last.batchFailures[1].code, 'QQJ_EMPTY');
+  view.deactivate();
+});
+
 test('无 chat 与无状态 provider 仍提供状态诊断，复制不会抢占正在激活的业务回显', async () => {
   let release;
   let state = { status: 'idle', pluginEnabled: true, chatId: null, headCheckpointId: null, foundationStatus: 'uninitialized', stableCount: 0, rememberedCount: 0, memoryWorkBusy: false, floors: [], rebuildStatus: 'caughtUp' };

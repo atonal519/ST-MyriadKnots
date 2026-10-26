@@ -138,6 +138,24 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   if (typeof generateAnalysisTask !== 'function') throw new TypeError('V3 CSE analysis route 无效');
   if (typeof filterWorldInfoSources !== 'function') throw new TypeError('V3 CSE 世界书过滤器无效');
   let epoch = 0, active = null, reachable = null, replayed = null, lastFailure = null, replayDiagnostic = null;
+  let lastRequest = null;
+  const requestSnapshot = () => {
+    const value = active?.transportBudget?.diagnostic ?? lastRequest;
+    if (!value) return null;
+    const end = value.endedAt ?? Date.now();
+    return { phase: value.phase, outcome: value.outcome, startedAt: value.startedAt, endedAt: value.endedAt ?? null, attempts: active?.transportBudget?.used ?? value.attempts,
+      elapsedMs: Math.max(0, end - value.startedAt), phaseElapsedMs: Math.max(0, end - value.phaseStartedAt),
+      attemptElapsedMs: value.attemptStartedAt == null ? 0 : Math.max(0, (value.attemptEndedAt ?? end) - value.attemptStartedAt),
+      timeoutMs: value.timeoutMs ?? null, fromAssistantSeq: value.fromAssistantSeq, toAssistantSeq: value.toAssistantSeq,
+      error: value.error ?? null, lastAttemptError: value.lastAttemptError ? { ...value.lastAttemptError } : null };
+  };
+  const finishRequest = operation => {
+    if (!operation?.transportBudget) return;
+    const value = operation.transportBudget.diagnostic;
+    value.endedAt ??= Date.now();
+    value.outcome = operation.controller.signal.aborted ? 'cancelled' : value.outcome === 'failed' ? 'failed' : 'completed';
+    lastRequest = { ...value, attempts: operation.transportBudget.used };
+  };
   let identityProjection = normalizeIdentityProjection();
   let historyProjectionCache = null;
   const subscribers = new Set();
@@ -393,7 +411,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const cseTowardCandidates = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], floorIds: anchorFloorIds, identityProjection })
       .filter(entry => entry.entityType === 'person')
       .map(entry => Object.freeze({ entityId: entry.entityId, displayName: entry.displayName }));
-    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: projectedState, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
+    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: projectedState, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, cseRequest: requestSnapshot(), lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
   }
 
   function getActivityState() {
@@ -616,6 +634,10 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       epoch, controller: new AbortController(), store: targetStore, targetIdentity, pinnedTarget: Boolean(targetIdentity), sourceReachable: value, hostAdapter: operationHostAdapter, coreUserEditedSubjectReadCache: new Map(),
       sanitizerOptions: typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions,
       runId: await deterministicUuid(['v3-cse-run', value.root.headCheckpointId, memory.id, newUuid()]), startedAt: nowIso(now), phase: 'baseline' };
+    lastRequest = null;
+    operation.transportBudget = { remaining: 3, used: 0, diagnostic: { phase: 'preparing', startedAt: Date.now(), phaseStartedAt: Date.now(),
+      outcome: 'running', fromAssistantSeq: value.floors.find(item => item.id === (memory.sourceFloorIds?.[0] ?? memory.floorId))?.assistantSeq ?? floor.assistantSeq,
+      toAssistantSeq: floor.assistantSeq, lastAttemptError: null } };
     active = operation; notify();
     try {
       operation.identityProjection = normalizeIdentityProjection(typeof identityProjectionProvider === 'function'
@@ -738,12 +760,14 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
       operation.promptGuidanceFingerprint = `sha256:${await sha256(String(promptGuidanceSnapshot ?? ''))}`;
       operation.systemPromptFingerprint = `sha256:${await sha256(buildCseSystemPrompt(promptGuidanceSnapshot, processingPromptSnapshot))}`;
-      const result = await runCseRequest({ generateAnalysisTask, envelope, previousCurrentState: projectedPreviousCurrentState, now: nowIso(now), deltaId, promptGuidance: promptGuidanceSnapshot, processingPrompt: processingPromptSnapshot, signal: operation.controller.signal });
+      const result = await runCseRequest({ generateAnalysisTask, envelope, previousCurrentState: projectedPreviousCurrentState, now: nowIso(now), deltaId, promptGuidance: promptGuidanceSnapshot, processingPrompt: processingPromptSnapshot, signal: operation.controller.signal, transportBudget: operation.transportBudget });
       if ((!operation.pinnedTarget && operation.epoch !== epoch) || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', '人物状态分析已停止。');
       operation.phase = 'committing'; notify();
+      Object.assign(operation.transportBudget.diagnostic, { phase: 'saving', phaseStartedAt: Date.now() });
       await commitDelta(operation, result, roleEntities);
     } catch (error) {
       const stopped = error?.name === 'AbortError' || operation.controller.signal.aborted;
+      Object.assign(operation.transportBudget.diagnostic, { outcome: stopped ? 'cancelled' : 'failed' });
       const failure = stopped || error?.code === 'V3_CSE_STALE'
         ? { floorId, runId: operation.runId, code: 'V3_CSE_STALE', message: stopped
           ? '人物状态分析已停止；请查看本楼记录确认当前状态。'
@@ -752,7 +776,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       if (failure.phase === 'retryableError') publishFailureHint(value, floorId, failure);
       if (reachable?.root?.chatId === operation.targetIdentity?.chatId || !operation.pinnedTarget) lastFailure = failure;
       logger?.warn?.('[qianqianjie] V3 CSE failed', { code: error?.code ?? error?.name ?? 'V3_CSE_FAILED' });
-    } finally { if (active === operation) active = null; }
+    } finally { if (active === operation) { finishRequest(operation); active = null; } }
     return notify();
   }
 
@@ -802,11 +826,12 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     if (!active) return false;
     epoch += 1;
     active.controller.abort();
+    finishRequest(active);
     active = null;
     notify();
     return true;
   }
-  function clearView() { reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
-  function invalidate() { epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
+  function clearView() { lastRequest = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
+  function invalidate() { lastRequest = null; epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
   return Object.freeze({ load, analyzeFloor, correctSubjectState, cancelActive, clearView, invalidate, setIdentityProjection, getState, getActivityState, getCurrentSubjectStates, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

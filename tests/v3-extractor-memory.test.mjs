@@ -1,6 +1,7 @@
 import { processingTransport } from './fixtures/processing-transport.mjs';
 import { describePrefixDifference } from '../src/v3/memory-prefix-diagnostic.js';
 import { planAutoHide } from '../src/v3/auto-hide.js';
+import { createPluginActivity } from '../src/plugin-activity.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -999,6 +1000,227 @@ test('实际聚合记忆状态进入自动隐藏时按来源楼覆盖并在批�
   const plan = planAutoHide({ chat: h.context.chat, memoryState: state, keepAiCount: 3 });
   assert.equal(plan.keepFrom, 15, '保留3条历史AI与当前回复槽，并保留之前相邻用户输入');
   assert.deepEqual(plan.hideRanges, [{ start: 0, end: 14 }], '首批1–10内只隐藏1–8，不要求等整批跨过保留边界');
+});
+
+test('等待诊断切聊后B未新提取时不继承A完成或取消的最后请求', async t => {
+  for (const outcome of ['completed', 'cancelled']) await t.test(outcome, async () => {
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    const client = createCompactApiClient({ timeoutMs: () => 10000, fetchImpl: async () => ({ ok: true,
+      json: () => outcome === 'cancelled' ? new Promise(() => { started(); })
+        : Promise.resolve({ choices: [{ message: { content: JSON.stringify({ summary: 'A已保存摘要' }) }, finish_reason: 'stop' }] }) }) });
+    const h = harness({ initialChat: [assistant('A原文'), user('稳定A')], utility: options => client.generateTask({ ...options,
+      config: { url: 'https://offline.test', key: 'PRIVATE', model: 'PRIVATE', timeoutSec: 5 } }) });
+    await h.runtime.start();
+    if (outcome === 'completed') await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+    else { const pending = h.runtime.startHistoricalRebuild(); await ready; h.runtime.pauseHistoricalRebuild(); await pending; }
+    assert.equal(h.runtime.getState().extractorRequest.outcome, outcome);
+    const calls = h.calls.length, otherId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    h.context.chatId = 'host-B'; h.context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: otherId } };
+    h.context.chat = [assistant('B原文'), user('稳定B')]; h.emit('CHAT_CHANGED');
+    await h.foundationRuntime.reconcile('diagnostic-chat-B'); await h.runtime.refreshStatus({ preferCached: false });
+    const state = h.runtime.getState();
+    assert.equal(state.chatId, otherId); assert.equal(state.memorySnapshotStatus, 'ready');
+    assert.equal(state.extractorRequest, null, 'B尚未提取，不能把A最后请求作为B的诊断');
+    assert.equal(h.calls.length, calls, '切聊诊断清理不派发模型');
+  });
+});
+
+test('等待诊断边界普通单楼摘要已提交后只等CSE，摘要完成时间不继续累计', async () => {
+  let started, release;
+  const ready = new Promise(resolve => { started = resolve; });
+  const client = createCompactApiClient({ fetchImpl: async (_url, options) => {
+    const request = JSON.parse(JSON.parse(options.body).messages.at(-1).content);
+    const reply = value => ({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }] });
+    return { ok: true, json: () => request.task === 'extractFloorSemantics' ? Promise.resolve(reply({ summary: '已保存摘要' }))
+      : new Promise(resolve => { release = () => resolve(reply({ noMaterialChange: true })); started(); }) };
+  } });
+  const h = harness({ initialChat: [assistant('普通单楼'), user('稳定')], utility: options => client.generateTask({ ...options,
+    config: { url: 'https://offline.test', key: 'PRIVATE', model: 'PRIVATE', timeoutSec: 5 } }) });
+  await h.runtime.start();const pending=h.runtime.extractFloor(h.runtime.getState().floors[0].floorId);let summary;
+  try {await ready;summary=h.runtime.getState().extractorRequest;
+    assert.equal(summary.outcome,'completed');assert.ok(Number.isSafeInteger(summary.endedAt));
+    assert.equal(h.runtime.getState().cseRequest.outcome,'running');
+  } finally {release();await pending;}
+  assert.equal(h.runtime.getState().extractorRequest.endedAt,summary.endedAt);
+});
+
+test('等待诊断真实摘要CSE并发各有owner，暂停留阶段且新轮不复用旧在途', async () => {
+  let summaryStarted, cseStarted, releaseSummary, holdCse = true;
+  let summaryReady = new Promise(resolve => { summaryStarted = resolve; });
+  const cseReady = new Promise(resolve => { cseStarted = resolve; });
+  const response = value => ({ ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }] }) });
+  const client = createCompactApiClient({ timeoutMs: () => 10000, fetchImpl: async (_url, options) => {
+    const request = JSON.parse(JSON.parse(options.body).messages.at(-1).content), content = request.payload.canonicalContent;
+    if (request.task === 'extractFloorSemantics' && content === '等待楼3') return { ...response({}), json: () => new Promise(resolve => {
+      releaseSummary = () => resolve({ choices: [{ message: { content: JSON.stringify({ summary: '等待楼3摘要' }) }, finish_reason: 'stop' }] }); summaryStarted();
+    }) };
+    if (request.task !== 'extractFloorSemantics' && content === '等待楼2' && holdCse) return { ok: true, status: 200,
+      headers: { get: () => 'text/event-stream' }, body: { getReader: () => ({ read: () => { cseStarted(); return new Promise(() => {}); }, cancel() {}, releaseLock() {} }) } };
+    return response(request.task === 'extractFloorSemantics' ? { summary: `${content}摘要` } : { noMaterialChange: true });
+  } });
+  const route = { kind: 'independent', source: 'test', config: { url: 'https://offline.test', key: 'PRIVATE_WAIT', model: 'PRIVATE_WAIT', timeoutSec: 5, stream: true } };
+  const router = createTaskRouter({ resolver: { resolve: () => route, resolveUtility: () => route }, compactClient: client });
+  const h = harness({ initialChat: [assistant('等待楼1'), user('稳定1'), assistant('等待楼2'), user('稳定2'), assistant('等待楼3'), user('稳定3')],
+    utility: options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics' ? router.generateUtilityTask(options) : router.generateAnalysisTask(options) });
+  await h.runtime.start();
+  const running = h.runtime.startHistoricalRebuild();
+  try {
+    await Promise.all([summaryReady, cseReady]);
+    const during = h.runtime.getState();
+    assert.equal(during.extractorRequest.phase, 'responseBody'); assert.equal(during.cseRequest.phase, 'sseBody');
+    assert.deepEqual([during.extractorRequest.fromAssistantSeq, during.extractorRequest.toAssistantSeq], [3, 3]);
+    assert.deepEqual([during.cseRequest.fromAssistantSeq, during.cseRequest.toAssistantSeq], [2, 2]);
+  } finally { h.runtime.pauseHistoricalRebuild(); await running; }
+  const stopped = h.runtime.getState();
+  assert.equal(stopped.extractorRequest.outcome, 'cancelled'); assert.equal(stopped.extractorRequest.phase, 'responseBody');
+  assert.equal(stopped.cseRequest.outcome, 'cancelled'); assert.equal(stopped.cseRequest.phase, 'sseBody');
+  assert.equal(stopped.extractorRequest.attempts, 1); assert.equal(stopped.cseRequest.attempts, 1);
+  holdCse = false; summaryReady = new Promise(resolve => { summaryStarted = resolve; });
+  const next = h.runtime.startHistoricalRebuild(); await summaryReady;
+  const fresh = h.runtime.getState().extractorRequest;
+  assert.equal(fresh.outcome, 'running'); assert.equal(fresh.attempts, 1); assert.equal(fresh.lastAttemptError, null);
+  releaseSummary(); await next;
+  assert.equal(h.runtime.getState().extractorRequest.outcome, 'completed');
+});
+
+test('等待诊断outer超时重试共享budget，第二次取消不覆盖先前timeout', async () => {
+  let calls = 0, started, logicalStartedAt;
+  const ready = new Promise(resolve => { started = resolve; });
+  const client = createCompactApiClient({ timeoutMs: () => calls < 1 ? 5 : 10000, fetchImpl: async () => {
+    calls += 1;
+    if (calls === 1) return new Promise(() => {});
+    return { ok: true, json: () => { started(); return new Promise(() => {}); } };
+  } });
+  const h = harness({ initialChat: [assistant('一楼等待'), user('稳定')], utility: options => client.generateTask({ ...options,
+    config: { url: 'https://offline.test', key: 'PRIVATE_WAIT', model: 'PRIVATE_WAIT', timeoutSec: 5 } }) });
+  await h.runtime.start(); const pending = h.runtime.startHistoricalRebuild();
+  try { await ready; const value = h.runtime.getState().extractorRequest;
+    assert.equal(value.attempts, 2); assert.equal(value.lastAttemptError.code, 'QQJ_TIMEOUT');
+    assert.equal(value.outcome, 'running'); assert.ok(value.elapsedMs >= value.attemptElapsedMs);
+    logicalStartedAt = value.startedAt;
+    assert.ok(value.lastAttemptError.at >= value.startedAt); assert.equal(value.endedAt, null);
+  } finally { h.runtime.pauseHistoricalRebuild(); await pending; }
+  const last = h.runtime.getState().extractorRequest;
+  assert.equal(last.outcome, 'cancelled'); assert.equal(last.phase, 'responseBody'); assert.equal(last.attempts, 2);
+  assert.equal(last.lastAttemptError.code, 'QQJ_TIMEOUT'); assert.equal(calls, 2);
+  assert.equal(last.startedAt, logicalStartedAt); assert.ok(last.endedAt >= last.lastAttemptError.at);
+});
+
+test('等待诊断真实client经engine最终401与耗尽503仍保HTTP状态且总运输不超三次', async t => {
+  for (const status of [401, 503]) await t.test(String(status), async () => {
+    let calls = 0, copied;
+    const client = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => {
+      calls += 1; return { ok: false, status, json: async () => ({ error: { message: 'PRIVATE_HTTP', code: 'provider_error' } }) };
+    } });
+    const h = harness({ initialChat: [assistant('一楼HTTP失败'), user('稳定')], utility: options => client.generateTask({ ...options,
+      config: { url: 'https://offline.test', key: 'PRIVATE_HTTP', model: 'PRIVATE_HTTP', timeoutSec: 5 } }) });
+    await h.runtime.start(); await h.runtime.startHistoricalRebuild();
+    const value = h.runtime.getState().extractorRequest;
+    assert.equal(value.error.httpStatus, status); assert.equal(value.lastAttemptError.httpStatus, status);
+    assert.equal(value.attempts, status === 401 ? 1 : 3); assert.equal(calls, value.attempts);
+    const ui = viewHarness(h.runtime, { page: 'management', navigatorRef: { clipboard: { writeText: async text => { copied = text; } } } });
+    ui.flatten(ui.container).find(node => node.textContent === '复制状态诊断').click(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(JSON.parse(copied).memory.request.error.httpStatus, status);
+    assert.doesNotMatch(copied, /PRIVATE_HTTP/u); ui.view.deactivate();
+  });
+});
+
+test('四十楼历史流水在30楼等待后正常与Abort及旧paused恢复失效的自然终态', async t => {
+  for (const outcome of ['normal', 'abort', 'resumeInvalidated']) await t.test(outcome, async () => {
+    let summaries = 0, cses = 0, summaryPending = null, csePending = null;
+    const active = { summary: 0, cse: 0 }, max = { summary: 0, cse: 0 }, batchSizes = [];
+    const controlled = (options, kind) => {
+      let resolve, reject;
+      const control = { signal: options.signal, settled: false,
+        resolve: value => resolve(value), reject: error => reject(error) };
+      const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+      const abort = () => reject(new DOMException('offline operation cancelled', 'AbortError'));
+      options.signal.addEventListener('abort', abort, { once: true });
+      if (options.signal.aborted) abort();
+      if (kind === 'summary') summaryPending = control; else csePending = control;
+      return promise.finally(() => { control.settled = true; options.signal.removeEventListener('abort', abort); });
+    };
+    const h = harness({ modernAnchors: true,
+      initialChat: Array.from({ length: 40 }, (_, index) => [assistant(`离线流水正文 ${index + 1}`),
+        { ...user(`确认 ${index + 1}`), send_date: `probe-forty-${index + 1}` }]).flat(),
+      utility: async options => {
+        const request = JSON.parse(options.taskMessages[0].content), kind = request.task === 'extractFloorSemantics' ? 'summary' : 'cse';
+        active[kind] += 1; max[kind] = Math.max(max[kind], active[kind]);
+        try {
+          if (kind === 'summary') {
+            summaries += 1; batchSizes.push(request.payload.sourceFloors.length);
+            if (summaries === 4 || summaries === 5) return await controlled(options, kind);
+            return { jsonData: { summary: `已保存批次 ${summaries}` } };
+          }
+          cses += 1;
+          if (cses === 3) return await controlled(options, kind);
+          return { jsonData: { noMaterialChange: true } };
+        } finally { active[kind] -= 1; }
+      } });
+    await h.runtime.start();
+    const ui = viewHarness(h.runtime, { page: 'management' });
+    await ui.view.activate();
+    const activity = createPluginActivity([h.foundationRuntime, h.runtime]);
+    const releaseActivity = activity.subscribe(value => ui.view.setActivity(value));
+    ui.view.setActivity(activity.getState());
+    const notifications = [];
+    const narrow = state => ({ remembered: state.rememberedCount, stable: state.stableCount, rebuild: state.rebuildStatus,
+      busy: state.memoryWorkBusy, phase: state.activeMemoryWork?.phase ?? null, extraction: Boolean(state.activeExtraction),
+      cse: Boolean(state.activeCse), error: state.lastExtractorError?.code ?? null, errorPhase: state.lastExtractorError?.phase ?? null,
+      lastAuto: state.lastAutoMemory?.status ?? null });
+    const releaseState = h.runtime.subscribe(state => notifications.push(narrow(state)));
+    let running = h.runtime.startHistoricalRebuild({ aggregate: true });
+    await waitFor(() => summaries === 4 && summaryPending && csePending, '前三批后摘要4与CSE3没有同时等待');
+    const waiting = narrow(h.runtime.getState());
+    assert.equal(waiting.remembered, 30); assert.equal(waiting.rebuild, 'rebuilding');
+    assert.deepEqual(active, { summary: 1, cse: 1 });
+    assert.ok(ui.flatten(ui.container).some(node => node.textContent === '暂停补齐'));
+    h.runtime.setIdentityProjection({});
+    h.runtime.setIdentityProjection({});
+    assert.equal(summaryPending.signal.aborted, false, '等价身份投影本身不取消正在进行的摘要');
+    csePending.resolve({ jsonData: { noMaterialChange: true } });
+    await waitFor(() => active.cse === 0 && !h.runtime.getState().activeCse, '真实CSE3没有自然收尾');
+    assert.equal(summaryPending.signal.aborted, false, '并行CSE正常提交不取消摘要4');
+    let pausedSeed = null;
+    if (outcome === 'resumeInvalidated') {
+      h.runtime.pauseHistoricalRebuild();
+      await running;
+      pausedSeed = narrow(h.runtime.getState());
+      assert.equal(pausedSeed.rebuild, 'paused');
+      running = h.runtime.startHistoricalRebuild({ aggregate: true });
+      await waitFor(() => summaries === 5 && summaryPending && !summaryPending.settled, '旧paused任务没有恢复到最后一批');
+      assert.equal(h.runtime.getState().rebuildStatus, 'rebuilding');
+      h.context.chat[60].mes = '真实变化的第31楼正文';
+      h.context.chat[60].swipes = ['真实变化的第31楼正文'];
+      h.emit('MESSAGE_EDITED', 60);
+      await waitFor(() => summaryPending.signal.aborted, '恢复任务真实来源变化后没有取消旧请求');
+    } else if (outcome === 'abort') summaryPending.reject(new DOMException('offline transport aborted', 'AbortError'));
+    else summaryPending.resolve({ jsonData: { summary: '已保存批次 4' } });
+    const returned = await running;
+    await waitFor(() => !h.runtime.getActivityState().busy, '流水收尾后runtime活动没有自然归闲');
+    const final = narrow(h.runtime.getState()), graph = await h.store.readReachable({ mode: 'runtime' });
+    assert.deepEqual(active, { summary: 0, cse: 0 });
+    assert.deepEqual(max, { summary: 1, cse: 1 });
+    assert.equal(final.busy, false); assert.equal(final.extraction, false); assert.equal(final.cse, false);
+    assert.equal(activity.getState().busy, false);
+    assert.deepEqual(notifications.at(-1), final, '最后一次真实runtime通知必须包含已清理的owner终态');
+    assert.equal(ui.flatten(ui.container).some(node => node.textContent === '暂停补齐'), false,
+      '真实runtime自然结束后管理view订阅不保留运行中的暂停按钮');
+    if (outcome === 'normal') {
+      assert.equal(final.remembered, 40); assert.equal(final.rebuild, 'caughtUp'); assert.equal(final.error, null);
+      assert.equal(graph.floorMemories.length, 4); assert.equal(graph.stateDeltas.length, 4);
+    } else {
+      assert.equal(final.remembered, 30); assert.equal(final.error, 'V3_MEMORY_STALE');
+      assert.equal(final.rebuild, outcome === 'abort' ? 'partial' : 'paused');
+      assert.equal(graph.floorMemories.length, 3);
+    }
+    console.log(JSON.stringify({ fortyFloorProbe: { outcome, waiting, pausedSeed, returned: narrow(returned), final,
+      summaries, cses, batchSizes, memorySourceCounts: graph.floorMemories.map(memory => memory.sourceFloorIds.length),
+      deltaCount: graph.stateDeltas.length, pluginBusy: activity.getState().busy,
+      newPauseCallsAfterResume: 0, explicitPausedSeed: outcome === 'resumeInvalidated', realModelRequests: 0 } }));
+    releaseState(); releaseActivity(); activity.dispose(); ui.view.deactivate();
+  });
 });
 
 test('高楼压缩把 23 个连续 AI 楼按 10/10/3 写成三份记忆并各分析一次 CSE', async () => {

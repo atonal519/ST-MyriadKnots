@@ -216,11 +216,19 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   const identity = () => { try { return session.identity(); } catch { return { chatId: null }; } };
   const current = operation => enabled() && operation.epoch === epoch && !operation.controller.signal.aborted && identity().chatId === operation.chatId;
   const bodyAttempt = (fragments, prepared = null) => ({
+    fromAssistantSeq: fragments[0]?.assistantSeq ?? null,
+    toAssistantSeq: fragments.at(-1)?.assistantSeq ?? null,
     cutoffFloorId: prepared?.cutoffFloorId ?? fragments.at(-1)?.floorId ?? null,
     cutoffAssistantSeq: prepared?.cutoffAssistantSeq ?? fragments.at(-1)?.assistantSeq ?? 0,
     ...(prepared ? { sourceKeys: prepared.sourceKeys } : {}),
     fragments: fragments.map(({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters }) => ({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters })),
   });
+  const failureDiagnostic = (error, phase) => {
+    const code = /^(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}$/.test(error?.code ?? '') || error?.code === 'BACKEND_TIMEOUT' ? error.code : null;
+    const name = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : null;
+    const status = error?.httpStatus ?? error?.status;
+    return { phase, code, name, httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null, at: Date.now() };
+  };
   const sameBodyAttempt = (attempt, fragments, prepared = null) => Array.isArray(attempt?.fragments)
     ? JSON.stringify(attempt.fragments) === JSON.stringify(bodyAttempt(fragments).fragments)
     : prepared && prepared.cutoffFloorId === attempt?.cutoffFloorId && JSON.stringify(prepared.sourceKeys) === JSON.stringify(attempt?.sourceKeys);
@@ -663,6 +671,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
         const roundFailures = [];
         if (plan.currentReview && groups.at(-1)?.length) groups.push([]);
         for (const planned of groups) {
+          operation.failurePhase = 'preparing';
           const currentReview = Boolean(plan.currentReview && !planned.length);
           if (currentReview && plan.reviewAuthorization && stored.head?.currentReviewAttempt?.authorization === plan.reviewAuthorization) break;
           const reads = timeBodyReads(stored.batches, source);
@@ -677,26 +686,32 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           const witnesses = fragments.length ? fragments : plan.currentWitness ? [{ ...plan.currentWitness, totalCharacters: plan.currentWitness.content.length }] : [];
           if (!witnesses.length) continue;
           if (!current(operation)) return;
+          operation.failurePhase = 'sourceValidation';
           if (!await validateBody(operation, source, witnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           let prepared;
           try {
+            operation.failurePhase = 'preparing';
             prepared = await prepareTimeRequest(source, stored.batches, { fragments, cutoffBody: !fragments.length ? plan.currentWitness : null, allowInitialProjection: manual || currentReview, currentReview });
           } catch (error) {
             if (!current(operation) || error?.name === 'AbortError' || error?.code !== 'QQJ_TIME_INVALID') throw error;
             const message = publicErrorMessage({ code: error.code, name: error.name, status: error.status }, { fallback: '本批时间正文无法准备；其余批次已继续处理，可手动补查本批。' });
             const attempt = currentReview ? {} : bodyAttempt(fragments);
+            const failure = failureDiagnostic(error, 'preparing');
             const failedRun = { status: 'partial', cutoffFloorId: attempt.cutoffFloorId ?? plan.currentWitness?.floorId ?? null,
-              cutoffAssistantSeq: attempt.cutoffAssistantSeq ?? plan.currentWitness?.assistantSeq ?? 0, items: itemCount(stored.batches, source), message };
+              cutoffAssistantSeq: attempt.cutoffAssistantSeq ?? plan.currentWitness?.assistantSeq ?? 0, items: itemCount(stored.batches, source), message, failure };
             const failedHead = { ...stored.head, lastRun: failedRun };
+            operation.failurePhase = 'saving';
             const saved = await store.putHead(operation.chatId, failedHead, stored.revision, operation.controller.signal);
             stored = { ...stored, head: failedHead, revision: saved.revision };
-            roundFailures.push({ currentReview, message, ...attempt });
+            roundFailures.push({ currentReview, message, failure, ...attempt,
+              ...(currentReview ? { cutoffAssistantSeq: plan.currentWitness?.assistantSeq ?? null } : {}) });
             operation.progress.completed += 1; statusKey = null;
             last = { ...failedRun, requests: operation.requests, persisted: true }; notify();
             continue;
           }
           if (!prepared.shouldRequest) { if (currentReview) operation.progress.total -= 1; continue; }
           const preparedWitnesses = liveBodyWitnesses(source, prepared.futureContextRefs ?? [], witnesses);
+          operation.failurePhase = 'sourceValidation';
           if (!await validateBody(operation, source, preparedWitnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           operation.currentReview = currentReview;
           const latestSourceBody = source.bodyFloors.filter(body => body.floorId).at(-1);
@@ -705,47 +720,56 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
             items: itemCount(stored.batches, source) };
           const reviewAttempt = currentReview ? { authorization: plan.reviewAuthorization, scopeKey: await reviewScopeKey(source, plan.currentWitness), signature: prepared.signature, cutoffFloorId: prepared.cutoffFloorId, cutoffAssistantSeq: prepared.cutoffAssistantSeq, status: 'running' } : null;
           const head = { ...stored.head, ...(reviewAttempt ? { currentReviewAttempt: reviewAttempt } : {}), lastAttemptSignature: prepared.signature, lastAttemptTime: prepared.request.currentTime, lastRun: run };
+          operation.failurePhase = 'saving';
           const attempted = await store.putHead(operation.chatId, head, stored.revision, operation.controller.signal);
           stored = { ...stored, head, revision: attempted.revision };
           operation.phase = prepared.request.trackedItems.length ? 'projecting' : 'collecting'; notify();
           const transportBudget = { remaining: 1, used: 0 };
           operation.requests += 1;
           let result, batch;
+          operation.failurePhase = 'request';
           try {
             result = await generateTimeTask({ systemPrompt: withBaseProcessingPrompt(prepared.systemPrompt, operation.processingPrompt), taskMessages: [{ role: 'user', content: JSON.stringify(prepared.request) }],
               temperature: 0, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic', transportBudget, transportRetries: 0, signal: operation.controller.signal });
             if (!current(operation)) return;
             operation.phase = 'saving'; notify();
+            operation.failurePhase = 'compile';
             batch = await compileTimeResponse(result, prepared, stored.batches);
           } catch (error) {
             if (!current(operation) || error?.name === 'AbortError') throw error;
             const message = error?.code === 'QQJ_TIME_INVALID' && error.itemErrors?.length
               ? `${error.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 本批未保存，可手动补查。`
               : publicErrorMessage({ code: error?.code, name: error?.name, status: error?.status }, { fallback: '本批时间正文处理失败；成功批次已保留，可补查本批。' });
-            const failedRun = { ...run, status: 'partial', message };
+            const failure = failureDiagnostic(error, operation.failurePhase);
+            const failedRun = { ...run, status: 'partial', message, failure };
             const failedHead = { ...head, ...(reviewAttempt ? { currentReviewAttempt: { ...reviewAttempt, status: 'failed' } } : {}), lastRun: failedRun };
+            operation.failurePhase = 'saving';
             const saved = await store.putHead(operation.chatId, failedHead, stored.revision, operation.controller.signal);
             stored = { ...stored, head: failedHead, revision: saved.revision };
-            roundFailures.push({ currentReview, message, ...(currentReview ? {} : bodyAttempt(fragments, prepared)) });
+            roundFailures.push({ currentReview, message, failure, ...(currentReview ? { cutoffAssistantSeq: prepared.cutoffAssistantSeq } : bodyAttempt(fragments, prepared)) });
             operation.progress.completed += 1; statusKey = null;
             last = { ...failedRun, requests: operation.requests, persisted: true }; notify();
             continue;
           }
           batch.id = `v3-time-batch-${newUuid()}`;
           const submitWitnesses = liveBodyWitnesses(source, [...(batch.dependencies ?? []), ...(prepared.futureContextRefs ?? [])], witnesses);
+          operation.failurePhase = 'sourceValidation';
           if (!await validateBody(operation, source, submitWitnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
+          operation.failurePhase = 'saving';
           await store.putBatch(operation.chatId, batch, operation.controller.signal);
+          operation.failurePhase = 'sourceValidation';
           if (!await validateBody(operation, source, submitWitnesses)) throw Object.assign(new Error('正文来源已变化，本批未应用。'), { code: 'QQJ_TIME_SOURCE_CHANGED' });
           const completed = { ...run, status: batch.status === 'partial' ? 'partial' : batch.changes.length ? 'completed' : 'empty',
             ...(batch.itemErrors?.length ? { itemErrors: batch.itemErrors, message: `已保存 ${batch.changes.length} 项；${batch.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 失败项可在后续新正文或手动补查时再试。` } : {}), items: itemCount([...stored.batches, batch], source),
             ...(!fragments.length && batch.status !== 'partial' ? { initialProjectionCheckedSignature: prepared.signature } : {}) };
           if (batch.currentReview) { completed.currentReview = batch.currentReview; completed.message = `当前评估：估计 ${batch.currentReview.updated} 项，依据不足 ${batch.currentReview.insufficient} 项，短期事项退出 ${batch.currentReview.retired ?? 0} 项，归并退出 ${batch.currentReview.merged ?? 0} 项，未纳入 ${batch.currentReview.omitted} 项。${completed.message ?? ''}`; }
           const nextHead = { ...head, ...(reviewAttempt ? { currentReviewAttempt: { ...reviewAttempt, status: completed.status } } : {}), batchIds: [...head.batchIds, batch.id], lastRun: completed };
+          operation.failurePhase = 'saving';
           const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
           if (!current(operation)) return;
           stored = { head: nextHead, revision: saved.revision, batches: [...stored.batches, batch] };
           operation.progress.completed += 1;
-          if (batch.status === 'partial') roundFailures.push({ currentReview, message: completed.message ?? '本批有未完成事项，可手动补查。', ...(currentReview ? {} : bodyAttempt(fragments, prepared)) });
+          if (batch.status === 'partial') roundFailures.push({ currentReview, failure: failureDiagnostic(null, 'compilePartial'), message: completed.message ?? '本批有未完成事项，可手动补查。', ...(currentReview ? { cutoffAssistantSeq: prepared.cutoffAssistantSeq } : bodyAttempt(fragments, prepared)) });
           const freshAnnual = await annualSnapshot();
           if (!current(operation)) return;
           cacheItems(stored.batches, source, currentAnnualRecords(stored.head, freshAnnual)); coverage = planTimeBody(source, stored.batches, { start: stored.head.bodyStart });
@@ -754,12 +778,16 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           projectionCache = null; onInvalidate(); notify();
         }
         if (roundFailures.length && current(operation)) {
-          const failedBodyAttempts = roundFailures.filter(failure => !failure.currentReview).map(({ cutoffFloorId, cutoffAssistantSeq, sourceKeys, fragments }) => ({ cutoffFloorId, cutoffAssistantSeq, sourceKeys, fragments }));
+          const failedBodyAttempts = roundFailures.filter(failure => !failure.currentReview).map(({ cutoffFloorId, cutoffAssistantSeq, sourceKeys, fragments, fromAssistantSeq, toAssistantSeq, failure }) => ({ cutoffFloorId, cutoffAssistantSeq, sourceKeys, fragments, fromAssistantSeq, toAssistantSeq, ...(failure ? { failure } : {}) }));
           const details = roundFailures.slice(0, 3).map(failure => failure.message).filter(Boolean).join(' ');
           const message = `本轮 ${roundFailures.length} 批未完成；其余批次已继续处理，失败范围仍可手动补查。${details ? ` ${details}` : ''}`;
           const aggregate = { ...stored.head.lastRun, status: 'partial', message, failedBatchCount: roundFailures.length,
+            failureDiagnostics: roundFailures.slice(0, 12).map(({ currentReview, failure, fromAssistantSeq, toAssistantSeq, cutoffAssistantSeq }) => ({
+              currentReview, failure: failure ?? null, fromAssistantSeq: fromAssistantSeq ?? null, toAssistantSeq: toAssistantSeq ?? null, cutoffAssistantSeq: cutoffAssistantSeq ?? null })),
+            failureDiagnosticsTruncated: roundFailures.length > 12,
             ...(failedBodyAttempts.length ? { failedBodyAttempts } : {}) };
           const nextHead = { ...stored.head, lastRun: aggregate };
+          operation.failurePhase = 'saving';
           const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
           stored = { ...stored, head: nextHead, revision: saved.revision };
           last = { ...aggregate, requests: operation.requests, persisted: true }; statusKey = null; notify();
@@ -771,10 +799,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       } catch (error) {
         if (current(operation)) {
           const message = error?.code === 'QQJ_TIME_INVALID' && error.itemErrors?.length ? `${error.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 本批未保存，可手动补查。` : publicErrorMessage({ code: error?.code, name: error?.name, status: error?.status }, { fallback: '本批时间正文处理失败；成功批次已保留，可补查剩余正文。' });
-          last = { status: 'failed', message, persisted: false, ...(operation.currentReview ? { currentReview: { failed: true } } : {}) }; statusKey = null;
+          const failure = failureDiagnostic(error, operation.failurePhase ?? 'unknown');
+          last = { status: 'failed', message, failure, persisted: false, ...(operation.currentReview ? { currentReview: { failed: true } } : {}) }; statusKey = null;
           try {
             const latest = await store.read(operation.chatId);
-            if (current(operation) && latest.head) { await store.putHead(operation.chatId, { ...latest.head, ...(latest.head.currentReviewAttempt?.status === 'running' ? { currentReviewAttempt: { ...latest.head.currentReviewAttempt, status: 'failed' } } : {}), lastRun: { ...latest.head.lastRun, status: 'failed', message } }, latest.revision, operation.controller.signal); last.persisted = true; }
+            if (current(operation) && latest.head) { await store.putHead(operation.chatId, { ...latest.head, ...(latest.head.currentReviewAttempt?.status === 'running' ? { currentReviewAttempt: { ...latest.head.currentReviewAttempt, status: 'failed' } } : {}), lastRun: { ...latest.head.lastRun, status: 'failed', message, failure } }, latest.revision, operation.controller.signal); last.persisted = true; }
           } catch { /* Keep the visible failure if its status could not be saved. */ }
           notify();
         }

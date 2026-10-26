@@ -190,6 +190,14 @@ const presenceDiagnostic = (source, key) => source && Object.hasOwn(source, key)
 const operationDiagnostic = (value, { kind = false } = {}) => value
   ? { present: true, ...(kind ? { kind: enumDiagnostic(value.kind, DIAGNOSTIC_KIND) } : {}), phase: enumDiagnostic(value.phase, DIAGNOSTIC_PHASE) }
   : { present: false, ...(kind ? { kind: null } : {}), phase: null };
+const REQUEST_PHASES = new Set(['preparing', 'fetch', 'responseBody', 'sseBody', 'normalize', 'compile', 'validating', 'saving']);
+const TIME_FAILURE_PHASES = new Set(['preparing', 'request', 'compile', 'compilePartial', 'sourceValidation', 'saving']);
+const requestDiagnostic = value => value ? {
+  phase: enumDiagnostic(value.phase, REQUEST_PHASES), outcome: enumDiagnostic(value.outcome, new Set(['running', 'completed', 'failed', 'cancelled'])),
+  ...Object.fromEntries(['startedAt', 'endedAt', 'elapsedMs', 'phaseElapsedMs', 'attemptElapsedMs', 'attempts', 'timeoutMs', 'fromAssistantSeq', 'toAssistantSeq'].map(key => [key, value[key] === null ? null : countDiagnostic(value[key])])),
+  error: errorDiagnostic(value.error), lastAttemptError: value.lastAttemptError ? { ...errorDiagnostic(value.lastAttemptError),
+    attempt: countDiagnostic(value.lastAttemptError.attempt), at: countDiagnostic(value.lastAttemptError.at), phase: enumDiagnostic(value.lastAttemptError.phase, REQUEST_PHASES) } : null,
+} : null;
 function reviewReasonDiagnostic(value, sourceKnown = true) {
   if (!sourceKnown) return { present: 'unknown' };
   if (!value) return { present: false };
@@ -689,6 +697,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         });
         const message = typeof time?.last?.message === 'string' ? time.last.message.slice(0, 12000) : '';
         const knownReasons = [...new Set([...itemErrors.map(item => item.reason), ...[...TIME_ITEM_FAILURE_REASONS].filter(reason => message.includes(reason))])];
+        const failures = Array.isArray(time?.last?.failureDiagnostics) ? time.last.failureDiagnostics
+          : Array.isArray(time?.last?.failedBodyAttempts) ? time.last.failedBodyAttempts : time?.last?.failure ? [{ failure: time.last.failure, cutoffAssistantSeq: time.last.cutoffAssistantSeq }] : [];
         return { status: enumDiagnostic(time?.status, statuses),
           phase: time?.phase == null ? null : enumDiagnostic(time.phase, new Set(['preparing', 'collecting', 'projecting', 'saving'])),
           active: time ? booleanDiagnostic(time.active) : 'unknown',
@@ -697,7 +707,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
             cutoffAssistantSeq: countDiagnostic(time.last.cutoffAssistantSeq), failedBatchCount: countDiagnostic(time.last.failedBatchCount),
             itemErrorIndexScope: 'batch', itemErrors, itemErrorsTruncated: rawErrors.length > 12,
             knownReasons, reasonStatus: knownReasons.length ? 'known' : 'unknown',
-            error: ['failed', 'partial'].includes(time.last.status) ? errorDiagnostic(time.last.error ?? time.last, true) : null } : null };
+            batchFailures: failures.slice(0, 12).map(item => ({ ...errorDiagnostic(item.failure, Boolean(item.failure)),
+              phase: enumDiagnostic(item.failure?.phase, TIME_FAILURE_PHASES), at: countDiagnostic(item.failure?.at), currentReview: booleanDiagnostic(item.currentReview), fromAssistantSeq: countDiagnostic(item.fromAssistantSeq),
+              toAssistantSeq: countDiagnostic(item.toAssistantSeq), cutoffAssistantSeq: countDiagnostic(item.cutoffAssistantSeq) })),
+            batchFailuresTruncated: failures.length > 12 || time.last.failureDiagnosticsTruncated === true, failureDetails: time.last.failure || failures.some(item => item.failure) ? 'recorded' : 'unknown',
+            error: ['failed', 'partial'].includes(time.last.status) ? { ...errorDiagnostic(time.last.failure ?? time.last.error ?? time.last, true),
+              ...(time.last.failure ? { phase: enumDiagnostic(time.last.failure.phase, TIME_FAILURE_PHASES), at: countDiagnostic(time.last.failure.at) } : {}) } : null } : null };
       })(),
       identity: {
         status: identityKnown ? enumDiagnostic(identity.status, DIAGNOSTIC_STATUS) : 'unknown',
@@ -738,9 +753,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         activeAutoMemory: memoryKnown ? operationDiagnostic(memory.activeAutoMemory) : { present: 'unknown', phase: 'unknown' },
         syncError: errorDiagnostic(memory?.memorySyncError, memoryKnown),
         lastExtractorError: errorDiagnostic(memory?.lastExtractorError, memoryKnown),
+        request: requestDiagnostic(memory?.extractorRequest),
         lastAutomationError: automationErrorDiagnostic(memory?.lastAutomationError, memoryKnown),
       },
       cse: {
+        request: requestDiagnostic(memory?.cseRequest),
         active: memoryKnown ? operationDiagnostic(memory.activeCse) : { present: 'unknown', phase: 'unknown' },
         rebuildStatus: enumDiagnostic(memory?.cseRebuildStatus, DIAGNOSTIC_STATUS),
         lastError: { ...errorDiagnostic(memory?.lastCseError, memoryKnown),
@@ -800,6 +817,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
           activeCse: operationDiagnostic(historical.activeCse),
           syncError: errorDiagnostic(historical.memorySyncError),
           lastExtractorError: errorDiagnostic(historical.lastExtractorError),
+          extractorRequest: requestDiagnostic(historical.extractorRequest), cseRequest: requestDiagnostic(historical.cseRequest),
           lastAutomationError: automationErrorDiagnostic(historical.lastAutomationError),
           lastCseError: errorDiagnostic(historical.lastCseError),
         } : null,
@@ -2477,7 +2495,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (receiptOutcome.status === 'rejected') receiptFeedback = `历史召回回执恢复失败：${publicErrorMessage(receiptOutcome.reason, { fallback: '回执读取失败。' })}；不影响记忆读取。`;
     const peopleFeedback = peopleOutcome.status === 'rejected' ? `重要人物选择读取失败：${publicErrorMessage(peopleOutcome.reason, { fallback: '人物选择暂时无法读取。' })}；人物状态仍可查看。` : '';
     if (foundationOutcome.status === 'rejected') { feedback = `记忆读取失败：${publicErrorMessage(foundationOutcome.reason, { fallback: '后端数据暂时无法读取。' })}；历史召回回执已独立处理。`; const result = runtime.getState(); render(result); return { status: 'error', error: foundationOutcome.reason }; }
-    const result = foundationOutcome.value; feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); receiveFoundation(result); await readVectorIndexForReadyState(foundationState); return result;
+    const result = runtime.getState(); feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); receiveFoundation(result); await readVectorIndexForReadyState(foundationState); return result;
   }
   function deactivate() { refreshManagementProgress = null; active = false; vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
   function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null; if (active && container) render(foundationState); }

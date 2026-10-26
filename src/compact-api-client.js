@@ -312,8 +312,26 @@ function linkedController(signal, timeoutSec, timeoutMs) {
   const controller = new AbortController(); let timedOut = false;
   const onAbort = () => controller.abort();
   if (signal?.aborted) controller.abort(); else signal?.addEventListener?.('abort', onAbort, { once: true });
-  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs(timeoutSeconds(timeoutSec)));
-  return { controller, timedOut: () => timedOut, cleanup: () => { clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); } };
+  const deadlineMs = timeoutMs(timeoutSeconds(timeoutSec));
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, deadlineMs);
+  return { controller, timeoutMs: deadlineMs, timedOut: () => timedOut, cleanup: () => { clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); } };
+}
+
+function requestProgress(budget, phase, patch = {}) {
+  const value = budget?.diagnostic;
+  if (!value) return;
+  if (value.phase !== phase) { value.phase = phase; value.phaseStartedAt = Date.now(); }
+  Object.assign(value, patch);
+}
+function requestFailure(budget, error, cancelled = false) {
+  const value = budget?.diagnostic;
+  if (!value) return;
+  const code = /^(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}$/.test(error?.code ?? '') ? error.code : null;
+  const name = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : null;
+  const status = error?.httpStatus ?? error?.status;
+  const failure = { code, name, httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null, at: Date.now() };
+  Object.assign(value, { outcome: cancelled ? 'cancelled' : 'failed', error: failure, endedAt: Date.now(), attemptEndedAt: Date.now() });
+  if (!cancelled) value.lastAttemptError = { ...failure, attempt: budget.used, phase: value.phase };
 }
 
 export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryWait = wait, timeoutMs = seconds => seconds * 1000, onBusyChange = () => {}, processingPrompt = () => getSharedProcessingPrompt((globalThis.SillyTavern ?? globalThis.Luker)?.getContext?.()?.extensionSettings) } = {}) {
@@ -349,27 +367,34 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
           transportBudget.used += 1;
         }
         const linked = linkedController(signal, config.timeoutSec, timeoutMs);
+        requestProgress(transportBudget, 'fetch', { attemptStartedAt: Date.now(), attemptEndedAt: null, timeoutMs: linked.timeoutMs, outcome: 'running', error: null, endedAt: null });
         try {
           const response = await abortable(() => resolveFetch()(path, { method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: linked.controller.signal }), linked.controller.signal);
           if (!response.ok) {
             if ((response.status === 429 || response.status >= 500) && attempt < retries && retryAvailable()) {
+              requestFailure(transportBudget, mapHttpError(response.status));
               attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
             }
+            requestProgress(transportBudget, 'responseBody');
             throw mapHttpError(response.status, await abortable(() => readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]), linked.controller.signal));
           }
           if (stream) {
             const contentType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase();
             // Streaming stays on SSE unless the server explicitly labels its response as JSON.
             if (contentType === 'application/json' || contentType.endsWith('+json')) {
+              requestProgress(transportBudget, 'responseBody');
               let data; try { data = await abortable(() => response.json(), linked.controller.signal); } catch (error) { if (linked.controller.signal.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
               return completionDetails(data);
             }
+            requestProgress(transportBudget, 'sseBody');
             return await abortable(() => readSseResponse(response, { requireSse: contentType === 'text/event-stream', signal: linked.controller.signal }), linked.controller.signal);
           }
+          requestProgress(transportBudget, 'responseBody');
           try { return await abortable(() => response.json(), linked.controller.signal); } catch (error) { if (linked.controller.signal.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
         } catch (error) {
-          if (linked.timedOut()) throw safeError('timeout');
-          if (signal?.aborted || error?.name === 'AbortError') throw abortError();
+          if (linked.timedOut()) { const timeout = safeError('timeout'); requestFailure(transportBudget, timeout); throw timeout; }
+          if (signal?.aborted || error?.name === 'AbortError') { requestFailure(transportBudget, abortError(), true); throw abortError(); }
+          requestFailure(transportBudget, error);
           if (error instanceof TypeError && attempt < retries && retryAvailable()) {
             attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
           }
@@ -383,6 +408,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     }
   };
   const generateTask = async ({ config, taskMessages, jsonSchema, signal, maxTokens = 12000, temperature = 0.2, systemPrompt, transportBudget = null, parseMode = 'strict' } = {}) => {
+    requestProgress(transportBudget, 'preparing', { outcome: 'running', error: null, endedAt: null, attemptStartedAt: null, attemptEndedAt: null, timeoutMs: null });
     const compactMessages = [
       { role: 'system', content: typeof systemPrompt === 'string' && systemPrompt.trim()
         ? systemPrompt.trim()

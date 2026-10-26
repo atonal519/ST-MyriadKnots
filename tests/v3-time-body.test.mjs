@@ -54,6 +54,42 @@ async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), s
 }
 const reviewModel = (request,patch={}) => ({changes:request.trackedItems.map(item=>({itemId:item.id,progression:'截至当前可能仍有轻微不适，未确认恢复。',assessmentReason:'',...patch}))});
 const bodyModel = (request,patch={}) => request.currentReview ? reviewModel(request,patch) : ({changes:[{itemId:null,subjectEntityId:null,subjectName:'阿岚',type:'body',label:'手腕擦伤',observation:'手腕擦伤仍疼痛',occurrenceTime:'昨天',dueTime:'',periodDays:null,status:'active',stateRefs:[],progression:'疼痛可能逐渐减轻，仍待新观察确认',sourceKeys:[request.observations[0].sourceKey],...patch}]});
+
+test('等待诊断边界下一组来源校验失败不继承上一组saving阶段',async()=>{
+  const h=await harness({count:21,generate:()=>({changes:[]})});
+  const put=h.back.client.put;let changed=false;
+  h.back.client.put=async(...args)=>{const result=await put(...args);const data=args[2];
+    if(!changed&&data?.lastRun?.status==='empty'&&data.batchIds?.length===1){changed=true;h.chat[40].mes=raw(20,'真实改变的下一组正文');}
+    return result;};
+  await h.runtime.organize(await h.runtime.prepareHistoryPlan());
+  assert.equal(changed,true);assert.equal(h.runtime.getState().last.failure.phase,'sourceValidation');assert.equal(h.calls(),1);
+});
+
+test('等待诊断边界正文与currentReview同轮失败全有窄出口但不改业务失败范围',async()=>{
+  const h=await harness({count:21,generate:(request,calls)=>{
+    if(calls===1)return {changes:[bodyModel(request).changes[0],bodyModel(request,{sourceKeys:['S99']}).changes[0]]};
+    throw Object.assign(new Error('PRIVATE_REVIEW'),{code:request.currentReview?'QQJ_EMPTY':'QQJ_TIMEOUT'});
+  }});
+  await h.runtime.organize(await h.runtime.prepareHistoryPlan());
+  const last=(await h.store.read(CHAT)).head.lastRun;
+  assert.equal(last.failedBatchCount,3);assert.equal(last.failedBodyAttempts.length,2);
+  assert.equal(last.failureDiagnostics.length,3);assert.equal(last.failureDiagnostics[2].currentReview,true);
+  assert.equal(last.failureDiagnostics[2].failure.code,'QQJ_EMPTY');assert.doesNotMatch(JSON.stringify(last.failureDiagnostics),/PRIVATE_REVIEW/u);
+});
+
+test('等待诊断时间失败区分请求与编译并沿原保存保留安全码和楼范围',async t=>{
+  for(const phase of ['request','compile'])await t.test(phase,async()=>{
+    const h=await harness({count:2,generate:()=>{if(phase==='request')throw Object.assign(new Error('PRIVATE_BODY https://secret.invalid'),{code:'QQJ_TIMEOUT',status:504});return {changes:null};}});
+    await h.runtime.organize(await h.runtime.prepareHistoryPlan());
+    const stored=await h.store.read(CHAT),attempt=stored.head.lastRun.failedBodyAttempts[0];
+    assert.equal(attempt.failure.phase,phase);
+    assert.equal(attempt.failure.code,phase==='request'?'QQJ_TIMEOUT':'QQJ_TIME_INVALID');
+    assert.deepEqual([attempt.fromAssistantSeq,attempt.toAssistantSeq],[1,2]);
+    assert.ok(Number.isSafeInteger(attempt.failure.at));
+    assert.doesNotMatch(JSON.stringify(attempt.failure),/PRIVATE_BODY|secret.invalid/u);
+    assert.equal(h.calls(),1);
+  });
+});
 const rankedItem = (id,{type='deadline',label=id,observation=label,dueTime='',status='active',projection=null}={}) => ({
   id,subjectEntityId:PERSON,subjectName:'阿岚',type,label,status,observation,observationKey:`key-${id}`,
   observationTime:projectTime('2026-05-01'),occurrenceTime:projectTime('2026-05-01'),dueTime:projectTime(dueTime),periodDays:null,sourceRefs:[],stateRefs:[],projection,

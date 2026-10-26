@@ -1781,11 +1781,10 @@ export function inferCanonicalCurrentTime(canonicalContent, { allowOpeningFallba
   return relative ? Object.freeze({ text: relative, kind: 'relative' }) : null;
 }
 
-export async function runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities = [], now, supersedes = null, preservedSummary = null, expectedScope, promptGuidance = '', processingPrompt = '', aggregate = false, signal }) {
+export async function runExtractorRequest({ generateUtilityTask, envelope, floor, existingEntities = [], now, supersedes = null, preservedSummary = null, expectedScope, promptGuidance = '', processingPrompt = '', aggregate = false, signal, transportBudget = { remaining: 3, used: 0 } }) {
   if (typeof generateUtilityTask !== 'function') throw new TypeError('V3 Extractor utility route unavailable');
   if (!expectedScope) throw extractorError('V3_EXTRACTOR_LOCAL_SCOPE_INVALID', 'expectedScope');
   const validationErrors = [];
-  const transportBudget = { remaining: 3, used: 0 };
   const systemPrompt = aggregate ? buildHighFloorExtractorSystemPrompt(promptGuidance, processingPrompt) : buildExtractorSystemPrompt(promptGuidance, processingPrompt);
   const taskMessages = [{ role: 'user', content: JSON.stringify(envelope.request) }];
   for (let attempts = 1; attempts <= 3; attempts += 1) {
@@ -1793,6 +1792,7 @@ export async function runExtractorRequest({ generateUtilityTask, envelope, floor
     try {
       const result = await generateUtilityTask({ systemPrompt, taskMessages, maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
       receivedResult = true;
+      if (transportBudget.diagnostic) Object.assign(transportBudget.diagnostic, { phase: 'normalize', phaseStartedAt: Date.now(), attemptEndedAt: Date.now(), outcome: 'running', endedAt: null });
       candidate = result?.jsonData ?? result?.textData ?? result;
       metadata = sanitizeTaskMetadata(result?.taskMetadata);
       responseFingerprint = `sha256:${await sha256(JSON.stringify(candidate))}`;
@@ -1802,6 +1802,16 @@ export async function runExtractorRequest({ generateUtilityTask, envelope, floor
     } catch (error) {
       if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       if (error?.name === 'AbortError') throw error;
+      if (transportBudget.diagnostic) {
+        const code = /^(?:QQJ|V3)_[A-Z0-9_]{1,80}$/.test(error?.code ?? '') ? error.code : null;
+        const name = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'TimeoutError'].includes(error?.name) ? error.name : null;
+        const status = error?.httpStatus ?? error?.status;
+        if (receivedResult || transportBudget.diagnostic.lastAttemptError?.attempt !== transportBudget.used || transportBudget.diagnostic.lastAttemptError?.code !== code) {
+          transportBudget.diagnostic.lastAttemptError = { code, name, httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null, at: Date.now(), attempt: transportBudget.used, phase: transportBudget.diagnostic.phase };
+        }
+        const failure = transportBudget.diagnostic.lastAttemptError;
+        Object.assign(transportBudget.diagnostic, { outcome: 'failed', error: { code: failure.code, name: failure.name, httpStatus: failure.httpStatus, at: failure.at }, endedAt: Date.now() });
+      }
       const formatStage = error?.formatStage ?? null;
       validationErrors.push({ code: String(error?.code ?? 'V3_EXTRACTOR_REQUEST_FAILED').slice(0, 120), path: String(error?.validationPath ?? '').slice(0, 500), formatStage: formatStage ? String(formatStage).slice(0, 120) : null });
       const retryable = receivedResult || error?.retryableRecognitionFormat === true || ['QQJ_TIMEOUT', 'QQJ_EMPTY'].includes(error?.code);

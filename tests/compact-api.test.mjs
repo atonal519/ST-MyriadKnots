@@ -8,6 +8,29 @@ import { BASE_PROCESSING_PROMPT, resolveProcessingPrompt, withBaseProcessingProm
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
 
+test('等待诊断沿原budget记录fetch正文流阶段，取消保留等待处且不采请求材料', async t => {
+  for (const phase of ['fetch', 'responseBody', 'sseBody']) await t.test(phase, async () => {
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    const pending = () => { started(); return new Promise(() => {}); };
+    const budget = { remaining: 3, used: 0, diagnostic: { startedAt: Date.now(), phase: 'preparing', outcome: 'running' } };
+    const controller = new AbortController();
+    const client = createCompactApiClient({ timeoutMs: () => 1000, fetchImpl: () => phase === 'fetch' ? pending()
+      : phase === 'responseBody' ? { ok: true, json: pending }
+        : { ok: true, headers: { get: () => 'text/event-stream' }, body: { getReader: () => ({ read: pending, cancel() {}, releaseLock() {} }) } } });
+    const settled = client.generateTask({ config: config({ stream: phase === 'sseBody' }), taskMessages: [{ role: 'user', content: 'PRIVATE_BODY' }], signal: controller.signal, transportBudget: budget }).catch(error => error);
+    try {
+      await ready;
+      assert.equal(budget.diagnostic.phase, phase);
+      assert.equal(budget.used, 1);
+      assert.equal(budget.diagnostic.timeoutMs, 1000);
+    } finally { controller.abort(); await settled; }
+    assert.equal(budget.diagnostic.phase, phase);
+    assert.equal(budget.diagnostic.outcome, 'cancelled');
+    assert.doesNotMatch(JSON.stringify(budget.diagnostic), /PRIVATE_BODY|TEST_KEY|https:|compact-model/u);
+  });
+});
+
 test('附加参数走宿主自定义通道，保留独立凭证、材料与 schema；排除参数最后生效', async () => {
   const bodies = [];
   const client = createCompactApiClient({ fetchImpl: async (_path, options) => { bodies.push(JSON.parse(options.body)); return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }); } });

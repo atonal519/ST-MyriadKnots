@@ -746,7 +746,6 @@ export function createIndexedDbCoreRecordCache({
       stats.writeFailures += 1;
       recordIoFailure('publish', error, 0, 0, 'rejected');
       disableIo();
-      try { logger?.debug?.('[qianqianjie] core cache publish skipped', { code: error?.code ?? 'IDB_CACHE_WRITE_FAILED' }); } catch { /* cache diagnostics are optional */ }
       return false;
     }
   }
