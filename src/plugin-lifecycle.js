@@ -3,6 +3,7 @@ import { createPluginGate } from './plugin-gate.js';
 export function createPluginLifecycle({
   session,
   aborters = [],
+  contextAborters = aborters,
   isEnabled = true,
   getUi = () => null,
   onPrepared = null,
@@ -39,10 +40,10 @@ export function createPluginLifecycle({
     });
   }
 
-  function invalidate({ cancelBusiness = true } = {}) {
+  function invalidate({ cancelBusiness = true, contextChange = false } = {}) {
     prepareEpoch += 1;
     let firstError;
-    for (const dependency of [...(cancelBusiness ? aborters : []), session]) {
+    for (const dependency of [...(cancelBusiness ? contextChange ? contextAborters : aborters : []), session]) {
       const operation = typeof dependency === 'function' ? dependency : dependency?.invalidate ?? dependency?.abortAll;
       if (typeof operation !== 'function') continue;
       try { operation.call(dependency, dependency === session ? { cancelTask: !enabled() } : undefined); } catch (error) { firstError ??= error; }
@@ -81,7 +82,7 @@ export function createPluginLifecycle({
   }
 
   function onIdentityChange() {
-    try { invalidate(); }
+    try { invalidate({ contextChange: true }); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
     scheduleIdentityPrepare('personaChanged');
   }
@@ -96,7 +97,7 @@ export function createPluginLifecycle({
   }
 
   async function onCharacterRenamed(oldLocator, newLocator) {
-    try { invalidate(); }
+    try { invalidate({ contextChange: true }); }
     catch (error) { logger?.warn?.('[qianqianjie] 插件生命周期失效失败', error); }
     if (typeof session.renameCharacter !== 'function') {
       logger?.warn?.('[qianqianjie] 角色改名缺少身份迁移能力');

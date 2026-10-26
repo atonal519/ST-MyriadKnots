@@ -514,7 +514,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     await persistPhaseA([...newEntities, delta, currentState, ...indexes], operation.controller.signal, targetStore);
     await persist([run, checkpoint], operation.controller.signal, targetStore);
     if ((!operation.pinnedTarget && operation.epoch !== epoch) || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', '人物状态分析已停止。');
-    if (operation.userCoreExtraction && (hostAdapter.snapshot?.()?.userIdentity?.personaIdentifier ?? '') !== operation.userCoreExtraction.personaLocator) throw errorWith('V3_CSE_STALE', '当前用户身份资料已变化，人物状态结果未采用。');
+    if (operation.userCoreExtraction && (operation.hostAdapter.snapshot()?.userIdentity?.personaIdentifier ?? '') !== operation.userCoreExtraction.personaLocator) throw errorWith('V3_CSE_STALE', '任务捕获的用户身份与提取材料不一致，人物状态结果未采用。');
     const committed = await targetStore.commitRoot(root, current.rootRevision, { signal: operation.controller.signal });
     if (committed.status === 'conflict') throw errorWith('V3_CSE_CAS_CONFLICT', '人物资料已更新，请刷新后重新分析。');
     if (committed.status !== 'saved') throw errorWith('V3_CSE_COMMIT_FAILED', '无法确认人物状态结果已保存，请刷新状态后查看。');

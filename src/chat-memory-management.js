@@ -2,7 +2,7 @@ import { CHAT_IDENTITY_COLLECTION } from './chat-identity.js';
 import { isUuid, readHostState } from './host-context.js';
 import { V3_ROOT_RECORD_ID } from './v3/foundation-store.js';
 import { captureTargetChatDescriptor } from './v3/host-adapter.js';
-import { readTargetChat, sameMessageCoreAndQqjData, sameQqjChatMetadata } from './v3/message-floor-anchor.js';
+import { readTargetChat, sameChatQqjData, snapshotChatQqjData, sameQqjChatMetadata } from './v3/message-floor-anchor.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from './v3/message-floor-anchor.js';
 import { publicErrorMessage } from './public-error.js';
 
@@ -11,8 +11,6 @@ const AUTO_HIDE_KEY = 'qianqianjieAutoHide';
 const MEMORY_MESSAGE_KEYS = Object.freeze([RECEIPT_KEY, MESSAGE_FLOOR_ANCHOR_KEY, AUTO_HIDE_KEY]);
 const errorWith = (code, message) => Object.assign(new Error(message), { code });
 const clone = value => structuredClone(value);
-const sameChatBusiness = (left, right) => Array.isArray(left) && Array.isArray(right) && left.length === right.length
-  && left.every((message, index) => sameMessageCoreAndQqjData(message, right[index]));
 const sameChatMetadataOwnership = (left, right, clearPrequel) => sameQqjChatMetadata(left, right, { includePrequel: clearPrequel });
 
 function publicError(error) {
@@ -109,9 +107,8 @@ export function createChatMemoryManagement({
 
   async function persistTargetCleanup(identity, target, initial, clearPrequel, allowMissingIdentity = false) {
     const latest = await readTargetChat(target, { fetchImpl, allowMissingIdentity });
-    if (!sameChatMetadataOwnership(initial.header.chat_metadata, latest.header.chat_metadata, clearPrequel)
-      || !sameChatBusiness(initial.chat, latest.chat)) {
-      throw errorWith('QQJ_DELETE_HOST_CONFLICT', '原聊天正文或元数据已改变，未覆盖人工修改。');
+    if (!sameChatMetadataOwnership(initial.header.chat_metadata, latest.header.chat_metadata, clearPrequel)) {
+      throw errorWith('QQJ_DELETE_HOST_CONFLICT', '原聊天千千结归属已改变，未覆盖自有元数据。');
     }
     const header = clone(latest.header), messages = clone(latest.chat);
     const metadata = header.chat_metadata;
@@ -135,7 +132,7 @@ export function createChatMemoryManagement({
     });
     if (!response?.ok) throw errorWith([400, 409].includes(response?.status) ? 'QQJ_DELETE_HOST_CONFLICT' : 'QQJ_DELETE_HOST_SAVE_FAILED', '原聊天清理未能保存。');
     const persisted = await readTargetChat(target, { fetchImpl, allowMissingIdentity: true });
-    if (!sameChatBusiness(persisted.chat, messages)
+    if (!sameChatQqjData(persisted.chat, messages)
       || persisted.header.chat_metadata?.qianqianjie !== undefined
       || (clearPrequel && persisted.header.chat_metadata?.qianqianjiePrequel !== undefined)
       || !sameChatMetadataOwnership(header.chat_metadata, persisted.header.chat_metadata, clearPrequel)
@@ -145,7 +142,7 @@ export function createChatMemoryManagement({
     }
     if (inCurrentHost(identity)) {
       const current = hostAdapter.snapshot();
-      if (sameChatBusiness(current.chat, initial.chat)
+      if (sameChatQqjData(current.chat, initial.chat)
         && sameChatMetadataOwnership(initial.header.chat_metadata, current.context.chatMetadata, clearPrequel)) {
         current.chat.forEach((message, index) => {
           if (restoredIndexes.has(index)) message.is_system = false;
@@ -177,7 +174,7 @@ export function createChatMemoryManagement({
       const current = hostAdapter.snapshot();
       const currentMetadata = { ...(current.context.chatMetadata ?? {}) };
       if (currentMetadata.qianqianjie?.schemaVersion === 2 && currentMetadata.qianqianjie.chatId === rebuilt.chatId) delete currentMetadata.qianqianjie;
-      if (current.chatId !== identity.hostChatId || !sameChatBusiness(current.chat, chatBaseline)
+      if (current.chatId !== identity.hostChatId || !sameChatQqjData(current.chat, chatBaseline)
         || !sameQqjChatMetadata(currentMetadata, cleaned.header.chat_metadata ?? {})) return false;
       current.chat.forEach((message, index) => {
         syncOwnedMessageKeys(message, persisted.chat[index]);
@@ -195,16 +192,7 @@ export function createChatMemoryManagement({
     return false;
   }
 
-  function captureChatAdoptionBaseline(chat) {
-    return chat.map(message => message && typeof message === 'object' ? {
-      ...message,
-      extra: message.extra && typeof message.extra === 'object' ? { ...message.extra } : message.extra,
-      swipe_info: Array.isArray(message.swipe_info) ? message.swipe_info.map(swipe => swipe && typeof swipe === 'object' ? {
-        ...swipe,
-        extra: swipe.extra && typeof swipe.extra === 'object' ? { ...swipe.extra } : swipe.extra,
-      } : swipe) : message.swipe_info,
-    } : message);
-  }
+  const captureChatAdoptionBaseline = snapshotChatQqjData;
 
   function syncOwnedMessageKeys(target, source) {
     const syncExtra = (owner, sourceExtra) => {

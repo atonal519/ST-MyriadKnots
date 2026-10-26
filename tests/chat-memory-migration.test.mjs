@@ -228,13 +228,15 @@ test('显式来源楼指纹不符时不回退到同号B活动楼', () => {
   assert.deepEqual(aliases, [], '显式来源与正文见证冲突时不认领B同号楼');
 });
 
-test('搬家读回忽略宿主显示元数据，但继续核对正文与已完成楼的迁移alias', async t => {
+test('搬家成功读回只核QQJ身份与alias，宿主正文回复变化沿原生结果', async t => {
   const cases = [
     { name: '原生：正常保存读回', host: 'native', mutation: null, expected: 'completed' },
     { name: 'Luker：正常保存读回', host: 'luker', mutation: null, expected: 'completed' },
     { name: '原生：宿主只更新外部显示字段', host: 'native', mutation: chat => { chat[1].extra.otherPluginDisplay = { label: '宿主更新后的标题' }; }, verifyExternalDisplay: true, expected: 'completed' },
     { name: 'Luker：宿主只更新外部显示字段', host: 'luker', mutation: chat => { chat[1].extra.otherPluginDisplay = { label: '宿主更新后的标题' }; }, verifyExternalDisplay: true, expected: 'completed' },
-    { name: '读回正文变化', mutation: chat => { chat[1].mes += ' 被改动'; }, expected: 'QQJ_MIGRATION_HOST_VERIFY_FAILED' },
+    { name: '读回正文变化', mutation: chat => { chat[1].mes += ' 被改动'; }, expected: 'completed' },
+    { name: '读回复选变化', mutation: chat => { chat[1].swipes = ['另一个回答']; chat[1].swipe_id = 0; }, expected: 'completed' },
+    { name: 'QQJ文件归属未写入', mutation: chat => { delete chat[0].chat_metadata.qianqianjie.file; }, expected: 'QQJ_MIGRATION_HOST_VERIFY_FAILED' },
     { name: '已选alias在读回时缺失', mutation: chat => { delete chat[1].extra[MIGRATION_ALIAS_KEY]; }, expected: 'QQJ_MIGRATION_HOST_VERIFY_FAILED' },
     { name: '已选alias在读回时变化', mutation: chat => { chat[1].extra[MIGRATION_ALIAS_KEY] = '99999999-9999-4999-8999-999999999999'; }, expected: 'QQJ_MIGRATION_HOST_VERIFY_FAILED' },
   ];

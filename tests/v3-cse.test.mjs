@@ -1888,7 +1888,7 @@ test('完整 CSE 重构重新检查空 Core 一次，并复用本轮前楼结论
   assert.deepEqual(rebuilt.map(item => item?.status ?? null), ['insufficient', null]);
 });
 
-test('切换 Persona 身份时迟到的自动提取结果不落盘', async () => {
+test('任务捕获后Persona展示变化不撤销原任务已完成的提取', async () => {
   const h = runtimeHarness({ cse: options => {
     const request = JSON.parse(options.taskMessages[0].content);
     assert.ok(request.payload.userCoreExtraction);
@@ -1898,20 +1898,38 @@ test('切换 Persona 身份时迟到的自动提取结果不落盘', async () =>
   h.context.powerUserSettings.persona_description = '调查员林岚，重视查明事实。';
   const state = await h.runtime.start().then(() => h.runtime.extractNext());
   const graph = await h.store.readReachable({ mode: 'runtime' });
-  assert.equal(graph.stateDeltas.length, 0);
-  assert.equal(state.cseFloors[0].deltaId, null);
+  assert.equal(graph.stateDeltas.length, 1);
+  assert.ok(state.cseFloors[0].deltaId);
 });
 
-test('入口 Persona 标识按需补入标准宿主身份，并随切换更新；迟到结果仍被拒绝', async () => {
+test('固定CSE任务提交不再读取全局Persona，结果保留捕获的目标身份', async () => {
+  let livePersona = 'captured-persona', analysisCalls = 0;
+  const h = runtimeHarness({ testPersonaIdentifierOverride: () => livePersona, cse: options => {
+    analysisCalls++;
+    assert.ok(JSON.parse(options.taskMessages[0].content).payload.userCoreExtraction);
+    livePersona = 'later-live-persona';
+    return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [] } };
+  } });
+  await h.runtime.start();
+  await h.runtime.extractNext();
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(analysisCalls, 1);
+  assert.equal(graph.stateDeltas.length, 1);
+  assert.equal(graph.stateDeltas[0].source.userCoreExtraction.personaLocator, 'captured-persona');
+  assert.equal(graph.root.chatId, CHAT);
+});
+
+test('入口Persona按需捕获，已固定任务在提交时继续使用原身份', async () => {
   let livePersona = 'persona-from-entry-a';
   let analysisCalls = 0;
   const h = runtimeHarness({ host: 'luker', personaIdentifierProvider: () => livePersona, cse: options => {
     analysisCalls += 1;
     const request = JSON.parse(options.taskMessages[0].content);
-    assert.ok(request.payload.userCoreExtraction);
     if (analysisCalls === 1) {
+      assert.ok(request.payload.userCoreExtraction);
       return { jsonData: { userCoreExtraction: { status: 'traits' }, subjects: [{ subject: '林岚', additions: { core: [{ text: '重视查明事实', evidence: [{ source: 'userPersona', quote: '重视查明事实' }] }] } }] } };
     }
+    assert.equal(request.payload.userCoreExtraction, undefined, '已有Core不额外提取');
     livePersona = 'persona-from-entry-c';
     return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [{ subject: '林岚', situational: [{ text: '继续调查', visibility: 'private' }] }] } };
   } });
@@ -1933,8 +1951,8 @@ test('入口 Persona 标识按需补入标准宿主身份，并随切换更新�
   await h.runtime.refreshStatus();
   const state = await h.runtime.extractNext();
   graph = await h.store.readReachable({ mode: 'runtime' });
-  assert.equal(graph.stateDeltas.length, 1, '切换 Persona 后迟到的旧请求不得追加状态');
-  assert.equal(state.cseFloors.at(-1).deltaId, null);
+  assert.equal(graph.stateDeltas.length, 2, '已固定任务不被后来全局Persona变化否决');
+  assert.equal(state.cseFloors.filter(floor => floor.deltaId).length, 2);
 });
 
 test('缺少 Persona locator 时跳过用户 Core 辅助提取，普通 CSE 仍保存', async () => {

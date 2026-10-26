@@ -29,7 +29,7 @@ const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 const fingerprintText = value => `sha256:${createHash('sha256').update(String(value ?? '')).digest('hex')}`;
 
-async function readyFoundationRecords(hostGlobalName, host, manualAliases = false) {
+async function readyFoundationRecords(hostGlobalName, host, manualAliases = false, { expectedFloors = 1, summaries = false } = {}) {
   const records = new Map();
   const failed = status => Object.assign(new Error(`HTTP ${status}`), { status });
   const envelope = (data, revision) => ({ schemaVersion: 1, revision, generationId: '11111111-1111-4111-8111-111111111111',
@@ -66,14 +66,21 @@ async function readyFoundationRecords(hostGlobalName, host, manualAliases = fals
   const reachable = await store.readReachable({ mode: 'projection', allowRecallCseFallback: true });
   assert.equal(reachable.status, 'ready');
   assert.ok(reachable.checkpoint, '召回来源必须有经正式Store验证的checkpoint');
-  assert.equal(reachable.floors.length, 1);
-  if (manualAliases) {
-    const memory = createV3MemoryRuntime({ foundationRuntime: runtime, store, hostAdapter, isEnabled: () => true,
+  assert.equal(reachable.floors.length, expectedFloors);
+  let memory;
+  if (manualAliases || summaries) {
+    let summaryCalls = 0;
+    memory = createV3MemoryRuntime({ foundationRuntime: runtime, store, hostAdapter, isEnabled: () => true,
+      automationSettings: () => ({ enabled: false, batchSize: 1 }),
       sanitizerOptions: () => ({ keepTags: 'content' }),
-      generateUtilityTask: async () => ({ jsonData: { summary: '合成人物到场。', people: [{ name: '合成人物', aliases: ['旧称'], presence: 'present' }] } }),
-      generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }), logger: { warn() {} } });
+      generateUtilityTask: async () => { summaryCalls++; return { jsonData: summaries ? { summary: `源旧摘要${summaryCalls}` }
+        : { summary: '合成人物到场。', people: [{ name: '合成人物', aliases: ['旧称'], presence: 'present' }] } }; },
+      generateAnalysisTask: async () => { if (summaries) assert.fail('离线fixture不应请求CSE'); return { jsonData: { noMaterialChange: true } }; }, logger: { warn() {} } });
     await memory.start();
-    await memory.extractFloor(reachable.floors[0].id, { analyzeState: false });
+    for (const floor of summaries ? reachable.floors : reachable.floors.slice(0, 1)) await memory.extractFloor(floor.id, { analyzeState: false });
+    assert.equal(summaryCalls, summaries ? expectedFloors : 1);
+  }
+  if (manualAliases) {
     const people = createPeopleWorkspaceRuntime({ store: createPeopleWorkspaceStore({ client }), session: { identity: () => identity },
       foundationRuntime: runtime, memoryRuntime: memory, generateUtilityTask: async () => ({ jsonData: { profiles: [] } }), sourcePermissions: { filterCandidates: ({ candidates }) => candidates }, contextProvider: () => host });
     await people.refresh();
@@ -317,7 +324,7 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const seededSettings = wrapperSeed ? structuredClone(wrapperSeed) : { qianqianjie: {}, 'schedule-planner': {} };
@@ -374,7 +381,30 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     eventSource: { once(name, callback) { assert.equal(name, 'app-ready'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); assert.equal(callback(), undefined, '已就绪宿主回放不等待QQJ准备'); }, on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
   if (firstIdentityChat) host.chatMetadata = { otherPlugin: { header: '保留' } };
-  const readyRecords = locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? await readyFoundationRecords(hostGlobalName, host, manualAliases) : null;
+  let branchSource = null;
+  let readyRecords = locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? await readyFoundationRecords(hostGlobalName, host, manualAliases) : null;
+  if (nativeBranch) {
+    const sourceChatId = host.chatMetadata.qianqianjie.chatId;
+    const sourceHost = { ...host, chatId: 'source-chat', chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: sourceChatId,
+      file: { characterLocator: 'char.png', hostChatId: 'source-chat' } } },
+    chat: ['首楼主走入庭院。', '主说话。主回应。主离开。', '第三楼主留下末尾物件。'].flatMap((mes, index) => [
+      { is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0, extra: { otherPlugin: { kept: index + 1 } } },
+      { is_user: true, is_system: false, mes: `确认${index + 1}`, send_date: `2026-09-13T00:0${index}:00.000Z` },
+    ]) };
+    readyRecords = await readyFoundationRecords(hostGlobalName, sourceHost, false, { expectedFloors: 3, summaries: true });
+    const floors = [...readyRecords.values()].map(record => record.data).filter(record => record.recordType === 'floor')
+      .sort((left, right) => left.assistantSeq - right.assistantSeq);
+    for (const floor of floors) sourceHost.chat[floor.hostLocator.messageIndex].extra.qianqianjie_floor = {
+      schemaVersion: 1, chatId: sourceChatId, floorId: floor.id,
+    };
+    const copiedCount = nativeBranch === 'full3' ? 3 : nativeBranch === 'checkpoint1' ? 1 : 2;
+    hostChat.push(...structuredClone(sourceHost.chat.slice(0, copiedCount * 2)));
+    if (copiedCount > 1) hostChat[2].mes = hostChat[2].swipes[0] = '主君说话。主君回应。主君离开。';
+    if (nativeBranch === 'copy2NewAi') hostChat.push({ is_user: false, is_system: false,
+      mes: sourceHost.chat[4].mes, swipes: [sourceHost.chat[4].mes], swipe_id: 0, extra: { otherPlugin: { newAi: true } } });
+    host.chatMetadata = structuredClone(sourceHost.chatMetadata);
+    branchSource = { chatId: sourceChatId, floors: nativeJson(floors), recordsBefore: JSON.stringify([...readyRecords]) };
+  }
   if (tauri && readyRecords) {
     const nativeFetch = createTauriBackendFetch({ globalRef: { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } }, crypto: globalThis.crypto } });
     for (const [key, record] of readyRecords) {
@@ -412,7 +442,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
       state: 'ready', sourceChatId: null, createdAt: '2026-09-13T00:00:00.000Z', updatedAt: '2026-09-13T00:00:00.000Z',
     },
   });
-  if (locationReferenceChat || legacyReceiptUi || fileOwnedIdentity) {
+  if (locationReferenceChat || legacyReceiptUi || fileOwnedIdentity || nativeBranch) {
     for (const [key, record] of readyRecords) backendRecords.set(`/api/plugins/st-bainiaodata/v1/records/qianqianjie/${key}`, record);
   }
   let backendCalls = 0;
@@ -449,6 +479,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
       fetchRequests.push({ url: String(url), method: options.method ?? 'GET' });
+      if (nativeBranch && String(url) === '/api/characters/chats') return { ok: true, status: 200,
+        async json() { return [{ file_id: 'source-chat' }, { file_id: 'host-chat' }]; } };
       if (String(url) === '/api/chats/get') { chatReadCalls++; return hostFile
         ? { ok: true, status: 200, async json() { return [structuredClone(hostFile.header), ...structuredClone(hostFile.chat)]; } }
         : { ok: true, status: 200, async json() { return { new_chat: true }; } }; }
@@ -481,15 +513,17 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
         const value = privateRecords.get(String(url));
         return value ? { ok: true, json: async () => structuredClone(value) } : { ok: false, status: 404 };
       }
-      if (initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi || fileOwnedIdentity) {
-        if (allowIdentityWrites && options.method === 'PUT' && String(url).includes('/chat-identity-bindings/')) {
-          const body = JSON.parse(options.body), record = { revision: body.expectedRevision + 1, data: body.data };
+      if (initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi || fileOwnedIdentity || nativeBranch) {
+        if (options.method === 'PUT' && (nativeBranch || allowIdentityWrites && String(url).includes('/chat-identity-bindings/'))) {
+          const body = JSON.parse(options.body), previous = backendRecords.get(String(url));
+          assert.equal(body.expectedRevision, previous?.revision ?? 0, '实际dist写入遵守原目标记录CAS');
+          const record = { revision: body.expectedRevision + 1, data: body.data };
           backendRecords.set(String(url), record);
-          return { ok: true, status: 200, async json() { return structuredClone(record); } };
+          return { ok: true, status: 200, async json() { return nativeBranch ? vmJson(record) : structuredClone(record); } };
         }
         const record = backendRecords.get(String(url));
         return record
-          ? { ok: true, status: 200, async json() { return locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? vmJson(record) : structuredClone(record); } }
+          ? { ok: true, status: 200, async json() { return locationReferenceChat || legacyReceiptUi || fileOwnedIdentity || nativeBranch ? vmJson(record) : structuredClone(record); } }
           : { ok: false, status: 404, async json() { return {}; } };
       }
       if (enabled) return { ok: false, status: 404, async json() { return {}; } };
@@ -502,6 +536,9 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     },
   });
   const vmJson = value => runInContext(`JSON.parse(${JSON.stringify(JSON.stringify(value))})`, context);
+  // These persisted records are JSON-only; clone inside the browser realm as the
+  // existing production-dist-branch fixture does, rather than Node's outer realm.
+  if (nativeBranch) runInContext('globalThis.structuredClone = value => JSON.parse(JSON.stringify(value))', context);
   const cache = new Map();
   const synthetic = (identifier, exports) => new SyntheticModule(Object.keys(exports), function initialize() {
     for (const [name, value] of Object.entries(exports)) this.setExport(name, value);
@@ -538,18 +575,20 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
       await new Promise(resolvePromise => setImmediate(resolvePromise));
     }
   }
-  if (fileOwnedIdentity) {
+  if (fileOwnedIdentity || nativeBranch) {
     // APP_READY starts the original asynchronous load without awaiting it.
     // Observe its real public terminal state without issuing another read.
     let snapshot;
-    for (let attempt = 0; attempt < 200; attempt++) {
+    for (let attempt = 0; attempt < (nativeBranch ? 1000 : 200); attempt++) {
       snapshot = context.qqj_v3_public_bridge_v1?.getSnapshot?.();
-      if (snapshot?.memory?.status === 'ready' && snapshot.memory.syncStatus === 'idle') break;
+      if (snapshot?.memory?.status === 'ready' && (nativeBranch ? snapshot.memory.syncStatus !== 'syncing' : snapshot.memory.syncStatus === 'idle')) break;
       await new Promise(resolvePromise => setImmediate(resolvePromise));
     }
+    assert.equal(snapshot?.memory?.status, 'ready', JSON.stringify({ snapshot,
+      startupWarnings: startupWarnings.map(args => args.map(value => value instanceof Error ? { message: value.message, code: value.code } : String(value))),
+      backendDataRequestPaths }));
     assert.equal(snapshot?.identity?.qqjChatId, host.chatMetadata.qianqianjie.chatId);
-    assert.equal(snapshot?.memory?.status, 'ready', JSON.stringify({ snapshot, startupWarnings, backendDataRequestPaths }));
-    assert.equal(snapshot.memory.syncStatus, 'idle');
+    if (!nativeBranch) assert.equal(snapshot.memory.syncStatus, 'idle');
   }
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
   let locationReferenceResult = null;
@@ -592,7 +631,56 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, fetchRequests, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
+  return { status: entry.status, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
+}
+
+for (const host of ['SillyTavern', 'Luker']) {
+  for (const [scenario, count] of [['full3', 3], ['checkpoint1', 1], ['copy2NewAi', 2]]) {
+    test(`实际生产dist原生复制继承：${host} ${scenario}`, async () => {
+      const result = await isolateBundle(host, { enabled: true, nativeBranch: scenario, coreCacheEnabled: false });
+      assert.equal(result.status, 'evaluated');
+      assert.equal(result.startupWarnings.length, 0, JSON.stringify(result.startupWarnings));
+      const targetChatId = result.finalQqjMetadata.chatId;
+      assert.notEqual(targetChatId, result.branchSource.chatId);
+      const snapshot = JSON.parse(JSON.stringify(result.getPublicSnapshot()));
+      assert.equal(snapshot.status, 'ready'); assert.equal(snapshot.memory.status, 'ready');
+      assert.equal(snapshot.memory.syncStatus, 'idle');
+      assert.equal(snapshot.identity.qqjChatId, targetChatId);
+      assert.deepEqual(snapshot.memory.floors.map(floor => floor.summary), Array.from({ length: count }, (_, index) => `源旧摘要${index + 1}`));
+      const prefix = `/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-${targetChatId}/`;
+      const targetRecords = [...result.backendRecords].filter(([key]) => key.startsWith(prefix)).map(([, record]) => nativeJson(record.data));
+      const rootRecord = targetRecords.find(record => record.recordType === 'root');
+      const checkpoint = targetRecords.find(record => record.recordType === 'checkpoint' && record.id === rootRecord.headCheckpointId);
+      const floors = checkpoint.floorRange.floorIds.map(id => targetRecords.find(record => record.recordType === 'floor' && record.id === id));
+      const memories = checkpoint.producedRefs.floorMemories.map(id => targetRecords.find(record => record.recordType === 'floorMemory' && record.id === id));
+      assert.deepEqual(floors.map(floor => floor.id), result.branchSource.floors.slice(0, count).map(floor => floor.id));
+      assert.deepEqual(memories.map(memory => memory.summary.aiText), snapshot.memory.floors.map(floor => floor.summary));
+      for (const [index, floor] of floors.entries()) {
+        assert.equal(result.hostFile.chat[index * 2].extra.qianqianjie_floor.chatId, targetChatId);
+        assert.equal(result.hostFile.chat[index * 2].extra.qianqianjie_floor.floorId, floor.id);
+        assert.deepEqual(result.hostFile.chat[index * 2].extra.otherPlugin, { kept: index + 1 });
+      }
+      if (count > 1) {
+        assert.equal(result.hostFile.chat[2].mes, '主君说话。主君回应。主君离开。');
+        assert.equal(floors[1].content.canonicalContent, '主说话。主回应。主离开。');
+      }
+      if (scenario === 'copy2NewAi') {
+        assert.equal(result.hostFile.chat[4].mes, result.branchSource.floors[2].content.canonicalContent);
+        assert.equal(result.hostFile.chat[4].extra.qianqianjie_floor, undefined);
+        assert.equal(floors.some(floor => floor.id === result.branchSource.floors[2].id), false);
+      }
+      const sourceAfter = [...result.backendRecords].filter(([key]) => key.startsWith(`/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-${result.branchSource.chatId}/`))
+        .map(([key, record]) => [key.split('/qianqianjie/')[1], record]);
+      assert.equal(JSON.stringify(sourceAfter), result.branchSource.recordsBefore, '源图未被复制任务改写');
+      const modelRequests = result.fetchRequests.filter(request => /generate|completion|openai|embedding/iu.test(request.url));
+      assert.deepEqual(modelRequests, []);
+      console.log(JSON.stringify({ phase3Scenario: scenario, host, targetChatId,
+        publicMemoryStatus: snapshot.memory.status, publicMemorySyncStatus: snapshot.memory.syncStatus, publicSummary: snapshot.memory.floors,
+        persistedFloorIds: floors.map(floor => floor.id), persistedSummaries: memories.map(memory => memory.summary.aiText),
+        copiedFloorMarkers: result.hostFile.chat.filter(message => message.extra?.qianqianjie_floor).map(message => message.extra.qianqianjie_floor),
+        chatGets: result.chatReadCalls, chatSaves: result.chatSaveCalls, modelCalls: modelRequests.length, embeddingCalls: 0 }));
+    });
+  }
 }
 
 test('生产bundle首次合并旧包裹规则，已有共享空值不从旧配置回灌', async () => {
@@ -693,7 +781,7 @@ for (const hostName of ['SillyTavern', 'Luker']) {
     const result = await isolateBundle(hostName, { enabled: true, firstIdentityChat: { saved, live } });
     assert.equal(result.status, 'evaluated');
     assert.equal(result.startupWarnings.length, 0);
-    assert.equal(result.chatReadCalls, 3); assert.equal(result.chatSaveCalls, 1);
+    assert.equal(result.chatReadCalls, 2); assert.equal(result.chatSaveCalls, 1);
     assert.equal(result.backendWriteCalls, 0); assert.equal(result.saveMetadataCalls, 0);
     assert.deepEqual(result.hostFile.chat, saved, '首次编号保存保留文件原正文和其它插件字段');
     assert.deepEqual(result.hostChat, live, '编号投影保留宿主渲染后的页面消息');
@@ -729,7 +817,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.9.7');
+  assert.equal(manifest.version, '0.9.8');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -841,6 +929,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   context.toastr = { warning: (...args) => { toastCalls.push(args); } };
   const entrySource = await readFile(resolve(root, 'index.js'), 'utf8');
   const utilityTask = async () => ({ jsonData: 'utility' });
+  const peopleUtilityTask = async () => ({ jsonData: 'people-utility' });
+  const taskRouters = [];
   const analysisTask = async () => ({ jsonData: 'analysis' });
   const recallTask = async () => ({ jsonData: 'recall' });
 
@@ -931,12 +1021,12 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/private-recall-diagnostics.js', { createPrivateRecallDiagnostics: () => ({ start: async () => false, dispose() {} }) });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {}, openMemory() { openMemoryCalls += 1; } }; } });
   const productionSettings = { generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标', storyCalendars: {} };
-  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, wrappers: () => ({ keepTags: 'content', extraTags: '' }), get: () => productionSettings, update: patch => Object.assign(productionSettings, patch) }) });
+  define('./src/settings.js', { createSettingsStore: () => ({ migrateLegacyApiSettings() {}, isEnabled: () => false, processingPrompt: () => productionSettings.processingPrompt, wrappers: () => ({ keepTags: 'content', extraTags: '' }), get: () => productionSettings, update: patch => Object.assign(productionSettings, patch) }) });
   define('./src/v3/calendar-rules.js', { normalizeStoryCalendar });
   define('./src/api-routing.js', {
     createApiResolver: () => ({}),
     createApiTools: options => { apiToolsOptions = options; return { abortAll() {} }; },
-    createTaskRouter: () => ({ generateAnalysisTask: analysisTask, generateUtilityTask: utilityTask, generateRecallTask: recallTask, abortAll() {} }),
+    createTaskRouter: options => { const router = { generateAnalysisTask: analysisTask, generateUtilityTask: taskRouters.length ? peopleUtilityTask : utilityTask, generateRecallTask: recallTask, abortAll() {} }; taskRouters.push({ options, router }); return router; },
   });
   define('./src/compact-api-client.js', { createCompactApiClient: options => { compactOptions = options; return compactStub; } });
   define('./src/chat-session.js', { createChatSession: options => {
@@ -1014,7 +1104,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let failMemoryStart = false;
   define('./src/v3/memory-runtime.js', { createV3MemoryRuntime: options => { v3MemoryOptions = options; v3MemoryRuntime = { bind(bindOptions) { v3MemoryBindOptions = bindOptions; }, async start(startOptions) { memoryStartOptions.push(startOptions); backgroundStarts.push('memory'); if (failMemoryStart) throw new TypeError('PRIVATE late memory failure'); }, async setEnabled(value) { runtimeEnables.push(`memory:${value}`); }, async confirmConsecutiveAssistants() { confirmationCalls += 1; }, getState: () => ({}), getActivityState: () => ({ memoryWorkBusy: false, activeExtraction: false, activeCse: false, qianshiHistoryActive: false }), getQianshiRecall: input => { qianshiRecallInputs.push(input); return { text: '' }; }, shouldBlockMainGeneration: () => false, allowsRealtimeTailFromEmpty: () => false }; return v3MemoryRuntime; } });
   define('./src/v3/preparation-diagnostic.js', { preparationFailureDiagnostic: error => ({ prepareStep: null, name: error?.name ?? null, code: error?.code ?? null, detail: null, location: null }) });
-  define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors, persistTargetChatIdentity: async () => ({ status: 'persisted' }) });
+  define('./src/v3/message-floor-anchor.js', { persistMessageFloorAnchors: persistAnchors, persistTargetChatIdentity: async () => ({ status: 'persisted' }), readTargetChatFile: async () => ({ header: { chat_metadata: {} }, chat: [] }) });
   define('./src/v3/recall-runtime.js', { createV3RecallRuntime: options => { v3RecallOptions = options; v3RecallRuntime = { bind() {}, async setEnabled(value) { runtimeEnables.push(`recall:${value}`); }, async intercept() {}, invalidate(reason) { recallInvalidations.push(reason); }, getState: () => ({}), getPromptSnapshot: () => null }; return v3RecallRuntime; } });
   define('./src/v3/auto-hide.js', { createAutoHideController: options => { autoHideOptions = options; return { applySettings() {}, stop() {}, dispose() {} }; } });
   define('./src/ui/inline-renderer.js', { createInlineRenderer: options => { inlineRendererOptions = options; return { setEnabled(value) { inlineEnabled.push(value); }, destroy() {} }; } });
@@ -1204,7 +1294,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(identityOptions.initializeBranch, branchInitializer, '生产入口必须把同角色副本初始化器注入身份准备链');
   assert.equal(branchInitializerOptions.client, backendClient);
   assert.equal(typeof branchInitializerOptions.hostAdapter.snapshot, 'function');
-  assert.equal(branchInitializerOptions.sanitizerOptions, v3MemoryOptions.sanitizerOptions);
+  assert.equal(Object.hasOwn(branchInitializerOptions, 'sanitizerOptions'), false, '原生复制继承只读自有楼对应，不接正文清洗器');
   assert.deepEqual(hostChatListOptions.headers(), { 'X-CSRF-Token': 'token' });
   assert.equal(context.crypto, undefined, '入口接线回归必须在浏览器 crypto.randomUUID 不可用时验证');
   assert.equal(identityOptions.freshUuid, foundationOptions.newUuid);
@@ -1216,7 +1306,16 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(typeof sessionOptions.contextProvider, 'function');
   assert.ok(sessionOptions.identityCoordinator);
   assert.ok(lifecycleOptions.session);
-  assert.equal(lifecycleOptions.aborters.length, 5);
+  assert.equal(lifecycleOptions.aborters.length, 6);
+  assert.equal(taskRouters.length, 2);
+  assert.equal(taskRouters[0].options.resolver, taskRouters[1].options.resolver);
+  assert.equal(taskRouters[0].options.compactClient, taskRouters[1].options.compactClient);
+  assert.equal(taskRouters[0].options.isEnabled, taskRouters[1].options.isEnabled);
+  assert.ok(lifecycleOptions.aborters.includes(taskRouters[1].router));
+  assert.equal(lifecycleOptions.contextAborters.length, 4);
+  assert.ok(lifecycleOptions.contextAborters.includes(taskRouters[0].router));
+  assert.equal(lifecycleOptions.contextAborters.includes(taskRouters[1].router), false);
+  assert.equal(lifecycleOptions.contextAborters.includes(peopleWorkspaceRuntime), false);
   assert.ok(lifecycleOptions.aborters.includes(peopleWorkspaceRuntime));
   assert.equal(typeof lifecycleOptions.onPrepared, 'function', '生产入口必须把身份成功后的后台续接注入 lifecycle');
   assert.deepEqual(backgroundStarts, [], '插件初始关闭时不得绕过 lifecycle 单独启动 memory/people');
@@ -1230,7 +1329,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(backgroundStarts.length, 2, '同一身份成功链只准备一次记忆和一次人物 workspace');
   assert.deepEqual(runtimeEnables, ['lifecycle:true', 'recall:true'], '启用链不得在 lifecycle 回调后重复 setEnabled 读取 memory/people');
   assert.equal(peopleStoreOptions.client, backendClient);
-  assert.equal(peopleWorkspaceOptions.generateUtilityTask, utilityTask);
+  assert.equal(peopleWorkspaceOptions.generateUtilityTask, peopleUtilityTask);
   assert.equal(peopleWorkspaceOptions.profilePromptGuidance(), '人物资料指导');
   assert.equal(peopleWorkspaceOptions.processingPrompt(), '  破限接线\n');
   assert.equal(typeof peopleWorkspaceOptions.isMainGenerationActive, 'function', '首次人物整理需让过宿主主楼生成');

@@ -93,17 +93,17 @@ export function planAutoHide({ chat = [], memoryState = null, keepAiCount = 3, r
 function snapshotMessages(chat, range) {
   return Array.from({ length: range.end - range.start + 1 }, (_, offset) => {
     const message = chat[range.start + offset];
-    return { message, hadIsSystem: Boolean(message && Object.hasOwn(message, 'is_system')), isSystem: message?.is_system, hadExtra: Boolean(message && Object.hasOwn(message, 'extra')), extra: message?.extra === undefined ? undefined : structuredClone(message.extra) };
+    return { message, hadMarker: Object.hasOwn(message?.extra ?? {}, MARKER_KEY), marker: message?.extra?.[MARKER_KEY] };
   });
 }
 
 function restoreMessages(snapshots) {
   for (const saved of snapshots) {
     if (!saved.message) continue;
-    if (saved.hadIsSystem) saved.message.is_system = saved.isSystem;
-    else delete saved.message.is_system;
-    if (saved.hadExtra) saved.message.extra = saved.extra;
-    else delete saved.message.extra;
+    if (saved.hadMarker) {
+      saved.message.extra ??= {};
+      saved.message.extra[MARKER_KEY] = saved.marker;
+    } else if (saved.message.extra && typeof saved.message.extra === 'object') delete saved.message.extra[MARKER_KEY];
   }
 }
 
@@ -142,12 +142,8 @@ export function createAutoHideController({ hostAdapter, memoryRuntime, settings,
     const saved = snapshotMessages(snapshot.chat, range);
     markRange(snapshot.chat, range, stableChatId, hide);
     try {
-      await execute.call(snapshot.context, `/${hide ? 'hide' : 'unhide'} ${rangeArgument(range)}`);
-      const current = assertSameHost(hostChatId);
-      for (let index = range.start; index <= range.end; index += 1) {
-        const message = current.chat[index];
-        if (!message || message.is_system !== hide || ownsMessage(message, stableChatId) !== hide) throw autoHideError('QQJ_AUTO_HIDE_VERIFY_FAILED', '酒馆没有确认自动隐藏结果。');
-      }
+      const result = await execute.call(snapshot.context, `/${hide ? 'hide' : 'unhide'} ${rangeArgument(range)}`, { handleParserErrors: false });
+      if (result?.isError === true || result?.isAborted === true) throw autoHideError('QQJ_AUTO_HIDE_COMMAND_FAILED', '酒馆未能完成自动隐藏命令。');
     } catch (error) {
       restoreMessages(saved);
       throw error;

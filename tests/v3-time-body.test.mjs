@@ -39,7 +39,7 @@ function backend() {
     setPermanentDelete(value){permanentDelete=value;},setRemoveHook(value){removeHook=value;} };
 }
 const raw = (i, body='陌生人阿岚的手腕擦伤仍疼痛。') => `<!-- QQJ-start | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=08:00 -->${body}<!-- QQJ-end | date=2026-05-${String(i+1).padStart(2,'0')} | weekday=周一 | time=09:00 -->`;
-async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), sanitizer={}, tags='', annualSettingsProvider=()=>({ready:false}), memoryStateProvider=null }={}) {
+async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), sanitizer={}, tags='', annualSettingsProvider=()=>({ready:false}), memoryStateProvider=null, memoryActivityStateProvider=null }={}) {
   let chatId=CHAT,on=true,calls=0,busy=true,cse=false,sync='idle', counter=0;
   const chat=[]; for(let i=0;i<count;i++) { chat.push({is_user:false,mes:raw(i)}); if(!unstable||i<count-1) chat.push({is_user:true,mes:'继续'}); }
   const source={status:'ready',root:{chatId:CHAT,narrativeGeneration:'gen',headCheckpointId:'head'},rootRevision:1,floors:[],floorMemories:[],stateDeltas:[],entities:[],capabilities:{}};
@@ -48,6 +48,7 @@ async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), s
   const options={store,hostAdapter,newUuid:()=>`test-${++counter}`,foundationStore:{readRoot:async()=>({data:source.root})},session:{identity:()=>({chatId,hostChatId:'host'})},
     getReachable:()=>source,getMemoryState:()=>memoryStateProvider ? memoryStateProvider() : ({memoryWorkBusy:busy,activeCse:cse?{}:null,memorySyncStatus:sync}),sanitizerOptions:()=>sanitizer,storyClockReferenceTags:()=>tags,isEnabled:()=>on,annualSettingsProvider,logger:{warn(){}},
     generateTimeTask:async task=>{calls++;assert.equal(task.transportBudget.remaining,1);assert.equal(task.transportRetries,0);assert.ok(estimateRecallTokens(task.systemPrompt+task.taskMessages[0].content)<=TIME_INPUT_TOKENS);return generate(JSON.parse(task.taskMessages[0].content),calls,task);}};
+  if (memoryActivityStateProvider) options.getMemoryActivityState = memoryActivityStateProvider;
   let runtime=createTimeRuntime(options);
   return {source,chat,store,back,seal,hostAdapter,get runtime(){return runtime;},reload(){runtime=createTimeRuntime(options);return runtime;},calls:()=>calls,setChat:value=>chatId=value,setEnabled:value=>on=value,setSync:value=>sync=value,body:()=>readTimeBody(source,hostAdapter.snapshot(),{sanitizerOptions:sanitizer,storyClockReferenceTags:tags})};
 }
@@ -1309,6 +1310,19 @@ test('批量人工状态一次保存一个批次并拒绝旧观察键',async()=>
   state=h.runtime.getState();assert.equal(state.trackedItems.length,1);assert.equal(state.stoppedItems.filter(item=>item.status==='paused').length,2);assert.equal(h.calls(),0);
   await assert.rejects(h.runtime.editItems([{itemId:state.trackedItems[0].id,observationKey:'旧键',fields:{status:'completed'}}]),/事项已变化|来源已失效/u);
   assert.equal((await h.store.read(CHAT)).batches.length,after.batches.length);assert.equal(seed.batches.length,1);
+});
+
+test('时间refreshStatus只用窄活动状态，ready同步审查错误不读取完整记忆投影', async () => {
+  for (const memory of [{status:'ready',memorySyncStatus:'idle'}, {status:'ready',memorySyncStatus:'syncing'},
+    {status:'ready',memorySyncStatus:'needsReview'}, {status:'error',memorySyncStatus:'idle'}]) {
+    let narrowReads = 0;
+    const h = await harness({ memoryStateProvider: () => { throw new Error('不得读取完整UI投影'); },
+      memoryActivityStateProvider: () => { narrowReads++; return memory; } });
+    await h.runtime.refreshStatus();
+    assert.ok(narrowReads > 0);
+    assert.equal(h.runtime.getState().status, memory.memorySyncStatus === 'idle' && memory.status === 'ready' ? 'idle' : 'waiting');
+    assert.equal(h.calls(), 0);
+  }
 });
 
 test('每次getState只读取一次记忆状态且下一次调用刷新快照', async () => {

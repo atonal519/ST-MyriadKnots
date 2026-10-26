@@ -379,8 +379,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '等待当前聊天记忆读取。' }; return notify();
     }
     const bodyKey = sourceKey(source);
-    if (['needsReview', 'error'].includes(getMemoryState()?.memorySyncStatus) || ['needsReview', 'error'].includes(getMemoryState()?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
-    if (getMemoryState()?.memorySyncStatus === 'syncing') {
+    const memory = getMemoryActivityState();
+    if (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
+    if (memory?.memorySyncStatus === 'syncing') {
       if (itemsKey !== bodyKey) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; }
       return notify();
     }

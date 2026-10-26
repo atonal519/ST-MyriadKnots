@@ -7,6 +7,7 @@ export const MESSAGE_FLOOR_ANCHOR_SCHEMA_VERSION = 1;
 const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 const AUTO_HIDE_MARKER_KEY = 'qianqianjieAutoHide';
 const BRANCH_QQJ_MESSAGE_KEYS = Object.freeze([MESSAGE_FLOOR_ANCHOR_KEY, MESSAGE_MEMORY_EXCLUSION_KEY, RECALL_RECEIPT_KEY, AUTO_HIDE_MARKER_KEY]);
+const QQJ_MESSAGE_KEYS = Object.freeze([...BRANCH_QQJ_MESSAGE_KEYS, 'qianqianjie_migration_alias']);
 
 const chatIdFrom = snapshot => String(snapshot?.context?.chatMetadata?.qianqianjie?.chatId ?? '').trim();
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -22,44 +23,55 @@ function normalizeJsonOrder(value) {
 const stableJson = value => JSON.stringify(normalizeJsonOrder(value));
 const ownValue = (object, key) => Object.hasOwn(object ?? {}, key)
   ? Object.freeze({ present: true, value: object[key] }) : Object.freeze({ present: false });
-const qqjMessageMetadataProjection = extra => Object.freeze(Object.fromEntries(BRANCH_QQJ_MESSAGE_KEYS
+const qqjMessageMetadataProjection = (extra, keys = BRANCH_QQJ_MESSAGE_KEYS) => Object.freeze(Object.fromEntries(keys
   .filter(key => Object.hasOwn(extra ?? {}, key)).map(key => [key, extra[key]])));
 export const sameQqjMessageMetadata = (left, right) => stableJson(qqjMessageMetadataProjection(left)) === stableJson(qqjMessageMetadataProjection(right));
 
 // Rendering may fill empty swipe containers and mirror the selected outer extra.
 // Keep distinct per-swipe ownership; omit only that exact host-created mirror.
-function swipeMetadataProjection(message, keys = BRANCH_QQJ_MESSAGE_KEYS) {
+function swipeMetadataProjection(message, keys = BRANCH_QQJ_MESSAGE_KEYS, { allOuterMirrors = false } = {}) {
   const selectedIndex = Number.isSafeInteger(message?.swipe_id) ? message.swipe_id : 0;
   const projected = Array.isArray(message?.swipe_info) ? message.swipe_info.map((swipe, index) => Object.fromEntries(keys
     .filter(key => Object.hasOwn(swipe?.extra ?? {}, key)
-      && !(index === selectedIndex && Object.hasOwn(message?.extra ?? {}, key)
+      && !((allOuterMirrors || index === selectedIndex) && Object.hasOwn(message?.extra ?? {}, key)
         && stableJson(swipe.extra[key]) === stableJson(message.extra[key])))
     .map(key => [key, swipe.extra[key]]))) : [];
   while (projected.length && Object.keys(projected.at(-1)).length === 0) projected.pop();
   return projected;
 }
-// Identity preparation checks message business and QQJ ownership, ignores display metadata, and writes only QQJ identity on the latest host-file base.
-export function sameQqjChatMetadata(left, right, { includePrequel = false } = {}) {
+// QQJ chat metadata is owned by the plugin; the native host owns message text.
+export function sameQqjChatMetadata(left, right, { includePrequel = false, includeFile = false } = {}) {
   const keys = includePrequel ? ['qianqianjie', 'qianqianjiePrequel'] : ['qianqianjie'];
   const value = (metadata, key) => {
     const projected = ownValue(metadata, key);
-    if (key !== 'qianqianjie' || !projected.value || typeof projected.value !== 'object') return projected;
+    if (includeFile || key !== 'qianqianjie' || !projected.value || typeof projected.value !== 'object') return projected;
     const { file, ...business } = projected.value;
     return { ...projected, value: business };
   };
   return stableJson(Object.fromEntries(keys.map(key => [key, value(left, key)])))
     === stableJson(Object.fromEntries(keys.map(key => [key, value(right, key)])));
 }
-const sameTargetBusiness = (capturedMetadata, capturedChat, persistedMetadata, persistedChat) => Array.isArray(capturedChat)
-  && Array.isArray(persistedChat)
-    && sameQqjChatMetadata(capturedMetadata, persistedMetadata)
-  && stableJson(capturedChat.map(branchMessageBusinessProjection)) === stableJson(persistedChat.map(branchMessageBusinessProjection));
 
 function branchQqjMessageProjection(chat) {
-  return chat.map(message => ({
-    extra: qqjMessageMetadataProjection(message?.extra),
-    swipeInfo: swipeMetadataProjection(message),
-  }));
+  return chat.flatMap((message, messageIndex) => {
+    const extra = qqjMessageMetadataProjection(message?.extra, QQJ_MESSAGE_KEYS);
+    const swipeInfo = swipeMetadataProjection(message, QQJ_MESSAGE_KEYS, { allOuterMirrors: true });
+    return Object.keys(extra).length || swipeInfo.length ? [{ messageIndex, extra, swipeInfo }] : [];
+  });
+}
+
+export function sameChatQqjData(left, right) {
+  return Array.isArray(left) && Array.isArray(right)
+    && stableJson(branchQqjMessageProjection(left)) === stableJson(branchQqjMessageProjection(right));
+}
+
+export function snapshotChatQqjData(chat) {
+  return Array.isArray(chat) ? chat.map(message => ({
+    extra: structuredClone(qqjMessageMetadataProjection(message?.extra, QQJ_MESSAGE_KEYS)),
+    ...(Array.isArray(message?.swipe_info) ? { swipe_info: message.swipe_info.map(swipe => ({
+      extra: structuredClone(qqjMessageMetadataProjection(swipe?.extra, QQJ_MESSAGE_KEYS)),
+    })) } : {}),
+  })) : null;
 }
 
 export function branchMessageCoreProjection(message) {
@@ -81,13 +93,12 @@ export function branchMessageCoreProjection(message) {
   });
 }
 
-export function branchMessageBusinessProjection(message) {
+function branchMessageOwnershipProjection(message) {
   return Object.freeze({
-    core: branchMessageCoreProjection(message),
     ownership: Object.freeze({
       outer: ownValue(message?.extra, MESSAGE_FLOOR_ANCHOR_KEY),
       memoryExcluded: ownValue(message?.extra, MESSAGE_MEMORY_EXCLUSION_KEY),
-      swipes: swipeMetadataProjection(message, [MESSAGE_FLOOR_ANCHOR_KEY]).map(extra => ownValue(extra, MESSAGE_FLOOR_ANCHOR_KEY)),
+      swipes: swipeMetadataProjection(message, [MESSAGE_FLOOR_ANCHOR_KEY], { allOuterMirrors: true }).map(extra => ownValue(extra, MESSAGE_FLOOR_ANCHOR_KEY)),
     }),
   });
 }
@@ -133,38 +144,24 @@ export function assertCapturedBranchTargetMatches(snapshot, targetFile, sourceCh
     return !expected?.present || stableJson(normalizeAnchor(expected.value)) === stableJson(normalizeAnchor(actual.value));
   };
   for (let index = 0; index < length; index += 1) {
-    const captured = branchMessageBusinessProjection(capturedChat[index]);
-    const persisted = branchMessageBusinessProjection(persistedChat[index]);
-    const coreMatches = stableJson(captured.core) === stableJson(persisted.core);
+    const captured = branchMessageOwnershipProjection(capturedChat[index]);
+    const persisted = branchMessageOwnershipProjection(persistedChat[index]);
     const swipeCount = Math.max(captured.ownership.swipes.length, persisted.ownership.swipes.length);
     const ownershipMatches = sameAnchor(captured.ownership.outer, persisted.ownership.outer, index)
       && stableJson(captured.ownership.memoryExcluded) === stableJson(persisted.ownership.memoryExcluded)
       && Array.from({ length: swipeCount }, (_, swipeIndex) => sameAnchor(
         captured.ownership.swipes[swipeIndex], persisted.ownership.swipes[swipeIndex], index,
       )).every(Boolean);
-    if (coreMatches && ownershipMatches) continue;
-    const fields = [];
-    for (const field of ['isUser', 'isSystem', 'name', 'mes', 'messageType']) {
-      if (stableJson(captured.core[field]) !== stableJson(persisted.core[field])) fields.push(field);
-    }
-    for (const [key, field] of [['hasSwipes', 'hasSwipes'], ['selectedIndex', 'selectedIndex'], ['value', 'selectedValue']]) {
-      if (stableJson(captured.core.selectedReply[key]) !== stableJson(persisted.core.selectedReply[key])) fields.push(field);
-    }
-    if (!ownershipMatches) fields.push('ownership');
-    const labels = { isUser: '发言者信息', name: '发言者信息', isSystem: '消息类型或隐藏状态', messageType: '消息类型或隐藏状态',
-      mes: '正文', hasSwipes: '选中回复', selectedIndex: '选中回复',
-      selectedValue: captured.core.selectedReply.hasSwipes || persisted.core.selectedReply.hasSwipes ? '选中回复' : '正文', ownership: '记忆归属' };
-    const changed = [...new Set(fields.map(field => labels[field]))].join('、');
-    throw Object.assign(fail('V3_BRANCH_TARGET_CHANGED', `分支页面与保存文件的第 ${index + 1} 条消息的${changed}不同。请到“记忆管理”点击“刷新状态”；仍失败时复制状态诊断反馈。`), {
+    if (ownershipMatches) continue;
+    throw Object.assign(fail('V3_BRANCH_TARGET_CHANGED', `分支页面与保存文件的第 ${index + 1} 条消息的记忆归属不同。请到“记忆管理”点击“刷新状态”；仍失败时复制状态诊断反馈。`), {
       branchTargetDifference: branchTargetDifferenceDiagnostic({ reason: 'message', messageIndex: index,
-        capturedCount: capturedChat.length, persistedCount: persistedChat.length, fields }),
+        capturedCount: capturedChat.length, persistedCount: persistedChat.length, fields: ['ownership'] }),
     });
   }
-  if (capturedChat.length !== persistedChat.length) {
-    throw Object.assign(fail('V3_BRANCH_TARGET_CHANGED', '分支页面与保存文件的消息数量不同。请到“记忆管理”点击“刷新状态”；仍失败时复制状态诊断反馈。'), {
-      branchTargetDifference: branchTargetDifferenceDiagnostic({ reason: 'messageCount', messageIndex: length,
-        capturedCount: capturedChat.length, persistedCount: persistedChat.length, fields: ['messageCount'] }),
-    });
+  for (const binding of expectedBindings) {
+    const inspected = inspectMessageFloorAnchor(persistedChat[binding.messageIndex], '');
+    if (inspected.status !== 'valid' || ![sourceChatId, targetChatId].includes(inspected.anchor.chatId)
+      || inspected.anchor.floorId !== binding.floorId) throw fail('V3_BRANCH_TARGET_CHANGED', '分支目标楼的记忆归属无法对应。');
   }
   const persistedQqj = targetFile.header?.chat_metadata?.qianqianjie ?? {};
   if (![sourceChatId, targetChatId].includes(persistedQqj.chatId)) {
@@ -257,10 +254,6 @@ export async function clearExactMessageFloorAnchor({ hostAdapter, targetChat, ch
     return inspected.status === 'valid' && inspected.anchor.floorId === floorId;
   };
   if (!assistantMessage(message) || !exactTarget(message.extra)) throw fail('V3_MESSAGE_ANCHOR_CLEAR_TARGET_CHANGED', '待清理的孤儿标识已经变化。');
-  const anchorSnapshot = value => JSON.stringify({
-    outer: value?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] ?? null,
-    swipes: Array.isArray(value?.swipe_info) ? value.swipe_info.map(swipe => swipe?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] ?? null) : [],
-  });
   const capturedCandidate = messageFloorAnchorCandidateSnapshot(message);
   const previousOuter = message.extra?.[MESSAGE_FLOOR_ANCHOR_KEY];
   const clearTarget = extra => {
@@ -279,7 +272,10 @@ export async function clearExactMessageFloorAnchor({ hostAdapter, targetChat, ch
     changedSwipes.push({ applied, previousAnchor: swipe?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] });
     return applied;
   });
-  const expectedAnchors = anchorSnapshot(message);
+  const metadata = targetChat.header.chat_metadata ?? {};
+  const expectedMetadata = Object.fromEntries(['qianqianjie', 'qianqianjiePrequel']
+    .filter(key => Object.hasOwn(metadata, key)).map(key => [key, structuredClone(metadata[key])]));
+  const expectedChat = snapshotChatQqjData(before.chat);
   const restoreAnchor = (extra, previous, present = true) => {
     const next = extra && typeof extra === 'object' && !Array.isArray(extra) ? { ...extra } : {};
     if (present) next[MESSAGE_FLOOR_ANCHOR_KEY] = previous;
@@ -308,27 +304,10 @@ export async function clearExactMessageFloorAnchor({ hostAdapter, targetChat, ch
       }), signal,
     });
     if (!response?.ok) throw fail([400, 409].includes(response?.status) ? 'V3_MESSAGE_ANCHOR_SAVE_CONFLICT' : 'V3_MESSAGE_ANCHOR_SAVE_FAILED', '原聊天未确认保存孤儿消息标记。');
-    let saveResult = null;
-    try { saveResult = await response.json(); } catch { /* native hosts may return no JSON body */ }
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const persisted = await readTargetChat(targetChat, { signal, fetchImpl });
-    const withoutIntegrity = header => {
-      const value = structuredClone(header);
-      if (value?.chat_metadata && typeof value.chat_metadata === 'object') delete value.chat_metadata.integrity;
-      return value;
-    };
-    const previousIntegrity = targetChat.header?.chat_metadata?.integrity;
-    const nextIntegrity = persisted.header?.chat_metadata?.integrity;
-    const hasReturnedIntegrity = Boolean(saveResult && typeof saveResult === 'object'
-      && (Object.hasOwn(saveResult, 'integrity') || Object.hasOwn(saveResult, 'chat_metadata')
-        && saveResult.chat_metadata && Object.hasOwn(saveResult.chat_metadata, 'integrity')));
-    const returnedIntegrity = Object.hasOwn(saveResult ?? {}, 'integrity') ? saveResult.integrity : saveResult?.chat_metadata?.integrity;
-    const integrityValid = !hasReturnedIntegrity
-      ? nextIntegrity === previousIntegrity
-      : typeof returnedIntegrity === 'string' && returnedIntegrity.length > 0 && nextIntegrity === returnedIntegrity;
-    if (!integrityValid || JSON.stringify(withoutIntegrity(persisted.header)) !== JSON.stringify(withoutIntegrity(targetChat.header)) || persisted.chat.length !== before.chat.length
-      || JSON.stringify(persisted.chat) !== JSON.stringify(before.chat)
-      || messageFloorAnchorCandidateSnapshot(persisted.chat[messageIndex]) !== capturedCandidate || anchorSnapshot(persisted.chat[messageIndex]) !== expectedAnchors) {
+    if (!sameQqjChatMetadata(persisted.header.chat_metadata, expectedMetadata, { includePrequel: true, includeFile: true })
+      || !sameChatQqjData(persisted.chat, expectedChat)) {
       throw fail('V3_MESSAGE_ANCHOR_VERIFY_FAILED', '孤儿消息记忆标识没有完成持久化，可安全重试。');
     }
     targetChat.onPersisted(persisted, { messageIndex, floorId, candidateFingerprint: capturedCandidate });
@@ -460,11 +439,12 @@ export async function persistBranchedMessageMetadata({
   if (!Array.isArray(bindings) || !Array.isArray(retainedFloorIds)) throw new TypeError('V3 branch message bindings 无效');
   const allowedFloors = new Set(retainedFloorIds);
   if ([...allowedFloors].some(floorId => !isUuid(floorId))) throw fail('V3_BRANCH_MESSAGE_BINDING_INVALID', '分支消息包含无效记忆楼。');
-  const forcedByMessage = new Map();
+  const forcedByMessage = new Map(), boundFloors = new Set();
   for (const binding of bindings) {
     if (!Number.isSafeInteger(binding?.messageIndex) || binding.messageIndex < 0 || !allowedFloors.has(binding?.floorId)
-      || forcedByMessage.has(binding.messageIndex)) throw fail('V3_BRANCH_MESSAGE_BINDING_INVALID', '分支消息与记忆楼的绑定关系无效。');
+      || forcedByMessage.has(binding.messageIndex) || boundFloors.has(binding.floorId)) throw fail('V3_BRANCH_MESSAGE_BINDING_INVALID', '分支消息与记忆楼的绑定关系无效。');
     forcedByMessage.set(binding.messageIndex, binding.floorId);
+    boundFloors.add(binding.floorId);
   }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const allowedChatIds = [sourceChatId, targetChatId];
@@ -565,7 +545,6 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
   const target = { ...coordinates, chatId };
   const capturedQqjId = snapshot.chatMetadata.qianqianjie?.chatId ?? null;
   let before;
-  let create = false;
   try {
     if (initialTargetFile === null) throw Object.assign(new Error('目标聊天文件尚未创建。'), { missing: true });
     before = initialTargetFile ?? await readTargetChat(target, { signal, fetchImpl, readPhase: 'identityBeforeSave', allowMissingIdentity: true,
@@ -577,18 +556,7 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
       const names = await listHostChats(coordinates.characterLocator, { signal });
       if (names.includes(coordinates.hostChatId)) throw fail('QQJ_TARGET_CHAT_DELETED', '待保存身份的聊天文件已不存在，未重建已删除聊天。');
     }
-    create = true;
     before = { header: { chat_metadata: structuredClone(snapshot.chatMetadata) }, chat: structuredClone(snapshot.chat) };
-  }
-  if (!create) {
-    const latest = await readTargetChat(target, { signal, fetchImpl, readPhase: 'identityBeforeCommit', allowMissingIdentity: true,
-      allowedChatIds: [capturedQqjId, chatId].filter(Boolean) });
-    // The host may render greeting macros into live text; compare the fixed file reads for this identity-only save.
-    if (!sameTargetBusiness(before.header.chat_metadata ?? {}, before.chat, latest.header.chat_metadata ?? {}, latest.chat)) {
-      throw fail('V3_TARGET_CHAT_CHANGED', '聊天内容或千千结身份已变化，未保存身份。请确认当前聊天内容后，重新打开当前聊天。');
-    }
-    // Save from the newest host payload so display metadata and unrelated message fields survive this QQJ-only update.
-    before = latest;
   }
   const header = structuredClone(before.header);
   header.chat_metadata ??= {};
@@ -606,8 +574,7 @@ export async function persistTargetChatIdentity({ coordinates, raw, snapshot, ch
   });
   if (!response?.ok) throw fail([400, 409].includes(response?.status) ? 'V3_TARGET_CHAT_CHANGED' : 'V3_TARGET_CHAT_SAVE_FAILED', '千千结身份未能保存到聊天。请确认当前聊天仍可正常保存，再重新打开当前聊天。');
   const persisted = await readTargetChat(target, { signal, fetchImpl, readPhase: 'identityVerify' });
-  if (!sameQqjChatMetadata(header.chat_metadata, persisted.header.chat_metadata ?? {})
-    || stableJson(before.chat.map(branchMessageBusinessProjection)) !== stableJson(persisted.chat.map(branchMessageBusinessProjection))) {
+  if (stableJson(header.chat_metadata.qianqianjie) !== stableJson(persisted.header.chat_metadata?.qianqianjie)) {
     throw fail('V3_TARGET_CHAT_VERIFY_FAILED', '保存后无法确认聊天身份已写入。请到“记忆管理”页点击“复制状态诊断”反馈。');
   }
   if (raw?.chatId === coordinates.hostChatId && raw?.chatMetadata

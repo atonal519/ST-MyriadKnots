@@ -10,13 +10,14 @@ import {
   PEOPLE_PROFILE_FIELD_SET, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields, hasPeopleProfileMaterial as hasProfileMaterial,
 } from './people-profile-fields.js';
 import {
-  buildEntityIdentityDirectory, identityProjectionMembers, isIdentityDeleted,
-  normalizeIdentityProjection, resolveIdentityEntityId,
+  buildEntityIdentityDirectory, deriveUserIdentityProjection, identityProjectionMembers, isIdentityDeleted,
+  normalizeIdentityProjection, projectCseStateIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
 import { isMemoryExcludedFloor } from './memory-exclusion.js';
 import { migrationPartition } from './migration-prefix.js';
+import { replayCurrentState } from './cse-engine.js';
 
 export const PEOPLE_WORKSPACE_RECORD_ID = 'v3-people-workspace';
 export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
@@ -65,8 +66,7 @@ function nowIso(now) {
   return result;
 }
 function sameIdentity(left, right) {
-  return left?.chatId === right?.chatId && left?.hostChatId === right?.hostChatId
-    && left?.characterLocator === right?.characterLocator && left?.personaLocator === right?.personaLocator;
+  return isUuid(left?.chatId) && isUuid(right?.chatId) && left.chatId === right.chatId;
 }
 function profileFields(value = {}) {
   const result = emptyPeopleProfileFields();
@@ -606,19 +606,65 @@ export function createPeopleWorkspaceRuntime({
   if (!memoryRuntime || typeof memoryRuntime.getState !== 'function') throw new TypeError('人物工作区 memoryRuntime 无效');
   if (typeof generateUtilityTask !== 'function' || typeof contextProvider !== 'function') throw new TypeError('人物资料生成依赖无效');
   if (!sourcePermissions || typeof sourcePermissions.filterCandidates !== 'function') throw new TypeError('人物资料来源许可依赖无效');
-  let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, people = Object.freeze([]), lastError = null, lastGenerationReport = null;
+  let epoch = 0, active = null, workspace = null, revision = 0, chatId = null, viewIdentity = null, people = Object.freeze([]), lastError = null, lastGenerationReport = null;
   let autoDrainQueued = false, autoDrainTimer = null, pendingAutomaticScan = false, destroyed = false, automaticFloorCount = null, automaticChatId = null;
   const pendingInitialProfiles = new Set();
   const concurrentWrites = new Set();
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
-  const notify = () => { const value = getState(); for (const listener of subscribers) { try { listener(value); } catch { /* view isolation */ } } return value; };
+  const notify = () => { let value; try { value = getState(); } catch { return null; } for (const listener of subscribers) { try { listener(value); } catch { /* view isolation */ } } return value; };
   const capture = () => Object.freeze({ ...session.identity() });
   const isCurrent = operation => {
     if (!enabled() || operation.epoch !== epoch || operation.controller.signal.aborted) return false;
     try { return sameIdentity(operation.identity, capture()); } catch { return false; }
   };
-  const assertCurrent = operation => { if (!isCurrent(operation)) throw errorWith('QQJ_PEOPLE_STALE', '聊天已变化，迟到的人物资料结果没有写入。'); };
+  const assertActive = operation => { if (!enabled() || operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('QQJ_PEOPLE_STALE', '人物任务已停止，结果没有写入。'); };
+  const operations = () => [active, ...concurrentWrites].filter(Boolean);
+  const currentOperation = () => operations().find(isCurrent) ?? null;
+  const viewIsCurrent = () => { try { return sameIdentity(viewIdentity, capture()); } catch { return false; } };
+  const setReport = (operation, report) => { operation.lastGenerationReport = report; if (isCurrent(operation)) lastGenerationReport = report; };
+  async function targetInputs(operation, currentWorkspace = operation.workspace) {
+    assertActive(operation);
+    let reachable = operation.currentReachable ?? operation.reachable;
+    let graphChanged = false;
+    if (typeof foundationStore?.forIdentity === 'function') {
+      const targetStore = foundationStore.forIdentity(operation.identity);
+      try {
+        const root = await targetStore.readRoot?.();
+        const sameRoot = root?.status === 'ready' && root.revision === reachable?.rootRevision
+          && root.data?.chatId === operation.identity.chatId && root.data.headCheckpointId === reachable?.root?.headCheckpointId
+          && root.data.narrativeGeneration === reachable?.root?.narrativeGeneration
+          && root.data.sourceSnapshotFingerprint === reachable?.root?.sourceSnapshotFingerprint;
+        if (!sameRoot) {
+          const latest = await targetStore.readReachable({ mode: 'runtime' });
+          graphChanged = latest !== reachable && !(latest?.root && reachable?.root
+            && latest.rootRevision === reachable.rootRevision && latest.root.chatId === reachable.root.chatId
+            && latest.root.headCheckpointId === reachable.root.headCheckpointId
+            && latest.root.narrativeGeneration === reachable.root.narrativeGeneration
+            && latest.root.sourceSnapshotFingerprint === reachable.root.sourceSnapshotFingerprint);
+          reachable = latest;
+        }
+      }
+      finally { targetStore.release?.(); }
+      assertActive(operation);
+      if (reachable?.root?.chatId && reachable.root.chatId !== operation.identity.chatId) throw errorWith('QQJ_PEOPLE_SOURCE_INVALID', '人物任务的原目标资料身份不一致。');
+    }
+    const previousMemory = operation.currentMemoryState ?? operation.memoryState;
+    let subjects = previousMemory.sourceSubjects ?? previousMemory.cseSubjects;
+    if (graphChanged && reachable?.root) {
+      const replayed = reachable.baseline?.id ? await replayCurrentState({ chatId: operation.identity.chatId,
+        narrativeGeneration: reachable.root.narrativeGeneration, baselineId: reachable.baseline.id,
+        floors: reachable.floors, floorMemories: reachable.floorMemories, stateDeltas: reachable.stateDeltas, now: nowIso(now) }) : null;
+      assertActive(operation);
+      subjects = replayed?.subjects ?? [];
+    }
+    const projection = deriveUserIdentityProjection({ ...reachable, identityProjection: identityProjection(currentWorkspace) });
+    const memoryState = { sourceSubjects: subjects,
+      cseSubjects: projectCseStateIdentityReferences({ subjects }, projection).subjects };
+    operation.currentReachable = reachable;
+    operation.currentMemoryState = memoryState;
+    return { reachable, memoryState };
+  }
   let projectedInputs = null;
   const projectionInputs = (reachable, memoryState) => [chatId, revision, reachable, reachable?.floorMemories, reachable?.entities,
     reachable?.rootRevision, reachable?.root?.headCheckpointId, reachable?.baseline?.id,
@@ -629,9 +675,8 @@ export function createPeopleWorkspaceRuntime({
     projectedInputs = projectionInputs(reachable, memoryState);
   };
   const syncIdentityProjection = () => { try { memoryRuntime.setIdentityProjection?.(identityProjection(workspace)); } catch { /* memory projection remains readable */ } };
-  async function fullMaterialPlanFor(candidate, characterCard) {
-    const reachable = foundationRuntime.getReachable?.();
-    const memoryState = memoryRuntime.getState();
+  async function fullMaterialPlanFor(operation, candidate, characterCard) {
+    const { reachable, memoryState, workspace } = operation;
     const macros = macrosFor(reachable);
     const projection = normalizeIdentityProjection(workspace ?? {}, macros);
     const directory = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection: projection });
@@ -682,11 +727,13 @@ export function createPeopleWorkspaceRuntime({
     for (const entityId of selectedIds) {
       try {
         const entityResult = await foundationStore.readRecord('entity', entityId);
+        if (!isCurrent(operation)) return proofs;
         const entity = entityResult?.status === 'ready' ? entityResult.data : null;
         const oldFloorId = entity?.firstSeenFloorId;
         if (entity?.id !== entityId || entity.chatId !== operation.identity.chatId || entity.entityType !== 'person'
           || entity.recordStatus !== 'active' || !oldFloorId) continue;
         const floorResult = await foundationStore.readRecord('floor', oldFloorId);
+        if (!isCurrent(operation)) return proofs;
         const oldFloor = floorResult?.status === 'ready' ? floorResult.data : null;
         const messageIndex = oldFloor?.hostLocator?.messageIndex;
         if (oldFloor?.id !== oldFloorId || oldFloor.chatId !== operation.identity.chatId || !Number.isSafeInteger(messageIndex)) continue;
@@ -707,7 +754,7 @@ export function createPeopleWorkspaceRuntime({
     return proofs;
   }
   async function pruneUnreachableSelections(operation) {
-    if (active !== operation || operation.kind !== 'loading' || memoryIsBusy()) return;
+    if (!isCurrent(operation) || operation.kind !== 'loading' || memoryIsBusy()) return;
     const initial = confirmedFoundationSnapshot(operation.identity, { allowPending: true });
     if (!initial) return;
     const foundationState = foundationRuntime.getState?.();
@@ -724,11 +771,11 @@ export function createPeopleWorkspaceRuntime({
         return canonicalId && !isIdentityDeleted(canonicalId, projection) && !reachablePeople.has(canonicalId);
       });
       pendingProofs = await pendingTailRemovalProofs(operation, initial, absentSelections);
-      assertCurrent(operation);
+      assertActive(operation);
     }
     await mutate(operation, current => {
       const latestSnapshot = confirmedFoundationSnapshot(operation.identity, { allowPending: true });
-      if (!latestSnapshot || latestSnapshot.key !== initial.key || memoryIsBusy()
+      if (!isCurrent(operation) || !latestSnapshot || latestSnapshot.key !== initial.key || memoryIsBusy()
         // A pending tail can appear while the workspace CAS reloads, even when root/head stay unchanged.
         || JSON.stringify(foundationRuntime.getState?.()?.pending ?? null) !== pendingSignature) return null;
       const currentProjection = identityProjection(current);
@@ -750,12 +797,13 @@ export function createPeopleWorkspaceRuntime({
   }
   function scheduleAutomaticMaintenance() {
     if (destroyed || !enabled() || !workspace || (!pendingInitialProfiles.size && !pendingAutomaticScan) || autoDrainQueued) return;
-    const scheduledEpoch = epoch;
+    if (!viewIsCurrent()) { pendingInitialProfiles.clear(); pendingAutomaticScan = false; return; }
+    const scheduledEpoch = epoch, scheduledIdentity = viewIdentity;
     autoDrainQueued = true;
     autoDrainTimer = setTimeout(() => {
       autoDrainTimer = null;
       autoDrainQueued = false;
-      if (scheduledEpoch !== epoch) { scheduleAutomaticMaintenance(); return; }
+      if (scheduledEpoch !== epoch || !sameIdentity(scheduledIdentity, viewIdentity) || !viewIsCurrent()) { scheduleAutomaticMaintenance(); return; }
       void drainAutomaticMaintenance();
     }, 0);
   }
@@ -779,7 +827,7 @@ export function createPeopleWorkspaceRuntime({
     scheduleAutomaticMaintenance();
   }
   async function drainAutomaticMaintenance() {
-    if (destroyed || (!pendingInitialProfiles.size && !pendingAutomaticScan) || !workspace || active || memoryIsBusy()
+    if (destroyed || (!pendingInitialProfiles.size && !pendingAutomaticScan) || !workspace || !viewIsCurrent() || currentOperation() || memoryIsBusy()
       || (() => { try { return isMainGenerationActive() === true; } catch { return true; } })()) return;
     if (pendingInitialProfiles.size) {
       const entityId = pendingInitialProfiles.values().next().value;
@@ -816,23 +864,29 @@ export function createPeopleWorkspaceRuntime({
       scheduleAutomaticMaintenance();
     }
   }
-  function getState() {
-    const selected = Object.freeze([...(workspace?.selectedEntityIds ?? [])]);
-    const personOrder = Object.freeze([...(workspace?.personOrderEntityIds ?? [])]);
-    const profiles = Object.freeze({ ...(workspace?.profilesByEntityId ?? {}) });
-    const avatars = Object.freeze({ ...(workspace?.avatarsByEntityId ?? {}) });
-    const redirects = Object.freeze({ ...(workspace?.identityRedirectsByEntityId ?? {}) });
-    const deleted = Object.freeze([...(workspace?.deletedEntityIds ?? [])]);
-    const materialProgress = Object.freeze({ ...(workspace?.profileMaterialProgressByEntityId ?? {}) });
-    const migrationDescriptor = foundationRuntime.getReachable?.()?.migrationDescriptor ?? null;
+  function getState(operation = null) {
+    const visible = viewIsCurrent();
+    const data = operation ? operation.workspace : visible ? workspace : null;
+    const projectedPeople = operation ? operation.people : visible ? people : Object.freeze([]);
+    const shownOperation = operation ? operation.settled ? null : operation : currentOperation();
+    const shownChatId = operation ? operation.identity.chatId : (() => { try { return capture().chatId; } catch { return null; } })();
+    const shownReachable = operation ? operation.currentReachable ?? operation.reachable : visible ? foundationRuntime.getReachable?.() : null;
+    const selected = Object.freeze([...(data?.selectedEntityIds ?? [])]);
+    const personOrder = Object.freeze([...(data?.personOrderEntityIds ?? [])]);
+    const profiles = Object.freeze({ ...(data?.profilesByEntityId ?? {}) });
+    const avatars = Object.freeze({ ...(data?.avatarsByEntityId ?? {}) });
+    const redirects = Object.freeze({ ...(data?.identityRedirectsByEntityId ?? {}) });
+    const deleted = Object.freeze([...(data?.deletedEntityIds ?? [])]);
+    const materialProgress = Object.freeze({ ...(data?.profileMaterialProgressByEntityId ?? {}) });
+    const migrationDescriptor = shownReachable?.migrationDescriptor ?? null;
     const archivedPeopleSnapshotIds = Object.freeze([...(migrationDescriptor?.recordRefs?.peopleSnapshotIds ?? [])]);
-    return Object.freeze({ status: !enabled() ? 'disabled' : active?.kind ?? (workspace ? 'ready' : 'idle'), chatId,
-      revision, selectedEntityIds: selected, personOrderEntityIds: personOrder, profilesByEntityId: profiles, avatarsByEntityId: avatars, people,
+    return Object.freeze({ status: !enabled() ? 'disabled' : shownOperation?.kind ?? (data ? 'ready' : 'idle'), chatId: shownChatId,
+      revision: operation ? operation.revision : visible ? revision : 0, selectedEntityIds: selected, personOrderEntityIds: personOrder, profilesByEntityId: profiles, avatarsByEntityId: avatars, people: projectedPeople,
       archivedPeopleSnapshotCount: archivedPeopleSnapshotIds.length,
-      active: active ? Object.freeze({ kind: active.kind, ...(active.batchTotal ? { batchIndex: active.batchIndex, batchTotal: active.batchTotal } : {}) }) : null,
+      active: shownOperation ? Object.freeze({ kind: shownOperation.kind, ...(shownOperation.batchTotal ? { batchIndex: shownOperation.batchIndex, batchTotal: shownOperation.batchTotal } : {}) }) : null,
       identityRedirectsByEntityId: redirects, deletedEntityIds: deleted,
       profileMaterialProgressByEntityId: materialProgress,
-      unprofiledSelectedCount: people.filter(person => person.selected && !person.profiled).length, lastError, lastGenerationReport });
+      unprofiledSelectedCount: projectedPeople.filter(person => person.selected && !person.profiled).length, lastError: operation ? operation.lastError : visible ? lastError : null, lastGenerationReport: operation ? operation.lastGenerationReport : visible ? lastGenerationReport : null });
   }
   function getPeopleAvatars(entityIds = []) {
     const requested = [...new Set((Array.isArray(entityIds) ? entityIds : [])
@@ -840,7 +894,7 @@ export function createPeopleWorkspaceRuntime({
     const requestedIds = new Set(requested);
     const avatarsByEntityId = Object.fromEntries(requested.map(entityId => [entityId, null]));
     if (!enabled()) return Object.freeze({ status: 'disabled', chatId: chatId ?? null, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
-    if (!workspace || !chatId) return Object.freeze({ status: 'not-ready', chatId: null, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
+    if (!workspace || !chatId || !viewIsCurrent()) return Object.freeze({ status: 'not-ready', chatId: null, avatarsByEntityId: Object.freeze(avatarsByEntityId) });
     for (const person of people) {
       const entityId = person?.entityId;
       if (requestedIds.has(entityId)) avatarsByEntityId[entityId] = typeof person.avatar === 'string' ? person.avatar : null;
@@ -863,67 +917,96 @@ export function createPeopleWorkspaceRuntime({
   }
   function begin(kind) {
     if (!enabled()) throw errorWith('QQJ_PEOPLE_DISABLED', '千千结已关闭。');
-    const alongsideGeneration = ['generating', 'generatingAvatar'].includes(active?.kind) && ['savingProfile', 'savingSelection', 'savingAvatar'].includes(kind);
-    if (active && !alongsideGeneration) throw errorWith('QQJ_PEOPLE_BUSY', '人物资料正在处理，请稍候。');
-    const operation = { kind, epoch, identity: capture(), controller: new AbortController() };
-    if (alongsideGeneration) concurrentWrites.add(operation); else active = operation;
+    const identity = capture();
+    const ownOperations = operations().filter(operation => sameIdentity(operation.identity, identity));
+    const alongsideGeneration = ownOperations.length && ownOperations.every(operation => ['generating', 'generatingAvatar'].includes(operation.kind))
+      && ['savingProfile', 'savingSelection', 'savingAvatar'].includes(kind);
+    if (ownOperations.length && !alongsideGeneration) throw errorWith('QQJ_PEOPLE_BUSY', '人物资料正在处理，请稍候。');
+    if (!sameIdentity(viewIdentity, identity)) {
+      viewIdentity = identity; workspace = null; revision = 0; chatId = identity.chatId; people = Object.freeze([]); projectedInputs = null;
+      lastError = null; lastGenerationReport = null;
+      pendingInitialProfiles.clear(); pendingAutomaticScan = false; automaticFloorCount = null; automaticChatId = null;
+    }
+    const reachable = foundationRuntime.getReachable?.();
+    const source = reachable?.root?.chatId && reachable.root.chatId !== identity.chatId ? null : reachable;
+    const memory = memoryRuntime.getState();
+    const operation = { kind, epoch, identity, controller: new AbortController(),
+      reachable: source, memoryState: { cseSubjects: clone(memory?.cseSubjects ?? []) },
+      workspace: workspace ?? emptyWorkspace(identity.chatId, nowIso(now)), revision,
+      lastError: null, lastGenerationReport: null };
+    operation.people = displayPeopleProjection(candidateProjection(source, operation.memoryState, operation.workspace), operation.workspace);
+    if (active) concurrentWrites.add(operation); else active = operation;
     lastGenerationReport = null;
     lastError = null; notify(); return operation;
   }
   function adopt(operation, result) {
-    assertCurrent(operation); workspace = result.data ?? emptyWorkspace(operation.identity.chatId, nowIso(now));
-    revision = result.revision; chatId = operation.identity.chatId; syncIdentityProjection();
-    const memoryState = memoryRuntime.getState(), reachable = foundationRuntime.getReachable?.();
-    if (!sameProjectionInputs(projectedInputs, projectionInputs(reachable, memoryState))) project(memoryState, reachable);
+    operation.workspace = result.data ?? emptyWorkspace(operation.identity.chatId, nowIso(now));
+    operation.revision = result.revision;
+    operation.people = displayPeopleProjection(candidateProjection(operation.currentReachable ?? operation.reachable,
+      operation.currentMemoryState ?? operation.memoryState, operation.workspace), operation.workspace);
+    if (!isCurrent(operation) || chatId === operation.identity.chatId && revision > result.revision) return;
+    workspace = operation.workspace; revision = result.revision; chatId = operation.identity.chatId; viewIdentity = operation.identity;
+    syncIdentityProjection();
+    try {
+      const memoryState = memoryRuntime.getState(), reachable = foundationRuntime.getReachable?.();
+      if (!sameProjectionInputs(projectedInputs, projectionInputs(reachable, memoryState))) project(memoryState, reachable);
+    } catch { projectedInputs = null; /* A completed save is independent of its visible projection. */ }
   }
-  async function latest(operation) { const result = await store.read(operation.identity); assertCurrent(operation); return result; }
+  async function latest(operation) { const result = await store.read(operation.identity); assertActive(operation); return result; }
   async function mutate(operation, updater) {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const current = await latest(operation);
       const base = current.data ?? emptyWorkspace(operation.identity.chatId, nowIso(now));
-      const next = updater(base);
-      if (!next) { adopt(operation, current); return { changed: false, state: getState() }; }
-      try { const saved = await store.put(operation.identity, next, current.revision, { signal: operation.controller.signal }); adopt(operation, saved); return { changed: true, state: getState() }; }
-      catch (error) { if (error?.status === 409) continue; throw error; }
+      const next = await updater(base);
+      assertActive(operation);
+      if (!next) { adopt(operation, current); return { changed: false, state: getState(operation) }; }
+      try {
+        const saved = await store.put(operation.identity, next, current.revision, { signal: operation.controller.signal });
+        adopt(operation, saved); return { changed: true, state: getState(operation) };
+      } catch (error) { if (error?.status === 409) continue; throw error; }
     }
     throw errorWith('QQJ_PEOPLE_CAS_CONFLICT', '人物资料同时发生多次修改，本次没有覆盖新数据，请重试。');
   }
   async function settle(operation, task) {
     try { await task(); }
     catch (error) {
-      if (isCurrent(operation) && error?.name !== 'AbortError' && error?.code !== 'QQJ_PEOPLE_STALE') {
-        lastError = Object.freeze({ code: String(error?.code ?? 'QQJ_PEOPLE_FAILED'), message: clean(error?.message || '人物资料处理失败。', 500) });
+      if (error?.name !== 'AbortError' && error?.code !== 'QQJ_PEOPLE_STALE') {
+        operation.lastError = Object.freeze({ code: String(error?.code ?? 'QQJ_PEOPLE_FAILED'), message: clean(error?.message || '人物资料处理失败。', 500) });
+        if (isCurrent(operation)) lastError = operation.lastError;
       }
       throw error;
     } finally {
+      operation.settled = true;
       if (active === operation) active = null;
       concurrentWrites.delete(operation); notify(); scheduleAutomaticMaintenance();
     }
-    return getState();
+    return getState(operation);
   }
   async function refresh({ refreshMemory = true } = {}) {
-    if (active) return getState();
+    if (currentOperation()) return getState();
     const operation = begin('loading');
     return settle(operation, async () => {
       if (refreshMemory && typeof memoryRuntime.refreshStatus === 'function') await memoryRuntime.refreshStatus({ preferCached: true });
-      assertCurrent(operation); adopt(operation, await store.read(operation.identity));
+      assertActive(operation); adopt(operation, await latest(operation));
       await pruneUnreachableSelections(operation);
+      if (!isCurrent(operation)) return;
       if (automaticChatId !== chatId || automaticFloorCount === null) {
         automaticChatId = chatId;
         automaticFloorCount = eligibleAutomaticFloorCount(foundationRuntime.getReachable?.());
       }
-      lastError = null; return notify();
+      lastError = null; notify();
     });
   }
   async function setSelectedEntityIds(entityIds) {
     const operation = begin('savingSelection');
     return settle(operation, async () => {
-      const startingSelection = JSON.stringify(workspace?.selectedEntityIds ?? []);
-      const previouslySelected = new Set(workspace?.selectedEntityIds ?? []);
+      const startingSelection = JSON.stringify(operation.workspace?.selectedEntityIds ?? []);
+      const previouslySelected = new Set(operation.workspace?.selectedEntityIds ?? []);
       const requested = [...new Set((Array.isArray(entityIds) ? entityIds : []).map(String))];
-      const result = await mutate(operation, current => {
+      const result = await mutate(operation, async current => {
+        const { reachable, memoryState } = await targetInputs(operation, current);
         if (JSON.stringify(current.selectedEntityIds) !== startingSelection) throw errorWith('QQJ_PEOPLE_SELECTION_CONFLICT', '重要人物选择已在其他页面更新，本次没有覆盖新选择，请重试。');
-        const allowed = new Set(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).map(person => person.entityId));
+        const allowed = new Set(candidateProjection(reachable, memoryState, current).map(person => person.entityId));
         // Temporary roster gaps may keep a choice editable; confirmed checkpoint refresh removes IDs no longer canonical.
         if (requested.some(id => !isUuid(id) || (!allowed.has(id) && !previouslySelected.has(id)))) {
           throw errorWith('QQJ_PEOPLE_SELECTION_INVALID', '重要人物选择包含当前聊天不可用的人物。');
@@ -931,15 +1014,18 @@ export function createPeopleWorkspaceRuntime({
         if (JSON.stringify(current.selectedEntityIds) === JSON.stringify(requested)) return null;
         return { ...clone(current), selectedEntityIds: requested, updatedAt: nowIso(now) };
       });
-      lastError = null;
+      if (isCurrent(operation)) lastError = null;
       const selectedNow = new Set(result.state.selectedEntityIds);
       // Only a newly added, actually empty profile starts first-time work; opening an old chat never backfills legacy profiles.
-      for (const id of result.state.selectedEntityIds) {
-        if (!previouslySelected.has(id) && !result.state.profileMaterialProgressByEntityId?.[id]
-          && !hasProfileMaterial(result.state.profilesByEntityId?.[id])) pendingInitialProfiles.add(id);
+      if (isCurrent(operation)) {
+        for (const id of result.state.selectedEntityIds) {
+          if (!previouslySelected.has(id) && !result.state.profileMaterialProgressByEntityId?.[id]
+            && !hasProfileMaterial(result.state.profilesByEntityId?.[id])) pendingInitialProfiles.add(id);
+        }
+        for (const id of [...pendingInitialProfiles]) if (!selectedNow.has(id)) pendingInitialProfiles.delete(id);
       }
-      for (const id of [...pendingInitialProfiles]) if (!selectedNow.has(id)) pendingInitialProfiles.delete(id);
-      if (active?.firstInitializationEntityId && !selectedNow.has(active.firstInitializationEntityId)) active.controller.abort();
+      for (const pending of operations()) if (sameIdentity(pending.identity, operation.identity)
+        && pending.firstInitializationEntityId && !selectedNow.has(pending.firstInitializationEntityId)) pending.controller.abort();
       scheduleAutomaticMaintenance();
       return result.state;
     });
@@ -947,8 +1033,8 @@ export function createPeopleWorkspaceRuntime({
   async function setPersonOrderEntityIds(entityIds) {
     const operation = begin('savingOrder');
     return settle(operation, async () => {
-      const startingOrder = JSON.stringify(workspace?.personOrderEntityIds ?? []);
-      const allowed = new Set(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).map(person => person.entityId));
+      const startingOrder = JSON.stringify(operation.workspace?.personOrderEntityIds ?? []);
+      const allowed = new Set(candidateProjection(operation.reachable, operation.memoryState, operation.workspace).map(person => person.entityId));
       const requested = [...new Set((Array.isArray(entityIds) ? entityIds : []).map(String))];
       if (requested.some(id => !isUuid(id) || !allowed.has(id))) throw errorWith('QQJ_PEOPLE_ORDER_INVALID', '人物顺序包含当前聊天不可用的人物。');
       const result = await mutate(operation, current => {
@@ -956,20 +1042,21 @@ export function createPeopleWorkspaceRuntime({
         if (JSON.stringify(current.personOrderEntityIds) !== startingOrder) throw errorWith('QQJ_PEOPLE_ORDER_CONFLICT', '人物顺序已在其他页面更新，本次没有覆盖新顺序，请重试。');
         return { ...clone(current), personOrderEntityIds: requested, updatedAt: nowIso(now) };
       });
-      lastError = null; return result.state;
+      if (isCurrent(operation)) lastError = null; return result.state;
     });
   }
   async function saveProfile(entityId, fields, { manualFields: requestedManualFields = null } = {}) {
     const operation = begin('savingProfile');
     return settle(operation, async () => {
-      const startingProfile = workspace?.profilesByEntityId?.[entityId] ?? null;
-      const candidate = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).find(person => person.entityId === entityId);
+      const startingProfile = operation.workspace?.profilesByEntityId?.[entityId] ?? null;
+      const candidate = candidateProjection(operation.reachable, operation.memoryState, operation.workspace).find(person => person.entityId === entityId);
       if (!candidate) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
       const requested = profileFields(fields);
-      const result = await mutate(operation, current => {
+      const result = await mutate(operation, async current => {
+        const { reachable, memoryState } = await targetInputs(operation, current);
         const projection = identityProjection(current);
         if (resolveIdentityEntityId(entityId, projection) !== entityId || isIdentityDeleted(entityId, projection)
-          || !candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).some(person => person.entityId === entityId)) {
+          || !candidateProjection(reachable, memoryState, current).some(person => person.entityId === entityId)) {
           throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已删除或归属变化，本次资料没有写入。');
         }
         const existing = current.profilesByEntityId[entityId];
@@ -986,7 +1073,7 @@ export function createPeopleWorkspaceRuntime({
           entityId, ...desired, ...(existing?.aliasesComplete !== undefined ? { aliasesComplete: existing.aliasesComplete } : {}), manualFields: manual, source: manual.length ? 'manual' : existing?.source ?? 'manual', createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp,
         } }, updatedAt: timestamp };
       });
-      lastError = null; return result.state;
+      if (isCurrent(operation)) lastError = null; return result.state;
     });
   }
   function prepareAvatarGeneration(entityId) {
@@ -999,19 +1086,20 @@ export function createPeopleWorkspaceRuntime({
     const operation = begin('generatingAvatar');
     let result;
     await settle(operation, async () => {
-      const person = people.find(person => person.entityId === entityId);
+      const person = operation.people.find(person => person.entityId === entityId);
       if (!person) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
       if (!avatarGenerator) throw new Error('当前环境无法生成头像。');
       result = await avatarGenerator.generate({ character, prompt: avatarPrompt(), clothingStyle: person.profile?.clothingStyle ?? '', signal: operation.controller.signal });
+      assertActive(operation);
     });
     return result;
   }
   async function saveAvatar(entityId, avatarDataUrl, { originalFile = null, originalRef = null, crop = null, generated = false, onOriginalUploaded } = {}) {
     const operation = begin('savingAvatar');
     return settle(operation, async () => {
-      const startingAvatar = workspace?.avatarsByEntityId?.[entityId] ?? null;
-      const startingSource = workspace?.avatarSourcesByEntityId?.[entityId] ?? null;
-      const candidate = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).find(person => person.entityId === entityId);
+      const startingAvatar = operation.workspace?.avatarsByEntityId?.[entityId] ?? null;
+      const startingSource = operation.workspace?.avatarSourcesByEntityId?.[entityId] ?? null;
+      const candidate = candidateProjection(operation.reachable, operation.memoryState, operation.workspace).find(person => person.entityId === entityId);
       if (!candidate) throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已不在当前聊天的可用人物中。');
       const requested = avatarDataUrl === null || avatarDataUrl === '' ? null : validateAvatar(avatarDataUrl, entityId);
       let source = null;
@@ -1022,10 +1110,11 @@ export function createPeopleWorkspaceRuntime({
         onOriginalUploaded?.(uploaded);
         source = normalizeAvatarSource({ ...uploaded, crop });
       }
-      const result = await mutate(operation, current => {
+      const result = await mutate(operation, async current => {
+        const { reachable, memoryState } = await targetInputs(operation, current);
         const projection = identityProjection(current);
         if (resolveIdentityEntityId(entityId, projection) !== entityId || isIdentityDeleted(entityId, projection)
-          || !candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), current).some(person => person.entityId === entityId)) {
+          || !candidateProjection(reachable, memoryState, current).some(person => person.entityId === entityId)) {
           throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已删除或归属变化，本次头像没有写入。');
         }
         const existing = current.avatarsByEntityId[entityId] ?? null;
@@ -1038,7 +1127,7 @@ export function createPeopleWorkspaceRuntime({
         if (source) sources[entityId] = source; else delete sources[entityId];
         return { ...clone(current), avatarsByEntityId: avatars, avatarSourcesByEntityId: sources, updatedAt: timestamp };
       });
-      lastError = null; return result.state;
+      if (isCurrent(operation)) lastError = null; return result.state;
     });
   }
   async function mergePeople(sourceEntityId, targetEntityId, profileSource = 'target') {
@@ -1047,7 +1136,7 @@ export function createPeopleWorkspaceRuntime({
       if (!isUuid(sourceEntityId) || !isUuid(targetEntityId) || sourceEntityId === targetEntityId || !['source', 'target'].includes(profileSource)) {
         throw errorWith('QQJ_PEOPLE_MERGE_INVALID', '请选择两个不同人物及要采用的整份资料。');
       }
-      const candidates = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace);
+      const candidates = candidateProjection(operation.reachable, operation.memoryState, operation.workspace);
       const sourceCandidate = candidates.find(person => person.entityId === sourceEntityId);
       const targetCandidate = candidates.find(person => person.entityId === targetEntityId);
       if (!sourceCandidate || !targetCandidate) throw errorWith('QQJ_PEOPLE_MERGE_TARGET_INVALID', '合并人物已不在当前聊天的可用人物中。');
@@ -1097,15 +1186,15 @@ export function createPeopleWorkspaceRuntime({
           profileMaterialProgressByEntityId: progress,
           identityRedirectsByEntityId: redirects, deletedEntityIds: deleted, updatedAt: timestamp };
       });
-      pendingInitialProfiles.delete(sourceEntityId); pendingInitialProfiles.delete(targetEntityId);
-      lastError = null; return result.state;
+      if (isCurrent(operation)) { pendingInitialProfiles.delete(sourceEntityId); pendingInitialProfiles.delete(targetEntityId); }
+      if (isCurrent(operation)) lastError = null; return result.state;
     });
   }
   async function deletePerson(entityId) {
     const operation = begin('deleting');
     return settle(operation, async () => {
       if (!isUuid(entityId)) throw errorWith('QQJ_PEOPLE_DELETE_INVALID', '要删除的人物标识无效。');
-      const candidate = candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace).find(person => person.entityId === entityId);
+      const candidate = candidateProjection(operation.reachable, operation.memoryState, operation.workspace).find(person => person.entityId === entityId);
       if (!candidate) throw errorWith('QQJ_PEOPLE_DELETE_TARGET_INVALID', '这个人物已不在当前聊天的人物管理列表中。');
       const result = await mutate(operation, current => {
         const projection = identityProjection(current);
@@ -1123,16 +1212,30 @@ export function createPeopleWorkspaceRuntime({
           profileMaterialProgressByEntityId: progress,
           deletedEntityIds: [...new Set([...current.deletedEntityIds, canonical])], updatedAt: timestamp };
       });
-      for (const id of identityProjectionMembers(entityId, identityProjection(workspace))) pendingInitialProfiles.delete(id);
-      pendingInitialProfiles.delete(entityId);
-      lastError = null; return result.state;
+      if (isCurrent(operation)) {
+        for (const id of identityProjectionMembers(entityId, identityProjection(operation.workspace))) pendingInitialProfiles.delete(id);
+        pendingInitialProfiles.delete(entityId);
+      }
+      if (isCurrent(operation)) lastError = null; return result.state;
     });
   }
+  function prepareWorldInfo(operation) {
+    const filterBookNames = names => {
+      if (typeof sourcePermissions.filterWorldInfoSources !== 'function') return names;
+      const filtered = sourcePermissions.filterWorldInfoSources(names.map(sourceName => Object.freeze({ sourceName })));
+      if (!Array.isArray(filtered)) throw errorWith('QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID', '世界书许可过滤结果无效。');
+      const allowedBooks = new Set(filtered.map(source => typeof source?.sourceName === 'string' ? source.sourceName.trim() : '').filter(Boolean));
+      return names.filter(name => allowedBooks.has(name));
+    };
+    try { operation.worldInfoPromise = Promise.resolve(scanner(operation.context, { complete: true, strict: true, includeCatalog: false, filterBookNames })); }
+    catch (error) { operation.worldInfoPromise = Promise.reject(error); }
+    // History compaction may yield before the catalog is consumed.
+    operation.worldInfoPromise.catch(() => {});
+  }
   async function generationEnvelope(operation, targets, { includeWorldInfo = true, selectRelevantWorldInfo = false, characterCard = null } = {}) {
-    const reachable = foundationRuntime.getReachable?.();
-    const memoryState = memoryRuntime.getState();
+    const { reachable, memoryState, workspace } = operation;
     const macros = operation.macros;
-    const hostContext = contextProvider();
+    const hostContext = operation.context;
     const prequelText = typeof hostContext?.chatMetadata?.[PREQUEL_METADATA_KEY] === 'string' ? hostContext.chatMetadata[PREQUEL_METADATA_KEY] : '';
     const peopleRequest = [];
     const worldInfoPeople = [];
@@ -1166,21 +1269,11 @@ export function createPeopleWorkspaceRuntime({
     let worldInfoReport = null;
     if (includeWorldInfo) {
       let catalog;
-      const filterBookNames = names => {
-        if (typeof sourcePermissions.filterWorldInfoSources !== 'function') return names;
-        const filtered = sourcePermissions.filterWorldInfoSources(names.map(sourceName => Object.freeze({ sourceName })));
-        if (!Array.isArray(filtered)) throw errorWith('QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID', '世界书许可过滤结果无效。');
-        const allowedBooks = new Set(filtered.map(source => typeof source?.sourceName === 'string' ? source.sourceName.trim() : '').filter(Boolean));
-        return names.filter(name => allowedBooks.has(name));
-      };
-      try {
-        // Excluded books are removed before strict reads so an unreadable source the user excluded cannot block allowed materials.
-        catalog = await scanner(hostContext, { complete: true, strict: true, includeCatalog: false, filterBookNames });
-      }
+      try { catalog = await operation.worldInfoPromise; }
       catch {
         throw errorWith('QQJ_PEOPLE_WORLDBOOK_INCOMPLETE', '关联世界书读取不完整，本次人物资料未保存。');
       }
-      assertCurrent(operation);
+      assertActive(operation);
       const candidates = await sourceCandidateFactory(catalog);
       const allowed = sourcePermissions.filterCandidates({ chatId: operation.identity.chatId, candidates });
       if (!Array.isArray(allowed)) throw errorWith('QQJ_PEOPLE_WORLDBOOK_FILTER_INVALID', '世界书许可过滤结果无效。');
@@ -1221,8 +1314,7 @@ export function createPeopleWorkspaceRuntime({
     })).length;
   }
   function automaticGenerationEnvelope(operation, targets) {
-    const reachable = foundationRuntime.getReachable?.();
-    const memoryState = memoryRuntime.getState();
+    const { reachable, memoryState, workspace } = operation;
     const macros = operation.macros;
     const recentFloors = automaticRecentFloors(reachable);
     if (!recentFloors.length) return null;
@@ -1274,22 +1366,28 @@ export function createPeopleWorkspaceRuntime({
       operation.automatic = automatic;
       const rebuilding = replaceExisting && !automatic;
       operation.firstInitializationEntityId = firstInitialization ? null : undefined;
-      const initialReachable = foundationRuntime.getReachable?.();
+      const initialReachable = operation.reachable;
       operation.macros = macrosFor(initialReachable);
       operation.characterCard = automatic ? null : characterCardContext(initialReachable, operation.macros);
       const guidanceSnapshot = typeof profilePromptGuidance === 'function' ? profilePromptGuidance() : profilePromptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
       const systemPrompt = buildPeopleProfileSystemPrompt(guidanceSnapshot, processingPromptSnapshot);
-      let targets = targetResolver(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace));
+      let targets = targetResolver(candidateProjection(operation.reachable, operation.memoryState, operation.workspace));
       if (automatic) targets = targets.filter(target => hasProfileMaterial(target.profile));
       if (!targets.length) {
         if (automatic) return getState();
         throw errorWith('QQJ_PEOPLE_NOTHING_TO_GENERATE', replaceExisting ? '当前人物不可重新整理。' : '选中的人物都已有基础资料。');
       }
       if (firstInitialization) operation.firstInitializationEntityId = targets[0].entityId;
+      const host = contextProvider();
+      const character = host?.characters?.[host.characterId];
+      operation.context = { ...host, chatMetadata: { ...host?.chatMetadata },
+        ...(character ? { characters: { [host.characterId]: { ...character, data: { ...character.data,
+          ...(character.data?.character_book ? { character_book: clone(character.data.character_book) } : {}) } } } } : {}) };
+      if (!automatic && includeWorldInfo) prepareWorldInfo(operation);
       if (!automatic) await yieldProfileWork();
       const plans = new Map();
-      if (!automatic) for (const target of targets) plans.set(target.entityId, await fullMaterialPlanFor(target, operation.characterCard));
+      if (!automatic) for (const target of targets) plans.set(target.entityId, await fullMaterialPlanFor(operation, target, operation.characterCard));
       const preparedTargets = targets.map(target => ({ ...target, materialPlan: target.materialPlan ?? plans.get(target.entityId) }));
       const envelope = automatic
         ? automaticGenerationEnvelope(operation, targets)
@@ -1319,8 +1417,10 @@ export function createPeopleWorkspaceRuntime({
       for (const batch of requests) {
         operation.batchIndex = batch.overallIndex; operation.batchTotal = batch.overallTotal;
         const request = { ...batch.request, people: batch.request.people.map(person => ({ ...person })) };
-        const requestCandidates = new Map(candidateProjection(foundationRuntime.getReachable?.(), memoryRuntime.getState(), workspace)
-          .map(item => [item.entityId, item]));
+        const requestWorkspace = await latest(operation);
+        const { reachable: requestReachable, memoryState: requestMemory } = await targetInputs(operation, requestWorkspace.data ?? operation.workspace);
+        const requestCandidates = new Map(candidateProjection(requestReachable, requestMemory,
+          requestWorkspace.data ?? emptyWorkspace(operation.identity.chatId, nowIso(now))).map(item => [item.entityId, item]));
         for (const person of request.people) {
           const entityId = batch.keys.get(person.personKey);
           const current = requestCandidates.get(entityId);
@@ -1328,7 +1428,7 @@ export function createPeopleWorkspaceRuntime({
           person.manualProfile = manualProfile(current?.profile, operation.macros);
           person.manualFields = current?.profile?.manualFields ?? [];
         }
-        notify(); assertCurrent(operation);
+        notify(); assertActive(operation);
         let result;
         try {
           result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(request) }],
@@ -1339,9 +1439,10 @@ export function createPeopleWorkspaceRuntime({
           }
           throw error;
         }
-        assertCurrent(operation);
+        assertActive(operation);
         if (rebuilding) incompleteProfileResult(result);
-        if (automatic && operation.automaticSourceSignature !== materialSignature(automaticRecentFloors(foundationRuntime.getReachable?.()))) {
+        const completionInputs = automatic ? await targetInputs(operation) : null;
+        if (automatic && operation.automaticSourceSignature !== materialSignature(automaticRecentFloors(completionInputs.reachable))) {
           throw errorWith('QQJ_PEOPLE_STALE', '最近稳定楼正文已变化，迟到的人物粗扫结果未写入。');
         }
         const parsed = parseGenerated(result, batch.keys, operation.macros, { omitEmptyValues: automatic });
@@ -1350,23 +1451,22 @@ export function createPeopleWorkspaceRuntime({
           .filter(([entityId, count]) => completedBatches.get(entityId) === count).map(([entityId]) => entityId));
         totals.missing += parsed.missing; totals.conflicts += parsed.conflicts; totals.invalid += parsed.invalid; totals.unknown += parsed.unknown;
         if (!parsed.generated.size) {
-          lastGenerationReport = Object.freeze({ requested: targets.length, saved: saved.size, batches: requests.length, completedBatches: batch.overallIndex - 1, ...totals });
+          setReport(operation, Object.freeze({ requested: targets.length, saved: saved.size, batches: requests.length, completedBatches: batch.overallIndex - 1, ...totals }));
           const savedEarlier = saved.size
             ? `此前已保存的 ${saved.size} 位资料已保留，请重新整理未完成部分。`
             : '本次没有保存资料，请稍后重新整理。';
           throw errorWith('QQJ_PEOPLE_GENERATION_BINDING_INVALID', `这次回复没有可保存的人物资料；${savedEarlier}`);
         }
         let savedEntityIds = [], skipped = 0;
-        const persisted = await mutate(operation, current => {
-        if (automatic && (operation.automaticSourceSignature !== materialSignature(automaticRecentFloors(foundationRuntime.getReachable?.()))
+        const persisted = await mutate(operation, async current => {
+        const { reachable, memoryState } = await targetInputs(operation, current);
+        if (automatic && (operation.automaticSourceSignature !== materialSignature(automaticRecentFloors(reachable))
           || operation.automaticSelectedSignature !== materialSignature([...current.selectedEntityIds].sort()))) {
           throw errorWith('QQJ_PEOPLE_STALE', '原文或重要人物选择已变化，迟到的人物粗扫结果未写入。');
         }
         const firstEntityId = firstInitialization ? envelope.keys.values().next().value : null;
         // First initialization is conditional on an empty dossier; check the latest CAS value before any patch or completion witness is written.
         if (firstInitialization && hasProfileMaterial(current.profilesByEntityId?.[firstEntityId])) { skipped = 1; return null; }
-        const reachable = foundationRuntime.getReachable?.();
-        const memoryState = memoryRuntime.getState();
         const currentCandidates = new Map(candidateProjection(reachable, memoryState, current).map(item => [item.entityId, item]));
         const profiles = { ...clone(current.profilesByEntityId) };
         const progress = { ...clone(current.profileMaterialProgressByEntityId ?? {}) };
@@ -1441,13 +1541,13 @@ export function createPeopleWorkspaceRuntime({
         for (const entityId of savedEntityIds) saved.add(entityId);
         totals.skipped += skipped;
         finalState = persisted.state;
-        lastGenerationReport = Object.freeze({ requested: targets.length, saved: saved.size,
+        setReport(operation, Object.freeze({ requested: targets.length, saved: saved.size,
           ...(aliasesNotUpdated.size ? { aliasesNotUpdated: aliasesNotUpdated.size } : {}),
           ...(requests.length > 1 ? { batches: requests.length, completedBatches: batch.overallIndex } : {}),
-          ...(envelope.worldInfoReport ? { worldInfoMatched: envelope.worldInfoReport.matched } : {}), ...totals });
+          ...(envelope.worldInfoReport ? { worldInfoMatched: envelope.worldInfoReport.matched } : {}), ...totals }));
         notify();
       }
-      lastError = null; return finalState;
+      if (isCurrent(operation)) lastError = null; return finalState;
     });
   }
   async function generateMissingProfiles() {
@@ -1458,13 +1558,13 @@ export function createPeopleWorkspaceRuntime({
   }
   function invalidate() {
     epoch += 1; active?.controller.abort(); for (const operation of concurrentWrites) operation.controller.abort();
-    active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; people = Object.freeze([]); projectedInputs = null; lastError = null; lastGenerationReport = null;
+    active = null; concurrentWrites.clear(); workspace = null; revision = 0; chatId = null; viewIdentity = null; people = Object.freeze([]); projectedInputs = null; lastError = null; lastGenerationReport = null;
     if (autoDrainTimer !== null) clearTimeout(autoDrainTimer);
     autoDrainTimer = null; autoDrainQueued = false; pendingAutomaticScan = false; pendingInitialProfiles.clear(); automaticFloorCount = null; automaticChatId = null; syncIdentityProjection(); notify();
   }
   async function setEnabled(value) { if (value !== true) { invalidate(); return getState(); } return refresh(); }
   const unsubscribeMemory = typeof memoryRuntime.subscribe === 'function' ? memoryRuntime.subscribe(memoryState => {
-    if (!workspace) return;
+    if (!workspace || !viewIsCurrent()) return;
     try {
       const reachable = foundationRuntime.getReachable?.(), nextInputs = projectionInputs(reachable, memoryState);
       if (!sameProjectionInputs(projectedInputs, nextInputs)) { project(memoryState); notify(); }
@@ -1473,8 +1573,8 @@ export function createPeopleWorkspaceRuntime({
   }) : null;
   const unsubscribeFoundation = typeof foundationRuntime.subscribe === 'function' ? foundationRuntime.subscribe(() => observeStableFloors()) : null;
   return Object.freeze({ refresh, start: () => enabled() ? refresh() : Promise.resolve(getState()), setSelectedEntityIds, setPersonOrderEntityIds, saveProfile, saveAvatar, prepareAvatarGeneration, generateAvatar, mergePeople, deletePerson, generateMissingProfiles, regenerateProfile, readArchivedProfileHistory, invalidate, abortAll: invalidate, setEnabled,
-    getIdentityProjection: () => identityProjection(workspace),
-    getActivityState: () => ({ busy: Boolean(active || concurrentWrites.size), phase: active?.kind ?? (concurrentWrites.size ? 'savingProfile' : null) }),
+    getIdentityProjection: () => identityProjection(viewIsCurrent() ? workspace : null),
+    getActivityState: () => ({ busy: Boolean(active || concurrentWrites.size), phase: active?.kind ?? concurrentWrites.values().next().value?.kind ?? null }),
     getState, getPeopleAvatars, subscribe(listener) { if (typeof listener !== 'function') throw new TypeError('人物工作区 listener 无效'); subscribers.add(listener); return () => subscribers.delete(listener); },
     wakeAutomaticMaintenance: scheduleAutomaticMaintenance,
     destroy() { destroyed = true; unsubscribeMemory?.(); unsubscribeFoundation?.(); invalidate(); },

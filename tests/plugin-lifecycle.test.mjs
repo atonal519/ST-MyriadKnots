@@ -99,7 +99,7 @@ test('身份 snapshot 前置复制失败保留原始错误类型、步骤与安�
   const context = { characterId: 0, groupId: null, chatId: 'host-chat', characters: [{ avatar: 'char.png' }], userAvatar: 'persona.png',
     chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: '123e4567-e89b-42d3-a456-426614174000' } }, chat: [() => 'cannot clone'] };
   const session = createChatSession({ contextProvider: () => context,
-    identityCoordinator: { prepare: async () => context.chatMetadata.qianqianjie.chatId },
+    identityCoordinator: { prepare: async (_raw, _host, { getTaskInputs }) => { getTaskInputs(); return context.chatMetadata.qianqianjie.chatId; } },
     captureTaskInputs: ({ raw }) => structuredClone(raw.chat) });
   await assert.rejects(session.prepare(), error => error.name === 'DataCloneError');
   const state = session.getState();
@@ -288,4 +288,17 @@ test('身份准备将现有启动与人物事件入口传给会话诊断，不�
   enabled = false; await lifecycle.setEnabled(false);
   enabled = true; await lifecycle.setEnabled(true);
   assert.deepEqual(entries, ['startup', 'chatChanged', 'personaChanged', 'pluginEnable']);
+});
+
+test('人物固定任务与上下文aborters分离，Persona改名只取消原其它任务而禁用仍全量', async () => {
+  const calls = []; let enabled = true;
+  const shared = { abortAll() { calls.push('shared'); } }, peopleRouter = { abortAll() { calls.push('people-router'); } }, people = { invalidate() { calls.push('people'); } };
+  const lifecycle = createPluginLifecycle({ session: { prepare: async () => ({ status: 'ready' }), invalidate() { calls.push('session'); }, renameCharacter: async () => ({ status: 'ready' }) },
+    aborters: [shared, peopleRouter, people], contextAborters: [shared], isEnabled: () => enabled, logger: { warn() {} } });
+  lifecycle.onIdentityChange(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['shared', 'session']); calls.length = 0;
+  await lifecycle.onCharacterRenamed('old', 'new'); assert.deepEqual(calls, ['shared', 'session']); calls.length = 0;
+  await lifecycle.onChatChanged(); assert.deepEqual(calls, ['session']); calls.length = 0;
+  enabled = false; await lifecycle.setEnabled(false);
+  assert.deepEqual(calls, ['shared', 'people-router', 'people', 'session']);
 });

@@ -9,7 +9,6 @@ import {
   createCheckpointInputFingerprints,
   deterministicUuid,
   foundationInputSnapshot,
-  scanAssistantCandidates,
 } from './foundation-domain.js';
 import {
   validateFoundationCheckpoint,
@@ -19,11 +18,12 @@ import {
   V3_INDEX_LAYOUT_FLOOR_ORDER,
 } from './foundation-schema.js';
 import { validateCseGraph } from './cse-schema.js';
-import { partitionScannedCandidates, validateMigrationDescriptor } from './migration-prefix.js';
+import { MIGRATION_ALIAS_KEY, migrationPartition, validateMigrationDescriptor } from './migration-prefix.js';
 import { createPeopleWorkspaceStore } from './people-workspace.js';
 import { createTimeStore } from './time-runtime.js';
-import { assertCapturedBranchTargetMatches, persistBranchedMessageMetadata, readTargetChat, sameBranchMessageCore, sameQqjMessageMetadata } from './message-floor-anchor.js';
+import { assertCapturedBranchTargetMatches, inspectMessageFloorAnchor, persistBranchedMessageMetadata, readTargetChat, sameQqjMessageMetadata } from './message-floor-anchor.js';
 import { captureTargetChatDescriptor } from './host-adapter.js';
+import { isMemoryExcludedMessage } from './memory-exclusion.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const emptyIndexManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
@@ -40,12 +40,43 @@ const identity = (host, chatId) => Object.freeze({
 });
 const rehome = (record, chatId, narrativeGeneration) => record ? { ...structuredClone(record), chatId, narrativeGeneration } : null;
 
-function normalizeBranchCandidates(candidates, targetChatId) {
-  return candidates.map(candidate => {
-    const anchor = candidate.messageAnchor;
-    if (anchor?.status !== 'foreign' || anchor.anchor?.chatId !== targetChatId) return candidate;
-    return Object.freeze({ ...candidate, messageAnchor: Object.freeze({ status: 'valid', anchor: anchor.anchor }) });
+// Native copying already chose the messages and selected replies. Only QQJ's
+// copied floor/alias ownership identifies which existing memory travels with it.
+function branchCandidates(source, chat, sourceChatId, targetChatId) {
+  const partition = migrationPartition(source);
+  const floorById = new Map(source.floors.map(floor => [floor.id, floor]));
+  const aliases = new Map((partition.descriptor?.carriedAliases ?? []).map(alias => [alias.aliasId, alias]));
+  const exclusions = new Map((source.checkpoint?.inputFingerprints ?? []).map(item => [item.floorId, item.memoryExcluded === true]));
+  const candidateFor = floor => ({
+    rawFingerprint: floor?.content.rawFingerprint,
+    canonicalFingerprint: floor?.content.canonicalFingerprint,
+    sanitizerFingerprint: floor?.content.sanitizerFingerprint,
+    stabilityProof: floor?.stability?.proof ?? null,
+    memoryExcluded: exclusions.get(floor?.id) === true,
   });
+  const historical = partition.frozenFloors.map(floor => ({ ...candidateFor(floor), assistantSeq: floor.assistantSeq,
+    archiveCandidate: true, archiveFloorId: floor.id, messageAnchor: { status: 'archive', anchor: null }, hostLocator: { ...floor.hostLocator } }));
+  const live = [], aliasWitnesses = [], seenAliases = new Set();
+  for (const [messageIndex, message] of chat.entries()) {
+    const alias = aliases.get(message?.extra?.[MIGRATION_ALIAS_KEY]);
+    if (alias) {
+      if (seenAliases.has(alias.aliasId)) throw fail('V3_BRANCH_FLOOR_MATCH_INVALID', '分支携带的归档楼归属不唯一。');
+      seenAliases.add(alias.aliasId);
+      aliasWitnesses.push({ aliasId: alias.aliasId, messageIndex, rawFingerprint: alias.rawFingerprint, canonicalFingerprint: alias.canonicalFingerprint });
+      continue;
+    }
+    let messageAnchor = inspectMessageFloorAnchor(message, sourceChatId);
+    if (messageAnchor.status === 'none') continue;
+    if (messageAnchor.status === 'foreign' && messageAnchor.anchor.chatId === targetChatId) {
+      messageAnchor = { status: 'valid', anchor: messageAnchor.anchor };
+    }
+    const floor = messageAnchor.status === 'valid' ? floorById.get(messageAnchor.anchor.floorId) : null;
+    const selectedSwipeIndex = Array.isArray(message.swipes) ? (Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0) : null;
+    live.push({ ...candidateFor(floor), memoryExcluded: isMemoryExcludedMessage(message),
+      assistantSeq: historical.length + live.length + 1, messageAnchor,
+      hostLocator: { messageIndex, swipeId: message.swipe_id ?? selectedSwipeIndex, selectedSwipeIndex } });
+  }
+  return { all: [...historical, ...live], descriptorId: partition.descriptor?.id ?? null, aliasWitnesses };
 }
 
 function inheritedPrefix(source, candidates, { requireComplete = false } = {}) {
@@ -60,8 +91,7 @@ function inheritedPrefix(source, candidates, { requireComplete = false } = {}) {
   const reject = (reason, code = 'V3_BRANCH_FLOOR_MATCH_INVALID') => {
     throw Object.assign(fail(code, '分支消息与源记忆楼无法对应。请到“记忆管理”页复制状态诊断反馈。'), { branchMatch: describe(reason) });
   };
-  // Branches share an ordered body prefix. A different reply ends that prefix;
-  // later source markers cannot join it again or veto its verified earlier floors.
+  // Only copied QQJ markers participate; unregistered native replies carry no memory.
   while (count < candidates.length) {
     const candidate = candidates[count], floor = source.floors[count];
     if (!floor) { difference = describe('sourceExhausted'); break; }
@@ -69,15 +99,11 @@ function inheritedPrefix(source, candidates, { requireComplete = false } = {}) {
       if (candidate.archiveFloorId !== floor.id) reject('archiveFloorMissing');
     } else {
       const marker = candidate.messageAnchor;
-      if (!['none', 'valid'].includes(marker?.status)) reject('markerRejected');
+      if (marker?.status !== 'valid') reject('markerRejected');
       if (marker.status === 'valid' && marker.anchor.floorId !== floor.id) {
         if (sourceFloorIds.has(marker.anchor.floorId)) reject('floorOrder', 'V3_BRANCH_NOT_PREFIX');
         difference = describe('markerConflict'); break;
       }
-    }
-    if (floor.content.rawFingerprint !== candidate.rawFingerprint
-      && floor.content.canonicalFingerprint !== candidate.canonicalFingerprint) {
-      difference = describe('bodyMismatch'); break;
     }
     count += 1;
   }
@@ -143,7 +169,8 @@ function projectSavedBranchMetadata(raw, hostAdapter, hostChatId, capturedChat, 
   if (live.chatId !== hostChatId || live.chat !== raw?.chat || live.context?.chatMetadata !== raw?.chatMetadata) return;
   for (let index = 0; index < capturedChat.length; index += 1) {
     const current = live.chat[index], captured = capturedChat[index], saved = savedFile.chat[index];
-    if (!current || !captured || !saved || !sameBranchMessageCore(current, captured)) continue;
+    if (!current || !captured || !saved
+      || !sameQqjMessageMetadata(current.extra, captured.extra)) continue;
     const previousExtra = current.extra;
     const extra = current.extra && typeof current.extra === 'object' && !Array.isArray(current.extra) ? { ...current.extra } : {};
     for (const key of ['qianqianjie_floor', 'qianqianjie_memory_excluded', 'qqj_v3_recall_receipt', 'qianqianjieAutoHide']) {
@@ -231,7 +258,6 @@ export function createChatBranchInitializer({
   client,
   hostAdapter,
   vectorRuntimeProvider = () => null,
-  sanitizerOptions = () => ({}),
   now = () => new Date(),
   fetchImpl = globalThis.fetch,
 } = {}) {
@@ -247,7 +273,6 @@ export function createChatBranchInitializer({
       chat: structuredClone(Array.isArray(liveSnapshot.chat) ? liveSnapshot.chat : []),
       chatMetadata: cloneHostJsonMetadata(liveSnapshot.context?.chatMetadata ?? {}),
       target: captureTargetChatDescriptor(liveSnapshot, { ...sourceIdentity, hostChatId: host.hostChatId }),
-      sanitizerOptions: { ...sanitizerOptions() },
     };
     if (!Array.isArray(snapshot.chat) || !snapshot.target?.hostChatId || snapshot.target.hostChatId !== sourceIdentity.hostChatId) {
       throw fail('V3_BRANCH_TARGET_INVALID', '分支目标快照无效。');
@@ -265,9 +290,8 @@ export function createChatBranchInitializer({
     let bindings = [];
     let retainedFloorIds = [];
     if (['ready', 'needsReseal'].includes(target.status)) {
-      const scanned = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: snapshot.sanitizerOptions, chatId: sourceChatId });
-      const partitioned = partitionScannedCandidates(target, snapshot.chat, sourceChatId, scanned);
-      const candidates = normalizeBranchCandidates(partitioned.all, targetChatId);
+      const partitioned = branchCandidates(target, targetFile.chat, sourceChatId, targetChatId);
+      const candidates = partitioned.all;
       const prefix = inheritedPrefix(target, candidates, { requireComplete: true });
       bindings = prefix.floors.flatMap((floor, index) => prefix.candidates[index]?.archiveCandidate
         ? [] : [{ messageIndex: prefix.candidates[index].hostLocator.messageIndex, floorId: floor.id }]);
@@ -286,9 +310,8 @@ export function createChatBranchInitializer({
       const source = await sourceStore.readReachable();
       sourceReachable = source;
       if (['ready', 'needsReseal'].includes(source.status)) {
-        const scanned = await scanAssistantCandidates(snapshot.chat, { sanitizerOptions: snapshot.sanitizerOptions, chatId: sourceChatId });
-        const partitioned = partitionScannedCandidates(source, snapshot.chat, sourceChatId, scanned);
-        const candidates = normalizeBranchCandidates(partitioned.all, targetChatId);
+        const partitioned = branchCandidates(source, targetFile.chat, sourceChatId, targetChatId);
+        const candidates = partitioned.all;
         const prefix = inheritedPrefix(source, candidates);
         if (prefix.count > 0) {
           const branchBindings = prefix.floors.flatMap((floor, index) => prefix.candidates[index]?.archiveCandidate

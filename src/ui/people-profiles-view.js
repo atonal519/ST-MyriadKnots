@@ -75,8 +75,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
     try {
       const result = await task(); state = runtime.getState();
-      if ((state.chatId ?? null) === operationChatId) after?.(state);
-      if (active && mine === epoch) {
+      if (chatId === operationChatId && (state.chatId ?? null) === operationChatId) after?.(state);
+      if (active && mine === epoch && chatId === operationChatId && (state.chatId ?? null) === operationChatId) {
         const report = generationReport ? result?.lastGenerationReport : null;
         const details = report ? [report.missing ? `未返回 ${report.missing} 位` : '', report.conflicts ? `回复重复 ${report.conflicts} 位` : '', report.invalid ? `格式无效 ${report.invalid} 位` : '', report.unknown ? `无法对应人物 ${report.unknown} 项` : '', report.skipped ? `未更新 ${report.skipped} 位` : '',
           report.aliasesNotUpdated ? `别名未更新 ${report.aliasesNotUpdated} 位` : '',
@@ -88,7 +88,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       return result;
     } catch (error) {
       state = runtime.getState();
-      if (active && mine === epoch) { feedback = `${label}失败：${publicErrorMessage(error, { fallback: '操作没有完成，请重试。' })}`; render(state); }
+      if (active && mine === epoch && chatId === operationChatId && (state.chatId ?? null) === operationChatId) { feedback = `${label}失败：${publicErrorMessage(error, { fallback: '操作没有完成，请重试。' })}`; render(state); }
       return { status: 'error', error };
     }
   }
@@ -138,7 +138,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     try {
       await runtime.saveProfile(person.entityId, payload, { manualFields: [...draft.dirtyFields] });
       const next = runtime.getState(); state = next;
-      if ((next.chatId ?? null) !== token.chatId || drafts.get(token.entityId) !== token.draft) return false;
+      if ((next.chatId ?? null) !== token.chatId || drafts.get(token.entityId) !== token.draft) return true;
       const updated = next.people.find(item => item.entityId === token.entityId);
       if (!updated?.profiled) {
         token.draft.saving = false; token.draft.notice = ''; token.draft.error = '保存失败：没有读到已保存资料';
@@ -168,10 +168,10 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   }
   async function deletePerson(person) {
     if (!dialog?.confirm) { feedback = '当前环境无法打开删除确认窗口。'; render(state); return; }
-    const name = person.displayName || person.entityDisplayName || '该人物';
+    const operationChatId = chatId, name = person.displayName || person.entityDisplayName || '该人物';
     const confirmed = await dialog.confirm({ title: `删除人物 · ${name}`, body: '删除人物档案、头像和重要人物选择，并从人物候选中隐藏。',
       note: '正文、摘要和双丝网保留；剧情出现新的同名身份时，可能重新入列。', confirmText: '删除人物', cancelText: '取消' });
-    if (!confirmed) return;
+    if (!confirmed || chatId !== operationChatId || runtime.getState().chatId !== operationChatId) return;
     await run('删除人物', () => runtime.deletePerson(person.entityId), { after: () => {
       drafts.delete(person.entityId); if (currentEntityId === person.entityId) currentEntityId = null;
     } });
@@ -218,11 +218,12 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     if (!targets.length) { feedback = '当前没有其他可作为合并目标的人物。'; render(state); return; }
     const operationChatId = chatId, content = mergeDialogContent(person);
     void dialog.custom({ title: `合并人物 · ${person.displayName || person.entityDisplayName}`, content: content.panel, confirmText: '确认合并', cancelText: '取消', submit: async () => {
+      if (chatId !== operationChatId || runtime.getState().chatId !== operationChatId) return false;
       const targetEntityId = content.targetSelect.value;
       if (!targetEntityId) throw new Error('请选择合并目标。');
       await runtime.mergePeople(person.entityId, targetEntityId, content.profileSelect.value);
       const next = runtime.getState();
-      if ((next.chatId ?? null) !== operationChatId) throw new Error('聊天已变化，本次合并未应用到当前页面。');
+      if (chatId !== operationChatId || (next.chatId ?? null) !== operationChatId) return true;
       state = next; drafts.delete(person.entityId); currentEntityId = targetEntityId; feedback = '人物已合并；历史摘要与 CSE 归属已汇集到目标人物。'; if (active) render(next); return true;
     } });
   }
@@ -279,7 +280,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     return section;
   }
   async function generateAvatar(person, mark) {
-    const cropLifecycle = cropLoadId;
+    const cropLifecycle = cropLoadId, operationChatId = chatId;
     try {
       const options = runtime.prepareAvatarGeneration(person.entityId);
       let character = Number.isInteger(options.selectedIndex) ? options.characters[options.selectedIndex] : null;
@@ -295,10 +296,13 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         if (!selected) return;
         character = selected;
       }
+      if (chatId !== operationChatId || cropLifecycle !== cropLoadId) return;
       const result = await run('生成头像', () => runtime.generateAvatar(person.entityId, { character }));
       if (result?.dataUrl && active && cropLifecycle === cropLoadId) await chooseAvatar(person, mark, result.dataUrl, true);
     } catch (error) {
-      feedback = `生成头像失败：${publicErrorMessage(error, { fallback: '头像没有生成，请检查柏宝绘设置。' })}`; if (active) render(state);
+      if (active && chatId === operationChatId && cropLifecycle === cropLoadId) {
+        feedback = `生成头像失败：${publicErrorMessage(error, { fallback: '头像没有生成，请检查柏宝绘设置。' })}`; render(state);
+      }
     }
   }
   async function chooseAvatar(person, mark, file, generated = false) {
@@ -359,7 +363,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     zoom.addEventListener('input', () => { draft.zoom = Number(zoom.value); applyPreview(); }); zoomLabel.append(zoom); panel.append(zoomLabel); applyPreview();
     const status = element('p', 'sp-dialog-note'); status.hidden = true; status.setAttribute('aria-live', 'polite'); panel.append(status);
     const submit = async () => {
-      const token = { chatId, entityId: person.entityId, draft }; draft.saving = true;
+      draft.saving = true;
       status.hidden = false; status.textContent = '正在处理头像…'; applyPreview();
       try {
         // 先让本弹窗的忙态完成一帧绘制，再进行同步图片编码。
@@ -376,7 +380,6 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         await runtime.saveAvatar(person.entityId, dataUrl, { originalFile: draft.source.blob, originalRef: draft.originalRef, generated: draft.generated,
           crop: draft.cropping ? { aspectRatio: draft.aspectRatio, zoom: draft.zoom, offsetX: draft.offsetX, offsetY: draft.offsetY } : null,
           onOriginalUploaded: value => { draft.originalRef = value; } });
-        if (chatId !== token.chatId || cropDraft !== token.draft || currentEntityId !== token.entityId) throw new Error('页面已切换，本次头像没有应用到当前页面。');
         return true;
       } finally { draft.saving = false; status.hidden = true; status.textContent = ''; if (cropDraft === draft) applyPreview(); }
     };
@@ -502,7 +505,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     if (!dialog?.custom) { feedback = '当前环境无法打开人物排序窗口。'; render(state); return; }
     const operationChatId = chatId;
     void openPeopleOrderDialog({ customImpl: options => dialog.custom(options), runtime, people: state.people, documentRef, chatId: operationChatId,
-      onSaved: next => { if ((next.chatId ?? null) !== operationChatId) return; state = next; feedback = '人物顺序已保存。'; if (active) render(next); } });
+      onSaved: next => { if (chatId !== operationChatId || runtime.getState().chatId !== operationChatId || (next.chatId ?? null) !== operationChatId) return; state = next; feedback = '人物顺序已保存。'; if (active) render(next); } });
   }
   function peoplePicker(people) {
     const picker = element('section', 'qqj-profile-picker'), heading = element('header', 'qqj-profile-picker-heading');
@@ -602,7 +605,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   async function activate() {
     if (!container) throw new Error('千人人物资料 view 尚未挂载');
     active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
-    let preparingIdentity = false;
+    let preparingIdentity = false, operationChatId = runtime.getState().chatId ?? chatId;
     try {
       const sessionState = sessionStateProvider?.() ?? null;
       preparingIdentity = sessionState?.status === 'error';
@@ -617,9 +620,15 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         }
         if (prepared?.status !== 'ready') return prepared;
       }
-      const result = await runtime.refresh({ refreshMemory: false }); if (!active || mine !== epoch) return { status: 'stale' }; state = result; resetForChat(result.chatId ?? null); feedback = readFeedback(result); render(result); return result;
+      const refreshing = runtime.refresh({ refreshMemory: false });
+      operationChatId ??= runtime.getState().chatId ?? null;
+      const result = await refreshing;
+      if (!active || mine !== epoch) return { status: 'stale' };
+      const next = runtime.getState();
+      if ((next.chatId ?? null) !== (result.chatId ?? null)) return result;
+      state = next; resetForChat(next.chatId ?? null); feedback = readFeedback(next); render(next); return result;
     }
-    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; state = runtime.getState(); resetForChat(state.chatId ?? null); feedback = `${preparingIdentity ? '聊天身份准备失败' : '读取失败'}：${publicErrorMessage(error, { fallback: preparingIdentity ? '请到“记忆管理”页点击“复制状态诊断”反馈。' : '人物资料暂时无法读取，请重试。' })}`; render(state); return { status: 'error', error }; }
+    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; const next = runtime.getState(); if ((next.chatId ?? null) !== operationChatId) return { status: 'stale' }; state = next; resetForChat(state.chatId ?? null); feedback = `${preparingIdentity ? '聊天身份准备失败' : '读取失败'}：${publicErrorMessage(error, { fallback: preparingIdentity ? '请到“记忆管理”页点击“复制状态诊断”反馈。' : '人物资料暂时无法读取，请重试。' })}`; render(state); return { status: 'error', error }; }
   }
   function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); renderedState = null; renderedNodes = null; busyControls = []; generationButtons = []; switcherNode = null; unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });

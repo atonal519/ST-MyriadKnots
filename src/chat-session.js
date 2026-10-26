@@ -58,7 +58,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
       hostChatId: host.hostChatId,
       characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
     });
-    return { chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []), chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}), target, sanitizerOptions: {} };
+    return { chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []), chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}), target };
   };
   const publicIdentity = host => Object.freeze({
     hostChatId: host.hostChatId,

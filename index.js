@@ -127,9 +127,10 @@ const taskRouter = createTaskRouter({
   compactClient,
   isEnabled: settings.isEnabled,
 });
+const peopleTaskRouter = createTaskRouter({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, processingPrompt, isEnabled: settings.isEnabled });
 const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
-const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, vectorRuntimeProvider: () => vectorIndex, sanitizerOptions });
+const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, vectorRuntimeProvider: () => vectorIndex });
 const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch,
   readTargetFile: (raw, host, { signal }) => readTargetChatFile(captureTargetChatCoordinates({ context: raw, chatId: host.hostChatId }, {
     hostChatId: host.hostChatId, characterLocator: host.characterAvatar,
@@ -147,7 +148,6 @@ const session = createChatSession({ contextProvider, isEnabled: settings.isEnabl
     chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []),
     chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}),
     target,
-    sanitizerOptions: Object.freeze({ ...sanitizerOptions() }),
   };
 } });
 // 设置页在禁用、未选聊天及身份准备期间仍须可打开；此时不读写聊天历法，保存仍走严格身份校验。
@@ -328,7 +328,7 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   foundationStore,
   hostAdapter,
   memoryRuntime: v3MemoryRuntime,
-  generateUtilityTask: taskRouter.generateUtilityTask,
+  generateUtilityTask: peopleTaskRouter.generateUtilityTask,
   sourcePermissions,
   contextProvider,
   profilePromptGuidance: profilePrompt,
@@ -558,7 +558,8 @@ ui = bootstrap({
 });
 lifecycle = createPluginLifecycle({
   session,
-  aborters: [taskRouter, apiTools, peopleWorkspaceRuntime, vectorIndex, vectorApi],
+  aborters: [taskRouter, apiTools, peopleTaskRouter, peopleWorkspaceRuntime, vectorIndex, vectorApi],
+  contextAborters: [taskRouter, apiTools, vectorIndex, vectorApi],
   isEnabled: settings.isEnabled,
   getUi: () => ui,
   onPrepared: async ({ result, isCurrent, explicitEnable }) => {

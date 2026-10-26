@@ -123,7 +123,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
     let transport = null;
     try {
       const requestOptions = { ...options };
-      const requestHeaders = { Accept: 'application/json', ...headers(), ...(options.body ? { 'Content-Type': 'application/json' } : {}) };
+      const requestHeaders = { Accept: 'application/json', ...(useTauri ? {} : headers()), ...(options.body ? { 'Content-Type': 'application/json' } : {}) };
       if (requestDiagnostic?.method === 'PUT' && typeof options.body === 'string') {
         const bytes = new TextEncoder().encode(options.body);
         transport = { bodyBytes: bytes.byteLength };

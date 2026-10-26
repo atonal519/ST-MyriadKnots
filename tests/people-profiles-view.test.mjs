@@ -746,3 +746,72 @@ test('点击已存头像懒看完整图与下载，旧头像仍只显示原有�
     dialogs.dialog.cancelTop();assert.equal(image.src,'');view.deactivate();
   }
 });
+
+test('旧人物操作完成或失败只反馈原页，不覆盖B人物页面', async t => {
+  for (const outcome of ['success', 'failure']) await t.test(outcome, async () => {
+    const h = runtimeHarness(), container = new Node('main'); let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const original = structuredClone(h.state);
+    h.runtime.regenerateProfile = async () => { await gate; if (outcome === 'failure') throw new Error('A旧任务失败');
+      return { ...original, lastGenerationReport: { requested: 1, saved: 1 } }; };
+    const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+    flatten(container).find(node => node.tag === 'button' && node.textContent === '整理当前资料').click();
+    h.emitState({ ...h.state, chatId: CHAT_B, people: [person(C, 'B人物', true)], selectedEntityIds: [C] });
+    release(); await new Promise(resolve => setImmediate(resolve));
+    assert.match(visible(container), /B人物/); assert.doesNotMatch(visible(container), /保存 1\/1|A旧任务失败|整理当前资料完成/u);
+    view.deactivate();
+  });
+});
+
+test('人物资料真实保存后切到B只略过旧页接回，弹窗仍返回成功', async () => {
+  const h = runtimeHarness(), container = new Node('main'); let release;
+  h.runtime.saveProfile = async () => { await new Promise(resolve => { release = resolve; }); return { ...h.state, chatId: CHAT }; };
+  const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  flatten(container).find(node => node.tag === 'button' && node.textContent === '编辑资料').click();
+  const pending = saveEditor(view);
+  h.emitState({ ...h.state, chatId: CHAT_B, people: [person(C, 'B人物', true)], selectedEntityIds: [C] });
+  release(); assert.equal(await pending, true); assert.match(visible(container), /B人物/); view.deactivate();
+});
+
+test('头像确认已保存后页面B仅停止旧预览接回，不把持久成功报成失败', async () => {
+  const h = runtimeHarness(), container = new Node('main'), dialogs = dialogHarness(); let release, started;
+  const began = new Promise(resolve => { started = resolve; });
+  h.runtime.saveAvatar = async () => { started(); await new Promise(resolve => { release = resolve; }); return { chatId: CHAT }; };
+  const doc = { createElement: tag => tag === 'canvas' ? { getContext: () => ({ clearRect() {}, drawImage() {} }), toDataURL: () => 'data:image/png;base64,AAAA' } : new Node(tag) };
+  const imageFactory = () => ({ naturalWidth: 100, naturalHeight: 100, set src(value) { if (value) queueMicrotask(() => this.onload?.()); } });
+  const view = createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef: doc, imageFactory,
+    urlApi: { createObjectURL: () => 'blob:source', revokeObjectURL() {} } }); view.mount(container);
+  flatten(container).find(node => node.className === 'qqj-avatar-file').fire('change', { target: { files: [{ type: 'image/png', size: 1 }] } });
+  await waitFor(() => dialogs.active?.title === '头像预览');
+  const pending = dialogs.submit(); await began;
+  h.emitState({ ...h.state, chatId: CHAT_B, people: [person(C, 'B人物', true)], selectedEntityIds: [C] });
+  release(); assert.equal(await pending, true); assert.match(visible(container), /B人物/); view.deactivate();
+});
+
+test('人物合并与排序原目标已保存后不在B回画旧页或抛假失败', async t => {
+  for (const kind of ['merge', 'order']) await t.test(kind, async () => {
+    const h = runtimeHarness({ selected: [A, B] }), container = new Node('main'), dialogs = dialogHarness(); let release, started;
+    const began = new Promise(resolve => { started = resolve; }), before = structuredClone(h.state);
+    h.runtime[kind === 'merge' ? 'mergePeople' : 'setPersonOrderEntityIds'] = async () => { started(); await new Promise(resolve => { release = resolve; }); return before; };
+    const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, dialog: dialogs.dialog }); view.mount(container);
+    if (kind === 'merge') flatten(container).find(node => node.textContent === '合并到其他人物').click();
+    else { flatten(container).find(node => node.textContent === '更多人物（0）').click(); flatten(container).find(node => node.textContent === '排序').click(); }
+    const pending = dialogs.submit(); await began;
+    h.emitState({ ...h.state, chatId: CHAT_B, people: [person(C, 'B人物', true)], selectedEntityIds: [C] });
+    release(); assert.equal(await pending, true);
+    assert.match(visible(container), /B人物/); assert.doesNotMatch(visible(container), /人物已合并|人物顺序已保存/u); view.deactivate();
+  });
+});
+
+test('人物activate的A读取迟到成功或失败都不回画已展示的B', async t => {
+  for (const outcome of ['success', 'failure']) await t.test(outcome, async () => {
+    const h = runtimeHarness(), container = new Node('main'), before = structuredClone(h.state); let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    h.runtime.refresh = async () => { await gate; if (outcome === 'failure') throw new Error('A迟到读取失败'); return before; };
+    const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+    const pending = view.activate();
+    h.emitState({ ...h.state, chatId: CHAT_B, people: [person(C, 'B正常人物', true)], selectedEntityIds: [C] });
+    release(); await pending;
+    assert.match(visible(container), /B正常人物/u); assert.doesNotMatch(visible(container), /A迟到读取失败|读取失败/u); view.deactivate();
+  });
+});

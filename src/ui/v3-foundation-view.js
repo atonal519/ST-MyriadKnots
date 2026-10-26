@@ -618,6 +618,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const recall = readDiagnosticState(() => recallRuntime?.getState?.());
     const vector = readDiagnosticState(() => vectorRuntime?.getState?.());
     const management = readDiagnosticState(() => memoryManagement?.getState?.());
+    const managementActivity = readDiagnosticState(() => memoryManagement?.getActivityState?.());
+    const historical = management?.rebuildState;
     const time = readDiagnosticState(() => typeof timeRuntime?.getActivityState === 'function' ? timeRuntime.getActivityState() : timeRuntime?.getState?.());
     const memoryKnown = memory !== null, identityKnown = identity !== null, recallKnown = recall !== null, managementKnown = management !== null;
     const deleting = management?.status === 'deleting', deletePending = management?.status === 'failed';
@@ -779,6 +781,28 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         phase: managementKnown && management.phase !== null ? enumDiagnostic(management.phase, DIAGNOSTIC_PHASE) : managementKnown ? null : 'unknown',
         workBusy: managementKnown ? booleanDiagnostic(management.workBusy) : 'unknown',
         error: errorDiagnostic(management?.error, managementKnown),
+        activity: {
+          busy: booleanDiagnostic(managementActivity?.busy),
+          phase: managementActivity?.busy === false ? null : enumDiagnostic(managementActivity?.phase, DIAGNOSTIC_PHASE),
+        },
+        rebuildState: historical ? {
+          status: enumDiagnostic(historical.status, DIAGNOSTIC_STATUS),
+          snapshotStatus: enumDiagnostic(historical.memorySnapshotStatus, DIAGNOSTIC_STATUS),
+          syncStatus: enumDiagnostic(historical.memorySyncStatus, DIAGNOSTIC_STATUS),
+          rebuildStatus: enumDiagnostic(historical.rebuildStatus, DIAGNOSTIC_STATUS),
+          phase: historical.phase === null ? null : enumDiagnostic(historical.phase, DIAGNOSTIC_PHASE),
+          rememberedCount: countDiagnostic(historical.rememberedCount), stableCount: countDiagnostic(historical.stableCount),
+          rebuildCompletedCount: countDiagnostic(historical.rebuildCompletedCount), rebuildTotalCount: countDiagnostic(historical.rebuildTotalCount),
+          memoryWorkBusy: booleanDiagnostic(historical.memoryWorkBusy),
+          activeMemoryWork: operationDiagnostic(historical.activeMemoryWork, { kind: true }),
+          activeExtraction: operationDiagnostic(historical.activeExtraction),
+          activeAutoMemory: operationDiagnostic(historical.activeAutoMemory),
+          activeCse: operationDiagnostic(historical.activeCse),
+          syncError: errorDiagnostic(historical.memorySyncError),
+          lastExtractorError: errorDiagnostic(historical.lastExtractorError),
+          lastAutomationError: automationErrorDiagnostic(historical.lastAutomationError),
+          lastCseError: errorDiagnostic(historical.lastCseError),
+        } : null,
       },
       ui: {
         syncingOverlayActive: Boolean(syncingChatId && syncingChatId === foundationState?.chatId),

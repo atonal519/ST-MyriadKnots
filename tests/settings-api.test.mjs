@@ -704,3 +704,24 @@ test('副任务沿用统一 disabled 与 external signal 守卫', async () => {
 });
 
 test('共享破限缺键只初始化一次，显式空值保持原样且旧局部自定义不再回灌',()=>{const extensionSettings={qianqianjie:{processingPrompt:'旧QQJ生效全文'},'schedule-planner':{unknown:true}};let saves=0;const settings=createSettingsStore({extensionSettings,save(){saves++;}});assert.equal(saves,1);assert.equal(settings.processingPrompt(),'旧QQJ生效全文');settings.update({processingPrompt:''});assert.equal(extensionSettings['schedule-planner'].processingPrompt,'');extensionSettings.qianqianjie.processingPrompt='旧值不回灌';const reloaded=createSettingsStore({extensionSettings,save(){saves++;}});assert.equal(reloaded.processingPrompt(),'');assert.equal(extensionSettings['schedule-planner'].unknown,true);assert.equal(saves,2);assert.ok(BASE_PROCESSING_PROMPT);});
+
+test('人物独立router复用同resolver与client，按实际派发读配置并保持signal和全量取消', async () => {
+  const extensionSettings = { qianqianjie: { summaryPresetId: 'utility' }, 'schedule-planner': { apiPresets: [configured('副', 'utility', 'FIRST')] } };
+  const { settings } = setup(extensionSettings), resolver = createApiResolver({ settings }), calls = [], releases = [];
+  const compactClient = { generateTask: options => new Promise((resolve, reject) => { calls.push(options); releases.push(() => options.signal.aborted ? reject(new DOMException('Aborted', 'AbortError')) : resolve({ jsonData: {} })); }) };
+  const common = { resolver, compactClient, isEnabled: settings.isEnabled };
+  const shared = createTaskRouter(common), people = createTaskRouter(common);
+  const original = shared.generateUtilityTask({}).then(value => ({ value }), error => ({ error }));
+  const first = people.generateUtilityTask({});
+  assert.equal(shared.getActiveCount(), 1); assert.equal(people.getActiveCount(), 1);
+  shared.abortAll(); releases[0](); releases[1]();
+  assert.equal((await original).error.name, 'AbortError'); await first;
+  assert.equal(calls[1].signal.aborted, false);
+  extensionSettings['schedule-planner'].apiPresets[0].key = 'SECOND';
+  const controller = new AbortController(), pending = people.generateUtilityTask({ signal: controller.signal });
+  assert.equal(calls[2].config.key, 'SECOND'); assert.equal(calls[1].config.key, 'FIRST');
+  controller.abort(); releases[2](); await assert.rejects(pending, { name: 'AbortError' });
+  const stopped = people.generateUtilityTask({}); people.abortAll(); releases[3]();
+  await assert.rejects(stopped, { name: 'AbortError' });
+  assert.equal(people.getActiveCount(), 0); assert.equal(shared.getActiveCount(), 0);
+});

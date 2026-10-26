@@ -1031,7 +1031,8 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   assert.deepEqual(diagnostic.memory.lastExtractorError, { present: true, name: 'TypeError', code: 'V3_EXTRACTOR_FAILED', httpStatus: 429 });
   assert.deepEqual(diagnostic.memory.lastAutomationError, { present: true, name: 'Error', code: 'V3_AUTO_MEMORY_FAILED', prepareStep: null, detail: null, location: null, lastFailedAt: null });
   assert.equal(diagnostic.cse.active.phase, 'committing'); assert.equal(diagnostic.recall.active.phase, 'selecting');
-  assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, error: { present: true } });
+  assert.deepEqual(diagnostic.management, { status: 'deleting', phase: 'deletingRecords', workBusy: true, error: { present: true },
+    activity: { busy: 'unknown', phase: 'unknown' }, rebuildState: null });
   assert.equal(qianshiReads, 1, '每次复制诊断即时读取轻量千事状态');
   assert.equal(qianshiSnapshotReads, 0, '复制诊断不复制完整千事快照');
   assert.equal(diagnostic.qianshi.status, 'ready');
@@ -1072,6 +1073,54 @@ test('状态诊断在无可刷新状态与同步删除灰态仍可复制即时�
   assert.equal(diagnostic.qianshi.history.commitStatus, 'unknown');
   assert.equal(diagnostic.qianshi.history.outcomes[0].reasonCode, 'QIANSHI_HISTORY_COMMIT_AMBIGUOUS');
   assert.deepEqual(diagnostic.backend, backendState, '每次复制都应读取最新后端安全快照');
+});
+
+test('复制状态诊断区分基础空闲与独立历史owner，安全摘要读取最新状态', async () => {
+  const privateText = 'PRIVATE_OWNER_BODY_KEY';
+  const memory = { status: 'ready', chatId: 'current-chat', foundationStatus: 'ready', memorySnapshotStatus: 'ready',
+    memorySyncStatus: 'idle', stableCount: 138, rememberedCount: 0, memoryWorkBusy: false,
+    activeMemoryWork: null, activeExtraction: null, activeAutoMemory: null, activeCse: null, floors: [],
+    lastAutomationError: { code: 'CHAT_SESSION_NOT_READY', phase: 'extracting', prepareStep: 'identityDirectory', count: 1,
+      lastFailedAt: '2026-10-26T09:20:51.000Z', message: privateText } };
+  let historical = { ...memory, chatId: privateText, rebuildStatus: 'rebuilding', phase: 'extracting',
+    rebuildCompletedCount: 0, rebuildTotalCount: 138, memoryWorkBusy: true,
+    activeMemoryWork: { kind: 'auto', phase: 'extracting', floorIds: [privateText] },
+    activeExtraction: { phase: 'extracting', floorId: privateText }, activeAutoMemory: { phase: 'extracting', reason: privateText },
+    rawBody: privateText, identity: { key: privateText } };
+  let activity = { busy: true, phase: 'extracting', requestBody: privateText }, activityReads = 0, copied;
+  const management = { getState: () => ({ status: 'idle', phase: null, workBusy: activity.busy, rebuildState: historical }), deleteCurrent: async () => ({}),
+    getActivityState: () => { activityReads += 1; return activity; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime: { getState: () => memory, refreshStatus: async () => memory, confirmLatest: async () => memory }, memoryManagement: management,
+    documentRef, navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  view.mount(container);
+  flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  let diagnostic = JSON.parse(copied);
+  assert.equal(diagnostic.formatVersion, 2);
+  assert.equal(diagnostic.memory.activeExtraction.present, false);
+  assert.equal(diagnostic.management.status, 'idle');
+  assert.deepEqual(diagnostic.management.activity, { busy: true, phase: 'extracting' });
+  assert.equal(diagnostic.management.rebuildState.rebuildStatus, 'rebuilding');
+  assert.equal(diagnostic.management.rebuildState.stableCount, 138);
+  assert.equal(diagnostic.management.rebuildState.rebuildCompletedCount, 0);
+  assert.equal(diagnostic.management.rebuildState.rebuildTotalCount, 138);
+  assert.deepEqual(diagnostic.management.rebuildState.activeMemoryWork, { present: true, kind: 'auto', phase: 'extracting' });
+  assert.deepEqual(diagnostic.management.rebuildState.activeExtraction, { present: true, phase: 'extracting' });
+  assert.equal(diagnostic.memory.lastAutomationError.lastFailedAt, '2026-10-26T09:20:51.000Z', '历史错误保持其原时间，不冒充当前owner');
+  assert.doesNotMatch(copied, new RegExp(privateText));
+  historical = { ...historical, rebuildStatus: 'paused', phase: null, memoryWorkBusy: false,
+    activeMemoryWork: null, activeExtraction: null, activeAutoMemory: null };
+  activity = { busy: false, phase: null };
+  flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  await new Promise(resolve => setImmediate(resolve));
+  diagnostic = JSON.parse(copied);
+  assert.deepEqual(diagnostic.management.activity, { busy: false, phase: null });
+  assert.equal(diagnostic.management.rebuildState.rebuildStatus, 'paused');
+  assert.equal(diagnostic.management.rebuildState.memoryWorkBusy, false);
+  assert.equal(diagnostic.management.rebuildState.activeAutoMemory.present, false);
+  assert.equal(activityReads, 2, '每次复制直接采既有轻量getter，无后台监测');
+  view.deactivate();
 });
 
 test('无 chat 与无状态 provider 仍提供状态诊断，复制不会抢占正在激活的业务回显', async () => {
@@ -3952,8 +4001,10 @@ test('新轮准备经真实foundation和memory清旧页面错误，合并操作�
 test('真实分支目标差异进入设置复制诊断，仅保首楼与固定差异枚举', async () => {
   const chatId = '123e4567-e89b-42d3-a456-426614174000', targetId = '223e4567-e89b-42d3-a456-426614174000';
   const raw = { chatId: '合成差异反馈', characterId: 0, characters: [{ name: '人物', avatar: 'person.png' }], userAvatar: 'user.png',
-    chatMetadata: { qianqianjie: { schemaVersion: 2, chatId } }, chat: [{ is_user: false, mes: 'SECRET_BODY', name: 'SECRET_NAME' }] };
+    chatMetadata: { qianqianjie: { schemaVersion: 2, chatId } }, chat: [{ is_user: false, mes: 'SECRET_BODY', name: 'SECRET_NAME',
+      extra: { qianqianjie_floor: { schemaVersion: 1, chatId, floorId: '33333333-3333-4333-8333-333333333333' } } }] };
   const persisted = structuredClone(raw.chat); persisted[0].mes = 'SECRET_NEW_BODY';
+  persisted[0].extra.qianqianjie_floor.floorId = '44444444-4444-4444-8444-444444444444';
   const session = createChatSession({ contextProvider: () => raw, identityCoordinator: { prepare() {
     assertCapturedBranchTargetMatches({ chat: raw.chat, chatMetadata: raw.chatMetadata },
       { chat: persisted, header: { chat_metadata: raw.chatMetadata } }, chatId, targetId);
@@ -3965,9 +4016,9 @@ test('真实分支目标差异进入设置复制诊断，仅保首楼与固定�
     pluginDiagnosticProvider: () => ({ phase: 'identityPrepare', failure: session.getState().preparationFailure }),
     navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
   const container = new Node('main'); view.mount(container);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /第 1 条消息的正文不同/u);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /第 1 条消息的记忆归属不同/u);
   await flatten(container).find(node => node.textContent === '复制状态诊断').click();
-  const result = JSON.parse(copied), difference = { reason: 'message', messageIndex: 0, capturedCount: 1, persistedCount: 1, fields: ['mes', 'selectedValue'] };
+  const result = JSON.parse(copied), difference = { reason: 'message', messageIndex: 0, capturedCount: 1, persistedCount: 1, fields: ['ownership'] };
   assert.deepEqual(result.identity.preparationFailure.branchTargetDifference, difference);
   assert.deepEqual(result.pluginLifecycle.failure.branchTargetDifference, difference);
   assert.doesNotMatch(copied, /SECRET|swipes/u); view.deactivate();

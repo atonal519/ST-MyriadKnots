@@ -2,7 +2,7 @@ import { sha256 } from './identity.js';
 import { isUuid } from './host-context.js';
 import { CHAT_IDENTITY_COLLECTION } from './chat-identity.js';
 import { captureTargetChatDescriptor } from './v3/host-adapter.js';
-import { readTargetChat, sameMessageCoreAndQqjData } from './v3/message-floor-anchor.js';
+import { readTargetChat, sameChatQqjData, sameQqjChatMetadata } from './v3/message-floor-anchor.js';
 import { deterministicUuid, selectAssistantMessage } from './v3/foundation-domain.js';
 import { sanitizeMemoryContent } from './memory-content-sanitizer.js';
 import { initializeMigrationGraph, selectCompletedCarriedAliases } from './v3/memory-migration.js';
@@ -14,21 +14,6 @@ const AUTO_HIDE_KEY = 'qianqianjieAutoHide';
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const clone = value => structuredClone(value);
 const fingerprint = async value => `sha256:${await sha256(value)}`;
-// 通用业务比较不包含搬家携带标记；读回还需核对每条消息及所选 swipe 的自有 alias。
-const migrationAliasProjection = message => {
-  const alias = extra => Object.hasOwn(extra ?? {}, MIGRATION_ALIAS_KEY)
-    ? { present: true, value: extra[MIGRATION_ALIAS_KEY] } : { present: false };
-  return {
-    outer: alias(message?.extra),
-    swipes: Array.isArray(message?.swipe_info) ? message.swipe_info.map(value => alias(value?.extra)) : null,
-  };
-};
-function sameMigratedMessages(expected, persisted) {
-  return Array.isArray(expected) && Array.isArray(persisted) && expected.length === persisted.length
-    && expected.every((message, index) => sameMessageCoreAndQqjData(message, persisted[index])
-      && JSON.stringify(migrationAliasProjection(message)) === JSON.stringify(migrationAliasProjection(persisted[index])));
-}
-
 export function cleanOwnedMessage(message, { ai = false, aliasId = null, sourceChatId = null } = {}) {
   const { swipes: _oldSwipes, swipe_info: _oldSwipeInfo, ...payload } = message;
   const result = clone(payload);
@@ -229,9 +214,8 @@ export function createChatMemoryMigration({ client, session, hostAdapter, source
       if (!saved?.ok) throw fail('QQJ_MIGRATION_HOST_SAVE_FAILED', '新聊天没有保存成功。');
       const verifyTarget = Object.freeze({ ...target, chatId: targetChatId });
       const persisted = await readTargetChat(verifyTarget, { fetchImpl });
-      if (!sameMigratedMessages(targetChat, persisted.chat)
-        || persisted.header.chat_metadata?.qianqianjie?.chatId !== targetChatId
-        || (capturedPrequel !== null && persisted.header.chat_metadata?.qianqianjiePrequel !== capturedPrequel)) throw fail('QQJ_MIGRATION_HOST_VERIFY_FAILED', '新聊天读回核验失败，身份绑定未发布。');
+      if (!sameChatQqjData(targetChat, persisted.chat)
+        || !sameQqjChatMetadata(header.chat_metadata, persisted.header.chat_metadata, { includePrequel: true, includeFile: true })) throw fail('QQJ_MIGRATION_HOST_VERIFY_FAILED', '新聊天读回核验失败，身份绑定未发布。');
       if (capturedCalendar) await persistStoryCalendar(targetChatId, capturedCalendar);
       const createdAt = now()?.toISOString?.() ?? new Date().toISOString();
       const binding = { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: targetChatId,

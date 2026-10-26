@@ -14,6 +14,9 @@ import { createAvatarGenerator, DEFAULT_AVATAR_PROMPT } from '../src/avatar-gene
 import { createSettingsStore } from '../src/settings.js';
 import { createPluginActivity } from '../src/plugin-activity.js';
 import { scanWorldInfo } from '../src/world-info-scanner.js';
+import { replayCurrentState } from '../src/v3/cse-engine.js';
+import { stateFingerprint, validateCurrentStateRecord, validateStateDeltaRecord } from '../src/v3/cse-schema.js';
+import { createCseRuntime } from '../src/v3/cse-runtime.js';
 
 const CHAT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CHAT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -49,6 +52,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   };
   let memoryState = { baselineId: 'baseline-a', currentStateId: 'state-a', currentStateFingerprint: 'fingerprint-a',
     cseSubjects: peopleEntities.map((person, index) => ({ subjectEntityId: person.id, displayName: person.displayName, core: index === 0 ? [{ text: '谨慎', origin: 'delta', sourceFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }] : [], adaptive: [], situational: [] })) };
+  const targetGraphs = new Map([[CHAT_A, reachable]]), fixedGraphReads = [], releasedGraphViews = [];
   const listeners = new Set(), foundationListeners = new Set();
   let memoryRefreshes = 0, memoryStateReads = 0, foundationReads = 0;
   const memoryRuntime = { getState: () => { memoryStateReads += 1; return memoryState; }, refreshStatus: async () => { memoryRefreshes += 1; return memoryState; }, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); } };
@@ -56,7 +60,8 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
   const runtime = createPeopleWorkspaceRuntime({
     store: createPeopleWorkspaceStore({ client: db.client }), session: { identity: () => structuredClone(identity) },
     foundationRuntime: { getReachable: () => { foundationReads += 1; return reachable; }, getState: () => foundationState, subscribe(fn) { foundationListeners.add(fn); return () => foundationListeners.delete(fn); } }, memoryRuntime, generateUtilityTask: generate, profilePromptGuidance, processingPrompt, avatarGenerator, avatarPrompt, avatarImageStore,
-    foundationStore: { async readRecord(type, id) { await foundationReadHook?.(type, id); const value = foundationRecords.get(`${type}/${id}`); return value ? { status: 'ready', data: structuredClone(value) } : { status: 'missing' }; } },
+    foundationStore: { async readRecord(type, id) { await foundationReadHook?.(type, id); const value = foundationRecords.get(`${type}/${id}`); return value ? { status: 'ready', data: structuredClone(value) } : { status: 'missing' }; },
+      forIdentity(target) { return { async readRoot() { const graph = targetGraphs.get(target.chatId); return graph?.root ? { status: 'ready', revision: graph.rootRevision, data: graph.root } : { status: 'uninitialized' }; }, async readReachable() { fixedGraphReads.push(target.chatId); return targetGraphs.get(target.chatId); }, release() { releasedGraphViews.push(target.chatId); } }; } },
     hostAdapter: { snapshot: () => ({ context: { chatMetadata: { qianqianjie: { chatId: identity.chatId } } }, chat: hostChat }) },
     sourcePermissions: {
       filterCandidates({ chatId, candidates }) { sourceTrace.push(['filter', chatId, candidates.map(item => item.id)]); return permissionSettings ? filterSourcesByPermission({ chatId, candidates, settings: permissionSettings }) : candidates.filter(item => item.id !== 'worldbook:excluded'); },
@@ -69,7 +74,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
     now: () => new Date('2026-09-06T00:00:00.000Z'),
     logger: { warn() {} },
   });
-  return { db, runtime, peopleEntities, sourceTrace, foundationRecords, memoryStateReads: () => memoryStateReads, foundationReads: () => foundationReads,
+  return { db, runtime, memoryRuntime, peopleEntities, sourceTrace, foundationRecords, setTargetReachable: (targetChatId, value) => targetGraphs.set(targetChatId, value), memoryStateReads: () => memoryStateReads, foundationReads: () => foundationReads,
     emitMemory(value) { memoryState = value; for (const listener of listeners) listener(value); },
     setFoundationReadHook(value) { foundationReadHook = value; }, setHostChat(value) { hostChat = value; }, setMainGenerationActive(value) { mainGenerationActive = value; if (!value) runtime.wakeAutomaticMaintenance(); }, async seedSelectedWithoutProgress(entityIds) {
       const timestamp = '2026-09-06T00:00:00.000Z';
@@ -96,7 +101,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
           createdAt: previous.createdAt ?? '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
       }
       record.revision += 1; runtime.invalidate(); await runtime.refresh({ refreshMemory: false });
-    }, get identity() { return identity; }, setIdentity(value) { identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; }, setFoundationState(value) { foundationState = value; },
+    }, fixedGraphReads, releasedGraphViews, get identity() { return identity; }, setIdentity(value) { targetGraphs.set(identity.chatId, reachable); identity = value; }, get reachable() { return reachable; }, setReachable(value) { reachable = value; targetGraphs.set(identity.chatId, value); }, setFoundationState(value) { foundationState = value; },
     notifyFoundation() { for (const listener of foundationListeners) listener({ status: 'ready', chatId: identity.chatId }); },
     get memoryState() { return memoryState; }, setMemoryState(value, notify = true) { memoryState = value; if (notify) for (const listener of listeners) listener(memoryState); },
     notifyMemory() { for (const listener of listeners) listener(memoryState); }, setPrequel(value) { currentPrequel = value; }, get memoryRefreshes() { return memoryRefreshes; } };
@@ -622,7 +627,9 @@ test('刷新读取 workspace 时切聊天，不触发旧聊天的失联清理', 
   h.db.hooks.beforeGet = async (collection, key) => {
     if (key === PEOPLE_WORKSPACE_RECORD_ID) h.setIdentity({ chatId: CHAT_B, hostChatId: 'host-b', characterLocator: 'char.png', personaLocator: 'persona.png' });
   };
-  await assert.rejects(h.runtime.refresh({ refreshMemory: false }), error => error.code === 'QQJ_PEOPLE_STALE');
+  const result = await h.runtime.refresh({ refreshMemory: false });
+  assert.equal(result.chatId, CHAT_A, '已开始的读取仍返回原目标结果，过期展示不做失联清理');
+  assert.equal(h.runtime.getState().chatId, CHAT_B);
   assert.deepEqual(h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.selectedEntityIds, [oldId, newId]);
 });
 
@@ -2340,4 +2347,231 @@ test('单人完整重整变量以首份与逐路径变化表达，300楼已记�
   assert.equal(scheduledBeforeRequest, true, '准备期间主线程已有正常调度机会');
   assert.equal(JSON.stringify(snapshots), before, '原始已保存快照未修改');
   assert.ok(request.people[0].sourceFragments.length > 300, '保留全部原文连续片段而不硬截历史');
+});
+
+test('固定人物任务跨yield仍取A材料，B可加载操作且A结果报告不回画B', async () => {
+  let release, request;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = harness({ prequel: '人物1的过去：A专属前情。', generate: async options => {
+    request = JSON.parse(options.taskMessages[0].content); await gate;
+    return { jsonData: { profiles: [{ personKey: 'person-1', background: 'A已整理', aliases: [] }] } };
+  } });
+  await h.runtime.refresh({ refreshMemory: false });
+  const id = h.peopleEntities[0].id;
+  await h.runtime.setSelectedEntityIds([id]); await h.markProfileInitialized(id);
+  const pending = h.runtime.regenerateProfile(id).then(value => ({ value }), error => ({ error }));
+  h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' });
+  h.setReachable({ entities: [entity(ids[31], 'B人物')], floorMemories: [], baseline: { characterCard: { name: 'B卡', description: 'B禁止串入' } } });
+  h.setMemoryState({ cseSubjects: [{ subjectEntityId: ids[31], core: [{ text: 'B状态', origin: 'manual' }] }] });
+  h.setPrequel('B禁止串入的前情。');
+  const b = await h.runtime.refresh({ refreshMemory: false });
+  release(); const completed = await pending;
+  assert.equal(b.chatId, CHAT_B); assert.equal(b.active, null);
+  assert.equal(completed.error, undefined, completed.error?.stack);
+  assert.equal(completed.value.chatId, CHAT_A);
+  assert.equal(completed.value.lastGenerationReport.saved, 1);
+  assert.match(JSON.stringify(request), /角色卡描述|A专属前情|谨慎/u);
+  assert.doesNotMatch(JSON.stringify(request), /B禁止串入|B状态|B人物/u);
+  assert.equal(h.sourceTrace.find(item => item[0] === 'scan')[1], CHAT_A);
+  assert.equal(h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId[id].background, 'A已整理');
+  const visible = h.runtime.getState();
+  assert.equal(visible.chatId, CHAT_B); assert.equal(visible.lastGenerationReport, null); assert.equal(visible.lastError, null);
+  assert.equal(visible.people[0].entityId, ids[31]);
+  assert.deepEqual(h.fixedGraphReads, h.releasedGraphViews);
+  h.runtime.destroy();
+});
+
+test('固定人物手动写入在B页面继续成功，原目标返回值与B操作互不覆盖', async t => {
+  for (const kind of ['profile', 'avatar', 'selection', 'order', 'merge', 'delete']) await t.test(kind, async () => {
+    const h = harness(); await h.runtime.refresh({ refreshMemory: false });
+    const [first, second] = h.peopleEntities;
+    await h.runtime.setSelectedEntityIds([first.id, second.id]);
+    let release, started;
+    const gate = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { started = resolve; });
+    h.db.hooks.beforePut = async collection => { if (collection === `chat-${CHAT_A}`) { started(); await gate; } };
+    const call = { profile: () => h.runtime.saveProfile(first.id, { name: 'A手动资料' }),
+      avatar: () => h.runtime.saveAvatar(first.id, 'data:image/png;base64,AAAA'),
+      selection: () => h.runtime.setSelectedEntityIds([second.id]), order: () => h.runtime.setPersonOrderEntityIds([second.id, first.id]),
+      merge: () => h.runtime.mergePeople(first.id, second.id), delete: () => h.runtime.deletePerson(first.id) }[kind];
+    const pending = call().then(value => ({ value }), error => ({ error })); await began;
+    h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' });
+    h.setReachable({ entities: [entity(ids[31], 'B人物')], floorMemories: [], baseline: {} }); h.setMemoryState({ cseSubjects: [] });
+    const b = await h.runtime.refresh({ refreshMemory: false });
+    let bSaved;
+    try { bSaved = await h.runtime.saveProfile(ids[31], { name: 'B自己的资料' }); } catch (error) { bSaved = { error }; }
+    release(); const completed = await pending;
+    assert.equal(b.chatId, CHAT_B); assert.equal(bSaved.error, undefined, bSaved.error?.stack);
+    assert.equal(completed.error, undefined, completed.error?.stack); assert.equal(completed.value.chatId, CHAT_A);
+    assert.equal(h.runtime.getState().chatId, CHAT_B);
+    assert.equal(h.runtime.getState().profilesByEntityId[ids[31]].name, 'B自己的资料');
+    assert.equal(h.runtime.getState().profilesByEntityId[first.id], undefined);
+    assert.equal(h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.chatId, CHAT_A);
+    h.runtime.destroy();
+  });
+});
+
+test('固定已开工初建与十楼任务守A目标，未派发旧ID不由B消费且关闭真正取消两目标', async t => {
+  for (const kind of ['initial', 'automatic']) await t.test(kind, async () => {
+    let release, started, calls = 0;
+    const gate = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { started = resolve; });
+    const h = harness({ generate: async options => { calls++; started(); await gate;
+      return { jsonData: { profiles: JSON.parse(options.taskMessages[0].content).people.map(person => ({ personKey: person.personKey, appearance: 'A固定结果' })) } }; } });
+    const [first, second] = h.peopleEntities;
+    await h.runtime.refresh({ refreshMemory: false }); await h.runtime.setSelectedEntityIds([first.id, second.id]);
+    if (kind === 'automatic') {
+      await h.markProfileInitialized([first.id, second.id]);
+      h.setReachable({ ...h.reachable, floors: Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `A原文${index}` } })) });
+    }
+    h.setMainGenerationActive(false); if (kind === 'automatic') h.notifyFoundation(); await began;
+    h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' });
+    h.setReachable({ entities: [entity(ids[31], 'B人物')], floorMemories: [], baseline: {} }); h.setMemoryState({ cseSubjects: [] });
+    await h.runtime.refresh({ refreshMemory: false }); release(); await waitFor(() => !h.runtime.getActivityState().busy);
+    const a = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data;
+    assert.equal(a.profilesByEntityId[first.id].appearance, 'A固定结果');
+    if (kind === 'initial') { assert.ok(a.profileMaterialProgressByEntityId[first.id]); assert.equal(a.profilesByEntityId[second.id], undefined); }
+    assert.equal(calls, 1); assert.equal(h.runtime.getState().chatId, CHAT_B);
+    assert.equal(h.runtime.getState().lastGenerationReport, null); assert.equal(h.runtime.getState().lastError, null);
+    assert.equal(h.db.records.has(`chat-${CHAT_B}/${PEOPLE_WORKSPACE_RECORD_ID}`), false);
+    h.runtime.destroy();
+  });
+  await t.test('destroyCancelsBoth', async () => {
+    const signals = []; let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const h = harness({ generate: async options => { signals.push(options.signal); await gate; return { jsonData: { profiles: [{ personKey: 'person-1', notes: '不得落盘' }] } }; } });
+    await h.seedSelectedWithoutProgress(ids[0]);
+    const a = h.runtime.generateMissingProfiles().then(value => ({ value }), error => ({ error })); await waitFor(() => signals.length === 1);
+    h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' });
+    await h.seedSelectedWithoutProgress(ids[1]);
+    const b = h.runtime.generateMissingProfiles().then(value => ({ value }), error => ({ error })); await waitFor(() => signals.length === 2);
+    h.runtime.destroy(); assert.ok(signals.every(signal => signal.aborted)); release();
+    assert.equal((await a).error.code, 'QQJ_PEOPLE_STALE'); assert.equal((await b).error.code, 'QQJ_PEOPLE_STALE');
+    assert.equal(Object.keys(h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId).length, 0);
+    assert.equal(Object.keys(h.db.records.get(`chat-${CHAT_B}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.profilesByEntityId).length, 0);
+  });
+});
+
+test('固定原目标最新图与workspace在B页仍保护人工空值删除归并和真实粗扫来源变化', async t => {
+  for (const change of ['manualEmpty', 'delete', 'merge', 'automaticSource']) await t.test(change, async () => {
+    let release, started;
+    const gate = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { started = resolve; });
+    const h = harness({ generate: async options => { started(); await gate; return { jsonData: { profiles: [{ personKey: 'person-1', appearance: '迟到AI资料', aliases: [] }] } }; } });
+    const first = h.peopleEntities[0]; await h.seedSelectedWithoutProgress(first.id); await h.markProfileInitialized(first.id);
+    let pending;
+    if (change === 'automaticSource') {
+      h.setReachable({ ...h.reachable, floors: Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `A固定原文${index}` } })) });
+      h.setMainGenerationActive(false); h.notifyFoundation();
+    } else pending = h.runtime.regenerateProfile(first.id).then(value => ({ value }), error => ({ error }));
+    await began; const graphA = h.reachable;
+    h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' });
+    h.setReachable({ entities: [entity(ids[31], 'B人物')], floorMemories: [], baseline: {} }); h.setMemoryState({ cseSubjects: [] });
+    const projections = []; h.memoryRuntime.setIdentityProjection = value => { projections.push(value); };
+    await h.runtime.refresh({ refreshMemory: false }); const projectionCount = projections.length;
+    const a = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`);
+    if (change === 'manualEmpty') { a.data.profilesByEntityId[first.id].appearance = ''; a.data.profilesByEntityId[first.id].manualFields = ['appearance']; a.revision++; }
+    if (change === 'delete') { delete a.data.profilesByEntityId[first.id]; a.data.deletedEntityIds = [first.id]; a.data.selectedEntityIds = []; a.revision++; }
+    if (change === 'merge') { delete a.data.profilesByEntityId[first.id]; a.data.identityRedirectsByEntityId[first.id] = ids[1]; a.data.selectedEntityIds = [ids[1]]; a.revision++; }
+    if (change === 'automaticSource') h.setTargetReachable(CHAT_A, { ...graphA, floors: graphA.floors.map((floor, index) => index === 9 ? { ...floor, content: { canonicalContent: 'A自身原文真实变化' } } : floor) });
+    release(); const result = pending ? await pending : null; await waitFor(() => !h.runtime.getActivityState().busy);
+    const saved = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data;
+    if (change === 'manualEmpty') { assert.equal(result.error, undefined); assert.equal(saved.profilesByEntityId[first.id].appearance, ''); assert.ok(saved.profilesByEntityId[first.id].manualFields.includes('appearance')); }
+    else if (change === 'automaticSource') assert.equal(saved.profilesByEntityId[first.id].appearance, '');
+    else { assert.equal(result.error.code, 'QQJ_PEOPLE_STALE'); assert.equal(saved.profilesByEntityId[first.id], undefined); }
+    assert.ok(h.fixedGraphReads.includes(CHAT_A)); assert.deepEqual(h.fixedGraphReads, h.releasedGraphViews);
+    assert.equal(projections.length, projectionCount, 'A迟到任务不向B发身份投影');
+    assert.equal(h.runtime.getState().lastError, null); assert.equal(h.runtime.getState().lastGenerationReport, null); assert.equal(h.runtime.getState().chatId, CHAT_B);
+    h.runtime.destroy();
+  });
+});
+
+test('固定头像生成材料随原目标完成，显式停止仍取消operation信号', async t => {
+  for (const mode of ['background', 'stop']) await t.test(mode, async () => {
+    let release, started, signal, clothing;
+    const gate = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { started = resolve; });
+    const h = harness({ avatarGenerator: { prepare: () => ({}), generate: async options => { signal = options.signal; clothing = options.clothingStyle; started(); await gate; return { dataUrl: 'data:image/png;base64,AAAA' }; } } });
+    await h.runtime.refresh({ refreshMemory: false }); await h.runtime.saveProfile(ids[0], { clothingStyle: 'A固定衣装' });
+    const pending = h.runtime.generateAvatar(ids[0]).then(value => ({ value }), error => ({ error })); await began;
+    if (mode === 'stop') await h.runtime.setEnabled(false);
+    else { h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' }); h.setReachable({ entities: [entity(ids[31], 'B人物')], floorMemories: [] }); h.setMemoryState({ cseSubjects: [] }); await h.runtime.refresh({ refreshMemory: false }); }
+    release(); const result = await pending;
+    assert.equal(clothing, 'A固定衣装');
+    if (mode === 'stop') { assert.equal(signal.aborted, true); assert.equal(result.error.code, 'QQJ_PEOPLE_STALE'); }
+    else { assert.equal(result.error, undefined); assert.equal(result.value.dataUrl, 'data:image/png;base64,AAAA'); assert.equal(signal.aborted, false); assert.equal(h.runtime.getState().chatId, CHAT_B); }
+    assert.equal(h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`).data.avatarsByEntityId[ids[0]], undefined, '生图仍须确认才保存'); h.runtime.destroy();
+  });
+});
+
+async function replayedPeopleFixture(h, version = 1) {
+  const now = '2026-09-06T00:00:00.000Z', floorId = ids[10], deltaId = ids[11], duplicateUser = ids[30];
+  const baseline = { ...h.reachable.baseline, id: ids[20], userPersona: { entityId: USER, name: '用户' } };
+  const delta = validateStateDeltaRecord({ schemaVersion: 3, recordType: 'stateDelta', id: deltaId, chatId: CHAT_A, narrativeGeneration: ids[25],
+    floorId, floorMemoryId: ids[12], baselineId: baseline.id, previousCurrentStateId: null,
+    subjectSnapshots: [{ subjectEntityId: ids[0], core: [{ id: ids[13], text: version === 1 ? '可信原Core' : 'A最新人工Core',
+      visibility: 'observable', reason: '合法delta状态', origin: 'manual', towardEntityId: duplicateUser, sourceFloorId: floorId, sourceDeltaId: deltaId }],
+      adaptive: [], situational: [], changeSummary: [], coreChallenges: [] }], fixedChanges: [], noMaterialChange: false,
+    fingerprint: `sha256:${'a'.repeat(64)}`, source: { promptVersion: 'test', compilerVersion: 'test' }, createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null }, { expectedChatId: CHAT_A });
+  const graph = { ...h.reachable, status: 'ready', rootRevision: version,
+    root: { status: 'ready', chatId: CHAT_A, narrativeGeneration: ids[25], headCheckpointId: ids[20 + version], sourceSnapshotFingerprint: `sha256:${'a'.repeat(64)}` },
+    baseline, floors: [{ id: floorId, assistantSeq: 1, content: { canonicalContent: 'A真实楼材料' } }], stateDeltas: [delta],
+    entities: [...h.reachable.entities, entity(duplicateUser, '旧用户', { specialRole: 'user' })] };
+  const replay = await replayCurrentState({ chatId: CHAT_A, narrativeGeneration: ids[25], baselineId: baseline.id,
+    floors: graph.floors, floorMemories: graph.floorMemories, stateDeltas: graph.stateDeltas, now });
+  graph.currentStates = [validateCurrentStateRecord({ ...replay, subjects: [], fingerprint: await stateFingerprint([], replay.appliedDeltaIds, replay.headFloorId) }, { expectedChatId: CHAT_A })];
+  const cse = createCseRuntime({ store: { readReachable: async () => graph, putRecord() { assert.fail('只读CSE夹具不得写'); }, commitRoot() { assert.fail('只读CSE夹具不得提交'); }, recordKey: () => '' },
+    generateAnalysisTask: async () => { assert.fail('只读CSE夹具不得请求模型'); }, now: () => new Date(now) });
+  const trusted = await cse.load(graph);
+  assert.equal(trusted.cseReplayDiagnostic.code, 'V3_CSE_REPLAY_MISMATCH');
+  assert.equal(trusted.cseSubjects[0].core[0].towardEntityId, USER, '原runtime把旧user归并到baseline用户');
+  return { graph, trusted, cse };
+}
+
+test('人物同root复用可信CSE窄视图，合法空stored state不丢完成见证或空结果防重派', async () => {
+  let calls = 0;
+  const h = harness({ generate: async () => { calls++; return { jsonData: { profiles: [{ personKey: 'person-1' }] } }; } });
+  const { graph, trusted } = await replayedPeopleFixture(h);
+  h.setReachable(graph); h.setMemoryState(trusted); await h.seedSelectedWithoutProgress(ids[0]);
+  const result = await h.runtime.generateMissingProfiles();
+  assert.ok(result.profileMaterialProgressByEntityId[ids[0]], '空资料结果仍保存真实完成见证');
+  assert.deepEqual(result.people.find(person => person.entityId === ids[0]).cse.core.map(item => [item.text, item.towardEntityId]), trusted.cseSubjects[0].core.map(item => [item.text, item.towardEntityId]));
+  await h.runtime.setSelectedEntityIds([]); await h.runtime.setSelectedEntityIds([ids[0]]); h.setMainGenerationActive(false);
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 1, '空结果有见证，取消再选不重派初建'); h.runtime.destroy();
+});
+
+test('人物原目标root变化在B页可信重放最新人工Core并按最新workspace映射返回', async () => {
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { started = resolve; });
+  const h = harness({ generate: async () => { started(); await gate; return { jsonData: { profiles: [{ personKey: 'person-1', notes: 'A结果', aliases: [] }] } }; } });
+  const first = await replayedPeopleFixture(h);
+  h.setReachable(first.graph); h.setMemoryState(first.trusted); await h.seedSelectedWithoutProgress(ids[0]);
+  const pending = h.runtime.generateMissingProfiles(); await began;
+  const latest = await replayedPeopleFixture(h, 2);
+  h.setIdentity({ ...h.identity, chatId: CHAT_B, hostChatId: 'host-b' }); h.setReachable({ entities: [entity(ids[31], 'B人物')], floorMemories: [] }); h.setMemoryState({ cseSubjects: [] });
+  await h.runtime.refresh({ refreshMemory: false }); h.setTargetReachable(CHAT_A, latest.graph);
+  const a = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`); a.data.identityRedirectsByEntityId[ids[30]] = ids[1]; a.revision++;
+  const expected = latest.cse.setIdentityProjection(normalizeIdentityProjection(a.data));
+  release(); const result = await pending;
+  const core = result.people.find(person => person.entityId === ids[0]).cse.core;
+  assert.deepEqual(core.map(item => [item.text, item.origin, item.towardEntityId]), [['A最新人工Core', 'manual', ids[1]]]);
+  assert.deepEqual(core.map(item => [item.text, item.origin, item.towardEntityId]), expected.cseSubjects[0].core.map(item => [item.text, item.origin, item.towardEntityId]));
+  assert.equal(result.chatId, CHAT_A); assert.equal(h.runtime.getState().chatId, CHAT_B); assert.equal(h.runtime.getState().lastGenerationReport, null);
+  assert.ok(h.fixedGraphReads.includes(CHAT_A)); h.runtime.destroy();
+});
+
+test('人物同QQJ聊天改native坐标仍互斥，只有不同chatId可并行', async t => {
+  for (const field of ['hostChatId', 'characterLocator', 'personaLocator']) await t.test(field, async () => {
+    let release, started, calls = 0;
+    const gate = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { started = resolve; });
+    const h = harness({ generate: async () => { calls++; started(); await gate; return { jsonData: { profiles: [{ personKey: 'person-1', notes: '原任务完成', aliases: [] }] } }; } });
+    await h.seedSelectedWithoutProgress(ids[0]); await h.markProfileInitialized(ids[0]);
+    const pending = h.runtime.regenerateProfile(ids[0]); await began;
+    h.setIdentity({ ...h.identity, [field]: `changed-${field}` });
+    const refreshed = await h.runtime.refresh({ refreshMemory: false });
+    let secondOutcome;
+    const second = h.runtime.regenerateProfile(ids[0]).then(value => { secondOutcome = { value }; }, error => { secondOutcome = { error }; });
+    await waitFor(() => Boolean(secondOutcome) || calls === 2);
+    release(); const result = await pending; await second;
+    assert.equal(refreshed.active?.kind, 'generating');
+    assert.equal(secondOutcome.error?.code, 'QQJ_PEOPLE_BUSY'); assert.equal(calls, 1);
+    assert.equal(result.profilesByEntityId[ids[0]].notes, '原任务完成'); assert.equal(h.runtime.getActivityState().busy, false);
+    h.runtime.destroy();
+  });
 });

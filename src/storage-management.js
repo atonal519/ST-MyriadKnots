@@ -266,9 +266,13 @@ export function createStorageManagement({
       && root.data?.narrativeGeneration === anchor.narrativeGeneration && root.data?.headCheckpointId === anchor.headCheckpointId
       && root.data?.sourceSnapshotFingerprint === anchor.sourceSnapshotFingerprint
     : anchor?.status === root?.status;
+  const withIdentityStore = async (identity, read) => {
+    const targetStore = store.forIdentity?.(identity) ?? store;
+    try { return await read(targetStore); }
+    finally { if (targetStore !== store) targetStore.release?.(); }
+  };
   async function currentRootAnchor(identity) {
-    const root = await store.readRoot();
-    assertCurrent(identity);
+    const root = await withIdentityStore(identity, targetStore => targetStore.readRoot());
     return root?.status === 'ready'
       ? Object.freeze({ status: 'ready', chatId: root.data.chatId, revision: root.revision,
         narrativeGeneration: root.data.narrativeGeneration, headCheckpointId: root.data.headCheckpointId,
@@ -282,70 +286,65 @@ export function createStorageManagement({
   };
   async function takeReusableAutomaticSnapshot(identity, stableCount) {
     const cached = reusableAutomaticSnapshot;
-    if (!cached || cached.stableCount !== stableCount || !sameIdentity(cached.identity, identity) || !inCurrentHost(identity)) return { snapshot: null, stale: false };
-    const root = await store.readRoot();
-    assertCurrent(identity);
+    if (!cached || cached.stableCount !== stableCount || !sameIdentity(cached.identity, identity)) return { snapshot: null, stale: false };
+    const root = await withIdentityStore(identity, targetStore => targetStore.readRoot());
     const matches = rootMatchesAnchor(root, cached.snapshot.anchor);
     reusableAutomaticSnapshot = null;
     return matches ? { snapshot: cached.snapshot, stale: false } : { snapshot: null, stale: true };
   }
 
   async function scanSnapshot(identity) {
-    assertCurrent(identity);
-    let reachable = warmReachable(identity);
-    if (reachable && typeof store.readRoot === 'function') {
-      const root = await store.readRoot();
-      assertCurrent(identity);
-      if (root?.status !== 'ready' || root.revision !== reachable.rootRevision
-        || root.data?.chatId !== reachable.root.chatId
-        || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration
-        || root.data?.headCheckpointId !== reachable.root.headCheckpointId
-        || root.data?.sourceSnapshotFingerprint !== reachable.root.sourceSnapshotFingerprint) reachable = null;
-    } else reachable = null;
-    if (!reachable) reachable = await store.readReachable({ mode: 'full' });
-    assertCurrent(identity);
-    if (reachable?.status === 'ready' && reachable.root?.chatId !== identity.chatId) {
-      throw errorWith('QQJ_STORAGE_ROOT_IDENTITY_MISMATCH', '当前基础数据身份无法安全核对，本次没有生成清理候选。');
-    }
-    if (reachable?.status !== 'ready' || !reachable.root || !reachable.root.headCheckpointId) {
-      const totals = { count: 0, bytes: 0 };
+    return withIdentityStore(identity, async targetStore => {
+      let reachable = warmReachable(identity);
+      if (reachable && typeof targetStore.readRoot === 'function') {
+        const root = await targetStore.readRoot();
+        if (root?.status !== 'ready' || root.revision !== reachable.rootRevision
+          || root.data?.chatId !== reachable.root.chatId
+          || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration
+          || root.data?.headCheckpointId !== reachable.root.headCheckpointId
+          || root.data?.sourceSnapshotFingerprint !== reachable.root.sourceSnapshotFingerprint) reachable = null;
+      } else reachable = null;
+      if (!reachable) reachable = await targetStore.readReachable({ mode: 'full' });
+      if (reachable?.status === 'ready' && reachable.root?.chatId !== identity.chatId) {
+        throw errorWith('QQJ_STORAGE_ROOT_IDENTITY_MISMATCH', '当前基础数据身份无法安全核对，本次没有生成清理候选。');
+      }
+      if (reachable?.status !== 'ready' || !reachable.root || !reachable.root.headCheckpointId) {
+        const totals = { count: 0, bytes: 0 };
+        if (typeof client.iterRecords === 'function') {
+          for await (const item of client.iterRecords(`chat-${identity.chatId}`)) { totals.count += 1; totals.bytes += textBytes(item); }
+        } else {
+          const records = await client.list(`chat-${identity.chatId}`);
+          if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
+          for (const item of records) { totals.count += 1; totals.bytes += textBytes(item); }
+        }
+        return Object.freeze({ status: reachable?.status === 'uninitialized' ? 'uninitialized' : 'notReady', identity, stats: Object.freeze({ total: totals, active: { count: 0, bytes: 0 }, cleanup: { count: 0, bytes: 0 }, retained: totals, breakdown: { active: emptyBreakdown(), cleanup: emptyBreakdown() } }), candidates: Object.freeze([]), anchor: null });
+      }
+      let classified;
       if (typeof client.iterRecords === 'function') {
-        for await (const item of client.iterRecords(`chat-${identity.chatId}`)) { totals.count += 1; totals.bytes += textBytes(item); }
+        const classifier = createStorageClassifier(reachable, identity.chatId);
+        const vectorRecords = [];
+        let sourceIndex = 0;
+        for await (const record of client.iterRecords(`chat-${identity.chatId}`)) {
+          if (record?.recordId === VECTOR_INDEX_ID || String(record?.recordId ?? '').startsWith('qqj-vector-shard-')) vectorRecords.push({ record, sourceIndex });
+          else await classifier.add(record, sourceIndex);
+          sourceIndex += 1;
+        }
+        const vectorEnvelopes = vectorRecords.map(item => item.record);
+        const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, vectorEnvelopes) ?? [];
+        classifier.protectVectorRecords(vectorEnvelopes, resumableVectorShardIds);
+        for (const item of vectorRecords) await classifier.add(item.record, item.sourceIndex);
+        classified = classifier.finish();
       } else {
         const records = await client.list(`chat-${identity.chatId}`);
         if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
-        for (const item of records) { totals.count += 1; totals.bytes += textBytes(item); }
+        const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, records) ?? [];
+        classified = await classifyStorageRecords(records, reachable, identity.chatId, { resumableVectorShardIds });
       }
-      assertCurrent(identity);
-      return Object.freeze({ status: reachable?.status === 'uninitialized' ? 'uninitialized' : 'notReady', identity, stats: Object.freeze({ total: totals, active: { count: 0, bytes: 0 }, cleanup: { count: 0, bytes: 0 }, retained: totals, breakdown: { active: emptyBreakdown(), cleanup: emptyBreakdown() } }), candidates: Object.freeze([]), anchor: null });
-    }
-    let classified;
-    if (typeof client.iterRecords === 'function') {
-      const classifier = createStorageClassifier(reachable, identity.chatId);
-      const vectorRecords = [];
-      let sourceIndex = 0;
-      for await (const record of client.iterRecords(`chat-${identity.chatId}`)) {
-        if (record?.recordId === VECTOR_INDEX_ID || String(record?.recordId ?? '').startsWith('qqj-vector-shard-')) vectorRecords.push({ record, sourceIndex });
-        else await classifier.add(record, sourceIndex);
-        sourceIndex += 1;
-      }
-      const vectorEnvelopes = vectorRecords.map(item => item.record);
-      const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, vectorEnvelopes) ?? [];
-      classifier.protectVectorRecords(vectorEnvelopes, resumableVectorShardIds);
-      for (const item of vectorRecords) await classifier.add(item.record, item.sourceIndex);
-      classified = classifier.finish();
-    } else {
-      const records = await client.list(`chat-${identity.chatId}`);
-      assertCurrent(identity);
-      if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
-      const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, records) ?? [];
-      classified = await classifyStorageRecords(records, reachable, identity.chatId, { resumableVectorShardIds });
-    }
-    assertCurrent(identity);
-    return Object.freeze({
-      status: 'ready', identity, stats: classified.stats, candidates: classified.candidates,
-      anchor: Object.freeze({ status: 'ready', chatId: reachable.root.chatId, revision: reachable.rootRevision, headCheckpointId: reachable.root.headCheckpointId,
-        narrativeGeneration: reachable.root.narrativeGeneration, sourceSnapshotFingerprint: reachable.root.sourceSnapshotFingerprint }),
+      return Object.freeze({
+        status: 'ready', identity, stats: classified.stats, candidates: classified.candidates,
+        anchor: Object.freeze({ status: 'ready', chatId: reachable.root.chatId, revision: reachable.rootRevision, headCheckpointId: reachable.root.headCheckpointId,
+          narrativeGeneration: reachable.root.narrativeGeneration, sourceSnapshotFingerprint: reachable.root.sourceSnapshotFingerprint }),
+      });
     });
   }
 
@@ -368,9 +367,7 @@ export function createStorageManagement({
   }
 
   async function readRootUnderMaintenance(identity) {
-    assertCurrent(identity);
     const envelope = await client.get(`chat-${identity.chatId}`, 'v3-root');
-    assertCurrent(identity);
     if (!Number.isSafeInteger(envelope?.revision) || envelope.revision < 1) {
       throw errorWith('QQJ_STORAGE_ROOT_INVALID', '当前版本记录缺少可核对的 revision，本次没有删除。');
     }
@@ -397,14 +394,12 @@ export function createStorageManagement({
     async function worker() {
       while (!firstError) {
         try {
-          assertCurrent(identity);
           const index = cursor;
           if (index >= candidates.length) return;
           cursor += 1;
           const candidate = candidates[index];
           await client.removePermanent(collection, candidate.recordId, candidate.revision);
           deletedCount += 1;
-          assertCurrent(identity);
         } catch (error) {
           if (error?.status === 404) { convergedCount += 1; continue; }
           firstError ??= error;
@@ -422,16 +417,13 @@ export function createStorageManagement({
   async function cleanFromSnapshot(identity, snapshot, { automatic = false } = {}) {
     if (snapshot.status !== 'ready') return { status: snapshot.status, deletedCount: 0, convergedCount: 0, remainingCount: 0, automatic };
     if (!snapshot.candidates.length) return { status: 'completed', deletedCount: 0, convergedCount: 0, remainingCount: 0, automatic };
-    if (workBusy()) throw errorWith('QQJ_STORAGE_BUSY', '当前正在生成或处理千千结任务，请等待完成后再清理。');
+    if (inCurrentHost(identity) && workBusy()) throw errorWith('QQJ_STORAGE_BUSY', '当前正在生成或处理千千结任务，请等待完成后再清理。');
     let suspended = false, removed = null, lockedRootChanged = false, maintenanceError = null, releaseError = null;
     try {
-      session.suspend(identity.chatId);
-      suspended = true;
-      assertCurrent(identity);
+      if (inCurrentHost(identity)) { session.suspend(identity.chatId); suspended = true; }
       const before = await readRootUnderMaintenance(identity);
       if (!rootMatches(before, snapshot.anchor)) throw errorWith('QQJ_STORAGE_ROOT_CHANGED', '当前版本已在扫描后变化，本次没有删除；请刷新统计后重试。');
       removed = await removeCandidates(identity, snapshot.candidates);
-      assertCurrent(identity);
       try {
         const after = await readRootUnderMaintenance(identity);
         lockedRootChanged = !rootMatches(after, snapshot.anchor);
@@ -445,10 +437,8 @@ export function createStorageManagement({
     }
     if (!removed) throw maintenanceError ?? releaseError ?? errorWith('QQJ_STORAGE_CLEANUP_FAILED', '清理没有开始。');
     let refreshed = null, refreshError = null;
-    if (!hostMatches(identity)) throw errorWith('QQJ_STORAGE_CHAT_CHANGED', '当前聊天已经变化，未操作其他聊天的数据。');
     if (releaseError) refreshError = releaseError;
     else {
-      assertCurrent(identity);
       try { refreshed = await scanSnapshot(identity); }
       catch (error) { refreshError = error; }
     }

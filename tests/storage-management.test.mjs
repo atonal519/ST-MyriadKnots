@@ -164,17 +164,18 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
   let enabled = pluginEnabled;
+  const hostAdapter = { snapshot: () => ({ chatId: HOST, context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) };
   const manager = createStorageManagement({
     client, store, settings, memoryRuntime, foundationRuntime: { getReachable: () => warmCache ? reachable() : null },
     vectorRuntime,
     session,
-    hostAdapter: { snapshot: () => ({ chatId: HOST, context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) },
+    hostAdapter,
     isBusy: () => isBusy,
     isEnabled: () => enabled,
     logger: { warn() {} },
   });
   return {
-    manager, removes, ordinaryRemoves, settingsValue, session, sessionCalls,
+    manager, removes, ordinaryRemoves, settingsValue, session, sessionCalls, store, client, hostAdapter,
     counts: () => ({ listCalls, rootReads, fullReads, streamedRecords }),
     trashGcCalls: () => ({ health: trashHealthCalls, collect: trashCollectCalls }),
     failNextScan(error) { pendingScanFailure = error; },
@@ -364,6 +365,45 @@ test('3901条生产存储扫描使用逐条流并保持候选原始顺序', asyn
   assert.equal(snapshot.candidates.length, 3885);
   assert.equal(snapshot.candidates[0].recordId, `v3-run-${oldId(0)}`);
   assert.equal(snapshot.candidates.at(-1).recordId, `v3-run-${oldId(3884)}`);
+  f.manager.dispose();
+});
+
+test('固定store扫描不读后来UI的store，结果归原目标且释放视图', async () => {
+  const f = fixture();
+  const read = f.store.readReachable;
+  let leases = 0, releases = 0;
+  f.store.forIdentity = captured => {
+    assert.equal(captured.chatId, CHAT); leases++;
+    return { readReachable: async options => {
+      f.session.identity = () => ({ chatId: 'other-chat', hostChatId: 'other-host' });
+      f.hostAdapter.snapshot = () => ({ chatId: 'other-host', context: { chatMetadata: { qianqianjie: { chatId: 'other-chat' } } } });
+      return read(options);
+    }, release: () => { releases++; } };
+  };
+  f.store.readReachable = async () => { assert.fail('不得读取当前UI动态store'); };
+  const snapshot = await f.manager.scan();
+  assert.equal(snapshot.identity.chatId, CHAT); assert.equal(snapshot.candidates.length, 3);
+  assert.equal(leases, 1); assert.equal(releases, 1);
+  assert.equal(f.manager.getState().chatId, 'other-chat'); assert.equal(f.manager.getState().stats, null);
+  f.manager.dispose();
+});
+
+test('固定候选与root验证完成原目标清理，不因当前UI provider变化否决成功', async () => {
+  let f;
+  f = fixture({ removeHook: async () => {
+    f.session.identity = () => ({ chatId: 'other-chat', hostChatId: 'other-host' });
+    f.hostAdapter.snapshot = () => ({ chatId: 'other-host', context: { chatMetadata: { qianqianjie: { chatId: 'other-chat' } } } });
+  } });
+  const read = f.store.readReachable, root = f.store.readRoot;
+  let releases = 0;
+  f.store.forIdentity = captured => { assert.equal(captured.chatId, CHAT); return { readReachable: read, readRoot: root, release: () => { releases++; } }; };
+  const remove = f.client.removePermanent, get = f.client.get;
+  f.client.removePermanent = (collection, ...args) => { assert.equal(collection, `chat-${CHAT}`); return remove(collection, ...args); };
+  f.client.get = (collection, ...args) => { assert.equal(collection, `chat-${CHAT}`); return get(collection, ...args); };
+  const result = await f.manager.cleanup();
+  assert.equal(result.status, 'completed'); assert.equal(result.deletedCount, 3);
+  assert.ok(releases >= 2); assert.deepEqual(f.sessionCalls, ['suspend', 'resume']);
+  assert.equal(f.manager.getState().chatId, 'other-chat'); assert.equal(f.manager.getState().lastResult, null);
   f.manager.dispose();
 });
 
@@ -626,8 +666,9 @@ test('自动清理的约 8 MiB 阈值与 100 条阈值为“或”关系', async
   f.manager.setAutoEnabled(true);
   const old = f.records().find(item => item.recordId === `v3-run-${oldId(0)}`);
   old.data.diagnostics = { estimatedPayload: 'x'.repeat(STORAGE_AUTO_BYTE_THRESHOLD + 1) };
+  const settled = waitForOperationSettled(f.manager);
   f.setStableCount(20);
-  for (let index = 0; index < 200 && f.manager.getState().stats?.cleanup?.count !== 0; index += 1) await tick();
+  assert.equal(await settled, true);
   assert.equal(f.removes.length, 1);
   assert.equal(f.manager.getState().stats.cleanup.count, 0);
 });

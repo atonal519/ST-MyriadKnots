@@ -7562,6 +7562,92 @@ test('准备期受控重复边异常贯通持久、重载、累计与两种复�
   }, '旧0.4.0/0.4.1失败提示可恢复已有类型，新字段如实null');
 });
 
+test('固定摘要来源在前台身份未准备好时读取自身映射并更新本runtime投影', async () => {
+  const chat = [user('开始'), assistant('裴晚生提醒你带伞。'), user('稳定')];
+  const seed = harness({ initialChat: chat });
+  await seed.runtime.start();
+  await seed.runtime.extractNext({ analyzeState: false });
+  const source = await seed.store.readReachable({ mode: 'runtime' });
+  const person = source.entities.find(entity => entity.displayName === '裴晚生');
+  const userEntity = source.entities.find(entity => entity.specialRole === 'user');
+  assert.ok(person && userEntity);
+  const projection = { currentNamesByEntityId: { [person.id]: '人工正式名', [userEntity.id]: '{{user}}本人' },
+    manualAliasesByEntityId: { [person.id]: [] } };
+  const providerTargets = [], payloads = [];
+  const h = harness({ sharedBackend: seed.backend, sharedContext: seed.context,
+    identityProjectionProvider: async targetIdentity => {
+      providerTargets.push(targetIdentity);
+      if (!targetIdentity) throw Object.assign(new Error('前台身份暂未准备好'), { code: 'CHAT_SESSION_NOT_READY' });
+      assert.equal(targetIdentity.chatId, CHAT);
+      return projection;
+    }, utility: options => {
+      payloads.push(JSON.parse(options.taskMessages[0].content).payload);
+      return { jsonData: { summary: '原目标摘要正常保存。', people: [{ name: '人工正式名' }, { name: '你', role: 'user' }] } };
+    } });
+  await h.runtime.start();
+  const result = await h.runtime.extractFloor(source.floors[0].id, { analyzeState: false });
+  assert.equal(result.lastExtractorError, null);
+  assert.equal(h.calls.length, 1, '固定来源准备与提交只使用原有一次假模型调用');
+  assert.ok(providerTargets.length > 0);
+  assert.ok(providerTargets.every(target => target?.chatId === CHAT), '所有准备及提交映射读取都带原来源身份');
+  assert.equal(payloads[0].knownPeople.find(value => value.displayName === '人工正式名')?.aliases.length, 0);
+  assert.ok(payloads[0].knownPeople.some(value => value.displayName === '林岚本人'), '用户宏按原来源baseline投影');
+  assert.equal(h.runtime.getState().memoryEntities.find(value => value.entityId === person.id).displayName, '人工正式名',
+    '普通runtime读取仍更新自身投影，不能因provider补target而退化为只derive');
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.entities.filter(value => value.specialRole === 'user').length, 1);
+  assert.equal(saved.floorMemories.find(value => value.floorId === source.floors[0].id).summary.aiText, '原目标摘要正常保存。');
+});
+
+test('千事显式目标映射使用目标图及宏且不污染前台runtime投影', async t => {
+  for (const mode of ['history', 'rejudge']) await t.test(mode, async () => {
+    const event = { key: 'old-book', title: '归还旧书', description: '林岚答应归还旧书。', status: 'planned', matter: true };
+    const seed = harness({ initialChat: [user('开始'), assistant('林岚答应归还旧书。'), user('稳定')],
+      utility: () => ({ jsonData: { summary: '原A摘要', people: [{ name: '你', role: 'user' }],
+        ...(mode === 'rejudge' ? { qianshi: { events: [event], order: [] } } : {}) } }) });
+    await seed.runtime.start();
+    await seed.runtime.extractNext({ analyzeState: false });
+    const source = await seed.store.readReachable({ mode: 'runtime' }), userId = source.baseline.userPersona.entityId;
+    const targetIdentity = { chatId: CHAT, hostChatId: 'host-chat', characterLocator: 'character.png', personaLocator: 'persona.png' };
+    const otherId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    let runningTarget = false, current;
+    const projections = [], providerTargets = [];
+    current = harness({ sharedBackend: seed.backend, sharedContext: { ...seed.context, chatId: 'other-host', name1: '乙页用户',
+      chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: otherId } }, chat: [user('乙页开始'), assistant('乙页用户在阅读。'), user('乙页稳定')] },
+      captureBusinessIdentity: () => ({ ...targetIdentity, chatId: otherId, hostChatId: 'other-host' }),
+      identityProjectionProvider: async identity => {
+        providerTargets.push(identity);
+        return identity?.chatId === CHAT ? { currentNamesByEntityId: { [userId]: '{{user}}档案' } } : {};
+      }, qianshiGraphProjector: (value, options) => {
+        if (runningTarget && value.root.chatId === CHAT && options?.identityProjection) projections.push(options.identityProjection);
+        return projectQianshiGraph(value, options);
+      }, utility: options => {
+        if (!runningTarget) return { jsonData: { summary: '乙页摘要', people: [{ name: '你', role: 'user' }] } };
+        const request = JSON.parse(options.taskMessages[0].content);
+        return mode === 'history' ? { jsonData: { floors: request.floors.map(floor => ({ floorKey: floor.floorKey, qianshi: { events: [event], order: [] } })) } }
+          : { jsonData: { qianshi: { events: [{ key: 'record-1', status: 'planned', matter: true }], order: [] } } };
+      } });
+    await current.runtime.start();
+    await current.runtime.extractNext({ analyzeState: false });
+    const visibleBefore = current.runtime.getState().memoryEntities;
+    const plan = mode === 'history' ? await current.runtime.prepareQianshiHistory({ targetIdentity })
+      : await current.runtime.prepareQianshiRejudge({ targetIdentity });
+    runningTarget = true; providerTargets.length = 0;
+    const callsBefore = current.calls.length;
+    const result = mode === 'history' ? await current.runtime.startQianshiHistory(plan.planId)
+      : await current.runtime.startQianshiRejudge(plan.planId);
+    assert.equal(result.status, 'completed', JSON.stringify(result));
+    assert.equal(current.calls.length, callsBefore + 1);
+    assert.ok(providerTargets.length > 0 && providerTargets.every(identity => identity === targetIdentity), '显式原目标完整坐标优先');
+    assert.ok(projections.length > 0);
+    assert.ok(projections.every(projection => projection.userEntityId === userId
+      && projection.currentNamesByEntityId[userId] === '林岚档案'), 'A workspace映射只能搭A图和A宏，不能混入前台B图');
+    assert.deepEqual(current.runtime.getState().memoryEntities, visibleBefore, '显式别档derive不更新前台runtime投影');
+    const saved = await seed.store.readReachable({ mode: 'runtime' });
+    assert.equal(saved.floorMemories[0].summary.aiText, '原A摘要');
+  });
+});
+
 test('准备期身份目录异常标记真实步骤，不会全部退化成交接阶段', async () => {
   let failIdentity = false;
   const identityProjectionProvider = async () => {
@@ -12411,4 +12497,26 @@ test('实际派发破限指纹让A准备B派发的待存结果在B重用、改�
     const provenance=h.foundationRuntime.getReachable().run.diagnostics.floorProvenance[floorId];
     assert.equal(provenance.systemPromptFingerprint,`sha256:${createHash('sha256').update(actualSystem).digest('hex')}`);
   }
+});
+
+
+test('摘要准备复用已验证记录不全图深复制，固定模型材料和旧记录保持不变', async () => {
+  const h = harness({ utility: () => ({ jsonData: { summary: '轻量任务摘要' } }) });
+  await h.foundationRuntime.start(); await h.runtime.start();
+  const prepared = await h.runtime.prepareCurrent();
+  const previous = prepared.reachable, before = JSON.stringify(previous);
+  const originalClone = globalThis.structuredClone;
+  let graphClones = 0;
+  globalThis.structuredClone = (value, ...options) => {
+    if (value?.root && Array.isArray(value.floors) && Array.isArray(value.floorMemories)) graphClones++;
+    return originalClone(value, ...options);
+  };
+  try { await h.runtime.extractFloor(previous.floors[0].id, { analyzeState: false }); }
+  finally { globalThis.structuredClone = originalClone; }
+  assert.equal(graphClones, 0, '准备摘要无需深复制整份可达图');
+  assert.equal(JSON.stringify(previous), before, '准备、编译及提交不原地修改旧记录');
+  const graph = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(graph.floorMemories[0].summary.aiText, '轻量任务摘要');
+  assert.equal(JSON.parse(h.calls[0].taskMessages[0].content).payload.canonicalContent, previous.floors[0].content.canonicalContent);
+  assert.equal(h.calls.length, 1);
 });

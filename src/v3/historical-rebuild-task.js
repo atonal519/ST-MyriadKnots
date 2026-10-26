@@ -1,6 +1,6 @@
 import { createChatIdentityCoordinator } from '../chat-identity.js';
 import { createChatSession } from '../chat-session.js';
-import { MESSAGE_FLOOR_ANCHOR_KEY, readTargetChat, sameChatCoreAndQqjDataSnapshot, sameMessageCoreAndQqjData, sameQqjChatMetadata, snapshotChatCoreAndQqjData } from './message-floor-anchor.js';
+import { MESSAGE_FLOOR_ANCHOR_KEY, readTargetChat, sameChatQqjData, sameChatCoreAndQqjDataSnapshot, sameMessageCoreAndQqjData, sameQqjChatMetadata, snapshotChatCoreAndQqjData } from './message-floor-anchor.js';
 import { MESSAGE_MEMORY_EXCLUSION_KEY } from './memory-exclusion.js';
 import { createHostAdapter } from './host-adapter.js';
 import { createFoundationStore } from './foundation-store.js';
@@ -166,13 +166,14 @@ export async function runHistoricalRebuildTask({
     });
     if (!response?.ok) throw Object.assign(new Error('原目标聊天没有确认保存。'), { code: [400, 409].includes(response?.status) ? 'QQJ_REBUILD_TARGET_CONFLICT' : 'QQJ_REBUILD_TARGET_SAVE_FAILED' });
     const persisted = await readTargetChat(taskTarget, { fetchImpl, allowMissingIdentity: true });
-    if (!sameChatBusiness(mergedMessages, persisted.chat)
+    if (!sameChatQqjData(mergedMessages, persisted.chat)
       || persisted.header.chat_metadata?.qianqianjie?.chatId !== taskTarget.chatId
-      || !sameQqjChatMetadata(header.chat_metadata ?? {}, persisted.header.chat_metadata ?? {})) {
+      || !sameQqjChatMetadata(header.chat_metadata ?? {}, persisted.header.chat_metadata ?? {}, { includeFile: true })) {
       throw Object.assign(new Error('原目标聊天保存后读回不一致。'), { code: 'QQJ_REBUILD_TARGET_VERIFY_FAILED' });
     }
     expectedHeader = clone(persisted.header);
-    expectedChatSource = persisted.chat;
+    // Keep the next pre-save check tied to the task material, not new native text in the readback.
+    expectedChatSource = mergedMessages;
     expectedChatSnapshot = null;
     if (persisted.header.chat_metadata?.qianqianjie === undefined) delete targetContext.chatMetadata.qianqianjie;
     else targetContext.chatMetadata.qianqianjie = clone(persisted.header.chat_metadata.qianqianjie);

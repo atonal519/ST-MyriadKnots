@@ -454,7 +454,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return identityProjection;
   };
   const readIdentityProjection = async (targetIdentity = null, source = reachable) => {
-    const value = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider(targetIdentity) : identityProjection;
+    const providerIdentity = targetIdentity ?? (source?.root?.chatId ? { chatId: source.root.chatId } : null);
+    const value = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider(providerIdentity) : identityProjection;
     const input = value?.data ?? value ?? {};
     return targetIdentity ? deriveUserIdentityProjection({ ...source, identityProjection: input }) : setIdentityProjection(input, source);
   };
@@ -1951,10 +1952,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const settlement = backgroundSync;
       if (settlement) await settlement;
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在记忆读取期间已经变化，本次请求未发送。');
-      prepareStep = 'snapshotClone';
-      const source = reachable ? clone(reachable) : null;
-      const hostSnapshot = hostAdapter.snapshot();
       prepareStep = 'sourceSelection';
+      const source = reachable ? { ...reachable } : null;
+      const hostSnapshot = hostAdapter.snapshot();
       const memoryMap = currentMemoryMap(source);
       const liveFloors = liveFloorsFor(source);
       const eligibleFloorIds = new Set(liveFloors.map(item => item.id));
@@ -4027,7 +4027,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           throw errorWith('QIANSHI_HISTORY_PLAN_STALE', '原目标正文分支已变化；历史补齐已停止。');
         }
         publishHistory(historyState('running', `正在准备第 ${batchIndex}/${plan.batches.length} 批候选…`));
-        const identitySnapshot = await readIdentityProjection(plan.targetIdentity);
+        const identitySnapshot = await readIdentityProjection(plan.targetIdentity, targetReachable);
         const prepared = [];
         const preparedProjection = qianshiGraphProjector(targetReachable, { calendar: plan.calendar });
         const preparedEventMap = new Map(preparedProjection.events.map(event => [event.id, event]));
@@ -4385,7 +4385,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         targetReachable = await latestReachableForCommit({ epoch: epochAtStart, controller, store: plan.store, pinnedTarget: true }, plan.sourceReachable);
         targetReachable = { ...targetReachable, calendar: plan.calendar };
         await assertQianshiRejudgeSnapshot(targetReachable, rejudgeValidation);
-        const original = targetReachable, identitySnapshot = await readIdentityProjection(plan.targetIdentity);
+        const original = targetReachable, identitySnapshot = await readIdentityProjection(plan.targetIdentity, original);
         const originalProjection = qianshiGraphProjector(original, { calendar: plan.calendar, identityProjection: identitySnapshot });
         // 整组提交前原图不变；沿用已有的精确 root 版本核对，避免每个请求前后重读整份存档。
         const verifyCurrent = async () => {

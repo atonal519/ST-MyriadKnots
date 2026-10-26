@@ -99,7 +99,7 @@ test('首次身份保存兼容宿主 new_chat 读回，固定目标创建空聊�
   assert.equal(lists, 2);
 });
 
-test('首次身份保存比较QQJ业务内容，并以第二次读取的宿主数据为保存基底', async () => {
+test('首次身份只读一次实际文件作保存基底，保留宿主字段并仅确认QQJ身份', async () => {
   const chatId = '523e4567-e89b-42d3-a456-426614174000';
   const target = { hostChatId: '正在记录', characterLocator: 'char.png', characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} };
   const message = { is_user: false, is_system: false, name: '角色', mes: 'AI0正文', swipes: ['AI0正文', '另一条回复'], swipe_id: 0,
@@ -111,13 +111,13 @@ test('首次身份保存比较QQJ业务内容，并以第二次读取的宿主�
   const fetchImpl = async (url, options) => {
     if (url === '/api/chats/get') {
       reads += 1;
-      if (reads === 2) {
+      if (reads === 1) {
         saved.header.chat_metadata.otherPlugin.view = 2;
         saved.chat[0].extra.otherPlugin.view = 2;
         saved.chat[0].swipe_info[0].extra.otherPlugin.view = 2;
         raw.chatMetadata.otherPlugin.view = 2;
       }
-      if (reads === 3) {
+      if (reads === 2) {
         saved.header.chat_metadata.afterSave = 'kept';
         saved.chat[0].extra.afterSave = 'kept';
         saved.chat[0].swipe_info[0].extra.afterSave = 'kept';
@@ -129,16 +129,16 @@ test('首次身份保存比较QQJ业务内容，并以第二次读取的宿主�
     saves += 1;
     const body = JSON.parse(options.body);
     assert.equal(body.force, false);
-    assert.equal(body.chat[0].chat_metadata.otherPlugin.view, 2, '写入基底应包含第二次读取后的 header');
-    assert.equal(body.chat[1].extra.otherPlugin.view, 2, '写入基底应包含第二次读取后的 outer extra');
-    assert.equal(body.chat[1].swipe_info[0].extra.otherPlugin.view, 2, '写入基底应包含第二次读取后的 swipe_info');
+    assert.equal(body.chat[0].chat_metadata.otherPlugin.view, 2, '写入基底应包含实际读取后的 header');
+    assert.equal(body.chat[1].extra.otherPlugin.view, 2, '写入基底应包含实际读取后的 outer extra');
+    assert.equal(body.chat[1].swipe_info[0].extra.otherPlugin.view, 2, '写入基底应包含实际读取后的 swipe_info');
     saved = { header: body.chat[0], chat: body.chat.slice(1) };
     return { ok: true, status: 200 };
   };
   const result = await persistTargetChatIdentity({ coordinates: target, raw, snapshot, chatId,
     fetchImpl });
   assert.equal(result.status, 'persisted');
-  assert.equal(reads, 3);
+  assert.equal(reads, 2);
   assert.equal(saves, 1);
   assert.equal(result.header.chat_metadata.qianqianjie.chatId, chatId);
   assert.equal(result.header.chat_metadata.afterSave, 'kept');
@@ -192,35 +192,42 @@ for (const hostName of ['SillyTavern', 'Luker']) test(`首次身份保存保留�
   assert.deepEqual(raw.chat, [{ ...storedMessage, mes: '你好，测试用户。', extra: { otherPlugin: { live: '保留' } } }]);
   assert.deepEqual(raw.chatMetadata, { otherPlugin: { live: '保留' }, qianqianjie: file.header.chat_metadata.qianqianjie, integrity: 'macro-integrity' });
   assert.equal((await session.prepare()).identity.chatId, chatId);
-  assert.equal(reads, 3); assert.equal(saves, 1); assert.equal(captures, 1);
+  assert.equal(reads, 2); assert.equal(saves, 1); assert.equal(captures, 1);
   assert.deepEqual(backend.calls, { get: 0, put: 0 });
 });
 
-test('首次身份保存仍拒绝正文、所选回复或QQJ身份归属变化', async () => {
-  for (const change of ['body', 'selectedReply', 'identity']) {
+test('首次身份保存跟随宿主正文和回复选择，仅拒绝QQJ身份不符或实际保存失败', async () => {
+  for (const change of ['body', 'selectedReply', 'identity', 'noop', 'qqjFile', 'http']) {
     const chatId = '623e4567-e89b-42d3-a456-426614174000';
     const target = { hostChatId: `目标-${change}`, characterLocator: 'char.png', characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} };
-    const message = { is_user: false, is_system: false, mes: '原正文', swipes: ['原正文', '另一条'], swipe_id: 0,
-      extra: { qianqianjie_floor: { schemaVersion: 1, chatId, floorId: '723e4567-e89b-42d3-a456-426614174000' } } };
+    const message = { is_user: false, mes: '原正文', swipes: ['原正文', '另一条'], swipe_id: 0, extra: { other: true } };
     const raw = { chatId: target.hostChatId, chat: [structuredClone(message)], chatMetadata: {} };
     const snapshot = { chat: [structuredClone(message)], chatMetadata: {} };
     let saved = { header: { chat_metadata: {} }, chat: [structuredClone(message)] }, reads = 0, saves = 0;
-    const fetchImpl = async url => {
+    const fetchImpl = async (url, options) => {
       if (url === '/api/chats/get') {
-        reads += 1;
-        if (reads === 2) {
-          if (change === 'body') saved.chat[0].mes = '编辑后的正文';
-          if (change === 'selectedReply') { saved.chat[0].swipe_id = 1; saved.chat[0].mes = '另一条'; }
-          if (change === 'identity') saved.header.chat_metadata.qianqianjie = { schemaVersion: 1, chatId: '823e4567-e89b-42d3-a456-426614174000' };
-        }
-        return { ok: true, status: 200, async json() { return [structuredClone(saved.header), ...structuredClone(saved.chat)]; } };
+        reads++;
+        if (reads === 1 && change === 'identity') saved.header.chat_metadata.qianqianjie = { schemaVersion: 2, chatId: '823e4567-e89b-42d3-a456-426614174000' };
+        if (change === 'body') saved.chat[0].mes = reads === 1 ? '保存前宿主正文' : '保存后宿主正文';
+        if (change === 'selectedReply') { saved.chat[0].swipe_id = 1; saved.chat[0].mes = '另一条'; }
+        return { ok: true, json: async () => [structuredClone(saved.header), ...structuredClone(saved.chat)] };
       }
-      saves += 1;
+      saves++;
+      if (change === 'http') return { ok: false, status: 503 };
+      if (change !== 'noop') { const body = JSON.parse(options.body); saved = { header: body.chat[0], chat: body.chat.slice(1) }; }
+      if (change === 'qqjFile') delete saved.header.chat_metadata.qianqianjie.file;
       return { ok: true, status: 200 };
     };
-    await assert.rejects(persistTargetChatIdentity({ coordinates: target, raw, snapshot, chatId, fetchImpl }),
-      { code: change === 'identity' ? 'V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH' : 'V3_TARGET_CHAT_CHANGED' }, change);
-    assert.equal(saves, 0, `${change} change must be rejected before save`);
+    const operation = () => persistTargetChatIdentity({ coordinates: target, raw, snapshot, chatId, fetchImpl });
+    if (['identity', 'noop', 'qqjFile', 'http'].includes(change)) {
+      await assert.rejects(operation(), { code: change === 'http' ? 'V3_TARGET_CHAT_SAVE_FAILED'
+        : change === 'qqjFile' ? 'V3_TARGET_CHAT_VERIFY_FAILED' : 'V3_MESSAGE_ANCHOR_READ_SCOPE_MISMATCH' });
+      assert.equal(saves, change === 'identity' ? 0 : 1);
+    } else {
+      assert.equal((await operation()).persistedIdentity, chatId);
+      assert.equal(saved.chat[0].mes, change === 'body' ? '保存后宿主正文' : '另一条');
+      assert.equal(saves, 1); assert.equal(reads, 2); assert.equal(saved.chat[0].extra.other, true);
+    }
   }
 });
 

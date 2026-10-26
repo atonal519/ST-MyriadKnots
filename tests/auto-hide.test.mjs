@@ -215,7 +215,7 @@ test('摘要与 CSE 状态、连续覆盖回退及删尾缩窗都不得恢复既
   assert.deepEqual(commands, ['/hide 0-1', '/hide 2-3', '/unhide 0-3'], '显式恢复仍可恢复当前聊天剩余自有范围');
 });
 
-test('后续范围验证失败只回滚该范围，不恢复此前已成功隐藏的独立范围', async () => {
+test('原生命令resolve但可见性尚未同步时仍保留自有标记', async () => {
   const chat = [assistant('更早'), user('旧输入'), assistant('旧回复'), event('note'), user('中间输入'), assistant('中间回复'), user('较新输入'), assistant('较新回复'), user('最新输入'), assistant('最新回复')];
   const commands = [];
   const apply = commandExecutor(chat, commands);
@@ -223,23 +223,25 @@ test('后续范围验证失败只回滚该范围，不恢复此前已成功隐�
     if (command === '/hide 4-5') { commands.push(command); return; }
     return apply(command);
   } });
-  await assert.rejects(h.controller.reconcile(), error => error.code === 'QQJ_AUTO_HIDE_VERIFY_FAILED');
+  assert.equal((await h.controller.reconcile()).status, 'applied');
   assert.deepEqual(commands, ['/hide 0-2', '/hide 4-5']);
   for (const index of [0, 1, 2]) { assert.equal(chat[index].is_system, true); assert.equal(chat[index].extra[AUTO_HIDE_MARKER_KEY].chatId, CHAT); }
-  for (const index of [4, 5]) { assert.equal(chat[index].is_system, false); assert.equal(chat[index].extra?.[AUTO_HIDE_MARKER_KEY], undefined); }
+  for (const index of [4, 5]) { assert.equal(chat[index].is_system, false); assert.equal(chat[index].extra?.[AUTO_HIDE_MARKER_KEY]?.chatId, CHAT); }
 });
 
-test('slash 在改动内存后失败会回滚可重试事实，下一次成功才留下隐藏与标记', async () => {
+test('原生命令失败只回退自有marker，保留宿主状态及其它插件extra', async () => {
   const chat = [user('更早输入'), assistant('更早回复'), user('旧输入'), assistant('旧回复'), user('最新输入'), assistant('最新回复')];
   const commands = [];
-  const h = harness({ chat, enabled: true, keepAiCount: 1, execute: commandExecutor(chat, commands, { failOnce: true }) });
+  const apply = commandExecutor(chat, commands, { failOnce: true });
+  const h = harness({ chat, execute: async command => {
+    try { await apply(command); } finally { chat[0].extra.otherPlugin = { saved: true }; }
+  } });
   await assert.rejects(h.controller.reconcile(), /模拟宿主持久化失败/);
-  assert.equal(chat[0].is_system, false); assert.equal(chat[1].is_system, false);
-  assert.equal(chat[0].extra, undefined); assert.deepEqual(chat[1].extra, {}, '既有空 extra 必须原样恢复');
-  assert.equal(h.notices.length, 1); assert.match(h.notices[0].text, /未完成.*重试/);
-  const retried = await h.controller.reconcile();
-  assert.equal(retried.status, 'applied'); assert.deepEqual(commands, ['/hide 0-1', '/hide 0-1']);
-  assert.equal(chat[0].is_system, true); assert.equal(chat[0].extra[AUTO_HIDE_MARKER_KEY].chatId, CHAT);
+  assert.equal(chat[0].is_system, true); assert.equal(chat[1].is_system, true);
+  assert.deepEqual(chat[0].extra, { otherPlugin: { saved: true } });
+  assert.equal(chat[1].extra?.[AUTO_HIDE_MARKER_KEY], undefined);
+  assert.equal(h.notices.length, 1);
+  assert.deepEqual(commands, ['/hide 0-1']);
 });
 
 test('默认关闭不执行；停止在途多范围任务后只允许已发命令落地，不再继续下一范围', async () => {
@@ -285,13 +287,31 @@ test('宿主聊天切换或 metadata 尚未绑定当前稳定 UUID 时不把旧�
   h.context.chatMetadata.qianqianjie.chatId = CHAT;
   const apply = commandExecutor(chat, commands);
   h.context.executeSlashCommandsWithOptions = async command => { await apply(command); h.context.chatId = 'new-host-chat'; };
-  await assert.rejects(h.controller.reconcile(), error => error.code === 'QQJ_AUTO_HIDE_CHAT_CHANGED');
+  assert.equal((await h.controller.reconcile()).status, 'applied');
   assert.deepEqual(commands, ['/hide 0-1'], '聊天切换后不得继续旧计划的后续范围');
-  assert.equal(chat[0].is_system, false); assert.equal(chat[0].extra, undefined, '切换检测失败应回滚本范围的内存标记');
+  assert.equal(chat[0].is_system, true); assert.equal(chat[0].extra[AUTO_HIDE_MARKER_KEY].chatId, CHAT, '原生已完成结果不被后置页面状态反撤');
 
   const disposedChat = [user('旧'), assistant('旧'), user('新'), assistant('新')];
   const disposedCommands = [];
   const disposed = harness({ chat: disposedChat, execute: commandExecutor(disposedChat, disposedCommands) });
   disposed.controller.dispose();
   assert.equal((await disposed.controller.reconcile()).status, 'disposed'); assert.deepEqual(disposedCommands, []);
+});
+
+test('原生命令明确失败或中止结果撤销自有marker，解析错误交宿主抛出且保留宿主状态', async () => {
+  for (const flag of ['isError', 'isAborted']) {
+    const chat = [user('旧输入'), assistant('旧楼'), user('中间'), assistant('中间楼'), user('继续'), assistant('新楼')];
+    let commandOptions;
+    const h = harness({ chat, execute: async (_command, options) => {
+      commandOptions = options;
+      chat[0].is_system = true;
+      chat[0].extra.otherPlugin = { changed: true };
+      return { [flag]: true };
+    } });
+    await assert.rejects(h.controller.reconcile(), error => error.code === 'QQJ_AUTO_HIDE_COMMAND_FAILED');
+    assert.equal(commandOptions.handleParserErrors, false);
+    assert.equal(chat[0].is_system, true);
+    assert.deepEqual(chat[0].extra, { otherPlugin: { changed: true } });
+    assert.equal(chat[1].extra?.[AUTO_HIDE_MARKER_KEY], undefined);
+  }
 });

@@ -577,6 +577,20 @@ test('TT large collection scan stops issuing native reads after cancellation', a
   assert.equal(f.writes(), 128);
 });
 
+test('TT默认本地读写不依赖HTTP headers，注入与自定义HTTP仍读取provider', async t => {
+  const f = await fixture(t), previous = globalThis.__TAURITAVERN__;
+  globalThis.__TAURITAVERN__ = f.globalRef.__TAURITAVERN__;
+  t.after(() => { if (previous === undefined) delete globalThis.__TAURITAVERN__; else globalThis.__TAURITAVERN__ = previous; });
+  const failure = new Error('HTTP headers unavailable');
+  const headers = () => { throw failure; };
+  const local = createBackendClient({ headers });
+  await local.put('header-free', 'record', { own: true }, 0);
+  assert.deepEqual((await local.get('header-free', 'record')).data, { own: true });
+  for (const options of [{ fetchImpl: async () => { assert.fail('provider应先被调用'); } }, { baseUrl: '/custom-http' }]) {
+    await assert.rejects(createBackendClient({ ...options, headers }).get('c', 'r'), error => error === failure);
+  }
+});
+
 test('TT default routing selects local storage while explicit fetch injection is preserved', async t => {
   const f = await fixture(t);
   const previous = globalThis.__TAURITAVERN__;
