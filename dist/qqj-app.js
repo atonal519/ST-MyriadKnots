@@ -9879,7 +9879,7 @@ async function ul({ store: e, targetIdentity: t, cachedReachable: n = null } = {
 }
 //#endregion
 //#region manifest.json
-var dl = "0.10.0", fl = "CHANGELOG.md", pl = /* @__PURE__ */ new Map([
+var dl = "0.10.1", fl = "CHANGELOG.md", pl = /* @__PURE__ */ new Map([
 	["/api/chats/append", "追加聊天"],
 	["/api/chats/patch", "更新聊天"],
 	["/api/chats/save", "保存聊天"],
@@ -35224,7 +35224,7 @@ var WT = 67108864, GT = "qqj-core-chat-memory", KT = 2, qT = "self-use-memory-tr
 	"currentState",
 	"migrationDescriptor",
 	"index"
-]), rE = (e) => e === "v3-people-workspace" || /^v3-people-snapshot-[\da-f-]{36}$/i.test(e) || e === "v3-time-head" || /^v3-time-batch-[\da-f]{32}$/.test(e) || e === "qqj-vector-index" || /^qqj-vector-shard-[\da-f]{40}$/.test(e), iE = (e) => e.flatMap((e) => e.id === "v3-people-workspace" ? [e.data] : e.id.startsWith("v3-people-snapshot-") ? [e.data.workspace] : []), aE = [
+]), rE = (e) => e === "v3-people-workspace" || /^v3-people-snapshot-[\da-f-]{36}$/i.test(e) || e === "v3-time-head" || /^v3-time-batch-[\da-f]{32}$/.test(e) || e.startsWith("v3-time-batch-") && x(e.slice(14)) || e === "qqj-vector-index" || /^qqj-vector-shard-[\da-f]{40}$/.test(e), iE = (e) => e.flatMap((e) => e.id === "v3-people-workspace" ? [e.data] : e.id.startsWith("v3-people-snapshot-") ? [e.data.workspace] : []), aE = [
 	JT,
 	YT,
 	XT,

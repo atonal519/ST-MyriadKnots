@@ -23,7 +23,9 @@ const same = (a, b) => stableJson(a) === stableJson(b);
 const bytes = value => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value)).byteLength;
 const coreTypes = new Set(['root', 'floor', 'run', 'checkpoint', 'floorMemory', 'entity', 'baseline', 'stateDelta', 'currentState', 'migrationDescriptor', 'index']);
 const isAux = id => id === 'v3-people-workspace' || /^v3-people-snapshot-[\da-f-]{36}$/i.test(id)
-  || id === 'v3-time-head' || /^v3-time-batch-[\da-f]{32}$/.test(id) || id === 'qqj-vector-index' || /^qqj-vector-shard-[\da-f]{40}$/.test(id);
+  || id === 'v3-time-head' || /^v3-time-batch-[\da-f]{32}$/.test(id)
+  || (id.startsWith('v3-time-batch-') && isUuid(id.slice('v3-time-batch-'.length)))
+  || id === 'qqj-vector-index' || /^qqj-vector-shard-[\da-f]{40}$/.test(id);
 const peopleWorkspaces = records => records.flatMap(item => item.id === 'v3-people-workspace' ? [item.data]
   : item.id.startsWith('v3-people-snapshot-') ? [item.data.workspace] : []);
 const MESSAGE_KEYS = [ANCHOR, HIDDEN, RECEIPT, 'qianqianjie_migration_alias', MESSAGE_MEMORY_EXCLUSION_KEY];
