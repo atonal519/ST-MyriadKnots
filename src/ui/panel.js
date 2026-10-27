@@ -45,6 +45,7 @@ export function createPanel({
   peopleProfilesView,
   qianshiTimelineView,
   storageManagementView,
+  memoryTransferViewFactory,
   sourcePermissionView,
   onPluginEnabledChange,
   onPluginEnableFailure,
@@ -105,6 +106,7 @@ export function createPanel({
   let apiSettingsView = null;
   let promptsSettingsView = null;
   let updatesSettingsView = null;
+  let memoryTransferView = null;
   const scrollPositions = new Map();
   const themeButton = root.querySelector('.theme-btn');
   const fabToggleButton = root.querySelector('.fab-toggle-btn');
@@ -181,6 +183,7 @@ export function createPanel({
     }
   };
   const unmountContent = () => {
+    memoryTransferView?.dispose(); memoryTransferView = null;
     apiSettingsView?.dispose(); apiSettingsView = null;
     promptsSettingsView?.dispose(); promptsSettingsView = null;
     updatesSettingsView?.dispose(); updatesSettingsView = null;
@@ -471,7 +474,12 @@ export function createPanel({
       onToggle: open => { settingsDrawerState.set('storage', open); syncStorageActivation(); },
     });
     storageGroup = storageDrawer.drawer;
-    storageManagementView.mount(storageDrawer.body);
+    const storageMount = element('div');
+    storageManagementView.mount(storageMount);
+    storageDrawer.body.append(storageMount);
+    memoryTransferView = memoryTransferViewFactory?.({ open: settingsDrawerState.isOpen('memory-transfer', false),
+      onToggle: open => settingsDrawerState.set('memory-transfer', open) }) ?? null;
+    if (memoryTransferView) storageDrawer.body.append(memoryTransferView.node);
     memoryBody.append(autoHideToggle, keepRow, autoHideResult, calendarRow, prefixRow,
       element('p', 'settings-hint', '历法用于推算时间间隔，仅当前聊天生效。特殊年只填年份前的完整纪年名称，不填数字或“年”。'),
       element('p', 'settings-hint', '例：启航387年，填启航。'), calendarResult, storageGroup);
@@ -528,6 +536,7 @@ export function createPanel({
   }
 
   function close() {
+    memoryTransferView?.dispose(); memoryTransferView = null;
     rememberScroll();
     activationEpoch += 1;
     apiSettingsView?.dispose(); apiSettingsView = null;

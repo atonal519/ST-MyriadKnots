@@ -9,6 +9,7 @@ async function loadBootstrap(overrides = {}) {
   const entry = new SourceTextModule(source, { context, identifier: new URL('../src/bootstrap.js', import.meta.url).href });
   const factories = {
     './ui/panel.js': { createPanel: () => null },
+    './ui/memory-transfer-view.js': { createMemoryTransferView: () => null },
     './ui/fab.js': { createFab: () => ({ host: null }) },
     './ui/wand-entry.js': { installWandEntry() {} },
     './ui/source-permission-view.js': { createSourcePermissionView: () => null },

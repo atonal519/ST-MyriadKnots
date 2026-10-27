@@ -26,6 +26,7 @@ import { createChatIdentityCoordinator } from './src/chat-identity.js';
 import { cloneHostJsonMetadata, createHostChatList } from './src/host-context.js';
 import { createChatMemoryManagement } from './src/chat-memory-management.js';
 import { createStorageManagement } from './src/storage-management.js';
+import { createMemoryTransfer } from './src/memory-transfer.js';
 import { createPluginLifecycle } from './src/plugin-lifecycle.js';
 import { createSourcePermissionController } from './src/source-permission.js';
 import { captureTargetChatCoordinates, createHostAdapter } from './src/v3/host-adapter.js';
@@ -53,7 +54,9 @@ import { createMyKnotsStoryClockController, createStoryClockStatusProjection, ex
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
 import { normalizeStoryCalendar } from './src/v3/calendar-rules.js';
 
+let memoryTransfer = null;
 const isGenerating = () => Boolean(is_send_press || is_group_generating);
+const isMemoryWorkBlocked = () => isGenerating() || memoryTransfer?.getState().active === true;
 const hostAdapter = createHostAdapter({ personaIdentifierProvider: () => user_avatar, worldInfoBindings: {
   loadWorldInfo,
   getSelectedWorldInfo: () => selected_world_info,
@@ -239,7 +242,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   notifyUser: notification => notification?.action === 'openMemory'
     ? globalThis.toastr?.warning?.(notification.text, undefined, { timeOut: 12000, closeButton: true, onclick: () => ui?.openMemory?.() })
     : globalThis.toastr?.[notification?.kind]?.(notification?.text),
-  isMainGenerationActive: isGenerating,
+  isMainGenerationActive: isMemoryWorkBlocked,
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   processingPrompt,
@@ -258,7 +261,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   newUuid,
 });
 const vectorAutoUpdater = createVectorAutoUpdater({ memoryRuntime: v3MemoryRuntime, vectorRuntime: vectorIndex,
-  configProvider: () => resolveVectorConfig(settings), isEnabled: settings.isEnabled, isMainGenerationActive: isGenerating });
+  configProvider: () => resolveVectorConfig(settings), isEnabled: settings.isEnabled, isMainGenerationActive: isMemoryWorkBlocked });
 const vectorWakeListeners = [];
 const vectorWakeHost = hostContext();
 let vectorWakeTimer = null, vectorWakeDisposed = false;
@@ -337,10 +340,11 @@ peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   avatarPrompt: () => settings.get().avatarPrompt,
   processingPrompt,
   isEnabled: settings.isEnabled,
-  isMainGenerationActive: isGenerating,
+  isMainGenerationActive: isMemoryWorkBlocked,
 });
 let previousPeopleTimeState = peopleWorkspaceRuntime.getState?.() ?? null;
 peopleWorkspaceRuntime.subscribe?.(state => {
+  if (memoryTransfer?.getState().active) return;
   const currentChatId = session.identity().chatId;
   if (state?.status !== 'ready' || state.chatId !== currentChatId) {
     if (previousPeopleTimeState?.chatId !== state?.chatId || state?.chatId !== currentChatId) previousPeopleTimeState = null;
@@ -418,7 +422,7 @@ const chatMemoryManagement = createChatMemoryManagement({
   captureHistoricalRebuildSources,
   freshUuid: newUuid,
   createHistoricalRebuild,
-  isMainGenerationActive: isGenerating,
+  isMainGenerationActive: isMemoryWorkBlocked,
 });
 const storageManagement = createStorageManagement({
   client: backendClient,
@@ -433,7 +437,35 @@ const storageManagement = createStorageManagement({
   isEnabled: () => settings.isEnabled(),
   isBusy: () => {
     const memory = v3MemoryRuntime.getActivityState(), management = chatMemoryManagement.getState();
-    return Boolean(vectorIndex.getState().active || management.workBusy || management.status === 'deleting' || timeRuntime.getActivityState().active || memory.qianshiHistoryActive);
+    return Boolean(memoryTransfer?.getState().active || vectorIndex.getState().active || management.workBusy || management.status === 'deleting' || timeRuntime.getActivityState().active || memory.qianshiHistoryActive);
+  },
+});
+memoryTransfer = createMemoryTransfer({
+  client: backendClient,
+  session,
+  hostAdapter,
+  pluginVersion,
+  freshUuid: newUuid,
+  captureCalendar: chatId => settings.get().storyCalendars[chatId] ?? null,
+  persistCalendar: persistStoryCalendar,
+  isBusy: () => isGenerating() || [session, foundationRuntime, v3MemoryRuntime, v3RecallRuntime,
+    peopleWorkspaceRuntime, vectorIndex, timeRuntime, chatMemoryManagement, storageManagement]
+    .some(runtime => runtime.getActivityState().busy),
+  quiesce: async () => {
+    v3MemoryRuntime.invalidate();
+    foundationRuntime.invalidate();
+    v3RecallRuntime.invalidate('memoryTransfer');
+    v3RecallRuntime.clearCurrent();
+    peopleWorkspaceRuntime.invalidate();
+    vectorIndex.abortAll();
+    await Promise.all([timeRuntime.stop(), autoHideController.stop()]);
+  },
+  onSettled: async () => {
+    const result = await session.prepare({ entryPoint: 'memoryTransfer' });
+    if (result.status !== 'ready') return;
+    await v3MemoryRuntime.refreshStatus();
+    await peopleWorkspaceRuntime.refresh({ refreshMemory: false });
+    await timeRuntime.refreshStatus({ force: true });
   },
 });
 const publicMemoryBridgeMount = installPublicMemoryBridge({
@@ -495,7 +527,7 @@ const setAllEnabled = async enabled => {
   return lifecycleResult;
 };
 const pluginUpdates = createPluginUpdates({ moduleUrl: import.meta.url, extensionTypes: () => extensionTypes, noticePath: updateNoticePath, headers: getRequestHeaders });
-const pluginActivity = createPluginActivity([session, v3RecallRuntime, foundationRuntime, v3MemoryRuntime, timeRuntime, peopleWorkspaceRuntime, vectorIndex, chatMemoryManagement, storageManagement, compactClient, vectorApi, pluginUpdates]);
+const pluginActivity = createPluginActivity([session, v3RecallRuntime, foundationRuntime, v3MemoryRuntime, timeRuntime, peopleWorkspaceRuntime, vectorIndex, chatMemoryManagement, storageManagement, memoryTransfer, compactClient, vectorApi, pluginUpdates]);
 ui = bootstrap({
   activity: pluginActivity,
   pluginUpdates,
@@ -516,7 +548,7 @@ ui = bootstrap({
     const owner = session.identity();
     if (!chatId || owner?.chatId !== chatId || owner.hostChatId && owner.hostChatId !== hostAdapter.snapshot().chatId) throw new Error('当前聊天已变化，请重新设置历法。');
     const state = v3MemoryRuntime.getActivityState();
-    if (state.memoryWorkBusy || state.activeExtraction || state.activeCse || state.qianshiHistoryActive || timeRuntime.getActivityState().active) throw new Error('请等当前记忆任务完成后再设置历法。');
+    if (memoryTransfer.getState().active || state.memoryWorkBusy || state.activeExtraction || state.activeCse || state.qianshiHistoryActive || timeRuntime.getActivityState().active) throw new Error('请等当前记忆任务完成后再设置历法。');
     const previous = settings.get().storyCalendars;
     try { settings.update({ storyCalendars: { ...previous, [chatId]: normalized } }, { observeSaveFailure: true }); }
     catch (error) { settings.update({ storyCalendars: previous }); throw error; }
@@ -546,6 +578,7 @@ ui = bootstrap({
   peopleWorkspaceRuntime,
   chatMemoryManagement,
   storageManagement,
+  memoryTransfer,
   sessionStateProvider: () => session.getState(),
   pluginDiagnosticProvider: () => pluginLifecycleFailure,
   prepareSession: () => session.prepare({ entryPoint: 'memoryManagement' }),

@@ -991,8 +991,11 @@ export function createPeopleWorkspaceRuntime({
       await pruneUnreachableSelections(operation);
       if (!isCurrent(operation)) return;
       if (automaticChatId !== chatId || automaticFloorCount === null) {
-        automaticChatId = chatId;
-        automaticFloorCount = eligibleAutomaticFloorCount(foundationRuntime.getReachable?.());
+        const reachable = foundationRuntime.getReachable?.();
+        if (reachable && (!reachable.root?.chatId || reachable.root.chatId === chatId)) {
+          automaticChatId = chatId;
+          automaticFloorCount = eligibleAutomaticFloorCount(reachable);
+        }
       }
       lastError = null; notify();
     });

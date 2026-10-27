@@ -1537,6 +1537,44 @@ test('每十个稳定AI楼触发一次共享原文粗扫，摘要不参与筛楼
   assert.ok(requests[0].people.every(person => !Object.hasOwn(person, 'characterCard') && !Object.hasOwn(person, 'sourceFragments')));
 });
 
+test('自动原文粗扫只在可用图建立计数基线，旧楼恢复不当成新增楼', async t => {
+  for (const baseline of [null, 0]) await t.test(baseline === null ? '未知基线恢复旧20楼' : '真实空档从0楼开始', async t => {
+    const requests = [];
+    const h = harness({ generate: async options => {
+      const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+      return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey })) } };
+    } });
+    t.after(() => h.runtime.destroy());
+    const target = h.peopleEntities[0];
+    await h.runtime.refresh({ refreshMemory: false });
+    await h.runtime.setSelectedEntityIds([target.id]); await h.markProfileInitialized(target.id);
+    const base = h.reachable;
+    const floors = Array.from({ length: 30 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1,
+      content: { canonicalContent: `第${index + 1}楼原文` } }));
+    const graph = count => ({ ...base, floors: floors.slice(0, count),
+      checkpoint: { inputFingerprints: floors.slice(0, count).map(floor => ({ floorId: floor.id })) } });
+    const quiet = () => new Promise(resolve => setTimeout(resolve, 25));
+    h.setReachable(baseline === null ? null : graph(0)); h.runtime.invalidate();
+    await h.runtime.refresh({ refreshMemory: false });
+    h.setMainGenerationActive(false);
+    const knownCount = baseline === null ? 20 : 0;
+    h.setReachable(graph(knownCount)); h.notifyFoundation(); h.notifyFoundation(); await quiet();
+    assert.equal(requests.length, 0, '首次可用图只建立基线，恢复旧楼不派发');
+    await h.runtime.refresh({ refreshMemory: false }); h.notifyFoundation(); await quiet();
+    assert.equal(requests.length, 0, '同聊天重复ready和刷新不派发');
+    h.setReachable(graph(knownCount + 9)); h.notifyFoundation(); await quiet();
+    await h.runtime.refresh({ refreshMemory: false });
+    assert.equal(requests.length, 0, '实际新增九楼仍不派发，刷新也不重置已知基线');
+    h.setReachable(graph(knownCount + 10)); h.notifyFoundation(); h.notifyFoundation();
+    await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
+    assert.match(requests[0].task, /最近稳定AI楼原文粗扫/);
+    assert.deepEqual(requests[0].recentFloors.map(floor => floor.sourceFloor),
+      Array.from({ length: 10 }, (_, index) => knownCount + index + 1));
+    await h.runtime.refresh({ refreshMemory: false }); h.notifyFoundation(); h.notifyFoundation(); await quiet();
+    assert.equal(requests.length, 1, '十楼窗口只派发一次，同ID重复ready不重派');
+  });
+});
+
 test('十楼粗扫每个请求准备与CAS保存阶段只投影一次3901规模人物楼层', async () => {
   let request, passesAtRequest = 0, visitsAtRequest = 0;
   let projectionPasses = 0, memoryVisits = 0;

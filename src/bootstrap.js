@@ -6,6 +6,7 @@ import { createV3FoundationView } from './ui/v3-foundation-view.js';
 import { createPeopleProfilesView } from './ui/people-profiles-view.js';
 import { createQianshiTimelineView } from './ui/qianshi-timeline-view.js';
 import { createStorageManagementView } from './ui/storage-management-view.js';
+import { createMemoryTransferView } from './ui/memory-transfer-view.js';
 import { createDialogManager } from './ui/dialog.js';
 
 export function bootstrap({
@@ -33,6 +34,7 @@ export function bootstrap({
   peopleWorkspaceRuntime,
   chatMemoryManagement,
   storageManagement,
+  memoryTransfer,
   sessionStateProvider,
   prepareSession,
   backendDiagnosticProvider,
@@ -45,6 +47,7 @@ export function bootstrap({
   peopleProfilesViewFactory = createPeopleProfilesView,
   qianshiTimelineViewFactory = createQianshiTimelineView,
   storageManagementViewFactory = createStorageManagementView,
+  memoryTransferViewFactory = createMemoryTransferView,
   documentRef = globalThis.document,
   panelFactory = createPanel,
   fabFactory = createFab,
@@ -95,6 +98,7 @@ export function bootstrap({
     peopleProfilesView,
     qianshiTimelineView,
     storageManagementView,
+    memoryTransferViewFactory: memoryTransfer ? options => memoryTransferViewFactory({ ...options, runtime: memoryTransfer, documentRef, confirmImpl: options => dialog.confirm(options) }) : null,
     sourcePermissionView,
     onPluginEnabledChange,
     onPluginEnableFailure,

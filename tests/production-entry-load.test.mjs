@@ -817,7 +817,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '0.9.9');
+  assert.equal(manifest.version, '0.10.0');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -955,6 +955,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let chatMemoryManagement;
   let storageManagementOptions;
   let storageManagement;
+  let memoryTransferOptions, memoryTransferRuntime, transferActive = false;
   let inlineRendererOptions;
   let hostAdapterOptions;
   const inlineEnabled = [];
@@ -1037,6 +1038,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/host-context.js', { cloneHostJsonMetadata, createHostChatList: options => { hostChatListOptions = options; return productionListHostChats; } });
   define('./src/chat-memory-management.js', { createChatMemoryManagement: options => { memoryManagementOptions = options; chatMemoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent() {} }; return chatMemoryManagement; } });
   define('./src/chat-memory-migration.js', { createChatMemoryMigration: options => { memoryMigrationOptions = options; memoryMigrationRuntime = { getState: () => ({ status: 'idle' }) }; return memoryMigrationRuntime; } });
+  define('./src/memory-transfer.js', { createMemoryTransfer: options => { memoryTransferOptions = options; memoryTransferRuntime = { getState: () => ({ active: transferActive }), getActivityState: () => ({ busy: transferActive }) }; return memoryTransferRuntime; } });
   define('./src/storage-management.js', { createStorageManagement: options => { storageManagementOptions = options; storageManagement = { getState: () => ({ status: 'idle' }), scan() {}, cleanup() {}, setAutoEnabled() {}, subscribe() {}, dispose() {} }; return storageManagement; } });
   define('./src/plugin-lifecycle.js', {
     createPluginLifecycle: options => {
@@ -1153,6 +1155,21 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.doesNotMatch(JSON.stringify(startupDiagnostic), /PRIVATE source startup binding detail/u, '真实 index startup provider 只给安全诊断字段');
 
   await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
+  assert.equal(bootstrapOptions.memoryTransfer, memoryTransferRuntime);
+  assert.ok(pluginActivitySources.includes(memoryTransferRuntime), '导入导出使用现有活动状态显示');
+  assert.equal(memoryTransferOptions.client, backendClient);
+  assert.equal(memoryTransferOptions.pluginVersion, '0.1.9-test');
+  assert.equal(memoryTransferOptions.captureCalendar('test'), null);
+  assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
+  transferActive = true;
+  assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '导入导出期间阻止新的记忆任务');
+  assert.equal(peopleWorkspaceOptions.isMainGenerationActive(), true);
+  assert.equal(vectorAutoOptions.isMainGenerationActive(), true);
+  assert.equal(memoryManagementOptions.isMainGenerationActive(), true);
+  assert.equal(storageManagementOptions.isBusy(), true, '导入导出期间不清理存储');
+  await assert.rejects(bootstrapOptions.onCalendarChange({ chatId: 'test', calendar: { months: 4, prefix: '启航' } }), /当前记忆任务完成/);
+  transferActive = false;
+  assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
   assert.equal(memoryManagementOptions.vectorRuntime, vectorRuntime);
   assert.equal(memoryManagementOptions.memoryMigration, memoryMigrationRuntime);
   assert.equal(typeof memoryMigrationOptions.captureStoryCalendar, 'function');
