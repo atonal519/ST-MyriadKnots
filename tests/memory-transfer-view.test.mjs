@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTransferView, downloadMemoryPackage } from '../src/ui/memory-transfer-view.js';
-import * as transferView from '../src/ui/memory-transfer-view.js';
+import { createMemoryVolumes } from '../src/memory-transfer-volumes.js';
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.events = {}; this.textContent = ''; }
@@ -59,7 +59,7 @@ test('oversized file metadata is rejected before reading, previewing or importin
     input.files = [{ size, text: async () => { calls.text += 1; return '{}'; } }];
     input.fire('change'); await tick();
     assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });
-    assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '普通记忆包不能超过 64 MB，请在旧设备使用“分卷导出（大记忆）”。');
+    assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '普通记忆包不能超过 64 MB，请在旧设备使用“自动导出大记忆包”。');
     for (const control of nodes.filter(node => !node.hidden && (node.tag === 'button' || node === input))) assert.equal(control.disabled, false);
     nodes.find(node => node.textContent === '确认导入').fire('click'); await tick();
     assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });
@@ -94,82 +94,107 @@ test('JSON download uses a mounted anchor and keeps the blob URL available for m
   timer(); assert.equal(revoked, 'blob:test');
 });
 
-test('volume export produces one download per click and releases each previous URL before advancing', async () => {
-  const downloads = [], releases = []; let produced = 0, finished = 0;
-  const runtime = { async *exportVolumes() {
-    try {
-      for (const item of [
-        { filename: 'memory.qqj-memory.part-0001.bin', part: 1, manifest: false },
-        { filename: 'memory.qqj-memory.part-0002.bin', part: 2, manifest: false },
-        { filename: 'memory.qqj-memory.index.json', manifest: true },
-      ]) { produced += 1; yield { ...item, blob: new Blob(['test']) }; }
-    } finally { finished += 1; }
-  } };
-  const view = createMemoryTransferView({ runtime, documentRef: { createElement: tag => new Node(tag) },
-    downloadVolume: file => { downloads.push(file.filename); return () => releases.push(file.filename); } });
+async function exportFiles() {
+  const chatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', files = [];
+  for await (const file of createMemoryVolumes([
+    { kind: 'record', id: 'sample', data: { chatId, text: '合成记忆正文'.repeat(20) } },
+    { kind: 'header', value: { source: { chatId }, messages: [] } },
+  ], { archiveId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', source: { chatId }, partBytes: 128,
+    exportedAt: '2026-10-28T00:00:00.000Z' })) files.push(file);
+  return files;
+}
+async function waitFor(predicate) {
+  const deadline = Date.now() + 3000;
+  while (!predicate() && Date.now() < deadline) await tick();
+  assert.ok(predicate(), '导出视图未完成预期动作');
+}
+
+test('自动单包导出先选择一次目标，再逐卷写入，最后只保存一次并释放迭代器', async () => {
+  const files = await exportFiles(), writes = []; let produced = 0, returned = 0, prepared = 0, closed = 0, finished = 0, metadata;
+  let releaseFinish;
+  const saved = new Promise(resolve => { releaseFinish = resolve; });
+  const view = createMemoryTransferView({ runtime: { async *exportVolumes() {
+    try { for (const file of files) { produced++; yield file; } } finally { returned++; }
+  } }, documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => {
+    prepared++; assert.equal(produced, 0, '先取得保存位置，不预先生成记忆卷');
+    return { mode: 'bundle', writable: { async write(chunk) { writes.push(chunk); }, async close() { closed++; }, async abort() {} },
+      async finish(value) { metadata = value; finished++; await saved; return { delivered: true, message: '大记忆包已保存。' }; }, async abort() {} };
+  } });
   const nodes = () => flatten(view.node), button = text => nodes().find(node => node.tag === 'button' && node.textContent === text);
-  button('分卷导出（大记忆）').fire('click'); await tick();
-  assert.equal(produced, 1); assert.equal(downloads.length, 1); assert.equal(releases.length, 0);
-  assert.equal(button('导出当前聊天记忆').disabled, true);
-  assert.equal(nodes().find(node => node.type === 'file').disabled, true);
-  assert.equal(button('下载下一卷').disabled, false); assert.equal(button('结束导出').disabled, false);
-  await tick(); assert.equal(produced, 1, 'waiting for the user must not generate another volume');
-  button('下载下一卷').fire('click'); await tick();
-  assert.deepEqual(releases, ['memory.qqj-memory.part-0001.bin']);
-  assert.equal(produced, 2); assert.equal(downloads.length, 2);
-  button('下载下一卷').fire('click'); await tick();
-  assert.equal(produced, 3); assert.equal(downloads.at(-1), 'memory.qqj-memory.index.json');
-  assert.equal(button('下载下一卷').hidden, true); assert.equal(finished, 0);
-  button('结束导出').fire('click'); await tick();
-  assert.equal(finished, 1); assert.deepEqual(releases, downloads);
-  assert.equal(button('导出当前聊天记忆').disabled, false);
-  assert.equal(nodes().find(node => node.type === 'file').disabled, false);
-  assert.match(nodes().find(node => node.className === 'settings-result').textContent, /导出已完成/);
-  assert.match(nodes().find(node => node.className === 'settings-result').textContent, /刷新状态.*查看记忆/);
-  view.dispose(); assert.deepEqual(releases, downloads, 'disposing after completion must not retain or release old URLs again');
+  button('自动导出大记忆包').fire('click');
+  await waitFor(() => finished === 1);
+  assert.equal(prepared, 1); assert.equal(produced, files.length); assert.equal(returned, 1); assert.equal(closed, 1);
+  assert.ok(writes.length > files.length); assert.equal(metadata.parts, files.length - 1); assert.match(metadata.filename, /\.qqj-memory$/);
+  assert.equal(button('导出当前聊天记忆').disabled, true, '最终保存完成前保持独占');
+  assert.equal(button('下载下一卷'), undefined); assert.equal(button('结束导出'), undefined);
+  releaseFinish(); await waitFor(() => button('导出当前聊天记忆').disabled === false);
+  assert.match(nodes().find(node => node.className === 'settings-result').textContent, /已保存/);
+  assert.match(nodes().find(node => node.className === 'settings-result').textContent, /JSONL/);
+  view.dispose(); assert.equal(finished, 1);
 });
 
-test('ending or leaving volume export closes the iterator and ignores a late volume', async t => {
-  for (const leave of ['end', 'dispose']) await t.test(leave, async () => {
-    let resolveRead, finished = 0, downloads = 0;
+test('兼容下载模式同样一键顺序保存全部卷和末尾清单，等待当前卷交接才生成下一卷', async () => {
+  const files = await exportFiles(), downloaded = []; let produced = 0, saves = 0, active = 0, maximum = 0, finished = 0;
+  let releaseFirst;
+  const gate = new Promise(resolve => { releaseFirst = resolve; });
+  const view = createMemoryTransferView({ runtime: { async *exportVolumes() { for (const file of files) { produced++; yield file; } } },
+    documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => ({ mode: 'volumes',
+      async saveVolume(file) { active++; maximum = Math.max(maximum, active); saves++; if (saves === 1) await gate; downloaded.push(file.filename); active--; },
+      async finish() { finished++; return { delivered: false, message: '已提交全部下载，请允许连续下载。' }; }, async abort() {} }) });
+  const nodes = () => flatten(view.node), button = text => nodes().find(node => node.tag === 'button' && node.textContent === text);
+  button('自动导出大记忆包').fire('click'); await waitFor(() => saves === 1);
+  assert.equal(produced, 1); assert.equal(active, 1);
+  await tick(); assert.equal(produced, 1, '不能把所有卷生成后排队保留');
+  releaseFirst(); await waitFor(() => finished === 1 && !button('导出当前聊天记忆').disabled);
+  assert.deepEqual(downloaded, files.map(file => file.filename)); assert.match(downloaded.at(-1), /\.index\.json$/);
+  assert.equal(maximum, 1); assert.match(nodes().find(node => node.className === 'settings-result').textContent, /已提交全部下载/);
+  view.dispose();
+});
+
+test('目标选择中取消会清理迟到的目标，绝不启动记忆读取', async () => {
+  let ready, exported = 0, aborted = 0;
+  const target = new Promise(resolve => { ready = resolve; });
+  const view = createMemoryTransferView({ runtime: { exportVolumes() { exported++; assert.fail('取消后不得读取记忆'); } },
+    documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: () => target });
+  const nodes = () => flatten(view.node), button = text => nodes().find(node => node.tag === 'button' && node.textContent === text);
+  button('自动导出大记忆包').fire('click'); await tick();
+  assert.equal(button('取消导出').disabled, false);
+  button('取消导出').fire('click'); await tick();
+  ready({ mode: 'volumes', async abort() { aborted++; } });
+  await waitFor(() => aborted === 1);
+  assert.equal(exported, 0); assert.equal(button('导出当前聊天记忆').disabled, false);
+  assert.match(nodes().find(node => node.className === 'settings-result').textContent, /取消/);
+  view.dispose();
+});
+
+test('取消或离开自动导出会关闭两种模式的迭代器，忽略迟到卷且不触发保存', async t => {
+  for (const mode of ['bundle', 'volumes']) for (const leave of ['cancel', 'dispose']) await t.test(mode + ' ' + leave, async () => {
+    let resolveRead, produced = 0, returned = 0, finished = 0, aborted = 0, volumeSaves = 0;
     const waiting = new Promise(resolve => { resolveRead = resolve; });
-    const runtime = { async *exportVolumes() { try { await waiting; yield { filename: 'late.bin', blob: new Blob(['late']), part: 1 }; } finally { finished += 1; } } };
-    const view = createMemoryTransferView({ runtime, documentRef: { createElement: tag => new Node(tag) },
-      downloadVolume: () => { downloads += 1; return () => {}; } });
-    const button = text => flatten(view.node).find(node => node.tag === 'button' && node.textContent === text);
-    button('分卷导出（大记忆）').fire('click'); await tick();
-    assert.equal(button('结束导出').disabled, false, 'stop remains available while reading a volume');
-    if (leave === 'end') button('结束导出').fire('click'); else view.dispose();
-    resolveRead(); await tick(); await tick();
-    assert.equal(downloads, 0); assert.equal(finished, 1);
-    if (leave === 'end') { assert.equal(button('导出当前聊天记忆').disabled, false); view.dispose(); }
+    const view = createMemoryTransferView({ runtime: { async *exportVolumes() {
+      try { produced++; await waiting; yield { filename: 'late.bin', blob: new Blob(['late']), part: 1 }; } finally { returned++; }
+    } }, documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => ({ mode,
+      writable: { async write() {}, async close() {}, async abort() {} }, async saveVolume() { volumeSaves++; },
+      async finish() { finished++; }, async abort() { aborted++; } }) });
+    const nodes = () => flatten(view.node), button = text => nodes().find(node => node.tag === 'button' && node.textContent === text);
+    button('自动导出大记忆包').fire('click'); await waitFor(() => produced === 1);
+    if (leave === 'cancel') button('取消导出').fire('click'); else view.dispose();
+    resolveRead(); await waitFor(() => returned === 1 && aborted === 1);
+    assert.equal(finished, 0); assert.equal(volumeSaves, 0);
+    if (leave === 'cancel') { await waitFor(() => !button('导出当前聊天记忆').disabled); view.dispose(); }
   });
 });
 
-test('leaving after a volume download releases its URL and returns the active iterator', async () => {
-  let released = 0, finished = 0;
+test('自动保存失败停止后续卷并恢复普通控件，不重试或写末尾清单', async () => {
+  const files = await exportFiles(); let produced = 0, returned = 0, saves = 0, finished = 0, aborted = 0;
   const view = createMemoryTransferView({ runtime: { async *exportVolumes() {
-    try { yield { filename: 'memory.qqj-memory.part-0001.bin', blob: new Blob(['part']), part: 1 }; }
-    finally { finished += 1; }
-  } }, documentRef: { createElement: tag => new Node(tag) }, downloadVolume: () => () => { released += 1; } });
-  flatten(view.node).find(node => node.textContent === '分卷导出（大记忆）').fire('click'); await tick();
-  assert.equal(released, 0); assert.equal(finished, 0);
-  view.dispose(); assert.equal(released, 1); await tick(); assert.equal(finished, 1);
-});
-
-test('a failed next volume releases the old URL and restores the ordinary controls', async () => {
-  let released = 0, finished = 0;
-  const view = createMemoryTransferView({ runtime: { async *exportVolumes() {
-    try { yield { filename: 'first.bin', blob: new Blob(['part']), part: 1 }; throw new Error('read failed'); }
-    finally { finished += 1; }
-  } }, documentRef: { createElement: tag => new Node(tag) }, downloadVolume: () => () => { released += 1; } });
-  const nodes = () => flatten(view.node);
-  nodes().find(node => node.textContent === '分卷导出（大记忆）').fire('click'); await tick();
-  nodes().find(node => node.textContent === '下载下一卷').fire('click'); await tick();
-  assert.equal(released, 1); assert.equal(finished, 1);
-  assert.equal(nodes().find(node => node.className === 'settings-result').textContent, 'read failed');
-  assert.equal(nodes().find(node => node.textContent === '导出当前聊天记忆').disabled, false);
-  assert.equal(nodes().find(node => node.type === 'file').disabled, false);
+    try { for (const file of files) { produced++; yield file; } } finally { returned++; }
+  } }, documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => ({ mode: 'volumes',
+    async saveVolume() { saves++; throw new Error('本卷保存失败'); }, async finish() { finished++; }, async abort() { aborted++; } }) });
+  const nodes = () => flatten(view.node), button = text => nodes().find(node => node.tag === 'button' && node.textContent === text);
+  button('自动导出大记忆包').fire('click'); await waitFor(() => aborted === 1 && !button('导出当前聊天记忆').disabled);
+  assert.equal(produced, 1); assert.equal(returned, 1); assert.equal(saves, 1); assert.equal(finished, 0);
+  assert.match(nodes().find(node => node.className === 'settings-result').textContent, /本卷保存失败/);
   view.dispose();
 });
 
@@ -206,12 +231,37 @@ test('volume import requires the manifest and volume files together', async t =>
   });
 });
 
-test('volume download returns a release function instead of retaining every URL on a timer', () => {
-  const revoked = []; let appended, clicked = false, removed = false;
-  const file = { filename: 'memory.qqj-memory.part-0001.bin', blob: new Blob(['part']) };
-  const link = { click() { clicked = true; }, remove() { removed = true; } };
-  const release = transferView.downloadMemoryVolume(file, { createElement: () => link, body: { append(node) { appended = node; } },
-    defaultView: { URL: { createObjectURL(blob) { assert.equal(blob, file.blob); return 'blob:volume'; }, revokeObjectURL(url) { revoked.push(url); } } } });
-  assert.equal(link.download, file.filename); assert.equal(appended, link); assert.equal(clicked, true); assert.equal(removed, true);
-  assert.deepEqual(revoked, []); assert.equal(typeof release, 'function'); release(); assert.deepEqual(revoked, ['blob:volume']);
+test('单个大记忆包直接传文件给流式预览，超过1GB也不由UI整文件读取', async () => {
+  const file = { name: 'memory.qqj-memory', size: 1024 ** 3 + 1, text() { assert.fail('UI不得整包读取'); } };
+  let previewed = 0;
+  const view = createMemoryTransferView({ runtime: { async previewVolumes(files) { assert.deepEqual(files, [file]); previewed++; return { messages: 3, summaries: 1, states: 1 }; } },
+    documentRef: { createElement: tag => new Node(tag) } });
+  const input = flatten(view.node).find(node => node.type === 'file');
+  assert.match(input.accept, /\.qqj-memory/);
+  input.files = [file]; input.fire('change'); await waitFor(() => previewed === 1);
+  view.dispose();
+});
+
+test('系统保存过程中离开页面，迟到成功不会改写状态或再次保存', async () => {
+  const files = await exportFiles(); let resolveFinish, finishCalls = 0, abortCalls = 0;
+  const waiting = new Promise(resolve => { resolveFinish = resolve; });
+  const view = createMemoryTransferView({ runtime: { async *exportVolumes() { yield* files; } },
+    documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => ({ mode: 'bundle',
+      writable: { async write() {}, async close() {}, async abort() {} }, async finish() { finishCalls++; await waiting; return { message: '迟到保存成功' }; },
+      async abort() { abortCalls++; } }) });
+  const nodes = flatten(view.node), status = nodes.find(node => node.className === 'settings-result');
+  nodes.find(node => node.textContent === '自动导出大记忆包').fire('click'); await waitFor(() => finishCalls === 1);
+  view.dispose(); await waitFor(() => abortCalls === 1);
+  resolveFinish(); await tick(); await tick();
+  assert.equal(finishCalls, 1); assert.doesNotMatch(status.textContent, /迟到保存成功/);
+});
+
+test('保存目标不支持时不生成任何卷，保留明确提示并恢复控件', async () => {
+  let produced = 0;
+  const view = createMemoryTransferView({ runtime: { exportVolumes() { produced++; } },
+    documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => { throw new Error('当前环境无法保存大记忆包'); } });
+  const nodes = flatten(view.node), button = nodes.find(node => node.textContent === '自动导出大记忆包');
+  button.fire('click'); await waitFor(() => !button.disabled);
+  assert.equal(produced, 0); assert.match(nodes.find(node => node.className === 'settings-result').textContent, /当前环境无法保存/);
+  view.dispose();
 });

@@ -15,6 +15,7 @@ import { stableJson } from './memory-transfer-json.js';
 import { createActivitySignal } from './plugin-activity.js';
 import { createAvatarImageStore } from './avatar-image-store.js';
 import { createMemoryVolumes, openMemoryVolumes } from './memory-transfer-volumes.js';
+import { openMemoryBundle } from './memory-transfer-bundle.js';
 import { validateTransferGraph, transferRecordKey } from './memory-transfer-graph.js';
 
 export const MEMORY_PACKAGE_LIMIT = 64 * 1024 * 1024;
@@ -243,7 +244,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       const collected = new Map(); let collectedBytes = 0;
       const collect = (id, result) => {
         if (!collected.has(id)) collectedBytes += bytes({ id, data: result.data });
-        check(collectedBytes <= MEMORY_PACKAGE_LIMIT, '普通记忆包超过 64 MB，请使用“分卷导出（大记忆）”。');
+        check(collectedBytes <= MEMORY_PACKAGE_LIMIT, '普通记忆包超过 64 MB，请使用“自动导出大记忆包”。');
         collected.set(id, result);
       };
       const tracking = { ...client, async get(collection, id) { const result = await client.get(collection, id); collect(id, result); return result; } };
@@ -287,7 +288,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         prequel: typeof captured.metadata.qianqianjiePrequel === 'string' ? captured.metadata.qianqianjiePrequel : null,
         calendar: clone(captureCalendar(captured.identity.chatId)), ...(avatarImages.length ? { avatarImages } : {}) };
       const value = { ...payload, checksum: await sha256(stableJson(payload)) };
-      check(bytes(value) <= MEMORY_PACKAGE_LIMIT, '普通记忆包超过 64 MB，请使用“分卷导出（大记忆）”。');
+      check(bytes(value) <= MEMORY_PACKAGE_LIMIT, '普通记忆包超过 64 MB，请使用“自动导出大记忆包”。');
       return { filename: `千千结记忆-${now().toISOString().replace(/[:.]/g, '-')}.qqj-memory.json`, text: JSON.stringify(value) };
     });
   }
@@ -400,7 +401,9 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
   async function previewVolumes(files) {
     check(!active && !isBusy(), '请等待聊天生成和记忆任务完成后再导入。');
     const captured = capture();
-    const archive = await openMemoryVolumes(files, { onRecord: (item, chatId) => validateVolumeRecord(item, chatId) });
+    const selected = Array.from(files), options = { onRecord: (item, chatId) => validateVolumeRecord(item, chatId) };
+    const archive = selected.length === 1 && /\.qqj-memory$/i.test(selected[0].name ?? '')
+      ? await openMemoryBundle(selected[0], options) : await openMemoryVolumes(selected, options);
     const value = archive.header;
     check(value.format === FORMAT && value.formatVersion === 3 && value.source.chatId === archive.manifest.source.chatId,
       '分卷聊天说明无效。');

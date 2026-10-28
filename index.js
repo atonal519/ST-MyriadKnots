@@ -11,9 +11,9 @@ import { is_group_generating } from '/scripts/group-chats.js';
 import { loadWorldInfo, selected_world_info, world_info, world_info_case_sensitive, world_info_match_whole_words, world_names } from '/scripts/world-info.js';
 import { localforage, showdown, DOMPurify } from '/lib.js';
 import { getCurrentUserHandle } from '/scripts/user.js';
+import { download as hostDownload } from '/scripts/utils.js';
 import { version as pluginVersion, update_notice as updateNoticePath } from './manifest.json';
 import { createBackendClient } from './src/backend-client.js';
-import { isTauriTavern } from './src/tauri-backend.js';
 import { createPrivateRecallDiagnostics } from './src/private-recall-diagnostics.js';
 import { createPluginUpdates } from './src/plugin-updates.js';
 import { createPluginActivity } from './src/plugin-activity.js';
@@ -173,7 +173,7 @@ const sourcePermissions = createSourcePermissionController({ settings, contextPr
 const summaryPrompt = () => settings.get().summaryPrompt;
 const csePrompt = () => settings.get().csePrompt;
 const profilePrompt = () => settings.get().profilePrompt;
-const coreRecordCache = isTauriTavern() || settings.get().coreCacheEnabled === false
+const coreRecordCache = settings.get().coreCacheEnabled === false
   ? null : createIndexedDbCoreRecordCache({ localForage: localforage, accountHandleProvider: getCurrentUserHandle });
 const foundationStore = createFoundationStore({ client: backendClient, contextProvider: () => session.identity(), isEnabled: settings.isEnabled, coreRecordCache });
 const targetFoundationStore = identity => foundationStore.forIdentity(identity);
@@ -580,6 +580,7 @@ ui = bootstrap({
   chatMemoryManagement,
   storageManagement,
   memoryTransfer,
+  hostDownload,
   sessionStateProvider: () => session.getState(),
   pluginDiagnosticProvider: () => pluginLifecycleFailure,
   prepareSession: () => session.prepare({ entryPoint: 'memoryManagement' }),

@@ -573,5 +573,9 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   await panel.show(); settingsTab.fire('click');
   assert.ok(flatten(view.children[0]).some(node => node.id === 'qqj-settings-core-cache'), 'SillyTavern设置页显示缓存开关');
   eventTab.fire('click'); tauriTavern = true; settingsTab.fire('click');
-  assert.equal(flatten(view.children[0]).some(node => node.id === 'qqj-settings-core-cache'), false, 'TT继续使用原生存储，不展示无效开关');
+  const ttCacheToggle = flatten(view.children[0]).find(node => node.id === 'qqj-settings-core-cache');
+  assert.ok(ttCacheToggle, 'TT也显示同一core缓存开关');
+  const ttCacheInput = flatten(ttCacheToggle).find(node => node.tag === 'input');
+  ttCacheInput.checked = true; ttCacheInput.fire('change');
+  assert.equal(values.coreCacheEnabled, true, 'TT可用现有设置选择启用缓存');
 });

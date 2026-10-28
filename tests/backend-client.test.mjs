@@ -22,6 +22,34 @@ function withGlobals(values, callback) {
 
 const asBytes = body => typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
 
+test('TT默认客户端识别原生批读能力，每批仅一次请求且不走HTTP或批写', async () => {
+  const slots = new Map(); let healthReads = 0, nativeReads = 0;
+  const key = options => `${options.namespace}/${options.table}/${options.key}`;
+  const store = {
+    async tryGetJson(options) { nativeReads++; return slots.has(key(options)) ? { found: true, value: structuredClone(slots.get(key(options))) } : { found: false }; },
+    async setJson(options) { slots.set(key(options), structuredClone(options.value)); },
+    async deleteJson(options) { slots.delete(key(options)); },
+    async listKeys() { assert.fail('批读不得扫描整份集合'); },
+    async listTables() { healthReads++; return []; },
+  };
+  await withGlobals({ __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store } } }, fetch: () => assert.fail('TT不得访问HTTP后端') }, async () => {
+    const client = createBackendClient({ headers: () => assert.fail('原生接口不读取HTTP请求头') });
+    await client.put('chat', 'first', { summary: '人工摘要🙂' }, 0);
+    await client.put('chat', 'second', { state: '手动状态' }, 0);
+    nativeReads = 0;
+    const records = await client.getMany('chat', ['second', 'missing', 'first']);
+    assert.deepEqual(records.map(record => [record.recordId, record.status]), [['second', 200], ['missing', 404], ['first', 200]]);
+    assert.deepEqual(records[0].envelope.data, { state: '手动状态' });
+    assert.deepEqual(records[2].envelope.data, { summary: '人工摘要🙂' });
+    assert.equal(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.post, 1, '使用已实现的record-batch接口');
+    assert.equal(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.get, 0, '不再拆成独立GET');
+    assert.equal(nativeReads, 3); assert.equal(healthReads, 1);
+    await client.getMany('chat', ['first']);
+    assert.equal(healthReads, 1, '后续批次复用能力结果');
+    assert.equal(await client.putMany('chat', [{ recordId: 'never', data: {}, expectedRevision: 0 }]), null, '原生写入仍使用原单条CAS');
+  });
+});
+
 test('batch PUT sends one acknowledged package and uses only cached capability', async () => {
   const calls = []; let active = 0, maxActive = 0;
   const client = createBackendClient({ fetchImpl: async (url, options) => {

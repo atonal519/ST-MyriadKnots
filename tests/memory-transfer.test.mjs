@@ -14,6 +14,7 @@ import { createChatIdentityCoordinator } from '../src/chat-identity.js';
 import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import { sha256 } from '../src/identity.js';
 import { stableJson } from '../src/memory-transfer-json.js';
+import { writeMemoryBundle } from '../src/memory-transfer-bundle.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 import { createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
@@ -120,6 +121,33 @@ async function volumeFiles(runtime, options = { partBytes: 4096 }) {
   assert.ok(files.at(-1).name.endsWith('.qqj-memory.index.json'), 'the final file seals the completed archive');
   return files;
 }
+
+test('单文件流式包经正式runtime预览导入和撤销，保留人工摘要与前情', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const floorId = f.memory.getState().floors[0].floorId;
+  await f.memory.editSummary(floorId, '用户手填：钥匙在衣袋中。');
+  f.ctx.chatMetadata.qianqianjiePrequel = '手动前情'; f.api.reloadFromContext();
+  const chunks = []; let closed = false;
+  const metadata = await writeMemoryBundle(f.runtime.exportVolumes({ partBytes: 512 }), {
+    async write(blob) { chunks.push(blob); }, async close() { closed = true; }, async abort() { assert.fail('完整导出不能中止'); },
+  });
+  assert.equal(closed, true);
+  const file = new File(chunks, metadata.filename);
+  assert.match(file.name, /\.qqj-memory$/);
+  file.arrayBuffer = () => assert.fail('预览不得读取整个大文件');
+  file.text = () => assert.fail('预览不得把大文件读成文本');
+  const before = structuredClone(f.ctx.chat);
+  const plan = await f.runtime.previewVolumes([file]);
+  await f.runtime.importPreview(plan);
+  assert.equal(f.ctx.chatMetadata.qianqianjiePrequel, '手动前情');
+  assert.deepEqual(f.ctx.chat.map(message => message.mes), before.map(message => message.mes));
+  const restoredSummary = [...f.backend.records.values()].map(record => record.data)
+    .find(record => record.chatId === IMPORTED && record.recordType === 'floorMemory');
+  assert.equal(restoredSummary.summary.userText, '用户手填：钥匙在衣袋中。');
+  await f.runtime.undo();
+  assert.equal(f.ctx.chatMetadata.qianqianjie.chatId, SOURCE);
+  assert.equal(f.ctx.chatMetadata.qianqianjiePrequel, '手动前情');
+});
 
 test('volume runtime round trip streams records and preserves memory, time, people, vectors and host fields', async () => {
   const calendars = new Map([[SOURCE, { months: 4, prefix: '测试历' }], [TARGET, { months: 12, prefix: '旧历' }]]);

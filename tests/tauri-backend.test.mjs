@@ -78,13 +78,110 @@ test('TT health checks native IO; read/put/list survive a new client/runtime', a
   assert.deepEqual(await restarted.get('聊天🙂', '记录'.repeat(64)), created);
   assert.deepEqual(await restarted.list('聊天🙂'), [{ recordId: '记录'.repeat(64), ...created }]);
   const batch = await restarted.getMany('聊天🙂', ['记录'.repeat(64), '缺失记录']);
-  assert.deepEqual(batch.map(item => [item.recordId, item.status]), [['记录'.repeat(64), 200], ['缺失记录', 404]], 'TT默认HTTP适配器使用逐条读取回落');
+  assert.deepEqual(batch.map(item => [item.recordId, item.status]), [['记录'.repeat(64), 200], ['缺失记录', 404]], 'TT批量读取保留逐项结果');
   const iterated = [];
   for await (const item of restarted.iterRecords('聊天🙂')) iterated.push(item.recordId);
   assert.deepEqual(iterated, ['记录'.repeat(64)], 'TT记录遍历使用原生逐条迭代');
   assert.deepEqual(await restarted.list('other'), []);
   f.failRead(true);
   await assert.rejects(f.client.health(), /read failure/);
+});
+
+test('TT批量读取固定最多8条native并发，保持顺序、重复ID与逐项200/404/500', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.client.health()).capabilities.recordBatchRead, true);
+  const ids = Array.from({ length: 57 }, (_, index) => `record-${index}`);
+  for (const [index, id] of ids.entries()) await f.client.put('c', id, { index }, 0);
+  await f.client.put('c', 'deleted', '旧记录', 0); await f.client.remove('c', 'deleted', 1);
+  const table = nativeKey(JSON.stringify(['qianqianjie', 'c']));
+  await f.store.setJson({ namespace: 'qqj-bainiao-v1', table, key: nativeKey('bad'), value: { format: 'qqj-tt-json-v2', serialized: '{bad' } });
+  const originalRead = f.store.tryGetJson;
+  let active = 0, maximum = 0;
+  f.store.tryGetJson = async options => {
+    active++; maximum = Math.max(maximum, active);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      if (options.key === nativeKey('io-failure')) throw new Error('private native read failure');
+      return await originalRead(options);
+    } finally { active--; }
+  };
+  const requested = [ids[23], 'missing', 'bad', 'deleted', 'io-failure', ...ids.slice().reverse(), ids[0], 'bad'];
+  const writesBefore = f.writes();
+  const response = await f.request('record-batch/qianqianjie/c', 'POST', { recordIds: requested });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.deepEqual(result.map(item => item.recordId), requested);
+  assert.deepEqual(result.map(item => item.status), requested.map(id => ['missing', 'deleted'].includes(id) ? 404 : ['bad', 'io-failure'].includes(id) ? 500 : 200));
+  assert.ok(maximum > 1, '原生读取实际并行，不再排成逐条namespace任务');
+  assert.ok(maximum <= 8, '单批原生读取保持固定上限');
+  for (const item of result) {
+    if (item.status === 200) assert.equal(item.envelope.data.index, Number(item.recordId.slice('record-'.length)));
+    else assert.equal(item.error, item.status === 404 ? 'not_found' : 'storage_error');
+  }
+  assert.doesNotMatch(JSON.stringify(result), /private native read failure/);
+  assert.equal(f.writes(), writesBefore, '批量读取不写入');
+});
+
+test('TT批量读取拒绝坏JSON、空批次、超过64条及非法ID，且不读取或写入', async t => {
+  const f = await fixture(t); f.resetReads();
+  for (const body of [{}, { recordIds: [] }, { recordIds: Array(65).fill('r') }, { recordIds: 'r' },
+    { recordIds: ['valid', 1] }, { recordIds: ['valid', ''] }, { recordIds: ['valid', '../bad'] }]) {
+    assert.equal((await f.request('record-batch/qianqianjie/c', 'POST', body)).status, 400);
+  }
+  const malformed = await f.fetchImpl(`${API_BASE}/v1/record-batch/qianqianjie/c`, { method: 'POST', body: '{bad' });
+  assert.equal(malformed.status, 400);
+  assert.equal((await f.request('record-batch/qianqianjie/c', 'GET')).status, 405);
+  assert.equal(f.reads(), 0, '整批参数先验证，不能读到前面的合法ID');
+  assert.equal(f.writes(), 0);
+});
+
+test('TT批量读取取消后不再派发，全部已发native读结束后才允许复制写入并释放后续读取', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  assert.equal((await f.client.health()).capabilities.recordBatchRead, true);
+  const ids = Array.from({ length: 24 }, (_, index) => `record-${index}`);
+  for (const [index, id] of ids.entries()) await f.client.put('c', id, { index }, 0);
+  const originalRead = f.store.tryGetJson, originalWrite = f.store.setJson;
+  let announce, releaseFirst, releaseRest, firstFinished;
+  const entered = new Promise(resolve => { announce = resolve; });
+  const gateFirst = new Promise(resolve => { releaseFirst = resolve; });
+  const gateRest = new Promise(resolve => { releaseRest = resolve; });
+  const firstDone = new Promise(resolve => { firstFinished = resolve; });
+  let submitted = 0, active = 0, followingReadStarted = false, writeStarted = false;
+  f.store.tryGetJson = async options => {
+    const index = submitted++;
+    if (index >= 8) { followingReadStarted = true; assert.equal(active, 0, '后续读取不与已取消批次残留native读重叠'); return originalRead(options); }
+    active++; if (submitted === 8) announce();
+    try { await (index === 0 ? gateFirst : gateRest); return await originalRead(options); }
+    finally { active--; if (index === 0) firstFinished(); }
+  };
+  f.store.setJson = async options => { writeStarted = true; assert.equal(active, 0, 'fallback copy开始前整批已发读必须全部结束'); return originalWrite(options); };
+  const controller = new AbortController(), reason = new DOMException('chat changed', 'AbortError');
+  const reading = f.fetchImpl(`${API_BASE}/v1/record-batch/qianqianjie/c`, { method: 'POST', body: JSON.stringify({ recordIds: ids }), signal: controller.signal });
+  const cancelled = reading.then(value => ({ value }), error => ({ error }));
+  let writing;
+  try {
+    const earlyResponse = await Promise.race([entered.then(() => null), reading]);
+    assert.equal(earlyResponse, null, '批量请求应先提交8个native读取');
+    writing = f.client.put('c', ids[0], { index: 'updated' }, 1);
+    const written = writing.then(value => ({ value }), error => ({ error }));
+    controller.abort(reason);
+    assert.equal((await cancelled).error, reason);
+    releaseFirst(); await firstDone; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(submitted, 8, '取消后不读取剩余16条，也不提前启动下一任务');
+    assert.equal(followingReadStarted, false);
+    assert.equal(writeStarted, false, '首个worker结束不能释放仍有7个native读的namespace锁');
+    releaseRest();
+    const saved = await written;
+    assert.equal(saved.error, undefined);
+    assert.equal(saved.value.revision, 2);
+    assert.equal(writeStarted, true);
+    assert.equal((await f.client.get('c', ids[0])).data.index, 'updated');
+    assert.equal(submitted, 10, '仅8个已发批读、写入前读和最终读取');
+  } finally {
+    releaseFirst(); releaseRest();
+    await Promise.allSettled([reading, writing]);
+    f.store.tryGetJson = originalRead; f.store.setJson = originalWrite;
+  }
 });
 
 test('TT流式枚举逐条读取，yield后释放namespace锁，提前结束不读取其余正文', { timeout: 5000 }, async t => {

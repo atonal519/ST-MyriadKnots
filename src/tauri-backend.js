@@ -134,7 +134,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
       await store.listTables({ namespace: STORAGE_NAMESPACE });
       return { ok: true, plugin: { id: 'st-bainiaodata', name: 'Bainiao Data (TT)', version: '0.1.0-tt.3' },
         api: { current: 1, supported: [1] }, storage: { scope: 'tauritavern-data-root', envelopeSchemaVersion: 1 },
-        capabilities: { records: true, recordList: true, optimisticRevision: true, atomicReplace: true, trash: true,
+        capabilities: { records: true, recordList: true, recordBatchRead: true, optimisticRevision: true, atomicReplace: true, trash: true,
           trashRestore: true, permanentDelete: true, trashGc: true, pagination: false, batchTransactions: false },
         adapter: { version: 3, revisionScope: 'single-app-runtime' } };
     }
@@ -149,6 +149,37 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     // Native replacement can fall back to copy; reads must still wait for writes.
     return locked(globalRef, `${STORAGE_NAMESPACE}:${namespace}`, async () => {
       abort(signal);
+      if (parts[0] === 'record-batch' && parts.length === 3) {
+        if (method !== 'POST') throw error(405, 'Unsupported method');
+        let body;
+        try { body = JSON.parse(init.body); } catch { throw error(400, 'Invalid JSON'); }
+        if (!Array.isArray(body?.recordIds) || body.recordIds.length < 1 || body.recordIds.length > 64) throw error(400, 'Invalid recordIds');
+        const ids = body.recordIds.map(segment), collection = segment(parts[2]);
+        const table = await tableFor(namespace, collection), results = new Array(ids.length);
+        let cursor = 0;
+        const workers = await Promise.allSettled(Array.from({ length: Math.min(8, ids.length) }, async () => {
+          while (cursor < ids.length) {
+            abort(signal);
+            const index = cursor++, recordId = ids[index];
+            try {
+              const key = await keyFor(recordId);
+              abort(signal);
+              const slot = await read(store, table, key, namespace, collection, recordId);
+              abort(signal);
+              results[index] = slot?.current ? { recordId, status: 200, envelope: slot.current }
+                : { recordId, status: 404, error: 'not_found', message: 'Record not found' };
+            } catch {
+              abort(signal);
+              results[index] = { recordId, status: 500, error: 'storage_error', message: 'Unable to read record' };
+            }
+          }
+        }));
+        // Native reads already submitted must finish before a copying write can enter.
+        abort(signal);
+        const failed = workers.find(worker => worker.status === 'rejected');
+        if (failed) throw failed.reason;
+        return results;
+      }
       const permanent = parts.length === 5 && parts[4] === 'permanent';
       const collectExpired = parts[0] === 'trash' && parts.length === 3 && parts[2] === 'collect-expired';
       if (collectExpired) {

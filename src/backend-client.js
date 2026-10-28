@@ -192,7 +192,6 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
   const recordBatchKey = collection => `/v1/record-batch/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}`;
   const negotiateCapabilities = async () => {
     if (capabilities) return capabilities;
-    if (useTauri) return null;
     if (!capabilityRequest) {
       capabilityRequest = Promise.resolve().then(async () => { await client.health(); return capabilities; })
         .finally(() => { capabilityRequest = null; });
