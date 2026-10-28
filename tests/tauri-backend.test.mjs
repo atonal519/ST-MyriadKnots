@@ -135,6 +135,74 @@ test('TT批量读取拒绝坏JSON、空批次、超过64条及非法ID，且不�
   assert.equal(f.writes(), 0);
 });
 
+test('TT64条批读每8条让出共享队列，另一个client的root短预算不等待整批', { timeout: 5000 }, async t => {
+  for (const currentCollection of ['large-chat', 'other-chat']) await t.test(currentCollection, async t => {
+    const f = await fixture(t), ids = Array.from({ length: 64 }, (_, index) => `floor-${index}`);
+    for (const [index, id] of ids.entries()) await f.client.put('large-chat', id, { index }, 0);
+    await f.client.put(currentCollection, 'v3-root', { headCheckpointId: 'current-head' }, 0);
+    const originalRead = f.store.tryGetJson;
+    let announce, release, batchFinished = false, floorsRead = 0, floorsBeforeRoot = null;
+    const entered = new Promise(resolve => { announce = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    f.store.tryGetJson = async options => {
+      if (options.key === nativeKey('v3-root')) floorsBeforeRoot = floorsRead;
+      else { floorsRead++; if (floorsRead === 1) announce(); await gate; }
+      await new Promise(resolve => setTimeout(resolve, 35));
+      return originalRead(options);
+    };
+    const batch = f.client.getMany('large-chat', ids).then(value => { batchFinished = true; return value; });
+    try {
+      await entered;
+      const foreground = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef: f.globalRef }), timeoutMs: 180 });
+      const reading = foreground.get(currentCollection, 'v3-root'); release();
+      assert.equal((await reading).data.headCheckpointId, 'current-head');
+      assert.equal(floorsBeforeRoot, 8, '同namespace另一client在首个8条组之后获得原队列');
+      assert.equal(batchFinished, false, 'root不等待64条全部扫描');
+      const rows = await batch; assert.deepEqual(rows.map(row => row.envelope.data.index), ids.map((_, index) => index));
+    } finally { release(); await Promise.allSettled([batch]); f.store.tryGetJson = originalRead; }
+  });
+});
+
+test('TT批读组间CAS更新root，复制写入期间不开始下一组且查询看到完整新root', { timeout: 5000 }, async t => {
+  const f = await fixture(t), ids = Array.from({ length: 24 }, (_, index) => `floor-${index}`);
+  for (const [index, id] of ids.entries()) await f.client.put('chat', id, { index }, 0);
+  await f.client.put('chat', 'v3-root', { version: 'old' }, 0);
+  const originalRead = f.store.tryGetJson, originalWrite = f.store.setJson;
+  let announceFirst, announceSecond, announceWrite, releaseFirst, releaseSecond, releaseWrite;
+  const first = new Promise(resolve => { announceFirst = resolve; }), second = new Promise(resolve => { announceSecond = resolve; }), writeEntered = new Promise(resolve => { announceWrite = resolve; });
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; }), secondGate = new Promise(resolve => { releaseSecond = resolve; }), writeGate = new Promise(resolve => { releaseWrite = resolve; });
+  let floorsRead = 0, active = 0, writing = false;
+  f.store.tryGetJson = async options => {
+    assert.equal(writing, false, '不能在TT2.2 fallback复制替换期间读取半文件');
+    if (options.key === nativeKey('v3-root')) return originalRead(options);
+    const index = floorsRead++; active++;
+    if (floorsRead === 8) announceFirst(); if (floorsRead === 9) announceSecond();
+    try { if (index < 8) await firstGate; else if (index < 16) await secondGate; return await originalRead(options); }
+    finally { active--; }
+  };
+  f.store.setJson = async options => {
+    assert.equal(active, 0, '写入前当前8个native读取必须全部settle');
+    writing = true; announceWrite();
+    try { await writeGate; return await originalWrite(options); } finally { writing = false; }
+  };
+  const batch = f.client.getMany('chat', ids);
+  let outcomes, reading;
+  try {
+    await first;
+    const other = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef: f.globalRef }) });
+    outcomes = Promise.allSettled([f.client.put('chat', 'v3-root', { version: 'new', rows: [1, 2] }, 1), other.put('chat', 'v3-root', { version: 'loser' }, 1)]);
+    reading = other.get('chat', 'v3-root'); releaseFirst();
+    assert.equal(await Promise.race([writeEntered.then(() => 'write'), second.then(() => 'nextGroup')]), 'write', '排队写入先于下一8条组');
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(floorsRead, 8);
+    releaseWrite();
+    const root = await reading; assert.equal(root.revision, 2); assert.deepEqual(root.data, { version: 'new', rows: [1, 2] });
+    const results = await outcomes; assert.equal(results[0].status, 'fulfilled'); assert.equal(results[1].reason.status, 409);
+    releaseSecond(); assert.equal((await batch).length, ids.length);
+  } finally {
+    releaseFirst(); releaseSecond(); releaseWrite(); await Promise.allSettled([batch, outcomes, reading]);
+    f.store.tryGetJson = originalRead; f.store.setJson = originalWrite;
+  }
+});
+
 test('TT批量读取取消后不再派发，全部已发native读结束后才允许复制写入并释放后续读取', { timeout: 5000 }, async t => {
   const f = await fixture(t);
   assert.equal((await f.client.health()).capabilities.recordBatchRead, true);

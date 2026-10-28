@@ -2691,54 +2691,58 @@ function wr({ globalRef: e = globalThis } = {}) {
 		};
 		let h = yr(d[1]);
 		if (h === "system-trash") throw ur(400, "Reserved namespace");
+		let g = `${cr}:${h}`;
 		if (d[0] === "records" && d.length === 3 && f === "GET") {
 			let e = [];
 			for await (let t of l.iterRecords(h, yr(d[2]), { signal: p })) e.push(t);
 			return e.sort((e, t) => e.recordId.localeCompare(t.recordId));
 		}
-		return Sr(e, `${cr}:${h}`, async () => {
-			if (fr(p), d[0] === "record-batch" && d.length === 3) {
-				if (f !== "POST") throw ur(405, "Unsupported method");
-				let e;
-				try {
-					e = JSON.parse(u.body);
-				} catch {
-					throw ur(400, "Invalid JSON");
-				}
-				if (!Array.isArray(e?.recordIds) || e.recordIds.length < 1 || e.recordIds.length > 64) throw ur(400, "Invalid recordIds");
-				let t = e.recordIds.map(yr), n = yr(d[2]), a = await r(h, n), o = Array(t.length), c = 0, l = await Promise.allSettled(Array.from({ length: Math.min(8, t.length) }, async () => {
-					for (; c < t.length;) {
+		if (d[0] === "record-batch" && d.length === 3) {
+			if (f !== "POST") throw ur(405, "Unsupported method");
+			let t;
+			try {
+				t = JSON.parse(u.body);
+			} catch {
+				throw ur(400, "Invalid JSON");
+			}
+			if (!Array.isArray(t?.recordIds) || t.recordIds.length < 1 || t.recordIds.length > 64) throw ur(400, "Invalid recordIds");
+			let n = t.recordIds.map(yr), a = yr(d[2]), o = await r(h, a), c = Array(n.length);
+			for (let t = 0; t < n.length; t += 8) fr(p), await Sr(e, g, async () => {
+				fr(p);
+				let e = await Promise.allSettled(n.slice(t, t + 8).map(async (e, n) => {
+					fr(p);
+					let r = t + n;
+					try {
+						let t = await i(e);
 						fr(p);
-						let e = c++, r = t[e];
-						try {
-							let t = await i(r);
-							fr(p);
-							let c = await s(m, a, t, h, n, r);
-							fr(p), o[e] = c?.current ? {
-								recordId: r,
-								status: 200,
-								envelope: c.current
-							} : {
-								recordId: r,
-								status: 404,
-								error: "not_found",
-								message: "Record not found"
-							};
-						} catch {
-							fr(p), o[e] = {
-								recordId: r,
-								status: 500,
-								error: "storage_error",
-								message: "Unable to read record"
-							};
-						}
+						let n = await s(m, o, t, h, a, e);
+						fr(p), c[r] = n?.current ? {
+							recordId: e,
+							status: 200,
+							envelope: n.current
+						} : {
+							recordId: e,
+							status: 404,
+							error: "not_found",
+							message: "Record not found"
+						};
+					} catch {
+						fr(p), c[r] = {
+							recordId: e,
+							status: 500,
+							error: "storage_error",
+							message: "Unable to read record"
+						};
 					}
 				}));
 				fr(p);
-				let g = l.find((e) => e.status === "rejected");
-				if (g) throw g.reason;
-				return o;
-			}
+				let r = e.find((e) => e.status === "rejected");
+				if (r) throw r.reason;
+			});
+			return c;
+		}
+		return Sr(e, g, async () => {
+			fr(p);
 			let t = d.length === 5 && d[4] === "permanent";
 			if (d[0] === "trash" && d.length === 3 && d[2] === "collect-expired") {
 				if (f !== "POST") throw ur(405, "Unsupported method");

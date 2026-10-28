@@ -140,27 +140,28 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     }
     const namespace = segment(parts[1]);
     if (namespace === 'system-trash') throw error(400, 'Reserved namespace');
+    const lockName = `${STORAGE_NAMESPACE}:${namespace}`;
     if (parts[0] === 'records' && parts.length === 3 && method === 'GET') {
       const records = [];
       // Release the shared queue between native records so other chats can load.
       for await (const record of fetch.iterRecords(namespace, segment(parts[2]), { signal })) records.push(record);
       return records.sort((a, b) => a.recordId.localeCompare(b.recordId));
     }
-    // Native replacement can fall back to copy; reads must still wait for writes.
-    return locked(globalRef, `${STORAGE_NAMESPACE}:${namespace}`, async () => {
-      abort(signal);
-      if (parts[0] === 'record-batch' && parts.length === 3) {
-        if (method !== 'POST') throw error(405, 'Unsupported method');
-        let body;
-        try { body = JSON.parse(init.body); } catch { throw error(400, 'Invalid JSON'); }
-        if (!Array.isArray(body?.recordIds) || body.recordIds.length < 1 || body.recordIds.length > 64) throw error(400, 'Invalid recordIds');
-        const ids = body.recordIds.map(segment), collection = segment(parts[2]);
-        const table = await tableFor(namespace, collection), results = new Array(ids.length);
-        let cursor = 0;
-        const workers = await Promise.allSettled(Array.from({ length: Math.min(8, ids.length) }, async () => {
-          while (cursor < ids.length) {
+    if (parts[0] === 'record-batch' && parts.length === 3) {
+      if (method !== 'POST') throw error(405, 'Unsupported method');
+      let body;
+      try { body = JSON.parse(init.body); } catch { throw error(400, 'Invalid JSON'); }
+      if (!Array.isArray(body?.recordIds) || body.recordIds.length < 1 || body.recordIds.length > 64) throw error(400, 'Invalid recordIds');
+      const ids = body.recordIds.map(segment), collection = segment(parts[2]);
+      const table = await tableFor(namespace, collection), results = new Array(ids.length);
+      for (let start = 0; start < ids.length; start += 8) {
+        abort(signal);
+        // Let queued roots/writes run between groups, never during native reads.
+        await locked(globalRef, lockName, async () => {
+          abort(signal);
+          const workers = await Promise.allSettled(ids.slice(start, start + 8).map(async (recordId, offset) => {
             abort(signal);
-            const index = cursor++, recordId = ids[index];
+            const index = start + offset;
             try {
               const key = await keyFor(recordId);
               abort(signal);
@@ -172,14 +173,18 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
               abort(signal);
               results[index] = { recordId, status: 500, error: 'storage_error', message: 'Unable to read record' };
             }
-          }
-        }));
-        // Native reads already submitted must finish before a copying write can enter.
-        abort(signal);
-        const failed = workers.find(worker => worker.status === 'rejected');
-        if (failed) throw failed.reason;
-        return results;
+          }));
+          // Submitted reads must all finish before a copying write can enter.
+          abort(signal);
+          const failed = workers.find(worker => worker.status === 'rejected');
+          if (failed) throw failed.reason;
+        });
       }
+      return results;
+    }
+    // Native replacement can fall back to copy; reads must still wait for writes.
+    return locked(globalRef, lockName, async () => {
+      abort(signal);
       const permanent = parts.length === 5 && parts[4] === 'permanent';
       const collectExpired = parts[0] === 'trash' && parts.length === 3 && parts[2] === 'collect-expired';
       if (collectExpired) {
