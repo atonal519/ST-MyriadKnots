@@ -101,6 +101,45 @@ function mergeMessage(base, expected) {
       extra: mergeOwned(swipe?.extra, expected?.swipe_info?.[index]?.extra, MESSAGE_KEYS) })) } : {}) };
 }
 
+const missingReloadField = Symbol('missing reload field');
+function mergeReloadFields(saved, draft, latest) {
+  const equal = (left, right) => left === missingReloadField || right === missingReloadField ? left === right : same(left, right);
+  if (equal(draft, saved)) return latest;
+  if (equal(latest, saved)) return draft;
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (object(draft) && object(latest) && (saved === missingReloadField || object(saved))) {
+    const keys = new Set([...Object.keys(saved === missingReloadField ? {} : saved), ...Object.keys(draft), ...Object.keys(latest)]);
+    const field = (value, key) => Object.hasOwn(value, key) ? value[key] : missingReloadField;
+    return Object.fromEntries([...keys].flatMap(key => {
+      const value = mergeReloadFields(saved === missingReloadField ? saved : field(saved, key), field(draft, key), field(latest, key));
+      return value === missingReloadField ? [] : [[key, value]];
+    }));
+  }
+  return latest;
+}
+function mergeColdReloadMessage(saved, live, refreshed) {
+  const merged = mergeReloadFields(saved, live, refreshed);
+  const restored = { ...merged, extra: mergeOwned(merged.extra, refreshed.extra, MESSAGE_KEYS) };
+  for (const key of ['swipes', 'swipe_info']) if (Array.isArray(live[key]) && Array.isArray(refreshed[key])) {
+    const values = new Array(Math.max(live[key].length, refreshed[key].length));
+    for (let index = 0; index < values.length; index++) {
+      const beforeCold = live.swipes?.[index] === null && live.swipe_info?.[index] === null;
+      const afterCold = refreshed.swipes?.[index] === null && refreshed.swipe_info?.[index] === null;
+      // Cold nulls are unknown slots, not edits that delete a loaded reply.
+      const field = message => Object.hasOwn(message[key] ?? {}, index) ? message[key][index] : missingReloadField;
+      const base = field(saved);
+      const value = beforeCold && afterCold ? null : mergeReloadFields(base, beforeCold ? base : field(live), afterCold ? base : field(refreshed));
+      if (value !== missingReloadField) values[index] = key === 'swipe_info' && value !== null
+        ? { ...value, extra: mergeOwned(value.extra, saved.swipe_info?.[index]?.extra, MESSAGE_KEYS) } : value;
+    }
+    while (values.length && !Object.hasOwn(values, values.length - 1)) values.pop();
+    restored[key] = values;
+  }
+  delete restored.tt_swipe_cold;
+  if (Object.hasOwn(refreshed, 'tt_swipe_cold')) restored.tt_swipe_cold = refreshed.tt_swipe_cold;
+  return restored;
+}
+
 // V1 mixed body and host bookkeeping into one irreversible hash. Keep its exact
 // reader for existing packages/undo records; V2 compares story content separately.
 export async function transferWitness(chat, { version = VERSION } = {}) {
@@ -533,25 +572,21 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       if (snapshot.chat.some(hasColdSwipes)) {
         // Its source holds the old opened file even after the saved path changes.
         // The host reload cancels pending saves and binds a fresh cold source.
-        const liveMessages = snapshot.chat.slice(), liveMetadata = snapshot.context.chatMetadata;
+        const liveMessages = clone(snapshot.chat), liveMetadata = cloneHostJsonMetadata(snapshot.context.chatMetadata);
         await snapshot.context.reloadCurrentChat();
         const refreshed = hostAdapter.snapshot(), character = refreshed.context.characters?.[refreshed.context.characterId];
         if (refreshed.chatId !== captured.identity.hostChatId || character?.avatar !== captured.target.avatarUrl
           || !same(refreshed.userIdentity, captured.persona) || refreshed.context.chatMetadata?.qianqianjie?.chatId !== chatId
           || !sameCapturedInputs(saved, { ...captured, identity: { ...captured.identity, chatId }, chat: refreshed.chat, metadata: refreshed.context.chatMetadata })) return { reload: true };
-        // Retain the unrelated live edits that the ordinary merge preserves.
-        // Only unloaded slots and the cold source come from the reloaded page.
+        // Merge unsaved drafts against the published copy; later reload listeners
+        // own their new changes, including deletions of individual nested fields.
         refreshed.chat.forEach((message, index) => {
-          const live = liveMessages[index], restored = { ...live, extra: mergeOwned(live.extra, saved.chat[index].extra, MESSAGE_KEYS) };
-          delete restored.tt_swipe_cold;
-          if (Object.hasOwn(message, 'tt_swipe_cold')) restored.tt_swipe_cold = message.tt_swipe_cold;
-          if (Array.isArray(live.swipes)) restored.swipes = live.swipes.map((swipe, n) => swipe ?? message.swipes?.[n]);
-          if (Array.isArray(live.swipe_info)) restored.swipe_info = live.swipe_info.map((swipe, n) => swipe === null ? message.swipe_info?.[n]
-            : { ...swipe, extra: mergeOwned(swipe.extra, saved.chat[index].swipe_info?.[n]?.extra, MESSAGE_KEYS) });
+          const restored = mergeColdReloadMessage(saved.chat[index], liveMessages[index], message);
           for (const key of Object.keys(message)) delete message[key];
           Object.assign(message, restored);
         });
-        const metadata = refreshed.context.chatMetadata, restoredMetadata = mergeOwned(liveMetadata, metadata, [...HEADER_KEYS, 'integrity']);
+        const metadata = refreshed.context.chatMetadata;
+        const restoredMetadata = mergeOwned(mergeReloadFields(saved.header.chat_metadata, liveMetadata, metadata), metadata, [...HEADER_KEYS, 'integrity']);
         for (const key of Object.keys(metadata)) delete metadata[key];
         Object.assign(metadata, restoredMetadata);
         return { reload: false };

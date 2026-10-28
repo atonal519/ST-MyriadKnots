@@ -505,11 +505,12 @@ test('real memory and CSE round trip onto an updated card, without analysis call
   assert.ok(f.backend.records.has(`chat-${IMPORTED}/v3-root`), 'undo preserves imported memory too');
 });
 
-function coldSwipeTarget(f, target) {
+function coldSwipeTarget(f, target, prepare = () => {}) {
   const message = target.chat[1], anchor = { schemaVersion: 1, chatId: SOURCE, floorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
   message.swipes = [message.mes, '未选中的另一版回复', '仍未加载的回复'];
   message.swipe_id = 0;
   message.swipe_info = [{ extra: structuredClone(message.extra ?? {}) }, { extra: { qianqianjie_floor: anchor, keep: '未选回复资料' } }, { extra: { keep: '冷回复资料' } }];
+  prepare(message);
   f.api.reloadFromContext();
   let source, sourceId = 0, reloads = 0;
   const load = () => {
@@ -638,6 +639,70 @@ test('TT cold reload preserves live nonQQJ edits created while the saved copy is
   cold.hydrate();
   assert.equal(target.chat[1].swipes[1], '保存时手改的未选回复');
   assert.equal(target.chat[1].swipe_info[1].extra.qianqianjie_floor, undefined);
+});
+
+test('TT cold reload merges unsaved drafts with newer listener additions changes and deletions', async t => {
+  const baseline = { draftChanged: 'saved', draftDeleted: 'saved', listenerChanged: 'saved', listenerDeleted: 'saved', conflict: 'saved',
+    nested: { draftChanged: 'saved', draftDeleted: 'saved', listenerChanged: 'saved', listenerDeleted: 'saved', conflict: 'saved', stable: 'saved' } };
+  const expected = { draftChanged: 'draft', draftAdded: 'draft', listenerChanged: 'listener', listenerAdded: 'listener', conflict: 'listener',
+    nested: { draftChanged: 'draft', draftAdded: 'draft', listenerChanged: 'listener', listenerAdded: 'listener', conflict: 'listener', stable: 'saved' } };
+  const containers = target => [target.chat[1], target.chat[1].extra, target.chatMetadata,
+    target.chat[1].swipe_info[1], target.chat[1].swipe_info[1].extra];
+  const edit = (value, source) => {
+    value[`${source}Added`] = source; value[`${source}Changed`] = source; delete value[`${source}Deleted`]; value.conflict = source;
+    value.nested[`${source}Added`] = source; value.nested[`${source}Changed`] = source; delete value.nested[`${source}Deleted`]; value.nested.conflict = source;
+  };
+  const fields = [...Object.keys(baseline), 'draftAdded', 'listenerAdded'];
+  for (const format of ['ordinary', 'volume']) for (const operation of ['import', 'undo']) await t.test(`${format}: ${operation}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target();
+    if (operation === 'undo') {
+      const cold = coldSwipeTarget(f, target);
+      await f.runtime.importPreview(format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text));
+      cold.hydrate();
+    }
+    target.chat[1].extra ??= {};
+    for (const value of [target.chat[1], target.chat[1].extra, target.chatMetadata]) Object.assign(value, structuredClone(baseline));
+    let loadedAlternative;
+    const api = targetChatApi(target, { afterSave() {
+      target.chat[1].swipes[1] = '保存期间未选回复草稿';
+      target.chat[1].swipe_info[1] = structuredClone(loadedAlternative);
+      for (const value of containers(target)) edit(value, 'draft');
+    } });
+    f.setApi(api);
+    const cold = coldSwipeTarget(f, target, message => {
+      Object.assign(message.swipe_info[1], structuredClone(baseline));
+      Object.assign(message.swipe_info[1].extra, structuredClone(baseline));
+      delete message.swipe_info[1].extra.qianqianjie_floor;
+    });
+    loadedAlternative = api.persistedMessages[1].swipe_info[1];
+    const reload = target.reloadCurrentChat;
+    let refreshedReference, listenerFailure;
+    target.reloadCurrentChat = async () => {
+      try {
+        await reload();
+        target.chat[1].swipes[1] = '重载监听器最新未选回复';
+        target.chat[1].swipe_info[1] = structuredClone(api.persistedMessages[1].swipe_info[1]);
+        for (const value of containers(target)) edit(value, 'listener');
+        refreshedReference = structuredClone(target.chat[1].tt_swipe_cold);
+      } catch (error) { listenerFailure = error; throw error; }
+    };
+    const result = operation === 'undo' ? await f.runtime.undo()
+      : await f.runtime.importPreview(format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text));
+    assert.equal(listenerFailure, undefined);
+    assert.equal(result.reload, false);
+    for (const [index, value] of containers(target).entries()) {
+      assert.deepEqual(Object.fromEntries(fields.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]])), expected, `container ${index}`);
+    }
+    assert.equal(target.chatMetadata.qianqianjie.chatId, operation === 'undo' ? TARGET : IMPORTED);
+    assert.deepEqual(target.chat[1].tt_swipe_cold, refreshedReference);
+    assert.equal(target.chat[1].swipes[1], '重载监听器最新未选回复');
+    assert.equal(target.chat[1].swipes[2], null); assert.equal(target.chat[1].swipe_info[2], null);
+    cold.hydrate();
+    assert.equal(target.chat[1].swipes[1], '重载监听器最新未选回复');
+    assert.equal(target.chat[1].swipe_info[2].extra.keep, '冷回复资料');
+  });
 });
 
 test('TT cold reload never restores captured live fields into a different selected chat', async () => {

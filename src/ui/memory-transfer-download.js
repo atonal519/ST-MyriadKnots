@@ -27,6 +27,10 @@ export async function prepareMemoryBundleDownload(windowRef = globalThis, hostDo
     const directory = await windowRef.navigator.storage.getDirectory();
     const name = `qqj-export-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
     const handle = await directory.getFileHandle(name, { create: true });
+    if (typeof handle.createWritable !== 'function') {
+      await directory.removeEntry(name);
+      return volumeDownload(hostDownload);
+    }
     let writable;
     try { writable = trackedWritable(await handle.createWritable()); }
     catch (error) { await directory.removeEntry(name); throw error; }
@@ -58,6 +62,10 @@ export async function prepareMemoryBundleDownload(windowRef = globalThis, hostDo
       },
     };
   }
+  return volumeDownload(hostDownload);
+}
+
+function volumeDownload(hostDownload) {
   let stopped = false;
   return { mode: 'volumes',
     async saveVolume(file) {

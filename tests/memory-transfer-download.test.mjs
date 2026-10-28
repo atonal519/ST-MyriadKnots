@@ -40,7 +40,7 @@ function opfsFixture({ streaming = true } = {}) {
   const window = { __TAURITAVERN__: { api: { extension: { store: streaming ? { getBlobStream() {} } : {} } } },
     navigator: { storage: { async getDirectory() { calls.push(['getDirectory']); return directory; } } },
     Blob() { assert.fail('不得拼接整个包Blob'); } };
-  return { window, calls, file };
+  return { window, calls, file, handle };
 }
 
 test('TT流式下载用磁盘File交付一次，未整包读入内存，完成后删除临时文件', async () => {
@@ -55,6 +55,34 @@ test('TT流式下载用磁盘File交付一次，未整包读入内存，完成�
   assert.equal(f.calls.filter(call => call[0] === 'removeEntry').length, 1);
   await target.abort(); await target.abort();
   assert.equal(f.calls.filter(call => call[0] === 'removeEntry').length, 1);
+});
+
+test('TT有OPFS目录但缺少createWritable时清临时文件并逐卷交付', async () => {
+  const f = opfsFixture(), downloads = [];
+  delete f.handle.createWritable;
+  const target = await prepareMemoryBundleDownload(f.window, async (...args) => { downloads.push(args); return { delivered: true }; });
+  assert.equal(target.mode, 'volumes');
+  const removed = f.calls.filter(call => call[0] === 'removeEntry');
+  assert.equal(removed.length, 1);
+  assert.equal(removed[0][1], f.calls.find(call => call[0] === 'getFileHandle')[1]);
+  for (const filename of ['memory.part-0001.bin', 'memory.index.json']) {
+    const blob = new Blob([filename]);
+    await target.saveVolume({ filename, blob });
+    assert.deepEqual(downloads.at(-1), [blob, filename, blob.type, { throwOnFailure: true }]);
+  }
+  assert.equal(downloads.length, 2);
+  assert.equal((await target.finish(metadata)).delivered, true);
+  await target.abort();
+  await assert.rejects(target.saveVolume({ filename: 'late.bin', blob: new Blob(['late']) }), error => error.name === 'AbortError');
+  assert.equal(downloads.length, 2);
+});
+
+test('OPFS有createWritable但真实创建失败时清临时文件并保留原错误', async () => {
+  const f = opfsFixture(), failure = new Error('quota exceeded'); let downloads = 0;
+  f.handle.createWritable = async () => { throw failure; };
+  await assert.rejects(prepareMemoryBundleDownload(f.window, async () => { downloads++; }), error => error === failure);
+  assert.equal(f.calls.filter(call => call[0] === 'removeEntry').length, 1);
+  assert.equal(downloads, 0, '真实I/O错误不能变成另一轮下载');
 });
 
 test('OPFS向原生交付期间取消必须等读取结束才清临时文件', async () => {
