@@ -1154,6 +1154,49 @@ test('管理页激活等旧回执时runtime已通知收尾，迟到回执不得�
   view.deactivate();
 });
 
+test('千事请求诊断即时读取轻量状态，保留阶段耗时与失败并剔除敏感字段', async () => {
+  const secret = 'PRIVATE_QIANSHI_REQUEST_CONTENT';
+  let reads = 0, refreshes = 0, heavyReads = 0, copied;
+  const request = { phase: 'responseBody', outcome: 'running', startedAt: 1000, endedAt: null,
+    elapsedMs: 250, phaseElapsedMs: 100, attemptElapsedMs: 200, attempts: 2, timeoutMs: 180000,
+    fromAssistantSeq: 12, toAssistantSeq: 15, error: null,
+    lastAttemptError: { name: 'Error', code: 'QQJ_TIMEOUT', httpStatus: 504, attempt: 1, at: 1100, phase: 'fetch', message: secret },
+    body: secret, url: `https://${secret}`, key: secret, response: secret };
+  let history = { status: 'running', mode: 'history', calls: 1, request };
+  const state = { status: 'ready', pluginEnabled: true, chatId: 'qianshi-request', floors: [] };
+  const view = createV3FoundationView({ runtime: {
+    getState: () => state, refreshStatus: async () => { refreshes += 1; return state; }, confirmLatest: async () => state,
+    getQianshiStatus: () => { reads += 1; return { status: 'ready', history }; },
+    getQianshiSnapshot: () => { heavyReads += 1; throw new Error('must use lightweight status'); },
+  }, documentRef, navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  const container = new Node('main'); view.mount(container);
+  const copy = async () => {
+    await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+    assert.doesNotMatch(copied, new RegExp(secret));
+    return JSON.parse(copied).qianshi.history.request;
+  };
+  let value = await copy();
+  assert.equal(value.phase, 'responseBody'); assert.equal(value.outcome, 'running');
+  assert.deepEqual([value.elapsedMs, value.phaseElapsedMs, value.attemptElapsedMs, value.attempts, value.timeoutMs], [250, 100, 200, 2, 180000]);
+  assert.deepEqual([value.fromAssistantSeq, value.toAssistantSeq], [12, 15]);
+  assert.equal(value.error.present, false); assert.equal(value.lastAttemptError.code, 'QQJ_TIMEOUT');
+  assert.deepEqual([value.lastAttemptError.attempt, value.lastAttemptError.httpStatus, value.lastAttemptError.phase], [1, 504, 'fetch']);
+  history = { ...history, mode: 'rejudge', request: { ...request, phase: 'saving', outcome: 'failed', endedAt: 1500,
+    error: { code: 'V3_MEMORY_CAS_CONFLICT', name: 'Error', httpStatus: 409, message: secret }, lastAttemptError: null } };
+  value = await copy();
+  assert.equal(value.phase, 'saving'); assert.equal(value.outcome, 'failed');
+  assert.equal(value.endedAt, 1500); assert.equal(value.error.code, 'V3_MEMORY_CAS_CONFLICT'); assert.equal(value.error.httpStatus, 409);
+  history = { ...history, request: { ...request, phase: 'normalize', outcome: 'failed',
+    error: { code: 'QIANSHI_HISTORY_RESPONSE_SHAPE', name: 'Error', message: secret }, lastAttemptError: null } };
+  value = await copy(); assert.equal(value.error.code, 'QIANSHI_HISTORY_RESPONSE_SHAPE');
+  history = { ...history, request: { ...request, phase: secret, attempts: secret, lastAttemptError: null } };
+  value = await copy(); assert.equal(value.phase, 'unknown'); assert.equal(value.attempts, 'unknown');
+  history = { ...history }; delete history.request;
+  assert.equal(await copy(), null, '旧历史状态没有请求诊断时保持兼容');
+  assert.equal(reads, 5); assert.equal(refreshes, 0); assert.equal(heavyReads, 0);
+  view.deactivate();
+});
+
 test('等待诊断复制摘要CSE各自阶段与时间失败码范围，旧记录未知且敏感材料不导出', async () => {
   const request = { phase: 'responseBody', outcome: 'cancelled', elapsedMs: 200, phaseElapsedMs: 80, attemptElapsedMs: 90,
     attempts: 2, timeoutMs: 100, fromAssistantSeq: 31, toAssistantSeq: 40,

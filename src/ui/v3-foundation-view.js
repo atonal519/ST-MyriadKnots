@@ -220,7 +220,7 @@ function errorDiagnostic(value, sourceKnown = true) {
   if (value && typeof value === 'object') {
     if (STANDARD_ERROR_NAMES.has(value.name)) result.name = value.name;
     else if (STANDARD_ERROR_NAMES.has(value.code)) result.name = value.code;
-    if (typeof value.code === 'string' && (/^(?:QQJ|V3|CHAT_SESSION)_[A-Z0-9_]{1,80}$/.test(value.code) || value.code === 'BACKEND_TIMEOUT')) result.code = value.code;
+    if (typeof value.code === 'string' && (/^(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}$/.test(value.code) || value.code === 'BACKEND_TIMEOUT')) result.code = value.code;
     if (typeof value.phase === 'string') result.phase = enumDiagnostic(value.phase, DIAGNOSTIC_PHASE);
     if (Number.isSafeInteger(value.count) && value.count > 0) result.count = value.count;
     if (value.code === 'V3_MEMORY_PREFIX_CHANGED') {
@@ -662,6 +662,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         },
         history: history ? {
           status: enumDiagnostic(history.status, new Set(['idle', 'running', 'completed', 'partial', 'stopped', 'failed'])),
+          request: requestDiagnostic(history.request),
           mode: enumDiagnostic(history.mode, new Set(['history', 'rejudge'])),
           committing: booleanDiagnostic(history.committing),
           commitStatus: enumDiagnostic(history.commitStatus, new Set(['notAttempted', 'attempted', 'saved', 'unknown', 'conflict'])),

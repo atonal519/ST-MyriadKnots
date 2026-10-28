@@ -394,6 +394,36 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       timeoutMs: value.timeoutMs ?? null, fromAssistantSeq: value.fromAssistantSeq, toAssistantSeq: value.toAssistantSeq,
       error: value.error ?? null, lastAttemptError: value.lastAttemptError ? { ...value.lastAttemptError } : null };
   };
+  const createQianshiRequestBudget = (fromAssistantSeq = null, toAssistantSeq = null) => {
+    const startedAt = Date.now();
+    return { remaining: 3, used: 0, diagnostic: {
+      phase: 'preparing', startedAt, phaseStartedAt: startedAt, outcome: 'running',
+      fromAssistantSeq, toAssistantSeq, lastAttemptError: null,
+    } };
+  };
+  const qianshiRequestSnapshot = () => {
+    const activeBudget = qianshiHistoryRun?.transportBudget;
+    if (!activeBudget) {
+      const saved = qianshiHistoryState.request;
+      return saved ? { ...saved, error: saved.error ? { ...saved.error } : null, lastAttemptError: saved.lastAttemptError ? { ...saved.lastAttemptError } : null } : null;
+    }
+    return requestSnapshot(activeBudget.diagnostic, activeBudget.used);
+  };
+  const markQianshiRequest = (operation, phase, patch = {}) => {
+    const diagnostic = operation?.transportBudget?.diagnostic;
+    if (!diagnostic || !operation.requestActive) return;
+    Object.assign(diagnostic, { phase, phaseStartedAt: Date.now(), ...patch });
+  };
+  const finishQianshiRequest = (operation, outcome, error = null) => {
+    const diagnostic = operation?.transportBudget?.diagnostic;
+    if (!diagnostic || !operation.requestActive) return;
+    const safeCode = /^(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}$/u.test(error?.code ?? '') || error?.code === 'BACKEND_TIMEOUT' ? error.code : null;
+    const safeName = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AbortError', 'TimeoutError'].includes(error?.name) ? error.name : null;
+    const status = error?.httpStatus ?? error?.status;
+    const safeError = error ? { code: safeCode, name: safeName, httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null, at: Date.now() } : null;
+    Object.assign(diagnostic, { outcome, error: safeError, endedAt: Date.now() });
+    operation.requestActive = false;
+  };
   let bound = false;
   let awaitingFoundation = false;
   let foundationReload = null;
@@ -437,7 +467,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let qianshiHistoryPlan = null;
   let qianshiRejudgePlan = null;
   let qianshiHistoryRun = null;
-  let qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, outcomes: [], message: '' });
+  let qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, outcomes: [], message: '', request: null });
   const qianshiSnapshotMemo = createQianshiSnapshotMemo();
   const qianshiEventLookup = createQianshiEventLookup(source => qianshiSnapshotMemo(source, identityProjection, null, storyCalendarProvider(source?.root?.chatId)));
   const qianshiCandidateIndex = qianshiCandidatePreparer === prepareQianshiCandidates ? qianshiCandidateIndexFactory() : null;
@@ -763,7 +793,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = ({ deletedChatId = null } = {}) => { lastExtractorRequest = null; if (deletedChatId) clearChatFailures(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = ({ deletedChatId = null } = {}) => { lastExtractorRequest = null; if (deletedChatId) clearChatFailures(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '', request: null }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(state => notify(state));
   function runManualWork(reason, task) {
     if (workRun) return Promise.resolve(getState());
@@ -3348,7 +3378,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           releaseUnstartedQianshiPlans();
           qianshiHistoryRun = null;
           qianshiHistoryPlan = null; qianshiRejudgePlan = null;
-          qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '' });
+          qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '', request: null });
         }
         epoch += 1;
         active?.controller.abort(name);
@@ -3643,11 +3673,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   function qianshiSnapshot() {
     if (!reachable?.root) return Object.freeze({ status: 'not-ready', message: '尚未开始记录，继续对话后可开始记录。' });
-    return qianshiSnapshotMemo(reachable, identityProjection, qianshiHistoryState, storyCalendarProvider());
+    const value = qianshiSnapshotMemo(reachable, identityProjection, qianshiHistoryState, storyCalendarProvider());
+    if (!value.history) return value;
+    const request = qianshiRequestSnapshot();
+    return Object.freeze({ ...value, history: Object.freeze({ ...value.history, request }) });
   }
   function qianshiSnapshotVersion() {
     const value = qianshiSnapshot();
-    return Object.freeze({ status: value.status, projectionRevision: value.projectionRevision ?? null, history: value.history ?? null });
+    const history = value.history ? { ...value.history,
+      request: value.history.request ? Object.fromEntries(Object.entries(value.history.request).filter(([key]) => !['elapsedMs', 'phaseElapsedMs', 'attemptElapsedMs'].includes(key))) : null } : null;
+    return Object.freeze({ status: value.status, projectionRevision: value.projectionRevision ?? null, history });
   }
   function qianshiStatus() {
     const value = qianshiSnapshot();
@@ -4005,6 +4040,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const operation = { jobId, controller, store: plan.store, targetIdentity: plan.targetIdentity, pinnedTarget: true };
     let processedFloors = 0, calls = 0;
     qianshiHistoryRun = operation;
+    qianshiHistoryState = Object.freeze({ status: 'running', jobId, processedFloors: 0, totalFloors: plan.items.length, calls: 0, outcomes: [], message: '', request: null });
     const publishHistory = value => {
       if (qianshiHistoryRun !== operation) return false;
       qianshiHistoryState = Object.freeze(value); notify(); return true;
@@ -4020,7 +4056,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         savedPartialFloors: rows.filter(row => row.status === 'saved-partial').length,
         skippedFloors: rows.filter(row => row.status === 'skipped').length,
         failedFloors: rows.filter(row => row.status === 'failed').length,
-        outcomes: rows.map(row => ({ ...row })), message };
+        outcomes: rows.map(row => ({ ...row })), message, request: qianshiRequestSnapshot() };
     };
       const setOutcome = (floorId, status, reasonCode, message, attempted = null) => {
       const row = outcomes.get(floorId);
@@ -4127,23 +4163,28 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           targetReachable = latestTarget;
           calls += 1;
           for (const value of prepared) setOutcome(value.item.floorId, 'skipped', null, '模型请求已发出，等待逐楼结果。', true);
+          operation.transportBudget = createQianshiRequestBudget(prepared[0]?.floor?.assistantSeq ?? null, prepared.at(-1)?.floor?.assistantSeq ?? null);
+          operation.requestActive = true;
           publishHistory(historyState('running', `正在调用第 ${batchIndex}/${plan.batches.length} 批模型任务…`));
           const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(request) }],
-            maxTokens: plan.maxOutputTokens, temperature: 0, signal: controller.signal, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic' });
+            maxTokens: plan.maxOutputTokens, temperature: 0, signal: controller.signal, includeCharacterCard: false, worldInfoSource: 'none', parseMode: 'semantic', transportBudget: operation.transportBudget });
+          markQianshiRequest(operation, 'normalize', { attemptEndedAt: Date.now(), outcome: 'running', endedAt: null });
           const finishReason = result?.taskMetadata?.finishReason;
           packet = result?.jsonData ?? result?.data
             ?? (typeof result?.responseText === 'string' ? parseJsonOutput(result.responseText, { finishReason }) : null)
             ?? (typeof result?.textData === 'string' ? parseJsonOutput(result.textData, { finishReason }) : null);
         } catch (error) {
-          if (error?.name === 'AbortError' || controller.signal.aborted) break;
+          if (error?.name === 'AbortError' || controller.signal.aborted) { finishQianshiRequest(operation, 'cancelled', error); break; }
           failures += prepared.length;
           for (const value of prepared) setOutcome(value.item.floorId, 'failed', error?.code ?? 'QIANSHI_HISTORY_BATCH_FAILED', safeErrorMessage(error?.message), true);
+          finishQianshiRequest(operation, controller.signal.aborted ? 'cancelled' : 'failed', error);
           publishHistory(historyState('running', `一批返回无法解析，已保留原记录：${safeErrorMessage(error?.message)}`));
           continue;
         }
         if (!packet || typeof packet !== 'object' || Array.isArray(packet) || !Array.isArray(packet.floors)) {
           failures += prepared.length;
           for (const value of prepared) setOutcome(value.item.floorId, 'failed', 'QIANSHI_HISTORY_RESPONSE_SHAPE', '批响应缺少楼层列表；本批原记录保持不变。', true);
+          finishQianshiRequest(operation, 'failed', errorWith('QIANSHI_HISTORY_RESPONSE_SHAPE', '批响应结构无效。'));
           publishHistory(historyState('running', '批响应结构无效，已保留原记录。'));
           continue;
         }
@@ -4192,6 +4233,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             continue;
           }
           let delta, compiledBindings = [];
+          markQianshiRequest(operation, 'compile');
           try {
             delta = await compileQianshiDelta({ packet: hasNestedQianshi ? returned : { qianshi: qianshiPacket }, floor: value.floor,
               candidateBindings: [...(bindingsByFloor.get(value.item.floorId) ?? []), ...earlierBindings],
@@ -4210,6 +4252,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const nowValue = nowIso(now), id = await deterministicUuid(['v3-qianshi-history-memory', value.memory.id, delta, jobId]);
           const replacement = validateFloorMemory({ ...value.memory, id, qianshiDelta: delta, updatedAt: nowValue,
             supersedes: value.memory.id }, { expectedChatId: value.memory.chatId });
+          markQianshiRequest(operation, 'validating');
           let replacementToCommit = replacement;
           const commitOperation = { floorId: value.floor.id, floorRawFingerprint: value.floor.content.rawFingerprint, epoch,
             store: plan.store, pinnedTarget: true,
@@ -4219,6 +4262,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             qianshiCandidateSnapshot, runId: await deterministicUuid(['v3-qianshi-history-commit', jobId, value.floor.id]), startedAt: nowValue,
             commitTimestamp: null };
           try {
+            markQianshiRequest(operation, 'saving');
             const priorAudit = floorProvenance(targetReachable)[value.floor.id] ?? {};
             operation.commitOperation = commitOperation;
             targetReachable = await commitRevision(commitOperation, { oldReachable: targetReachable, replacement, newEntities: [],
@@ -4275,6 +4319,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           }
           publishHistory(historyState('running', failures ? `${failures} 楼未补齐，可重新准备计划后继续。` : ''));
         }
+        const failedRow = prepared.map(value => outcomes.get(value.item.floorId)).find(row => row?.status === 'failed' || row?.status === 'commit-unknown' || row?.status === 'saved-partial');
+        const batchFailed = Boolean(failedRow);
+        finishQianshiRequest(operation, controller.signal.aborted ? 'cancelled' : batchFailed ? 'failed' : 'completed',
+          batchFailed ? errorWith(failedRow.reasonCode ?? 'QIANSHI_HISTORY_BATCH_FAILED', '本批部分楼层处理失败。') : null);
+      }
+      if (operation.transportBudget?.diagnostic?.outcome === 'running') {
+        finishQianshiRequest(operation, controller.signal.aborted ? 'cancelled' : failures ? 'failed' : 'completed', failures ? errorWith('QIANSHI_HISTORY_FAILED', '部分历史楼层处理失败。') : null);
+      }
+      if (controller.signal.aborted && operation.transportBudget?.diagnostic?.outcome !== 'cancelled') {
+        finishQianshiRequest(operation, 'cancelled', Object.assign(new Error('千事历史已停止。'), { name: 'AbortError', code: 'QIANSHI_HISTORY_ABORTED' }));
       }
       const stopped = controller.signal.aborted, hasAggregateSkips = plan.aggregateSkippedFloors.length > 0 || plan.budgetSkippedFloors.length > 0;
       staleCandidateFloors = Math.max(staleCandidateFloors,
@@ -4287,6 +4341,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (publishHistory(historyState(finalStatus, finalMessage))) qianshiHistoryPlan = null;
       return structuredClone(qianshiHistoryState);
     })().catch(error => {
+      finishQianshiRequest(operation, controller.signal.aborted ? 'cancelled' : 'failed', error);
       const failedState = historyState(controller.signal.aborted ? 'stopped' : 'failed', controller.signal.aborted ? '已停止。' : safeErrorMessage(error?.message));
       publishHistory(failedState);
       return structuredClone(failedState);
@@ -4394,6 +4449,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const operation = { jobId, controller, store: plan.store, targetIdentity: plan.targetIdentity, pinnedTarget: true }, epochAtStart = epoch;
     let calls = 0;
     qianshiHistoryRun = operation;
+    qianshiHistoryState = Object.freeze({ status: 'running', jobId, mode: 'rejudge', processedFloors: 0, totalFloors: plan.items.length, calls: 0, outcomes: [], message: '', request: null });
     const publish = value => { if (qianshiHistoryRun !== operation) return false; qianshiHistoryState = Object.freeze(value); notify(); return true; };
     const makeState = (status, processedFloors, message = '', outcomes = []) => ({ status, jobId, mode: 'rejudge', committing: Boolean(operation.committing),
       commitStatus: operation.commitStatus ?? 'notAttempted', processedFloors,
@@ -4401,7 +4457,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       savedCompleteFloors: ['completed', 'partial'].includes(status) ? outcomes.filter(item => item.status === 'saved-complete').length : 0,
       savedPartialFloors: ['completed', 'partial'].includes(status) ? outcomes.filter(item => item.status === 'saved-partial').length : 0,
       savedFloors: ['completed', 'partial'].includes(status) ? outcomes.filter(item => ['saved-complete', 'saved-partial'].includes(item.status)).length : 0,
-      failedFloors: outcomes.filter(item => item.status === 'failed').length, skippedFloors: 0, outcomes, message });
+      failedFloors: outcomes.filter(item => item.status === 'failed').length, skippedFloors: 0, outcomes, message, request: qianshiRequestSnapshot() });
     publish(makeState('running', 0, '正在读取原存档；本组结果尚未提交。'));
     const task = (async () => {
       const outcomes = [], staged = [], usedCandidateSnapshots = [];
@@ -4450,12 +4506,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             source: item.input.sourceCanonicalContent, summary: item.input.effectiveSummary,
             precedingUserInput: item.input.sourceUserInputSnapshot, records: item.input.records,
             qianshiCandidates: candidateValues };
-          publish(makeState('running', index, `正在重判第 ${index + 1}/${plan.items.length} 楼；此前楼结果仅暂存，尚未写入。`, outcomes));
           calls += 1;
+          operation.transportBudget = createQianshiRequestBudget(item.assistantSeq ?? floor?.assistantSeq ?? null, item.assistantSeq ?? floor?.assistantSeq ?? null);
+          operation.requestActive = true;
+          publish(makeState('running', index, `正在重判第 ${index + 1}/${plan.items.length} 楼；此前楼结果仅暂存，尚未写入。`, outcomes));
           const result = await generateUtilityTask({ systemPrompt, taskMessages: [{ role: 'user', content: JSON.stringify(request) }],
             maxTokens: QIANSHI_HISTORY_OUTPUT_TOKENS, temperature: 0, signal: controller.signal, includeCharacterCard: false,
-            worldInfoSource: 'none', parseMode: 'semantic' });
+            worldInfoSource: 'none', parseMode: 'semantic', transportBudget: operation.transportBudget });
+          markQianshiRequest(operation, 'normalize', { attemptEndedAt: Date.now(), outcome: 'running', endedAt: null });
+          markQianshiRequest(operation, 'validating');
           await verifyCurrent();
+          markQianshiRequest(operation, 'normalize');
           const packet = result?.jsonData ?? result?.data
             ?? (typeof result?.responseText === 'string' ? parseJsonOutput(result.responseText, { finishReason: result?.taskMetadata?.finishReason }) : null)
             ?? (typeof result?.textData === 'string' ? parseJsonOutput(result.textData, { finishReason: result?.taskMetadata?.finishReason }) : null);
@@ -4486,6 +4547,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             }
             return value;
           });
+          markQianshiRequest(operation, 'compile');
           const compiledBindings = [], compilationIssues = [];
           const delta = await compileQianshiDelta({ packet: { qianshi: { ...qianshi, events: rawEvents } }, floor,
             candidateBindings, recordBindings, candidateStats: { count: candidateValues.length,
@@ -4543,11 +4605,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             message: partial ? `本楼只有部分记录通过整理；${nextDelta.reason || '其余旧记录按原值保留。'}本组尚未提交。`
               : '本楼结果已暂存；本组尚未提交。' });
         currentItem = null;
+        if (index < plan.items.length - 1) finishQianshiRequest(operation, controller.signal.aborted ? 'cancelled' : partial ? 'failed' : 'completed',
+          partial ? errorWith(outcomes.at(-1).reasonCode, '本楼部分记录未通过整理。') : null);
         }
         if (controller.signal.aborted) {
+          finishQianshiRequest(operation, 'cancelled');
           publish(makeState('stopped', staged.length, '已取消；整组未提交，原千事保持不变。', outcomes)); return structuredClone(qianshiHistoryState);
         }
         if (staged.length !== plan.items.length) throw errorWith('QIANSHI_REJUDGE_INCOMPLETE', '有楼未完成重判；整组未提交，原千事保持不变。');
+        markQianshiRequest(operation, 'validating');
         targetReachable = await verifyCurrent();
         const commitOperation = { jobId, controller, epoch: epochAtStart, store: plan.store, pinnedTarget: true, floorIds: plan.items.map(item => item.floorId),
           qianshiRejudge: { ...plan, candidateSnapshots: usedCandidateSnapshots },
@@ -4560,6 +4626,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         // Root CAS is the atomic boundary; once entered, stop cannot promise that no write occurred.
         operation.committing = true; operation.commitStatus = 'attempted';
         publish(makeState('running', staged.length, '正在一次提交整组结果；此阶段不能取消。', outcomes));
+        markQianshiRequest(operation, 'saving');
         targetReachable = await commitRevision(commitOperation, { oldReachable: targetReachable, replacement: staged[0], replacements: staged,
           newEntities: [], provenanceEntry: { ...priorAudit, qianshiRejudgeJobId: jobId }, action: 'qianshiRejudge', validationErrors: [] });
         operation.commitStatus = 'saved';
@@ -4567,6 +4634,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         const committedOutcomes = outcomes.map(item => ({ ...item, status: item.status === 'staged-partial' ? 'saved-partial' : 'saved-complete', message: item.status === 'staged-partial'
           ? item.message.replace('本组尚未提交。', '整组已提交。') : '本楼完整结果已保存。' }));
         // A single partial floor makes the atomic batch partial; complete counts exclude every such floor.
+        finishQianshiRequest(operation, hasPartialFloors ? 'failed' : 'completed', hasPartialFloors ? errorWith('QIANSHI_REJUDGE_PARTIAL', '部分楼层只有部分记录通过整理。') : null);
         publish(makeState(hasPartialFloors ? 'partial' : 'completed', staged.length,
           hasPartialFloors ? `整组已提交；${outcomes.filter(item => item.status === 'staged-partial').length} 楼只有部分记录通过整理，请查看逐楼原因。`
             : '千事重判完成；整组已一次提交。', committedOutcomes));
@@ -4574,6 +4642,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         return structuredClone(qianshiHistoryState);
       } catch (error) {
         const stopped = controller.signal.aborted;
+        finishQianshiRequest(operation, stopped ? 'cancelled' : 'failed', error);
         const reason = safeErrorMessage(error?.message || '千事重判失败。');
         if (currentItem && !stopped && !operation.committing) outcomes.push({ floorId: currentItem.floorId,
           assistantSeq: currentItem.assistantSeq, messageIndex: currentItem.displayMessageIndex, status: 'failed', reasonCode: error?.code ?? 'QIANSHI_REJUDGE_FAILED', message: reason });

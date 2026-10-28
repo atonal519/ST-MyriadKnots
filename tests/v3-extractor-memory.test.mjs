@@ -10364,6 +10364,8 @@ test('已存千事重判按record-N保文字和ID、读取前楼暂存候选并�
   const pending = h.runtime.startQianshiRejudge(plan.planId);
   await rootGate.started;
   assert.equal(h.runtime.getQianshiSnapshot().history.committing, true, '单次root CAS前显示不可取消的提交阶段');
+  assert.equal(h.runtime.getQianshiStatus().history.request.phase, 'saving', '重判整组提交等待期间保留saving诊断');
+  assert.equal(h.runtime.getQianshiStatus().history.request.outcome, 'running');
   await h.runtime.stopQianshiHistory();
   assert.equal(h.runtime.getQianshiSnapshot().history.status, 'running', 'root CAS期间停止请求不会谎称整组零写');
   rootGate.release();
@@ -10371,6 +10373,7 @@ test('已存千事重判按record-N保文字和ID、读取前楼暂存候选并�
   rejudgePrompts.forEach(assertQianshiLifecycleGuidance);
   assert.equal(graphProjectionCalls, 4, '两楼重判复用批次图和每楼候选图，不为每楼重新投影完整图');
   assert.equal(result.status, 'completed', JSON.stringify(result)); assert.equal(result.calls, 2);
+  assert.equal(h.runtime.getQianshiStatus().history.request.outcome, 'completed');
   assert.ok(memoryReads() - memoryReadsBefore <= before.floorMemories.length,
     '请求前后只核对root版本，旧楼档案最多完整读取一次，不能按楼反复拉取整档');
   const after = await h.store.readReachable({ mode: 'runtime' });
@@ -10568,6 +10571,8 @@ test('重判第二楼读root超时明确计失败楼，原档保留且不重试'
   assert.equal(result.status, 'failed'); assert.equal(result.processedFloors, 1); assert.equal(result.failedFloors, 1);
   assert.equal(result.calls, 2); assert.equal(rejudgeCalls, 2, '后台读取失败不重复调用模型');
   assert.equal(result.outcomes.at(-1).assistantSeq, 2); assert.equal(result.outcomes.at(-1).reasonCode, 'BACKEND_TIMEOUT');
+  assert.equal(result.request.phase, 'validating'); assert.equal(result.request.outcome, 'failed');
+  assert.equal(result.request.error.code, 'BACKEND_TIMEOUT'); assert.equal(result.request.lastAttemptError, null);
   assert.match(result.message, /整组未提交/u);
   assert.equal(h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-root').length, rootPuts);
 });
@@ -10814,7 +10819,12 @@ test('千事历史启动先发布读档与候选阶段，再进入模型任务�
   let heldRead = false;
   const h = harness({ initialChat: [user('开始'), assistant('顾舟答应归还旧书。'), user('稳定')], utility: async options => {
     if (mode === 'summary') return { jsonData: { summary: '顾舟答应归还旧书。' } };
-    markModel(); await modelWait;
+    markModel();
+    options.transportBudget.used = 1;
+    options.transportBudget.remaining = 2;
+    options.transportBudget.diagnostic.phase = 'responseBody';
+    options.transportBudget.diagnostic.phaseStartedAt = Date.now();
+    await modelWait;
     const request = JSON.parse(options.taskMessages[0].content);
     return { jsonData: { floors: request.floors.map(value => ({ floorKey: value.floorKey, qianshi: { events: [
       { key: 'event-1', title: '归还旧书', description: '顾舟答应归还旧书。', status: 'occurred', matter: false },
@@ -10839,10 +10849,156 @@ test('千事历史启动先发布读档与候选阶段，再进入模型任务�
   const requesting = h.runtime.getQianshiSnapshot().history;
   assert.equal(requesting.calls, 1, '模型任务尝试数只在准备完本批后递增');
   assert.match(requesting.message, /正在调用第 1\/1 批模型任务/u);
+  assert.equal(requesting.request.phase, 'responseBody');
+  assert.equal(h.runtime.getQianshiStatus().history.request.phase, 'responseBody');
+  const versionBeforeElapsed = h.runtime.getQianshiSnapshotVersion();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(h.runtime.getQianshiSnapshotVersion(), versionBeforeElapsed, '纯耗时变化不使千事快照版本抖动');
   assert.equal(h.calls.length, callsBeforeHistory + 1, '已进入 fake 模型任务');
   releaseModel();
   const result = await running;
   assert.equal(result.status, 'completed');
+});
+
+test('千事历史请求暴露独立传输诊断并沿用三次预算', async () => {
+  let mode = 'summary', initialBudget = null;
+  const h = harness({ initialChat: [user('开始'), assistant('顾舟答应归还旧书。'), user('稳定')], utility: async options => {
+    if (mode === 'summary') return { jsonData: { summary: '顾舟答应归还旧书。' } };
+    initialBudget = { remaining: options.transportBudget.remaining, used: options.transportBudget.used };
+    options.transportBudget.used = 1;
+    options.transportBudget.remaining = 2;
+    const request = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { floors: request.floors.map(value => ({ floorKey: value.floorKey, qianshi: { events: [
+      { key: 'event-1', title: '归还旧书', description: '顾舟归还旧书。', status: 'occurred', matter: false },
+    ], order: [] } })) } };
+  } });
+  await h.runtime.start();
+  const floor = h.runtime.getState().floors[0]; await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const plan = await h.runtime.prepareQianshiHistory(); mode = 'history';
+  const result = await h.runtime.startQianshiHistory(plan.planId);
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(initialBudget, { remaining: 3, used: 0 });
+  const request = h.runtime.getQianshiSnapshot().history.request;
+  assert.equal(request.outcome, 'completed');
+  assert.equal(request.phase, 'saving');
+  assert.equal(request.attempts, 1);
+  assert.equal(request.error, null);
+});
+
+test('千事历史真实 compact/router 加诊断前后尝试数相同，成功与429/5xx及超时均有回执', async () => {
+  const scenarios = [
+    { name: 'success', statuses: [], expectedAttempts: 1, expectedOutcome: 'completed' },
+    { name: '429-recover', statuses: [429], expectedAttempts: 2, expectedOutcome: 'completed', keepLastAttempt: true },
+    { name: '429-exhausted', statuses: [429, 429, 429], expectedAttempts: 3, expectedOutcome: 'failed' },
+    { name: '5xx-exhausted', statuses: [503, 503, 503], expectedAttempts: 3, expectedOutcome: 'failed' },
+    { name: 'timeout', timeout: true, expectedAttempts: 1, expectedOutcome: 'failed' },
+  ];
+  for (const scenario of scenarios) for (const withBudget of [false, true]) {
+    let historyAttempts = 0, statuses = [...(scenario.statuses ?? [])];
+    const client = createCompactApiClient({ retryWait: async () => {}, timeoutMs: () => scenario.timeout ? 5 : 5000, fetchImpl: async (_path, options) => {
+      const input = JSON.parse(options.body), task = JSON.parse(input.messages.at(-1).content);
+      const content = task.task === 'extractFloorSemantics' ? { summary: '顾舟答应归还旧书。' } : {
+        floors: task.floors.map(value => ({ floorKey: value.floorKey, qianshi: { events: [{ key: 'event-1', title: '归还旧书', description: '顾舟归还旧书。', status: 'occurred', matter: false }], order: [] } })),
+      };
+      if (task.task === 'extractFloorSemantics') return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+      historyAttempts += 1;
+      if (scenario.timeout) return await new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(Object.assign(new Error('timeout'), { name: 'AbortError' })), { once: true }));
+      const status = statuses.shift();
+      if (status) return new Response(JSON.stringify({ error: { message: `fixture ${status}` } }), { status, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) }, finish_reason: 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+    }});
+    const router = createTaskRouter({ resolver: { resolveUtility: () => ({ kind: 'independent', source: 'fixture', config: { url: 'https://fixture.invalid', key: 'fixture', model: 'fixture' } }), resolve: () => ({ kind: 'independent' }) }, compactClient: client });
+    const h = harness({ initialChat: [user('开始'), assistant('顾舟答应归还旧书。'), user('稳定')], utility: options => {
+      const { transportBudget, ...request } = options;
+      return router.generateUtilityTask(withBudget ? options : request);
+    } });
+    await h.runtime.start();
+    const floor = h.runtime.getState().floors[0]; await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+    const beforeHistory = historyAttempts; const plan = await h.runtime.prepareQianshiHistory();
+    const result = await h.runtime.startQianshiHistory(plan.planId);
+    const request = h.runtime.getQianshiStatus().history.request;
+    assert.equal(historyAttempts - beforeHistory, scenario.expectedAttempts, `${scenario.name} transport attempts`);
+    if (withBudget) assert.equal(request.attempts, scenario.expectedAttempts, `${scenario.name} diagnostic attempts`);
+    assert.equal(request.outcome, scenario.expectedOutcome, `${scenario.name} outcome`);
+    if (withBudget && scenario.keepLastAttempt) assert.equal(request.lastAttemptError.httpStatus, 429, `${scenario.name} keeps prior 429`);
+    if (scenario.expectedOutcome === 'completed') assert.equal(result.status, 'completed', scenario.name);
+  }
+});
+
+test('重判下一楼请求前读档失败保留上一楼完成回执，未发生新模型调用和提交', async () => {
+  let rejudging = false, rejudgeCalls = 0;
+  const h = harness({ initialChat: [user('开始'), assistant('约好归还旧书。'), user('继续'), assistant('约好送还雨伞。'), user('稳定')], utility: options => {
+    if (!rejudging) return { jsonData: { summary: '已有约定。', qianshi: { events: [
+      { key: 'event-1', title: '归还物品', description: '双方约好归还物品。', status: 'planned', matter: true },
+    ], order: [] } } };
+    rejudgeCalls += 1;
+    options.transportBudget.used = 1;
+    const input = JSON.parse(options.taskMessages[0].content);
+    return { jsonData: { qianshi: { events: input.records.map(record => ({ key: record.key,
+      lineStatus: 'inProgress', actionStatus: 'occurred', matter: true })), order: [] } } };
+  } });
+  await h.runtime.start();
+  for (const floor of h.runtime.getState().floors) await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const plan = await h.runtime.prepareQianshiRejudge();
+  const rootPuts = h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-root').length;
+  rejudging = true;
+  h.backend.setBeforeGet(({ key }) => {
+    if (key === 'v3-root' && h.runtime.getQianshiStatus().history.request?.outcome === 'completed') {
+      throw Object.assign(new Error('下一楼准备读档超时'), { code: 'BACKEND_TIMEOUT' });
+    }
+  });
+  const result = await h.runtime.startQianshiRejudge(plan.planId);
+  assert.equal(result.status, 'failed'); assert.equal(result.outcomes.at(-1).reasonCode, 'BACKEND_TIMEOUT');
+  assert.equal(result.request.outcome, 'completed'); assert.equal(result.request.phase, 'compile');
+  assert.equal(result.request.fromAssistantSeq, 1); assert.equal(result.request.error, null);
+  assert.equal(rejudgeCalls, 1); assert.equal(result.calls, 1);
+  assert.equal(h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-root').length, rootPuts);
+});
+
+test('千事历史 abort 不伪报 completed，新 job 不沿用旧取消回执', async () => {
+  let hold = false, historyStarted;
+  const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+    const input = JSON.parse(options.body), task = JSON.parse(input.messages.at(-1).content);
+    if (task.task === 'extractFloorSemantics') return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ summary: '旧摘要。' }) }, finish_reason: 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+    historyStarted?.();
+    if (hold) return await new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }));
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{"floors":[]}' }, finish_reason: 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+  }});
+  const router = createTaskRouter({ resolver: { resolveUtility: () => ({ kind: 'independent', source: 'fixture', config: { url: 'https://fixture.invalid', key: 'fixture', model: 'fixture' } }), resolve: () => ({ kind: 'independent' }) }, compactClient: client });
+  const h = harness({ initialChat: [user('开始'), assistant('旧摘要事实。'), user('稳定')], utility: options => router.generateUtilityTask(options) });
+  await h.runtime.start(); const floor = h.runtime.getState().floors[0]; await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const plan = await h.runtime.prepareQianshiHistory(); hold = true;
+  const started = new Promise(resolve => { historyStarted = resolve; }); const running = h.runtime.startQianshiHistory(plan.planId); await started;
+  await h.runtime.stopQianshiHistory(); const stopped = await running;
+  assert.equal(stopped.status, 'stopped'); assert.equal(h.runtime.getQianshiStatus().history.request.outcome, 'cancelled');
+  assert.equal(h.runtime.getQianshiStatus().history.request.attempts, 1, '取消沿一次实际HTTP请求结束');
+  assert.notEqual(h.runtime.getQianshiStatus().history.request.phase, 'completed');
+  hold = false; const nextPlan = await h.runtime.prepareQianshiHistory();
+  const nextRunning = h.runtime.startQianshiHistory(nextPlan.planId);
+  await nextRunning;
+  assert.notEqual(h.runtime.getQianshiStatus().history.request?.outcome, 'cancelled', 'new job does not retain the old cancellation');
+});
+
+test('千事历史保存门闩期间 request 保持 saving，完成后耗时快照稳定', async () => {
+  let mode = 'summary', releaseSave, saveStarted;
+  const saveWait = new Promise(resolve => { releaseSave = resolve; }), saveSeen = new Promise(resolve => { saveStarted = resolve; });
+  const h = harness({ initialChat: [user('开始'), assistant('顾舟答应归还旧书。'), user('稳定')], utility: async options => {
+    if (mode === 'summary') return { jsonData: { summary: '顾舟答应归还旧书。' } };
+    const request = JSON.parse(options.taskMessages[0].content);
+    options.transportBudget.used = 1;
+    return { jsonData: { floors: request.floors.map(value => ({ floorKey: value.floorKey, qianshi: { events: [{ key: 'event-1', title: '归还旧书', description: '顾舟归还旧书。', status: 'occurred', matter: false }], order: [] } })) } };
+  } });
+  await h.runtime.start(); const floor = h.runtime.getState().floors[0]; await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  const plan = await h.runtime.prepareQianshiHistory(); mode = 'history';
+  h.backend.setBeforePut(async ({ key }) => { if (key === 'v3-root') { saveStarted(); await saveWait; } });
+  const running = h.runtime.startQianshiHistory(plan.planId); await saveSeen;
+  const during = h.runtime.getQianshiStatus().history.request;
+  assert.equal(during.phase, 'saving'); assert.equal(during.outcome, 'running');
+  releaseSave(); const result = await running; assert.equal(result.status, 'completed');
+  const after = h.runtime.getQianshiStatus().history.request;
+  assert.equal(after.phase, 'saving'); assert.equal(after.outcome, 'completed'); assert.equal(after.attemptElapsedMs, 0);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(h.runtime.getQianshiStatus().history.request, after, '结束后的耗时冻结，不再增长或变为NaN');
 });
 
 test('千事历史补齐用项目 JSON 解析器处理未落盘的七楼结果并保留旧响应字段', async () => {
@@ -10953,6 +11109,10 @@ test('千事历史校验顶层响应、逐楼重复漏回和单楼完整输入�
       : scenario === 'duplicate' ? ['QIANSHI_HISTORY_FLOOR_DUPLICATE', 'QIANSHI_HISTORY_FLOOR_MISSING']
         : ['QIANSHI_HISTORY_FLOOR_MISSING', 'QIANSHI_HISTORY_FLOOR_MISSING'];
     assert.deepEqual(result.outcomes.map(outcome => outcome.reasonCode), Array.isArray(expected) ? expected : [expected, expected]);
+    const requestDiagnostic = h.runtime.getQianshiStatus().history.request;
+    assert.equal(requestDiagnostic.outcome, 'failed');
+    assert.equal(requestDiagnostic.error.code, Array.isArray(expected) ? expected[0] : expected);
+    assert.equal(requestDiagnostic.lastAttemptError, null, '业务校验失败不冒充传输失败');
     const after = await h.store.readReachable({ mode: 'runtime' });
     assert.ok(after.floorMemories.every(memory => !memory.qianshiDelta || memory.qianshiDelta.status === 'pending'), '坏批响应不覆盖旧字段');
   });
