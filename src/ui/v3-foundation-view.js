@@ -301,6 +301,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   let pluginActivity = { busy: false, copy: '' };
   let refreshManagementProgress = null;
   let container = null, active = false, epoch = 0, feedback = '', refreshFeedback = null, receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
+  let refreshRequestEpoch = null;
   let page = 'management';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null, pageFeedbackNode = null, managementFeedbackNode = null;
@@ -371,7 +372,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
     chatId = nextChatId;
     for (const [key, draft] of drafts) if (!draft.saving) drafts.delete(key);
-    cseDrafts.clear(); cseHistoryUi = null; openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; memoryListPage = 0; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null;
+    cseDrafts.clear(); cseHistoryUi = null; openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; memoryListPage = 0; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null; refreshRequestEpoch = null;
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -844,9 +845,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   const refreshSyncing = state => state?.memorySnapshotStatus === 'syncing' || state?.memorySyncStatus === 'syncing';
   async function run(label, task, { after, failed, resultCopy, followState = false } = {}) {
     const mine = ++epoch, progressFeedback = `${label}…`; feedback = progressFeedback; refreshFeedback = followState ? progressFeedback : null; updateManagementFeedback(foundationState); updateHealth(foundationState);
+    // 本次读取尚未返回时，之前排队的终态通知不结算新刷新的提示。
+    refreshRequestEpoch = followState ? mine : null;
     const beforeState = runtime.getState?.() ?? foundationState;
     try {
       const next = await task();
+      if (refreshRequestEpoch === mine) refreshRequestEpoch = null;
       const nextState = runtime.getState?.() ?? next;
       const settledRender = after?.(nextState) === true;
       if (!active) return next;
@@ -860,6 +864,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       }
       render(nextState); return next;
     } catch (error) {
+      if (refreshRequestEpoch === mine) refreshRequestEpoch = null;
       const settledRender = failed?.(error) === true;
       if (!active) return { status: 'stale' };
       if (mine !== epoch && !settledRender) return { status: 'stale' };
@@ -2430,7 +2435,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   function subscribe() {
     if (!active || !container || unsubscribe) return;
     const releases = [];
-    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (refreshFeedback !== null) { if (feedback !== refreshFeedback) refreshFeedback = null; else { feedback = refreshResult(snapshot); refreshFeedback = refreshSyncing(snapshot) || pluginActivity.busy ? feedback : null; } } if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
+    if (typeof runtime.subscribe === 'function') { const release = runtime.subscribe(snapshot => { if (refreshFeedback !== null && refreshRequestEpoch === null) { if (feedback !== refreshFeedback) refreshFeedback = null; else { feedback = refreshResult(snapshot); refreshFeedback = refreshSyncing(snapshot) || pluginActivity.busy ? feedback : null; } } if (snapshot?.status === 'ready' && feedback === statusCopy('stale')) feedback = '记忆状态已刷新。'; if (feedback === '正在读取当前聊天…' && snapshot?.memorySnapshotStatus !== 'syncing' && snapshot?.memorySyncStatus !== 'syncing') feedback = snapshot?.status === 'ready' ? '记忆状态已刷新。' : ''; if (active && container) receiveFoundation(snapshot); }); if (typeof release === 'function') releases.push(release); }
     if (typeof recallRuntime?.subscribe === 'function') { const release = recallRuntime.subscribe(snapshot => { recallState = snapshot; if (active && container && page === 'management') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof peopleRuntime?.subscribe === 'function') { const release = peopleRuntime.subscribe(snapshot => { peopleState = snapshot; if (active && container && page === 'people') render(foundationState); }); if (typeof release === 'function') releases.push(release); }
     if (typeof timeRuntime?.subscribe === 'function') { const release = timeRuntime.subscribe(snapshot => { if (active && container) { updateHealth(foundationState, snapshot); updateRecentItems(snapshot); } }); if (typeof release === 'function') releases.push(release); }
@@ -2499,5 +2504,14 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function deactivate() { refreshManagementProgress = null; active = false; vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
   function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null; if (active && container) render(foundationState); }
-  return Object.freeze({ setActivity(value) { pluginActivity = value; if (refreshFeedback !== null && feedback === refreshFeedback) { feedback = refreshResult(foundationState); refreshFeedback = pluginActivity.busy || refreshSyncing(foundationState) ? feedback : null; } if (active && container) { updateHealth(foundationState); updatePageFeedback(foundationState); updateManagementFeedback(foundationState); if (page === 'management') refreshManagementProgress?.(); } }, mount, activate, deactivate, render, setPage, getPage: () => page });
+  return Object.freeze({ setActivity(value) {
+    const becameIdle = pluginActivity.busy === true && value.busy === false;
+    pluginActivity = value;
+    if (refreshFeedback !== null && refreshRequestEpoch === null && feedback === refreshFeedback) { feedback = refreshResult(foundationState); refreshFeedback = pluginActivity.busy || refreshSyncing(foundationState) ? feedback : null; }
+    if (active && container) {
+      if (becameIdle && page === 'management' && (foundationState.mainGenerationActive === true || managementState?.workBusy === true)) { render(runtime.getState()); return; }
+      updateHealth(foundationState); updatePageFeedback(foundationState); updateManagementFeedback(foundationState);
+      if (page === 'management') refreshManagementProgress?.();
+    }
+  }, mount, activate, deactivate, render, setPage, getPage: () => page });
 }

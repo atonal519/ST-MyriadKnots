@@ -1,5 +1,6 @@
 import { BASE_PROCESSING_PROMPT } from '../src/internal-processing-prompt.js';
 import test from 'node:test';
+import { processingTransport } from './fixtures/processing-transport.mjs';
 import assert from 'node:assert/strict';
 import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from '../src/v3/time-annual-setting.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
@@ -306,7 +307,7 @@ test('旧档无正文可补读；相同和无关变化不调用，相关变化�
 });
 
 
-test('全局破限时间与年度同一运行只取一次快照，后续新任务取改值或默认', async () => {
+test('全局破限时间与年度业务任务不重复前缀，每次实际transport读取最新值或默认', async () => {
   for (const value of ['时间共用第一版', '时间共用第二版', '  \n ']) {
     let processing = value, reads = 0, id = 0;
     const sent = [], chat = [{ is_user: false, mes: '<!-- QQJ-start | date=2026-09-19 | time=08:00 -->阿岚答应明日回信。<!-- QQJ-end | date=2026-09-19 | time=09:00 -->' }, { is_user: true, mes: '继续' }];
@@ -314,19 +315,27 @@ test('全局破限时间与年度同一运行只取一次快照，后续新任�
     const root = { chatId: CHAT, narrativeGeneration: 'generation', headCheckpointId: 'head' };
     const source = { status: 'ready', root, rootRevision: 1, floors: candidates.filter(row => row.stabilityProof).map((candidate, index) => createFloorRecord({ candidate, id: `floor-${index+1}`, chatId: CHAT, narrativeGeneration: root.narrativeGeneration })), floorMemories: [], stateDeltas: [], entities: [], baseline: { userPersona: { entityId: USER, name: '用户' } } };
     const store = createTimeStore({ client: backend().client });
+    const transport = processingTransport({ processingPrompt: () => processing, respond: async task => {
+      sent.push(task); processing = '运行途中修改'; const request = JSON.parse(task.taskMessages[0].content);
+      if (request.task === 'annual-settings') return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: [{ category: 'birthday', label: '生日', originalDate: '9月20日', note: '' }] })) } };
+      if (request.currentReview) return { jsonData: { changes: request.trackedItems.map(item => ({ itemId: item.id, progression: '尚未确认回信。', assessmentReason: '' })) } };
+      return { jsonData: { changes: [{ itemId: null, subjectEntityId: null, subjectName: '阿岚', type: 'deadline', label: '回信期限', observation: '阿岚答应明日回信', occurrenceTime: '2026-09-19', dueTime: '2026-09-20', periodDays: null, status: 'active', stateRefs: [], progression: '尚未确认回信。', sourceKeys: [request.observations[0].sourceKey] }] } };
+    } });
     const runtime = createTimeRuntime({ store, foundationStore: { readRoot: async () => ({ data: root }) }, hostAdapter: { snapshot: () => ({ chat, chatId: 'host', context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) },
       session: { identity: () => ({ chatId: CHAT, hostChatId: 'host' }) }, getReachable: () => source, getMemoryState: () => ({ memorySyncStatus: 'idle' }), isEnabled: () => true,
       processingPrompt: () => { reads++; return processing; }, annualSettingsProvider: () => ({ ready: true, people: [{ entityId: PERSON, displayName: '阿岚', profile: { birthday: '9月20日' } }] }),
-      generateTimeTask: async task => {
-        sent.push(task); processing = '运行途中修改'; const request = JSON.parse(task.taskMessages[0].content);
-        if (request.task === 'annual-settings') return { jsonData: { sources: request.sources.map(row => ({ sourceId: row.sourceId, items: [{ category: 'birthday', label: '生日', originalDate: '9月20日', note: '' }] })) } };
-        if (request.currentReview) return { jsonData: { changes: request.trackedItems.map(item => ({ itemId: item.id, progression: '尚未确认回信。', assessmentReason: '' })) } };
-        return { jsonData: { changes: [{ itemId: null, subjectEntityId: null, subjectName: '阿岚', type: 'deadline', label: '回信期限', observation: '阿岚答应明日回信', occurrenceTime: '2026-09-19', dueTime: '2026-09-20', periodDays: null, status: 'active', stateRefs: [], progression: '尚未确认回信。', sourceKeys: [request.observations[0].sourceKey] }] } };
-      }, newUuid: () => `pool-time-${++id}` });
+      generateTimeTask: task => transport.generate(task), newUuid: () => `pool-time-${++id}` });
     await runtime.organize(await runtime.prepareHistoryPlan());
     assert.equal(sent.length, 3); assert.equal(reads, 1);
     const prefix = value.trim() ? value : BASE_PROCESSING_PROMPT;
-    for (const task of sent) { assert.ok(task.systemPrompt.startsWith(prefix+'\n\n')); assert.equal(task.systemPrompt.split(prefix).length-1, 1); }
+    assert.equal(transport.prefixReads(), 3);
+    for (const [index, task] of sent.entries()) {
+      const dispatchedPrefix = index === 0 ? prefix : '运行途中修改';
+      const dispatched = transport.bodies[index].messages[0].content;
+      assert.equal(dispatched, `${dispatchedPrefix}\n\n${task.systemPrompt}`);
+      assert.equal(dispatched.split(dispatchedPrefix).length - 1, 1);
+      assert.equal(task.systemPrompt.includes(prefix), false);
+    }
     assert.equal(runtime.getState().annualItems.length, 1); assert.equal(runtime.getState().trackedItems.length, 1);
   }
 });

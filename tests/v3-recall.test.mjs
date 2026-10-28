@@ -1,5 +1,6 @@
 import { resolveProcessingPrompt } from '../src/internal-processing-prompt.js';
 import test from 'node:test';
+import { processingTransport } from './fixtures/processing-transport.mjs';
 import assert from 'node:assert/strict';
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from '../src/v3/recall-source.js';
 import { buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, buildRecallQueryContext, buildRecallQueryFrame, cseSelectionContext, estimateRecallTokens, formatRecallInjection, historySelectionContext, recallBudget, selectRecall } from '../src/v3/recall-selector.js';
@@ -8029,22 +8030,25 @@ test('current origin沿候选新回执和时间重格式化保留，旧缺字段
 });
 
 
-test('全局破限召回生产selector取本次快照，任务候选输出与计量保留', async () => {
+test('全局破限召回生产selector由实际transport取值，任务候选输出与计量保留', async () => {
   const source = wideCandidateSource({ direct: 3 }), queryContext = buildRecallQueryContext({ coreChat: [{ is_user: true, mes: '阿裴，我们回钟楼赴约。' }] });
   let previousPayload = null;
   for (const value of ['召回共用第一版', '召回共用第二版', '  \n ']) {
     let processing = value, sent;
-    const result = await selectRecallWithLlm({ source, queryContext, contextSize: 65536, processingPrompt: () => processing,
-      generateUtilityTask: async options => {
+    const transport = processingTransport({ processingPrompt: () => processing, respond: async options => {
         sent = options; processing = '请求途中修改';
         const payload = JSON.parse(options.taskMessages[0].content);
         if (previousPayload) assert.deepEqual(payload, previousPayload);
         previousPayload = payload;
         return { jsonData: { history_exclude_keys: [], state_exclude_keys: [], priority_keys: [] } };
       } });
-    const prefix = resolveProcessingPrompt(value);
-    assert.equal(sent.systemPrompt, `${prefix}\n\n${RECALL_LLM_SYSTEM_PROMPT}`);
-    assert.equal(sent.systemPrompt.split(prefix).length - 1, 1);
+    const result = await selectRecallWithLlm({ source, queryContext, contextSize: 65536, processingPrompt: () => processing,
+      generateUtilityTask: options => transport.generate(options) });
+    const prefix = resolveProcessingPrompt(value), dispatched = transport.bodies[0].messages[0].content;
+    assert.equal(dispatched, `${prefix}\n\n${RECALL_LLM_SYSTEM_PROMPT}`);
+    assert.equal(dispatched.split(prefix).length - 1, 1);
+    assert.equal(sent.systemPrompt, RECALL_LLM_SYSTEM_PROMPT, 'selector仅准备业务prompt，共享前缀在实际派发时注入');
+    assert.equal(transport.prefixReads(), 1);
     assert.equal(result.selectorDiagnostic.requestCharacters, sent.systemPrompt.length + sent.taskMessages[0].content.length);
     assert.equal(result.selectorDiagnostic.requestEstimatedTokens, estimateRecallTokens(`${sent.systemPrompt}\n${sent.taskMessages[0].content}`));
     assert.ok(result.injectionText.length > 0);
@@ -8054,12 +8058,15 @@ test('全局破限召回生产selector取本次快照，任务候选输出与计
 
 test('全局破限召回runtime新请求取改值，同user冻结回执仍复用原签名', async () => {
   let processing = '运行时共用第一版'; const sent = [];
-  const h = createRuntimeHarness({ useDefaultSelector: true, processingPrompt: () => processing, generateUtilityTask: async options => {
+  const transport = processingTransport({ processingPrompt: () => processing, respond: async options => {
     sent.push(options); return { jsonData: { history_exclude_keys: [], state_exclude_keys: [] } };
   } });
+  const h = createRuntimeHarness({ useDefaultSelector: true, processingPrompt: () => processing,
+    generateUtilityTask: options => transport.generate(options) });
   await h.runtime.intercept(h.chat, 12000, null, 'normal'); await flushReceiptSave();
   const receipt = structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);
-  assert.ok(sent[0].systemPrompt.startsWith(processing+'\n\n'));
+  assert.ok(transport.bodies[0].messages[0].content.startsWith(processing+'\n\n'));
+  assert.equal(sent[0].systemPrompt, RECALL_LLM_SYSTEM_PROMPT);
   processing = '运行时共用第二版';
   const reused = await h.runtime.intercept(h.chat, 12000, null, 'continue');
   assert.equal(reused.lastRecall.reusedReceipt, true); assert.equal(sent.length, 1);
@@ -8068,9 +8075,11 @@ test('全局破限召回runtime新请求取改值，同user冻结回执仍复用
     processing = value;
     h.chat.push({ is_user: false, mes: '钟楼仍有人等待。' }, { is_user: true, mes: '阿裴，我们回钟楼赴约。' });
     await h.runtime.intercept(h.chat, 12000, null, 'normal');
-    assert.ok(sent.at(-1).systemPrompt.startsWith(resolveProcessingPrompt(value)+'\n\n'));
+    const prefix = resolveProcessingPrompt(value), dispatched = transport.bodies.at(-1).messages[0].content;
+    assert.equal(dispatched, `${prefix}\n\n${RECALL_LLM_SYSTEM_PROMPT}`);
+    assert.equal(dispatched.split(prefix).length - 1, 1);
   }
-  assert.equal(sent.length, 3);
+  assert.equal(sent.length, 3); assert.equal(transport.bodies.length, 3); assert.equal(transport.prefixReads(), 3);
 });
 
 

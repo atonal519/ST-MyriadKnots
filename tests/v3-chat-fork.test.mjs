@@ -1219,10 +1219,13 @@ test('260楼旧 preparing 在第248楼时间倒退场景下经 native/Luker 正�
 
     const firstPreparation = session.prepare();
     let laterTargetId = null;
+    let laterMetadata = null;
     if (hostKind === 'SillyTavern') {
       await targetSaveEntered;
       laterTargetId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
       const laterContext = context(`later-${hostKind}`, laterTargetId, [user('后来打开的聊天')]);
+      laterContext.chatMetadata.qianqianjie.file = { characterLocator: 'character.png', hostChatId: laterContext.chatId };
+      laterMetadata = structuredClone(laterContext.chatMetadata);
       const laterOwner = { hostChatId: laterContext.chatId, characterLocator: 'character.png', personaLocator: 'persona.png' };
       backend.records.set(`${CHAT_IDENTITY_COLLECTION}/binding-${laterTargetId}`, {
         revision: 1,
@@ -1240,7 +1243,7 @@ test('260楼旧 preparing 在第248楼时间倒退场景下经 native/Luker 正�
       assert.equal(prepared.identity.chatId, targetChatId, '迟到完成返回任务开始时固定的目标身份');
       await waitFor(() => session.getState().status === 'ready' && session.getState().identity?.chatId === laterTargetId,
         '后来打开聊天的页面身份准备未完成');
-      assert.deepEqual(activeContext.chatMetadata.qianqianjie, { schemaVersion: 2, chatId: laterTargetId }, '旧任务不能改写后来打开聊天的 metadata');
+      assert.deepEqual(activeContext.chatMetadata, laterMetadata, '旧任务不能改写后来打开聊天的完整 metadata');
       assert.equal(backend.records.has(`chat-${laterTargetId}/v3-root`), false, '旧任务结果不得改投后来聊天');
     }
     assert.equal(prepared.status, 'ready');

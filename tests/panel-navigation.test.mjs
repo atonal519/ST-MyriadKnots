@@ -25,6 +25,14 @@ class Node {
   scrollIntoView(options) { this.scrollOptions = options; }
 }
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
+const waitFor = async (condition, message, timeoutMs = 2000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
+};
 
 test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，并恢复各页滚动位置', async () => {
   const [source, panelHtml, panelCss] = await Promise.all([
@@ -172,9 +180,11 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
   body.scrollTop = 31;
   settingsTab.fire('click');
-  await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
-  const initialManagementMount = view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
-  const indexLink = flatten(initialManagementMount).find(node => node.className.includes('qqj-vector-index-link'));
+  const findManagementMount = () => view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
+  const findIndexLink = () => flatten(findManagementMount() ?? view).find(node => node.className.includes('qqj-vector-index-link'));
+  await waitFor(() => indexManifestReads === 1 && findIndexLink()?.hidden === false, '设置页索引状态未完成');
+  const initialManagementMount = findManagementMount();
+  const indexLink = findIndexLink();
   assert.ok(indexLink); assert.equal(indexLink.hidden, false, '直接打开设置记忆管理后按当前manifest显示零索引文字链接');
   assert.match(indexLink.textContent, /还没有向量索引/u);
   assert.equal(flatten(view).some(node => node.className.includes('qqj-vector-index-hint')), false, '千结内容页不再显示独立索引提示');
@@ -193,22 +203,24 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(apiSettingsMounts, apiMountsBeforeNavigation); assert.equal(apiSettingsDisposals, apiDisposalsBeforeNavigation);
   assert.equal(indexManifestReads, 1); assert.equal(indexShardReads, 0); assert.equal(identityReads, 0, '纯导航不重新读取manifest或identity');
   eventTab.fire('click');
-  await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  await waitFor(() => foundationRefreshes === 2, '千结页状态刷新未完成');
   assert.equal(foundationRefreshes, 2, '随后打开千结页只读取当前状态');
   assert.equal(indexManifestReads, 1, '零索引检查属于设置记忆管理入口');
   assert.equal(flatten(view).some(node => node.className.includes('qqj-vector-index-hint')), false);
-  settingsTab.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  settingsTab.fire('click');
+  await waitFor(() => findIndexLink()?.hidden === false, '重新进入设置页时索引状态未完成');
   const indexDiagnosticMount = view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
   const copyStatus = flatten(indexDiagnosticMount).find(node => node.textContent === '复制状态诊断');
   assert.ok(copyStatus, '设置页保留记忆页状态诊断入口');
-  copyStatus.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  copyStatus.fire('click'); await waitFor(() => clipboardWrites.length > 0, '状态诊断复制未完成');
   const copiedStatus = JSON.parse(clipboardWrites.at(-1));
   assert.equal(copiedStatus.vector.indexCheckStatus, 'ready');
   assert.equal(copiedStatus.vector.indexChunkCount, 0);
   assert.equal(copiedStatus.vector.indexChatMatchesMemory, true);
   assert.equal(JSON.stringify(copiedStatus).includes('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), false, '诊断说明是否匹配，不暴露聊天编号');
   clipboardWrites.length = 0;
-  eventTab.fire('click'); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  eventTab.fire('click');
+  await waitFor(() => indexManifestReads === 2, '重新打开记忆页时索引状态未完成');
   assert.equal(indexManifestReads, 2, '重新打开记忆页只再读取一次manifest');
   assert.equal(indexShardReads, 0); assert.equal(identityReads, 0);
   body.scrollTop = 31; eventTab.fire('click');

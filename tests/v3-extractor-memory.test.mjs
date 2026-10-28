@@ -35,6 +35,7 @@ import { createChatSession } from '../src/chat-session.js';
 import { createPluginLifecycle } from '../src/plugin-lifecycle.js';
 import { applyPluginEnabledImmediately } from '../src/settings.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
+import { projectTime } from '../src/v3/time-engine.js';
 import { createPeopleWorkspaceStore, createPeopleWorkspaceRuntime, PEOPLE_WORKSPACE_RECORD_ID } from '../src/v3/people-workspace.js';
 import { memorySourceFloorIds } from '../src/v3/memory-schema.js';
 import { createQianshiCandidateIndex, prepareQianshiCandidates, projectQianshiGraph } from '../src/v3/qianshi-domain.js';
@@ -212,7 +213,8 @@ test('时间状态字段按同一容器局部配对，兼容分隔的 Time 行�
   assert.equal(inferCanonicalCurrentTime('<unknown><details>[Time: 2026-09-29 | 19:20]</details></unknown>'), null);
   assert.equal(inferCanonicalCurrentTime('<unknown><think>[Time: 2026-09-29 | 19:20]</think></unknown>'), null);
   assert.equal(inferCanonicalCurrentTime('<unknown><snow><StatusBar>当前状态：2026-09-29 19:20</StatusBar></snow></unknown>'), null);
-  assert.equal(inferCanonicalCurrentTime('大陆历1686年10月4日 15:30'), null, '不截取具名纪年中的数字作为公历');
+  assert.deepEqual(inferCanonicalCurrentTime('大陆历1686年10月4日 15:30'), { text: '大陆历1686年10月4日 15:30', kind: 'explicit' }, '保留完整具名纪年，不截成公历');
+  assert.equal(projectTime('大陆历1686年10月4日 15:30').day, null, '没有确认历法时，不把具名纪年按公历计算');
   assert.deepEqual(inferCanonicalCurrentTime('<time-box><date>2026-09-29</date><time>19：20</time></time-box>'), { text: '2026-09-29 19：20', kind: 'explicit' });
   assert.deepEqual(inferCanonicalCurrentTime('<Status>[Time: 2026-09-29 | 晚上19:30]</Status>'), { text: '2026-09-29 晚上19:30', kind: 'explicit' });
   assert.deepEqual(inferCanonicalCurrentTime('<time-box><date>2026-09-29</date><time>晚上19:30</time></time-box>'), { text: '2026-09-29 晚上19:30', kind: 'explicit' });
@@ -525,7 +527,7 @@ test('人物刷新复用等价身份映射，真实合并与删除仍更新CSE�
   assert.ok(h.runtime.getQianshiSnapshotVersion().projectionRevision > beforeClearVersion, '清空映射仍更新千事投影');
 });
 
-test('1000楼 production store 含完整摘要/CSE与五类core，缓存重载和正式回源按实际GET逐类核验', async () => {
+test('1000楼 production store 含完整摘要/CSE与五类core，缓存重载和正式回源按实际GET逐类核验', async t => {
   const idb = localForageHarness();
   const cache = createIndexedDbCoreRecordCache({ localForage: idb.localForage, indexedDBProvider: () => idb.indexedDB,
     keyRangeProvider: () => idb.keyRange, accountHandleProvider: () => 'neutral-test-account', originProvider: () => 'https://tavern.invalid', ioTimeoutMs: 100, logger: { debug() {} } });
@@ -592,7 +594,11 @@ test('1000楼 production store 含完整摘要/CSE与五类core，缓存重载�
     return [id, { schemaVersion: 1, generationId: rootRead.generationId, revision: value.revision, createdAt: NOW, updatedAt: NOW, data: value.data }];
   }));
   const fixtureFs = await import('node:fs/promises');
-  await fixtureFs.writeFile('/tmp/qqj-v048-1000-current-reachable.json', JSON.stringify({ identity, witness, records: fixtureRecords }), { mode: 0o600 });
+  const { join } = await import('node:path');
+  const fixtureDir = await fixtureFs.mkdtemp(new URL('./.tmp-current-reachable-', import.meta.url));
+  const fixturePath = join(fixtureDir, 'qqj-v048-1000-current-reachable.json');
+  t.after(async () => { await fixtureFs.rm(fixturePath, { force: true }); await fixtureFs.rmdir(fixtureDir); });
+  await fixtureFs.writeFile(fixturePath, JSON.stringify({ identity, witness, records: fixtureRecords }), { mode: 0o600 });
   const scope = await cache.scopeFor(identity);
   for (let attempt = 0; attempt < 1000 && !await cache.readManifest(scope, witness); attempt += 1) await new Promise(resolve => setTimeout(resolve, 5));
   assert.ok(await cache.readManifest(scope, witness), '最后一次真实root版本在strict read/CAS后才发布cache manifest');
@@ -944,7 +950,7 @@ test('SillyTavern 与 Luker 的正文事件投影新发现连续 AI 后提醒且
 test('正常逐楼摘要准备复用增量千事索引，连续新增楼只做一次完整投影', async () => {
   let projections = 0;
   const h = harness({ modernAnchors: true,
-    initialChat: Array.from({ length: 4 }, (_, index) => [assistant(`普通楼 ${index + 1}`), user(`确认 ${index + 1}`)]).flat(),
+    initialChat: Array.from({ length: 5 }, (_, index) => [assistant(index ? `普通楼 ${index}` : '建立人物身份基线'), user(`确认 ${index}`)]).flat(),
     automation: { enabled: false, batchSize: 1 },
     qianshiCandidateIndexFactory: () => createQianshiCandidateIndex({ projector: (...args) => { projections += 1; return projectQianshiGraph(...args); } }),
     utility: options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
@@ -952,6 +958,9 @@ test('正常逐楼摘要准备复用增量千事索引，连续新增楼只做�
       : { jsonData: { noMaterialChange: true } },
   });
   await h.runtime.start();
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId);
+  assert.ok(h.runtime.getState().memoryEntities.some(entity => entity.specialRole === 'user'), '先固定人物身份，避免把首次创建全局用户当作同一索引范围');
+  h.calls.splice(0); projections = 0;
   await h.runtime.startHistoricalRebuild();
   await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
   assert.equal(h.calls.filter(call => JSON.parse(call.taskMessages[0].content).task === 'extractFloorSemantics').length, 4);
@@ -5265,9 +5274,12 @@ test('保存重试按父版本冻结候选与模型准备信息，root推进后�
 });
 
 test('root 保存失败的待保存结果可跨过另一楼成功提交后继续复用', async () => {
-  const h = harness({ initialChat: [assistant('第一楼'), assistant('第二楼'), assistant('用于确认第二楼稳定。')] });
+  const h = harness({ initialChat: [assistant('建立人物身份基线'), assistant('第一楼'), assistant('第二楼'), assistant('用于确认第二楼稳定。')] });
   await h.runtime.start();
-  const [firstFloor, secondFloor] = h.runtime.getState().floors;
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  assert.ok(h.runtime.getState().memoryEntities.some(entity => entity.specialRole === 'user'), '预先建立共享用户身份，另一楼提交才不改变待保存结果的身份依赖');
+  h.calls.splice(0);
+  const [, firstFloor, secondFloor] = h.runtime.getState().floors;
   let failRootOnce = true;
   h.backend.setBeforePut(({ key }) => {
     if (!failRootOnce || key !== 'v3-root') return;
@@ -5276,14 +5288,35 @@ test('root 保存失败的待保存结果可跨过另一楼成功提交后继续
   });
 
   let state = await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
-  assert.equal(state.rememberedCount, 0);
+  assert.equal(state.rememberedCount, 1);
   h.backend.setBeforePut(null);
   state = await h.runtime.extractFloor(secondFloor.floorId, { analyzeState: false });
-  assert.equal(state.rememberedCount, 1, JSON.stringify(state.lastExtractorError));
-  state = await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
   assert.equal(state.rememberedCount, 2, JSON.stringify(state.lastExtractorError));
+  state = await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 3, JSON.stringify(state.lastExtractorError));
   assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 2,
     '两楼各生成一次；第一楼保存重试不得产生第三次模型请求');
+});
+
+test('待保存期间首次建立共享用户身份会重新生成，不复用旧身份目录的结果', async () => {
+  const h = harness({ initialChat: [assistant('第一楼'), assistant('第二楼'), assistant('用于确认第二楼稳定。')] });
+  await h.runtime.start();
+  const [firstFloor, secondFloor] = h.runtime.getState().floors;
+  assert.equal(h.runtime.getState().memoryEntities.some(entity => entity.specialRole === 'user'), false);
+  let failRootOnce = true;
+  h.backend.setBeforePut(({ key }) => {
+    if (!failRootOnce || key !== 'v3-root') return;
+    failRootOnce = false;
+    throw Object.assign(new Error('root timeout'), { status: 504, code: 'BACKEND_TIMEOUT' });
+  });
+  await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
+  h.backend.setBeforePut(null);
+  await h.runtime.extractFloor(secondFloor.floorId, { analyzeState: false });
+  assert.ok(h.runtime.getState().memoryEntities.some(entity => entity.specialRole === 'user'));
+  const state = await h.runtime.extractFloor(firstFloor.floorId, { analyzeState: false });
+  assert.equal(state.rememberedCount, 2, JSON.stringify(state.lastExtractorError));
+  assert.equal(h.calls.filter(call => call.systemPrompt === EXTRACTOR_SYSTEM_PROMPT).length, 3,
+    '首次出现共享用户会改变身份依赖，不得把不同目录下的旧模型结果当作未变化');
 });
 
 test('待保存期间处理提示变化会重新生成，并按新提示记录来源指纹', async () => {
@@ -6050,7 +6083,7 @@ test('历史楼顺序提取只把最近已保存前楼的末段时间与摘要�
   const h = harness({
     initialChat: [
       user('开始'),
-      assistant('十月四日晚九点，宴席结束。'),
+      assistant('宾客散去，十月四日晚九点，宴席结束。'),
       assistant('众人稍作休息后继续交谈。'),
       assistant('未来楼写着十二月二十日。'),
       assistant('用于确认未来楼稳定。'),
@@ -6071,6 +6104,7 @@ test('历史楼顺序提取只把最近已保存前楼的末段时间与摘要�
 
   assert.equal(extractorRequests.length, 2, '两楼顺序提取仍只各发一次原有模型请求');
   assert.equal(extractorRequests[0].payload.previousFloorContext, null, '第一楼没有已保存前楼上下文');
+  assert.equal(extractorRequests[0].payload.storyClock, null, '本例测试无独立正文时钟时的摘要时间衔接');
   assert.deepEqual(extractorRequests[1].payload.previousFloorContext, {
     time: '10月4日 21:00',
     summaryTail: firstSummary.trim().slice(-300),

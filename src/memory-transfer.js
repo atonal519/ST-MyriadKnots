@@ -7,7 +7,9 @@ import { readTargetChat, sameChatQqjData, sameQqjChatMetadata } from './v3/messa
 import { validatePeopleWorkspace } from './v3/people-workspace.js';
 import { vectorRecordOwned } from './v3/vector-index.js';
 import { normalizeStoryCalendar } from './v3/calendar-rules.js';
-import { selectAssistantMessage } from './v3/foundation-domain.js';
+import { scanAssistantCandidates, selectAssistantMessage } from './v3/foundation-domain.js';
+import { matchFloorCandidates } from './v3/floor-binding.js';
+import { partitionScannedCandidates } from './v3/migration-prefix.js';
 import { MESSAGE_MEMORY_EXCLUSION_KEY } from './v3/memory-exclusion.js';
 import { stableJson } from './memory-transfer-json.js';
 import { createActivitySignal } from './plugin-activity.js';
@@ -140,14 +142,14 @@ export async function parseMemoryPackage(input) {
   return { value, graph };
 }
 
-async function verifyConversation(graph, chat) {
-  const frozen = new Set(graph.migrationDescriptor?.frozenFloorIds ?? []);
-  for (const floor of graph.floors) {
-    if (frozen.has(floor.id)) continue;
-    const message = chat[floor.hostLocator.messageIndex], selected = selectAssistantMessage(message);
-    check(selected && `sha256:${await sha256(selected.rawContent)}` === floor.content.rawFingerprint,
-      '记忆中的楼层与聊天正文不一致，请在旧设备刷新记忆状态后重新导出。');
-  }
+async function verifyConversation(graph, chat, sanitizerOptions) {
+  const scanned = await scanAssistantCandidates(chat, { chatId: graph.root.chatId, sanitizerOptions });
+  const candidates = partitionScannedCandidates(graph, chat, graph.root.chatId, scanned).all;
+  const bindings = matchFloorCandidates(graph.floors, candidates);
+  const missing = graph.floors.findIndex((_, index) => !bindings.floorMatches.has(index));
+  check(!bindings.issue && missing < 0,
+    `记忆中的楼层无法确认绑定：第 ${bindings.issue?.messageIndex ?? graph.floors[missing]?.hostLocator.messageIndex} 楼（从 0 开始）。请核对楼层标识、正文或清洗设置。`);
+  return bindings;
 }
 
 function ownedMarkers(message, chatId, aliases) {
@@ -156,15 +158,13 @@ function ownedMarkers(message, chatId, aliases) {
       : extra?.[key]?.schemaVersion === 1 && extra[key].chatId === chatId).map(key => [key, clone(extra[key])]));
   return { extra: select(message.extra), swipes: (message.swipe_info ?? []).map(item => select(item?.extra)) };
 }
-function exportMarkers(chat, graph) {
-  const chatId = graph.root.chatId, frozen = new Set(graph.migrationDescriptor?.frozenFloorIds ?? []);
+function exportMarkers(chat, graph, bindings) {
+  const chatId = graph.root.chatId;
   const aliases = new Set((graph.migrationDescriptor?.carriedAliases ?? []).map(alias => alias.aliasId));
   const markers = chat.map(message => ownedMarkers(message, chatId, aliases));
-  // A native export may omit or contain stale inline markers. The validated
-  // live graph owns these anchors; never regenerate floor IDs on the new device.
-  for (const floor of graph.floors) if (!frozen.has(floor.id)) {
-    const item = markers[floor.hostLocator.messageIndex];
-    if (item) item.extra[ANCHOR] = { schemaVersion: 1, chatId, floorId: floor.id };
+  // Match the host's current positions; persisted floor content stays historical.
+  for (const { floor, candidate } of bindings.matches) if (!candidate.archiveCandidate) {
+    markers[candidate.hostLocator.messageIndex].extra[ANCHOR] = { schemaVersion: 1, chatId, floorId: floor.id };
   }
   return markers;
 }
@@ -175,7 +175,7 @@ function rehomeRecord(item, chatId) {
 }
 
 export function createMemoryTransfer({ client, session, hostAdapter, isBusy = () => false, quiesce = async () => {},
-  onSettled = async () => {}, captureCalendar = () => null, persistCalendar = async () => {},
+  onSettled = async () => {}, captureCalendar = () => null, persistCalendar = async () => {}, sanitizerOptions = () => ({}),
   fetchImpl = globalThis.fetch, freshUuid = () => globalThis.crypto.randomUUID(), now = () => new Date(), pluginVersion = '0.7.8' } = {}) {
   let active = false;
   const activity = createActivitySignal(() => ({ busy: active, phase: active ? 'migrating' : null }));
@@ -227,7 +227,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       for (const record of list) if (isAux(record.recordId) && record.data?.chatId === captured.identity.chatId) collected.set(record.recordId, record);
       const records = [...collected].map(([id, record]) => ({ id, data: clone(record.data) }));
       await validateRecords(records, captured.identity.chatId);
-      await verifyConversation(graph, captured.chat);
+      const bindings = await verifyConversation(graph, captured.chat, sanitizerOptions());
       const avatarImages = [];
       const sources = new Map(peopleWorkspaces(records).flatMap(workspace => Object.values(workspace.avatarSourcesByEntityId ?? {})).map(source => [source.path, source]));
       for (const source of sources.values()) {
@@ -244,7 +244,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       current(captured);
       const payload = { format: FORMAT, formatVersion: VERSION, pluginVersion, exportedAt: now().toISOString(),
         source: { chatId: captured.identity.chatId, character: captured.target.characterName },
-        messages: await transferWitness(captured.chat), markers: exportMarkers(captured.chat, graph), records,
+        messages: await transferWitness(captured.chat), markers: exportMarkers(captured.chat, graph, bindings), records,
         prequel: typeof captured.metadata.qianqianjiePrequel === 'string' ? captured.metadata.qianqianjiePrequel : null,
         calendar: clone(captureCalendar(captured.identity.chatId)), ...(avatarImages.length ? { avatarImages } : {}) };
       const value = { ...payload, checksum: await sha256(stableJson(payload)) };
@@ -262,14 +262,16 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     check(mismatch < 0, value.formatVersion === 1
       ? `旧版记忆包在第 ${mismatch} 楼的综合校验不同，可能只是时间戳、候选编号或隐藏标记变化，不能据此判断正文不同。请两边更新插件，在旧设备重新导出记忆包后再试，无需重做摘要。`
       : `当前聊天与记忆包不一致：第 ${mismatch} 楼的发言方、正文或当前选中的回复不同（楼号从 0 开始）。请核对该楼；本次未写入记忆。`);
-    await verifyConversation(graph, captured.chat);
+    const sourceChat = captured.chat.map((message, index) => ({ ...message,
+      extra: mergeOwned(message.extra, value.markers[index].extra, MESSAGE_KEYS) }));
+    await verifyConversation(graph, sourceChat, sanitizerOptions());
     current(captured);
     const oldRoot = await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root'); current(captured);
     const result = Object.freeze({ character: value.source.character, messages: value.messages.length,
       summaries: graph.floorMemories.filter(item => item.recordStatus === 'active' && item.summary).length,
       states: graph.stateDeltas.filter(item => item.recordStatus === 'active').length,
       replacesMemory: Boolean(oldRoot?.data?.headCheckpointId), exportedAt: value.exportedAt });
-    previews.set(result, { captured, value, oldRoot });
+    previews.set(result, { captured, value, graph, oldRoot });
     return result;
   }
   async function optionalGet(collection, id) {
@@ -281,6 +283,10 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       }
       return await client.get(collection, id);
     } catch (error) { if (error.status === 404) return null; throw error; }
+  }
+  async function auxiliaryRevisions(chatId) {
+    return Object.fromEntries((await client.list(`chat-${chatId}`)).filter(item => isAux(item.recordId))
+      .map(item => [item.recordId, item.revision]));
   }
   async function publish(captured, initial, header, messages, chatId) {
     current(captured);
@@ -316,11 +322,14 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
   async function importPreview(previewValue) {
     const plan = previews.get(previewValue);
     check(plan, '预览已失效，请重新选择文件。'); previews.delete(previewValue);
-    const { captured, value, oldRoot } = plan;
+    const { captured, value, graph, oldRoot } = plan;
     return exclusive(captured, async () => {
       check(same(oldRoot, await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root')), '预览后记忆发生变化，请重新预览。');
       const initial = await readTargetChat(captured.target, { fetchImpl });
       check(sameInputs(initial, { chat: captured.chat, header: { chat_metadata: captured.metadata } }), '当前聊天尚未保存完成，请稍后重新预览。');
+      const sourceChat = captured.chat.map((message, index) => ({ ...message,
+        extra: mergeOwned(message.extra, value.markers[index].extra, MESSAGE_KEYS) }));
+      await verifyConversation(graph, sourceChat, sanitizerOptions());
       current(captured);
       const chatId = freshUuid(); check(isUuid(chatId) && chatId !== captured.identity.chatId && chatId !== value.source.chatId, '新记忆编号无效。');
       check((await client.list(`chat-${chatId}`)).length === 0, '新记忆编号已存在，请重试。');
@@ -382,7 +391,8 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       });
       await client.put(`chat-${chatId}`, ROLLBACK, { schemaVersion: 1, chatId, previousChatId: captured.identity.chatId,
         header: initial.header, messages: initial.chat, witnessVersion: 2,
-        importedMessages: await transferWitness(messages, { version: 2 }), importedRoot: committed.data ?? root }, 0);
+        importedMessages: await transferWitness(messages, { version: 2 }), importedRoot: committed.data ?? root,
+        importedAuxiliaryRevisions: await auxiliaryRevisions(chatId), importedCalendar: clone(captureCalendar(chatId)), importedPrequel: value.prequel }, 0);
       const result = await publish(captured, initial, header, messages, chatId);
       return { ...result, chatId, summaries: previewValue.summaries };
     });
@@ -395,6 +405,12 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       check(same(await transferWitness(captured.chat, { version: rollback.witnessVersion ?? 1 }), rollback.importedMessages), '导入后已继续聊天或修改正文。请先导出当前记忆；本次不覆盖新剧情。');
       const currentRoot = await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root');
       check(rollback.importedRoot && same(currentRoot?.data, rollback.importedRoot), '导入后的记忆已变化，请先导出当前记忆；本次没有撤销。');
+      if (rollback.importedAuxiliaryRevisions) {
+        check(same(await auxiliaryRevisions(captured.identity.chatId), rollback.importedAuxiliaryRevisions)
+          && same(captureCalendar(captured.identity.chatId), rollback.importedCalendar)
+          && (typeof captured.metadata.qianqianjiePrequel === 'string' ? captured.metadata.qianqianjiePrequel : null) === rollback.importedPrequel,
+        '导入后的记忆已变化，请先导出当前记忆；本次没有撤销。');
+      }
       const initial = await readTargetChat(captured.target, { fetchImpl });
       check(sameInputs(initial, { chat: captured.chat, header: { chat_metadata: captured.metadata } }), '当前聊天尚未保存完成，请稍后重试。');
       const header = clone(initial.header), messages = clone(initial.chat);
@@ -405,8 +421,14 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         const restore = (extra, previous) => { const result = { ...extra }; for (const key of [ANCHOR, HIDDEN, RECEIPT, 'qianqianjie_migration_alias', MESSAGE_MEMORY_EXCLUSION_KEY]) {
           delete result[key]; if (previous?.[key] !== undefined) result[key] = clone(previous[key]);
         } return result; };
-        message.extra = restore(message.extra, rollback.messages[index].extra);
-        message.swipe_info?.forEach((swipe, n) => { swipe.extra = restore(swipe.extra, rollback.messages[index].swipe_info?.[n]?.extra); });
+        const previous = rollback.messages[index];
+        message.extra = restore(message.extra, previous.extra);
+        message.swipe_info?.forEach((swipe, n) => {
+          const currentReply = Array.isArray(message.swipes) ? message.swipes[n] : n === 0 ? message.mes : undefined;
+          const previousReply = Array.isArray(previous.swipes) ? previous.swipes[n] : n === 0 ? previous.mes : undefined;
+          const sameReply = typeof currentReply === 'string' && currentReply === previousReply;
+          swipe.extra = restore(swipe.extra, sameReply ? previous.swipe_info?.[n]?.extra : undefined);
+        });
       });
       return publish(captured, initial, header, messages, rollback.previousChatId);
     });

@@ -325,20 +325,23 @@ test('分支失败具体楼沿session订阅进入私有诊断原有identity槽',
   assert.doesNotMatch(JSON.stringify(h.writes), /SECRET/u);
 });
 
-test('实际目标比较失败沿原私有身份槽保留有限差异，旧错误保持兼容', async t => {
+test('实际目标归属比较失败沿原私有身份槽保留有限差异，宿主回复变化不冒充归属错误', async t => {
   const { createChatSession } = await import('../src/chat-session.js');
   const { assertCapturedBranchTargetMatches } = await import('../src/v3/message-floor-anchor.js');
   const chatId = '123e4567-e89b-42d3-a456-426614174000', targetId = '223e4567-e89b-42d3-a456-426614174000';
   const raw = { chatId: '合成目标差异', characterId: 0, characters: [{ name: '人物', avatar: 'person.png' }], userAvatar: 'user.png',
     chatMetadata: { qianqianjie: { schemaVersion: 2, chatId } }, chat: [{ is_user: false, mes: 'SECRET_BODY', swipes: ['SECRET_BODY', 'SECRET_ALT'], swipe_id: 0 }] };
   const persisted = structuredClone(raw.chat); persisted[0].swipe_id = 1;
+  assert.doesNotThrow(() => assertCapturedBranchTargetMatches({ chat: raw.chat, chatMetadata: raw.chatMetadata },
+    { chat: persisted, header: { chat_metadata: raw.chatMetadata } }, chatId, targetId), '原生选中回复由宿主决定，诊断只记录真实QQJ归属冲突');
+  persisted[0].extra = { qianqianjie_memory_excluded: true };
   const session = createChatSession({ contextProvider: () => raw, identityCoordinator: { prepare() {
     assertCapturedBranchTargetMatches({ chat: raw.chat, chatMetadata: raw.chatMetadata },
       { chat: persisted, header: { chat_metadata: raw.chatMetadata } }, chatId, targetId);
   } } });
   const h = harness({ session }); t.after(h.channel.dispose); await h.channel.start();
   await assert.rejects(session.prepare({ entryPoint: 'sourcePrepare' })); await h.channel.flush();
-  const difference = { reason: 'message', messageIndex: 0, capturedCount: 1, persistedCount: 1, fields: ['selectedIndex', 'selectedValue'] };
+  const difference = { reason: 'message', messageIndex: 0, capturedCount: 1, persistedCount: 1, fields: ['ownership'] };
   assert.deepEqual(h.writes.at(-1).data.events.at(-1).data.identity.preparationFailure.branchTargetDifference, difference);
   assert.deepEqual(h.writes.at(-1).data.failures.find(item => item.kind === 'identity').identity.preparationFailure.branchTargetDifference, difference);
   assert.doesNotMatch(JSON.stringify(h.writes), /SECRET|swipes/u);
