@@ -651,3 +651,33 @@ test('记录迭代在旧后端能力缺失时保留 collection list 回落', asy
   assert.equal(calls.some(url => url.endsWith('/v1/records/qianqianjie/chat-x')), true);
   assert.equal(calls.some(url => url.includes('/v1/record-ids/')), false);
 });
+
+test('轻量ID清单不要求批读能力，流式枚举按已有单记录GET分批读取', async () => {
+  const calls = [], ids = Array.from({ length: 65 }, (_, index) => `id-${index}`);
+  const client = createBackendClient({ fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith('/v1/health')) return Response.json(batchHealth({ recordIdList: true }));
+    if (url.includes('/v1/record-ids/')) return Response.json(ids);
+    const recordId = decodeURIComponent(url.split('/').at(-1));
+    return Response.json({ revision: 1, data: { recordId } });
+  } });
+  const iterator = client.iterRecords('chat-x', { requireStreaming: true });
+  assert.equal((await iterator.next()).value.recordId, 'id-0');
+  assert.equal(calls.filter(call => call.url.includes('/v1/records/')).length, 64);
+  assert.equal(calls.some(call => call.url.endsWith('/v1/records/qianqianjie/chat-x')), false);
+  const remaining = [];
+  for await (const item of iterator) remaining.push(item.recordId);
+  assert.deepEqual(remaining, ids.slice(1));
+  assert.equal(calls.filter(call => call.url.includes('/v1/records/')).length, 65);
+});
+
+test('请求流式枚举时老HTTP后端在读取完整集合前提示更新白鸟', async () => {
+  const calls = [];
+  const client = createBackendClient({ fetchImpl: async url => {
+    calls.push(url);
+    return Response.json(batchHealth({}));
+  } });
+  await assert.rejects(client.iterRecords('chat-x', { requireStreaming: true }).next(), /更新.*白鸟|白鸟.*更新/);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].endsWith('/v1/health'));
+});

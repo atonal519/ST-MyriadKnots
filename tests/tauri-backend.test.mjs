@@ -81,10 +81,66 @@ test('TT health checks native IO; read/put/list survive a new client/runtime', a
   assert.deepEqual(batch.map(item => [item.recordId, item.status]), [['记录'.repeat(64), 200], ['缺失记录', 404]], 'TT默认HTTP适配器使用逐条读取回落');
   const iterated = [];
   for await (const item of restarted.iterRecords('聊天🙂')) iterated.push(item.recordId);
-  assert.deepEqual(iterated, ['记录'.repeat(64)], 'TT记录遍历回落到已有list接口');
+  assert.deepEqual(iterated, ['记录'.repeat(64)], 'TT记录遍历使用原生逐条迭代');
   assert.deepEqual(await restarted.list('other'), []);
   f.failRead(true);
   await assert.rejects(f.client.health(), /read failure/);
+});
+
+test('TT流式枚举逐条读取，yield后释放namespace锁，提前结束不读取其余正文', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  for (const id of ['a', 'b', 'c']) await f.client.put('c', id, { text: `正文-${id}` }, 0);
+  f.resetReads();
+  const iterator = f.client.iterRecords('c', { requireStreaming: true });
+  const first = await iterator.next();
+  assert.equal(first.done, false);
+  assert.equal(f.reads(), 1, '首条产出前只读取一条记录');
+  assert.deepEqual((await f.client.get('c', first.value.recordId)).data, first.value.data, '消费者能在同namespace读取，不等待整个迭代结束');
+  assert.equal(f.reads(), 2);
+  await iterator.return();
+  assert.equal(f.reads(), 2, '提前结束不扫描后续正文');
+  assert.equal((await iterator.next()).done, true);
+});
+
+test('TT流式枚举跳过已删除记录并在取消后停止后续native读取', async t => {
+  const f = await fixture(t);
+  for (const id of ['a', 'b', 'c']) await f.client.put('c', id, id, 0);
+  await f.client.remove('c', 'b', 1);
+  const ids = [];
+  for await (const item of f.client.iterRecords('c', { requireStreaming: true })) ids.push(item.recordId);
+  assert.deepEqual(ids.sort(), ['a', 'c']);
+  const controller = new AbortController(); f.resetReads();
+  const iterator = f.client.iterRecords('c', { signal: controller.signal, requireStreaming: true });
+  await iterator.next();
+  const reads = f.reads(); controller.abort();
+  await assert.rejects(iterator.next(), error => error.name === 'AbortError');
+  assert.equal(f.reads(), reads);
+});
+
+test('TT流式枚举沿用单次请求超时与诊断，并在迟到native读取结束后释放锁', { timeout: 5000 }, async t => {
+  const f = await fixture(t); await f.client.put('c', 'r', '内容', 0);
+  const originalRead = f.store.tryGetJson;
+  let release;
+  const pendingRead = new Promise(resolve => { release = resolve; });
+  f.store.tryGetJson = async options => { await pendingRead; return originalRead(options); };
+  const client = createBackendClient({ fetchImpl: f.fetchImpl, timeoutMs: 20 });
+  const iterator = client.iterRecords('c', { requireStreaming: true });
+  await assert.rejects(iterator.next(), error => error.code === 'BACKEND_TIMEOUT');
+  assert.equal(client.getDiagnosticSnapshot().lastFailure.outcome, 'timeout');
+  release(); f.store.tryGetJson = originalRead;
+  assert.equal((await client.get('c', 'r')).data, '内容');
+});
+
+test('TT流式枚举等待native就绪时也按单次请求截止，不在就绪后补扫正文', { timeout: 1000 }, async t => {
+  const f = await fixture(t); await f.client.put('c', 'r', '内容', 0); f.resetReads();
+  let release;
+  f.globalRef.__TAURITAVERN__.ready = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const client = createBackendClient({ fetchImpl: f.fetchImpl, timeoutMs: 20 });
+  await assert.rejects(client.iterRecords('c', { requireStreaming: true }).next(), error => error.code === 'BACKEND_TIMEOUT');
+  release();
+  assert.equal((await client.get('c', 'r')).data, '内容');
+  assert.equal(f.reads(), 1, '只有消费者随后主动读取，不补扫已经超时的迭代');
 });
 
 test('TT preserves JSON field order through native save, cold read, list and trash restore', async t => {

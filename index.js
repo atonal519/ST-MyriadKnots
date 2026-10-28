@@ -461,9 +461,9 @@ memoryTransfer = createMemoryTransfer({
     vectorIndex.abortAll();
     await Promise.all([timeRuntime.stop(), autoHideController.stop()]);
   },
-  onSettled: async () => {
+  onSettled: async ({ streaming = false } = {}) => {
     const result = await session.prepare({ entryPoint: 'memoryTransfer' });
-    if (result.status !== 'ready') return;
+    if (result.status !== 'ready' || streaming) return;
     await v3MemoryRuntime.refreshStatus();
     await peopleWorkspaceRuntime.refresh({ refreshMemory: false });
     await timeRuntime.refreshStatus({ force: true });

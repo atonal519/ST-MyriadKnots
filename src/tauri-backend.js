@@ -325,7 +325,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
       throw error(404, 'Unsupported local backend route');
     });
   };
-  return async (url, init = {}) => {
+  const fetch = async (url, init = {}) => {
     try {
       // Native writes already submitted cannot be cancelled. Keep their lock
       // until completion even if the caller times out, as with an HTTP write.
@@ -336,4 +336,43 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
       return { ok: false, status: cause.status, json: async () => ({ message: cause.message }) };
     }
   };
+  // Only the key list survives between reads; consumers never hold the namespace lock.
+  fetch.iterRecords = (rawNamespace, rawCollection, { signal: outerSignal } = {}) => {
+    const namespace = segment(rawNamespace), collection = segment(rawCollection);
+    if (namespace === 'system-trash') throw error(400, 'Reserved namespace');
+    const lockName = `${STORAGE_NAMESPACE}:${namespace}`;
+    let store, table, keys, position = 0, closed = false;
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      async next(signal = outerSignal) {
+        return abortable(async () => {
+          if (closed) return { done: true };
+          abort(outerSignal); abort(signal);
+          store ??= await ready(); table ??= await tableFor(namespace, collection);
+          if (!keys) keys = await locked(globalRef, lockName, async () => {
+            abort(outerSignal); abort(signal);
+            const listed = await store.listKeys({ namespace: STORAGE_NAMESPACE, table });
+            abort(outerSignal); abort(signal);
+            if (!Array.isArray(listed)) throw error(500, 'Invalid storage listing');
+            return listed;
+          });
+          while (position < keys.length) {
+            const key = keys[position++];
+            const record = await locked(globalRef, lockName, async () => {
+              abort(outerSignal); abort(signal);
+              const slot = await read(store, table, key, namespace, collection);
+              abort(outerSignal); abort(signal);
+              if (!slot || key !== await keyFor(slot.recordId) || table !== await tableFor(namespace, slot.collection)) throw error(500, 'Stored record identity mismatch');
+              return slot.current ? copy({ recordId: slot.recordId, ...slot.current }) : null;
+            });
+            if (record) return { done: false, value: record };
+          }
+          closed = true; keys = null;
+          return { done: true };
+        }, signal);
+      },
+      async return() { closed = true; keys = null; return { done: true }; },
+    };
+  };
+  return fetch;
 }

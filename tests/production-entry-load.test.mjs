@@ -1160,6 +1160,25 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(memoryTransferOptions.client, backendClient);
   assert.equal(memoryTransferOptions.pluginVersion, '0.1.9-test');
   assert.equal(memoryTransferOptions.captureCalendar('test'), null);
+  const settledReads = [];
+  const settleSession = memoryTransferOptions.session;
+  const previousPrepare = settleSession.prepare, previousMemoryRefresh = v3MemoryRuntime.refreshStatus;
+  const previousPeopleRefresh = peopleWorkspaceRuntime.refresh, previousTimeRefresh = timeRuntime.refreshStatus;
+  try {
+    settleSession.prepare = async options => { assert.equal(options.entryPoint, 'memoryTransfer'); settledReads.push('session'); return { status: 'ready' }; };
+    v3MemoryRuntime.refreshStatus = async () => { settledReads.push('memory'); };
+    peopleWorkspaceRuntime.refresh = async options => { assert.equal(options.refreshMemory, false); settledReads.push('people'); };
+    timeRuntime.refreshStatus = async options => { assert.equal(options.force, true); settledReads.push('time'); };
+    await memoryTransferOptions.onSettled({ streaming: true });
+    assert.deepEqual(settledReads, ['session'], '分卷导入导出结束只准备身份，不立刻重读整份记忆与时间图');
+    settledReads.length = 0;
+    await memoryTransferOptions.onSettled();
+    assert.deepEqual(settledReads, ['session', 'memory', 'people', 'time'], '普通旧包保留原有结束刷新流程');
+  } finally {
+    settleSession.prepare = previousPrepare;
+    if (previousMemoryRefresh === undefined) delete v3MemoryRuntime.refreshStatus; else v3MemoryRuntime.refreshStatus = previousMemoryRefresh;
+    peopleWorkspaceRuntime.refresh = previousPeopleRefresh; timeRuntime.refreshStatus = previousTimeRefresh;
+  }
   assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
   transferActive = true;
   assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '导入导出期间阻止新的记忆任务');

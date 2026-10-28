@@ -86,7 +86,9 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
   await session.prepare();
   let api = targetChatApi(selected);
   const runtime = createMemoryTransfer({ client: backend.client, session, hostAdapter: host, sanitizerOptions, freshUuid: () => IMPORTED, ...transferOptions,
-    fetchImpl: (...args) => api.fetch(...args), onSettled: async () => { session.invalidate(); await session.prepare(); } });
+    fetchImpl: (...args) => api.fetch(...args), onSettled: async options => {
+      session.invalidate(); await session.prepare(); await transferOptions.onSettled?.(options);
+    } });
   const exported = await runtime.exportCurrent();
   return { backend, ctx, host, graph, memory, foundation, store, runtime, exported, session,
     async target({ changed = false } = {}) {
@@ -97,6 +99,222 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
     }, get api() { return api; }, setApi(value) { api = value; }, select(value) { selected = value; }, setWrappers(value) { currentWrappers = value; },
   };
 }
+
+function streamingFixture(f) {
+  const list = f.backend.client.list, scans = [];
+  f.backend.client.iterRecords = async function* (collection, options = {}) {
+    scans.push({ collection, options });
+    assert.equal(options.requireStreaming, true, 'large transfers require the bounded backend iterator');
+    for (const record of await list(collection)) yield record;
+  };
+  f.backend.client.list = async () => assert.fail('volume transfer must not load a whole collection');
+  return scans;
+}
+async function volumeFiles(runtime, options = { partBytes: 4096 }) {
+  const files = [];
+  for await (const output of runtime.exportVolumes(options)) {
+    const file = new File([output.blob], output.filename);
+    if (!output.manifest) file.text = () => assert.fail('binary volumes must be read by bounded byte ranges');
+    files.push(file);
+  }
+  assert.ok(files.at(-1).name.endsWith('.qqj-memory.index.json'), 'the final file seals the completed archive');
+  return files;
+}
+
+test('volume runtime round trip streams records and preserves memory, time, people, vectors and host fields', async () => {
+  const calendars = new Map([[SOURCE, { months: 4, prefix: '测试历' }], [TARGET, { months: 12, prefix: '旧历' }]]);
+  const f = await fixture({ excluded: true, transferOptions: { captureCalendar: id => calendars.get(id) ?? null,
+    persistCalendar: async (id, calendar) => calendars.set(id, calendar) } }), scans = streamingFixture(f);
+  f.ctx.chat[1].extra ??= {}; f.ctx.chat[1].extra.variables = { keeps: 'source variable' };
+  f.ctx.chatMetadata.qianqianjiePrequel = '手动前情';
+  f.api.reloadFromContext();
+  const people = { schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: SOURCE,
+    selectedEntityIds: [], personOrderEntityIds: [], profilesByEntityId: {}, avatarsByEntityId: {}, avatarSourcesByEntityId: {},
+    identityRedirectsByEntityId: {}, deletedEntityIds: [], profileMaterialProgressByEntityId: {}, createdAt: NOW, updatedAt: NOW };
+  const batchId = 'v3-time-batch-dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-people-workspace', people, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, batchId, { schemaVersion: 1, chatId: SOURCE, id: batchId, changes: [] }, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-time-head', { schemaVersion: 1, chatId: SOURCE, batchIds: [batchId], bodyStart: 0 }, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, 'qqj-vector-index', { schemaVersion: 1, recordType: 'vectorCache', chatId: SOURCE,
+    narrativeGeneration: f.graph.root.narrativeGeneration, modelKey: `sha256:${'a'.repeat(64)}`, dimensions: 1024, shardIds: [], chunkCount: 0 }, 0);
+  const before = structuredClone([...f.backend.records]);
+  const files = await volumeFiles(f.runtime); assert.ok(files.length > 2);
+  assert.deepEqual([...f.backend.records], before, 'export is read-only');
+  const target = await f.target(); target.chatMetadata.otherPlugin = { keep: true }; f.api.reloadFromContext();
+  const preview = await f.runtime.previewVolumes(files);
+  assert.equal(preview.messages, target.chat.length); assert.equal(preview.summaries, 1); assert.equal(preview.states, 1);
+  assert.equal(f.api.saves, 0);
+  const result = await f.runtime.importPreview(preview);
+  assert.equal(result.chatId, IMPORTED); assert.equal(f.session.identity().chatId, IMPORTED);
+  assert.equal(target.chatMetadata.qianqianjiePrequel, '手动前情');
+  assert.deepEqual(calendars.get(IMPORTED), { months: 4, prefix: '测试历' });
+  assert.deepEqual(target.chatMetadata.otherPlugin, { keep: true });
+  assert.deepEqual(target.chat[1].extra.variables, { keeps: 'source variable' });
+  assert.equal(target.chat[3].extra.qianqianjie_memory_excluded, true);
+  for (const id of ['v3-people-workspace', batchId, 'v3-time-head', 'qqj-vector-index']) {
+    const original = f.backend.records.get(`chat-${SOURCE}/${id}`).data;
+    assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/${id}`).data, { ...original, chatId: IMPORTED });
+  }
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const cold = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await cold.start()).status, 'ready');
+  const restored = await store.readReachable({ mode: 'full' });
+  assert.deepEqual(restored.floorMemories.map(item => item.summary), f.graph.floorMemories.map(item => item.summary));
+  assert.deepEqual(restored.stateDeltas.map(item => item.id), f.graph.stateDeltas.map(item => item.id));
+  assert.equal(f.backend.records.get(`chat-${IMPORTED}/self-use-memory-transfer-rollback-v1`).data.streaming, true);
+  await f.runtime.undo(); assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  assert.deepEqual(calendars.get(TARGET), { months: 12, prefix: '旧历' });
+  assert.ok(scans.some(scan => scan.collection === `chat-${IMPORTED}`), 'new-copy and undo checks use the same bounded iterator');
+});
+
+test('volume runtime preserves avatar bytes and crops while uploading shared originals once', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const personId = '33333333-3333-4333-8333-333333333333';
+  const originalPath = '/user/images/qqj-avatars/qqj-avatar-volume-source.png';
+  const newPath = '/user/images/qqj-avatars/qqj-avatar-volume-imported.png';
+  const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 255, 128, 17]);
+  const crop = { aspectRatio: 1, zoom: 1.2, offsetX: 0.1, offsetY: -0.1 }, thumbnail = 'data:image/png;base64,iVBORw0KGgo=';
+  const workspace = { schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: SOURCE,
+    selectedEntityIds: [personId], personOrderEntityIds: [personId], profilesByEntityId: {},
+    avatarsByEntityId: { [personId]: thumbnail }, avatarSourcesByEntityId: { [personId]: { path: originalPath, mimeType: 'image/png', crop } },
+    identityRedirectsByEntityId: {}, deletedEntityIds: [], profileMaterialProgressByEntityId: {}, createdAt: NOW, updatedAt: NOW };
+  const snapshotId = 'v3-people-snapshot-44444444-4444-4444-8444-444444444444';
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-people-workspace', workspace, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, snapshotId, { schemaVersion: 1, kind: 'qqj-v3-frozen-people-snapshot', chatId: SOURCE, sourceChatId: SOURCE, workspace: structuredClone(workspace) }, 0);
+  const images = new Map([[originalPath, imageBytes]]), uploads = [];
+  const withImages = api => ({ ...api, async fetch(url, options = {}) {
+    if (images.has(url)) return { ok: true, async arrayBuffer() { return images.get(url).slice().buffer; } };
+    if (url === '/api/images/upload') {
+      const bytes = Uint8Array.from(atob(JSON.parse(options.body).image), char => char.charCodeAt(0));
+      uploads.push(bytes); images.set(newPath, bytes); return { ok: true, async json() { return { path: newPath }; } };
+    }
+    return api.fetch(url, options);
+  } });
+  f.setApi(withImages(f.api)); const files = await volumeFiles(f.runtime);
+  await f.target(); f.setApi(withImages(f.api));
+  await f.runtime.importPreview(await f.runtime.previewVolumes(files));
+  assert.equal(uploads.length, 1); assert.deepEqual(uploads[0], imageBytes);
+  for (const id of ['v3-people-workspace', snapshotId]) {
+    const value = f.backend.records.get(`chat-${IMPORTED}/${id}`).data, people = value.workspace ?? value;
+    assert.equal(people.chatId, IMPORTED); assert.equal(people.avatarsByEntityId[personId], thumbnail);
+    assert.deepEqual(people.avatarSourcesByEntityId[personId], { path: newPath, mimeType: 'image/png', crop });
+  }
+});
+
+test('volume runtime undo retains imported auxiliary edits and cancellation releases the captured session', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const timeStore = createTimeStore({ client: f.backend.client });
+  await timeStore.putHead(SOURCE, { schemaVersion: 1, chatId: SOURCE, batchIds: [] }, 0);
+  const cancelled = f.runtime.exportVolumes({ partBytes: 1024 });
+  assert.equal((await cancelled.next()).done, false); assert.equal(f.runtime.getState().active, true);
+  await cancelled.return(); assert.equal(f.runtime.getState().active, false); assert.equal(f.session.identity().chatId, SOURCE);
+  const files = await volumeFiles(f.runtime), target = await f.target();
+  await f.runtime.importPreview(await f.runtime.previewVolumes(files));
+  const beforeRoot = structuredClone(f.backend.records.get(`chat-${IMPORTED}/v3-root`));
+  const head = f.backend.records.get(`chat-${IMPORTED}/v3-time-head`);
+  await timeStore.putHead(IMPORTED, { ...head.data, bodyStart: 1 }, head.revision);
+  const before = structuredClone([...f.backend.records]), saves = f.api.saves;
+  await assert.rejects(f.runtime.undo(), /导入后的.*已变化/);
+  assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/v3-root`), beforeRoot);
+  assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED); assert.equal(f.api.saves, saves);
+  assert.deepEqual([...f.backend.records], before);
+});
+
+test('volume runtime cancellation aborts an in-flight backend read before releasing the session', async () => {
+  const f = await fixture(); streamingFixture(f);
+  let announce;
+  const started = new Promise(resolve => { announce = resolve; });
+  f.backend.client.iterRecords = async function* (_collection, { signal, requireStreaming }) {
+    assert.equal(requireStreaming, true); assert.ok(signal);
+    announce();
+    await new Promise((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  const exporting = f.runtime.exportVolumes(), pending = exporting.next();
+  const rejected = assert.rejects(pending, error => error.name === 'AbortError');
+  await started; await exporting.return(); await rejected;
+  assert.equal(f.runtime.getState().active, false); assert.equal(f.session.identity().chatId, SOURCE);
+  assert.equal(f.api.saves, 0);
+});
+
+test('volume runtime rejects missing or mixed volumes and changed chat without publishing memory', async t => {
+  for (const change of ['missing', 'mixed', 'chat']) await t.test(change, async () => {
+    const f = await fixture(); streamingFixture(f);
+    let files = await volumeFiles(f.runtime); const target = await f.target();
+    if (change === 'missing') files = files.filter((_, index) => index !== 0);
+    if (change === 'mixed') {
+      const replacement = new Uint8Array(await files[0].arrayBuffer()); replacement[0] ^= 1;
+      files[0] = new File([replacement], files[0].name);
+    }
+    if (change === 'chat') { target.chat[1].mes = '另一份正文'; f.api.reloadFromContext(); }
+    const before = structuredClone([...f.backend.records]);
+    await assert.rejects(f.runtime.previewVolumes(files));
+    assert.deepEqual([...f.backend.records], before); assert.equal(f.api.saves, 0);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  });
+});
+
+test('volume runtime rechecks cleaning settings and failed staging keeps the current chat intact', async t => {
+  for (const change of ['wrappers', 'write']) await t.test(change, async () => {
+    const wrappers = { keepTags: 'scene', extraTags: 'thinking' };
+    const f = await fixture({ body: '<scene>她把钥匙放进木盒。</scene><thinking>思考内容</thinking>', wrappers });
+    streamingFixture(f);
+    const files = await volumeFiles(f.runtime), target = await f.target();
+    const plan = await f.runtime.previewVolumes(files);
+    if (change === 'wrappers') f.setWrappers({});
+    if (change === 'write') {
+      const put = f.backend.client.put;
+      f.backend.client.put = async (...args) => { if (args[0] === `chat-${IMPORTED}` && args[1].startsWith('v3-floor-memory-')) throw new Error('test write failed'); return put(...args); };
+    }
+    await assert.rejects(f.runtime.importPreview(plan));
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+  });
+});
+
+test('volume runtime rechecks bytes after preview before any import write', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const files = await volumeFiles(f.runtime), target = await f.target();
+  const plan = await f.runtime.previewVolumes(files), part = files.find(file => !file.name.endsWith('.json'));
+  const originalArrayBuffer = part.arrayBuffer.bind(part);
+  part.arrayBuffer = async () => {
+    const bytes = new Uint8Array(await originalArrayBuffer()); bytes[0] ^= 1; return bytes.buffer;
+  };
+  const records = structuredClone([...f.backend.records]), chat = structuredClone(target.chat), metadata = structuredClone(target.chatMetadata);
+  await assert.rejects(f.runtime.importPreview(plan), /已变化|校验失败/);
+  assert.deepEqual([...f.backend.records], records);
+  assert.deepEqual(target.chat, chat); assert.deepEqual(target.chatMetadata, metadata);
+  assert.equal(f.api.saves, 0);
+});
+
+test('volume runtime settled callback distinguishes bounded operations from ordinary transfers', async () => {
+  const legacyModes = [];
+  const legacy = await fixture({ transferOptions: { onSettled: options => legacyModes.push(options.streaming) } });
+  assert.deepEqual(legacyModes, [false]); legacyModes.length = 0;
+  const exported = await legacy.runtime.exportCurrent();
+  await legacy.target(); await legacy.runtime.importPreview(await legacy.runtime.preview(exported.text)); await legacy.runtime.undo();
+  assert.deepEqual(legacyModes, [false, false, false], 'ordinary export, import and undo retain their normal refresh');
+
+  const modes = [];
+  const modern = await fixture({ transferOptions: { onSettled: options => modes.push(options.streaming) } });
+  assert.deepEqual(modes, [false]); modes.length = 0; streamingFixture(modern);
+  const files = await volumeFiles(modern.runtime);
+  const cancelled = modern.runtime.exportVolumes({ partBytes: 1024 });
+  assert.equal((await cancelled.next()).done, false); await cancelled.return();
+  await modern.target(); await modern.runtime.importPreview(await modern.runtime.previewVolumes(files)); await modern.runtime.undo();
+  assert.deepEqual(modes, [true, true, true, true], 'completed export, cancelled export, import and undo use the bounded refresh');
+
+  const failedModes = [];
+  const failed = await fixture({ transferOptions: { onSettled: options => failedModes.push(options.streaming) } });
+  streamingFixture(failed); const failedFiles = await volumeFiles(failed.runtime); failedModes.length = 0;
+  await failed.target(); const failedPlan = await failed.runtime.previewVolumes(failedFiles);
+  const put = failed.backend.client.put;
+  failed.backend.client.put = async (...args) => { if (args[0] === `chat-${IMPORTED}`) throw new Error('test staging failure'); return put(...args); };
+  await assert.rejects(failed.runtime.importPreview(failedPlan), /test staging failure/);
+  assert.deepEqual(failedModes, [true], 'failed staged import also avoids reloading the complete graph');
+  assert.equal(failed.api.saves, 0); assert.equal(failed.session.identity().chatId, TARGET);
+});
 
 test('real memory and CSE round trip onto an updated card, without analysis calls or original writes', async () => {
   const f = await fixture(), target = await f.target();
