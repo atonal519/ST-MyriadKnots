@@ -31918,8 +31918,15 @@ function Iw({ runtime: e, recallRuntime: t = null, vectorRuntime: n = null, onOp
 		A !== e && (A = e, (A !== "people" || j !== "history") && (de = null), S && x && Kt(P));
 	}
 	return Object.freeze({
-		setActivity(e) {
-			y = e, T !== null && w === T && (w = ut(P), T = y.busy || at(P) ? w : null), S && x && (Re(P), ze(P), Vt(P), A === "management" && b?.());
+		setActivity(t) {
+			let n = y.busy === !0 && t.busy === !1;
+			if (y = t, T !== null && w === T && (w = ut(P), T = y.busy || at(P) ? w : null), S && x) {
+				if (n && A === "management" && (P.mainGenerationActive === !0 || L?.workBusy === !0)) {
+					Kt(e.getState());
+					return;
+				}
+				Re(P), ze(P), Vt(P), A === "management" && b?.();
+			}
 		},
 		mount: Xt,
 		activate: Zt,
@@ -35344,12 +35351,11 @@ async function gE(e) {
 	};
 }
 async function _E(e, t, n) {
-	let r = new Set(e.migrationDescriptor?.frozenFloorIds ?? []);
-	for (let i of e.floors) {
-		if (r.has(i.id)) continue;
-		let e = t[i.hostLocator.messageIndex], a = jt(e);
-		$T(a && (`sha256:${await C(a.rawContent)}` === i.content.rawFingerprint || `sha256:${await C(F(a.rawContent, n))}` === i.content.canonicalFingerprint), `记忆中的楼层与聊天正文不一致：第 ${i.hostLocator.messageIndex} 楼（从 0 开始）。请核对正文及清洗设置，在旧设备刷新记忆状态后重新导出。`);
-	}
+	let r = await Pt(t, {
+		chatId: e.root.chatId,
+		sanitizerOptions: n
+	}), i = cc(e, t, e.root.chatId, r).all, a = Ws(e.floors, i), o = e.floors.findIndex((e, t) => !a.floorMatches.has(t));
+	return $T(!a.issue && o < 0, `记忆中的楼层无法确认绑定：第 ${a.issue?.messageIndex ?? e.floors[o]?.hostLocator.messageIndex} 楼（从 0 开始）。请核对楼层标识、正文或清洗设置。`), a;
 }
 function vE(e, t, n) {
 	let r = (e) => Object.fromEntries([
@@ -35363,16 +35369,13 @@ function vE(e, t, n) {
 		swipes: (e.swipe_info ?? []).map((e) => r(e?.extra))
 	};
 }
-function yE(e, t) {
-	let n = t.root.chatId, r = new Set(t.migrationDescriptor?.frozenFloorIds ?? []), i = new Set((t.migrationDescriptor?.carriedAliases ?? []).map((e) => e.aliasId)), a = e.map((e) => vE(e, n, i));
-	for (let e of t.floors) if (!r.has(e.id)) {
-		let t = a[e.hostLocator.messageIndex];
-		t && (t.extra[JT] = {
-			schemaVersion: 1,
-			chatId: n,
-			floorId: e.id
-		});
-	}
+function yE(e, t, n) {
+	let r = t.root.chatId, i = new Set((t.migrationDescriptor?.carriedAliases ?? []).map((e) => e.aliasId)), a = e.map((e) => vE(e, r, i));
+	for (let { floor: e, candidate: t } of n.matches) t.archiveCandidate || (a[t.hostLocator.messageIndex].extra[JT] = {
+		schemaVersion: 1,
+		chatId: r,
+		floorId: e.id
+	});
 	return a;
 }
 function bE(e, t) {
@@ -35442,22 +35445,22 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				id: e,
 				data: ZT(t.data)
 			}));
-			await hE(s, t.identity.chatId), await _E(i, t.chat, c());
-			let u = [], p = new Map(iE(s).flatMap((e) => Object.values(e.avatarSourcesByEntityId ?? {})).map((e) => [e.path, e]));
-			for (let e of p.values()) {
+			await hE(s, t.identity.chatId);
+			let u = await _E(i, t.chat, c()), p = [], m = new Map(iE(s).flatMap((e) => Object.values(e.avatarSourcesByEntityId ?? {})).map((e) => [e.path, e]));
+			for (let e of m.values()) {
 				let n = await l(e.path, { headers: t.target.requestHeaders });
 				$T(n?.ok, "人物头像原图读取失败，请检查原图后重新导出。");
 				let r = new Uint8Array(await n.arrayBuffer()), i = "";
 				for (let e = 0; e < r.length; e += 32768) i += String.fromCharCode(...r.subarray(e, e + 32768));
-				u.push({
+				p.push({
 					path: e.path,
 					mimeType: e.mimeType,
 					data: btoa(i)
 				});
 			}
-			let m = await e.list(`chat-${t.identity.chatId}`);
-			$T([...n].every(([e, t]) => m.some((n) => n.recordId === e && n.revision === t.revision && eE(n.data, t.data))) && m.filter((e) => rE(e.recordId)).length === a.filter((e) => rE(e.recordId)).length, "导出期间记忆发生变化，请重试。"), _(t);
-			let h = {
+			let h = await e.list(`chat-${t.identity.chatId}`);
+			$T([...n].every(([e, t]) => h.some((n) => n.recordId === e && n.revision === t.revision && eE(n.data, t.data))) && h.filter((e) => rE(e.recordId)).length === a.filter((e) => rE(e.recordId)).length, "导出期间记忆发生变化，请重试。"), _(t);
+			let g = {
 				format: GT,
 				formatVersion: KT,
 				pluginVersion: f,
@@ -35467,18 +35470,18 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 					character: t.target.characterName
 				},
 				messages: await pE(t.chat),
-				markers: yE(t.chat, i),
+				markers: yE(t.chat, i, u),
 				records: s,
 				prequel: typeof t.metadata.qianqianjiePrequel == "string" ? t.metadata.qianqianjiePrequel : null,
 				calendar: ZT(o(t.identity.chatId)),
-				...u.length ? { avatarImages: u } : {}
-			}, g = {
-				...h,
-				checksum: await C(HT(h))
+				...p.length ? { avatarImages: p } : {}
+			}, v = {
+				...g,
+				checksum: await C(HT(g))
 			};
-			return $T(tE(g) <= WT, "导出数据超过第一版支持的 64 MB。"), {
+			return $T(tE(v) <= WT, "导出数据超过第一版支持的 64 MB。"), {
 				filename: `千千结记忆-${d().toISOString().replace(/[:.]/g, "-")}.qqj-memory.json`,
-				text: JSON.stringify(g)
+				text: JSON.stringify(v)
 			};
 		});
 	}
@@ -35487,7 +35490,10 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 		let t = g(), { value: n, graph: i } = await gE(e);
 		$T(t.chat.length === n.messages.length, `当前聊天与记忆包不一致：当前 ${t.chat.length} 条，记忆包 ${n.messages.length} 条。请打开对应的完整聊天记录。`);
 		let a = (await pE(t.chat, { version: n.formatVersion })).findIndex((e, t) => e !== n.messages[t]);
-		$T(a < 0, n.formatVersion === 1 ? `旧版记忆包在第 ${a} 楼的综合校验不同，可能只是时间戳、候选编号或隐藏标记变化，不能据此判断正文不同。请两边更新插件，在旧设备重新导出记忆包后再试，无需重做摘要。` : `当前聊天与记忆包不一致：第 ${a} 楼的发言方、正文或当前选中的回复不同（楼号从 0 开始）。请核对该楼；本次未写入记忆。`), await _E(i, t.chat, c()), _(t);
+		$T(a < 0, n.formatVersion === 1 ? `旧版记忆包在第 ${a} 楼的综合校验不同，可能只是时间戳、候选编号或隐藏标记变化，不能据此判断正文不同。请两边更新插件，在旧设备重新导出记忆包后再试，无需重做摘要。` : `当前聊天与记忆包不一致：第 ${a} 楼的发言方、正文或当前选中的回复不同（楼号从 0 开始）。请核对该楼；本次未写入记忆。`), await _E(i, t.chat.map((e, t) => ({
+			...e,
+			extra: dE(e.extra, n.markers[t].extra, aE)
+		})), c()), _(t);
 		let o = await S(`chat-${t.identity.chatId}`, "v3-root");
 		_(t);
 		let s = Object.freeze({
@@ -35516,7 +35522,10 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 			throw e;
 		}
 	}
-	async function w(e, t, r, i, a) {
+	async function w(t) {
+		return Object.fromEntries((await e.list(`chat-${t}`)).filter((e) => rE(e.recordId)).map((e) => [e.recordId, e.revision]));
+	}
+	async function T(e, t, r, i, a) {
 		_(e);
 		let o = await ht(e.target, { fetchImpl: l });
 		$T(uE(t, o), "聊天文件在导入期间有变化，已停止，原记忆保留。");
@@ -35557,7 +35566,7 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 		}
 		return { reload: !1 };
 	}
-	async function T(t) {
+	async function E(t) {
 		let n = h.get(t);
 		$T(n, "预览已失效，请重新选择文件。"), h.delete(t);
 		let { captured: r, value: i, oldRoot: a } = n;
@@ -35568,45 +35577,45 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				chat: r.chat,
 				header: { chat_metadata: r.metadata }
 			}), "当前聊天尚未保存完成，请稍后重新预览。"), _(r);
-			let o = u();
-			$T(x(o) && o !== r.identity.chatId && o !== i.source.chatId, "新记忆编号无效。"), $T((await e.list(`chat-${o}`)).length === 0, "新记忆编号已存在，请重试。");
-			let c = i.records.map((e) => bE(e, o));
-			await hE(c, o);
-			let f = new Map((i.avatarImages ?? []).map((e) => [e.path, e])), p = /* @__PURE__ */ new Map(), m = xx({
+			let c = u();
+			$T(x(c) && c !== r.identity.chatId && c !== i.source.chatId, "新记忆编号无效。"), $T((await e.list(`chat-${c}`)).length === 0, "新记忆编号已存在，请重试。");
+			let f = i.records.map((e) => bE(e, c));
+			await hE(f, c);
+			let p = new Map((i.avatarImages ?? []).map((e) => [e.path, e])), m = /* @__PURE__ */ new Map(), h = xx({
 				fetchImpl: l,
 				headers: () => r.target.requestHeaders
 			});
-			for (let e of iE(c)) for (let t of Object.values(e.avatarSourcesByEntityId ?? {})) {
-				let e = f.get(t.path);
+			for (let e of iE(f)) for (let t of Object.values(e.avatarSourcesByEntityId ?? {})) {
+				let e = p.get(t.path);
 				if (e) {
-					if (_(r), !p.has(t.path)) {
+					if (_(r), !m.has(t.path)) {
 						let n = atob(e.data), r = Uint8Array.from(n, (e) => e.charCodeAt(0));
-						p.set(t.path, await m.upload(new Blob([r], { type: t.mimeType })));
+						m.set(t.path, await h.upload(new Blob([r], { type: t.mimeType })));
 					}
-					t.path = p.get(t.path).path;
+					t.path = m.get(t.path).path;
 				}
 			}
-			let h = PT({
+			let g = PT({
 				client: e,
 				contextProvider: () => ({
 					...r.identity,
-					chatId: o
+					chatId: c
 				})
-			}), g = c.filter((e) => e.id !== "v3-root" && nE.has(e.data.recordType));
-			for (let e = 0; e < g.length; e += 64) {
+			}), v = f.filter((e) => e.id !== "v3-root" && nE.has(e.data.recordType));
+			for (let e = 0; e < v.length; e += 64) {
 				_(r);
-				let t = g.slice(e, e + 64), n = await h.putRecords(t.map((e) => e.data));
+				let t = v.slice(e, e + 64), n = await g.putRecords(t.map((e) => e.data));
 				$T(n.length === t.length && n.every((e) => ["saved", "reused"].includes(e.status)), "新副本的存储返回内容不一致，未切换当前记忆。");
 			}
-			for (let t of c.filter((e) => !nE.has(e.data.recordType))) _(r), $T(eE((await e.put(`chat-${o}`, t.id, t.data, 0)).data, t.data), "新副本的存储返回内容不一致，未切换当前记忆。");
+			for (let t of f.filter((e) => !nE.has(e.data.recordType))) _(r), $T(eE((await e.put(`chat-${c}`, t.id, t.data, 0)).data, t.data), "新副本的存储返回内容不一致，未切换当前记忆。");
 			_(r);
-			let v = c.find((e) => e.id === "v3-root").data, y = await h.commitRoot(v, 0);
-			$T(y.status === "saved", "新副本写入冲突，未切换当前记忆。"), i.calendar && await s(o, i.calendar);
-			let b = d().toISOString();
-			await e.put(cT, `binding-${o}`, {
+			let y = f.find((e) => e.id === "v3-root").data, b = await g.commitRoot(y, 0);
+			$T(b.status === "saved", "新副本写入冲突，未切换当前记忆。"), i.calendar && await s(c, i.calendar);
+			let C = d().toISOString();
+			await e.put(cT, `binding-${c}`, {
 				schemaVersion: 1,
 				kind: "qqj-chat-identity-binding",
-				chatId: o,
+				chatId: c,
 				owner: {
 					hostChatId: r.identity.hostChatId,
 					characterLocator: r.identity.characterLocator,
@@ -35614,16 +35623,16 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				},
 				state: "ready",
 				sourceChatId: i.source.chatId,
-				createdAt: b,
-				updatedAt: b
+				createdAt: C,
+				updatedAt: C
 			}, 0);
-			let C = ZT(n.header), T = ZT(n.chat);
-			return C.chat_metadata.qianqianjie = {
-				...C.chat_metadata.qianqianjie,
+			let E = ZT(n.header), D = ZT(n.chat);
+			return E.chat_metadata.qianqianjie = {
+				...E.chat_metadata.qianqianjie,
 				schemaVersion: 2,
-				chatId: o,
+				chatId: c,
 				file: px(r.identity)
-			}, i.prequel === null ? delete C.chat_metadata.qianqianjiePrequel : C.chat_metadata.qianqianjiePrequel = i.prequel, T.forEach((e, t) => {
+			}, i.prequel === null ? delete E.chat_metadata.qianqianjiePrequel : E.chat_metadata.qianqianjiePrequel = i.prequel, D.forEach((e, t) => {
 				let n = (e, t) => {
 					let n = { ...e };
 					delete n[XT], delete n[JT], delete n[YT], delete n.qianqianjie_migration_alias, delete n[Le];
@@ -35632,35 +35641,38 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 						YT,
 						"qianqianjie_migration_alias",
 						Le
-					]) (e === "qianqianjie_memory_excluded" ? t?.[e] === !0 : t?.[e] !== void 0) && (n[e] = ZT(t[e]), n[e]?.chatId === i.source.chatId && (n[e].chatId = o));
+					]) (e === "qianqianjie_memory_excluded" ? t?.[e] === !0 : t?.[e] !== void 0) && (n[e] = ZT(t[e]), n[e]?.chatId === i.source.chatId && (n[e].chatId = c));
 					return n;
 				};
 				e.extra = n(e.extra, i.markers[t].extra), Array.isArray(e.swipe_info) && e.swipe_info.forEach((e, r) => {
 					e.extra = n(e.extra, i.formatVersion === 1 ? i.markers[t].swipes?.[r] : null);
 				});
-			}), await e.put(`chat-${o}`, qT, {
+			}), await e.put(`chat-${c}`, qT, {
 				schemaVersion: 1,
-				chatId: o,
+				chatId: c,
 				previousChatId: r.identity.chatId,
 				header: n.header,
 				messages: n.chat,
 				witnessVersion: 2,
-				importedMessages: await pE(T, { version: 2 }),
-				importedRoot: y.data ?? v
+				importedMessages: await pE(D, { version: 2 }),
+				importedRoot: b.data ?? y,
+				importedAuxiliaryRevisions: await w(c),
+				importedCalendar: ZT(o(c)),
+				importedPrequel: i.prequel
 			}, 0), {
-				...await w(r, n, C, T, o),
-				chatId: o,
+				...await T(r, n, E, D, c),
+				chatId: c,
 				summaries: t.summaries
 			};
 		});
 	}
-	async function E() {
+	async function D() {
 		let e = g();
 		return v(e, async () => {
 			let t = (await S(`chat-${e.identity.chatId}`, qT))?.data;
 			$T(t?.schemaVersion === 1 && t.chatId === e.identity.chatId, "当前聊天没有可撤销的导入。"), $T(eE(await pE(e.chat, { version: t.witnessVersion ?? 1 }), t.importedMessages), "导入后已继续聊天或修改正文。请先导出当前记忆；本次不覆盖新剧情。");
 			let n = await S(`chat-${e.identity.chatId}`, "v3-root");
-			$T(t.importedRoot && eE(n?.data, t.importedRoot), "导入后的记忆已变化，请先导出当前记忆；本次没有撤销。");
+			$T(t.importedRoot && eE(n?.data, t.importedRoot), "导入后的记忆已变化，请先导出当前记忆；本次没有撤销。"), t.importedAuxiliaryRevisions && $T(eE(await w(e.identity.chatId), t.importedAuxiliaryRevisions) && eE(o(e.identity.chatId), t.importedCalendar) && (typeof e.metadata.qianqianjiePrequel == "string" ? e.metadata.qianqianjiePrequel : null) === t.importedPrequel, "导入后的记忆已变化，请先导出当前记忆；本次没有撤销。");
 			let r = await ht(e.target, { fetchImpl: l });
 			$T(uE(r, {
 				chat: e.chat,
@@ -35678,18 +35690,19 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 						Le
 					]) delete n[e], t?.[e] !== void 0 && (n[e] = ZT(t[e]));
 					return n;
-				};
-				e.extra = r(e.extra, t.messages[n].extra), e.swipe_info?.forEach((e, i) => {
-					e.extra = r(e.extra, t.messages[n].swipe_info?.[i]?.extra);
+				}, i = t.messages[n];
+				e.extra = r(e.extra, i.extra), e.swipe_info?.forEach((t, n) => {
+					let a = Array.isArray(e.swipes) ? e.swipes[n] : n === 0 ? e.mes : void 0, o = Array.isArray(i.swipes) ? i.swipes[n] : n === 0 ? i.mes : void 0, s = typeof a == "string" && a === o;
+					t.extra = r(t.extra, s ? i.swipe_info?.[n]?.extra : void 0);
 				});
-			}), w(e, r, i, a, t.previousChatId);
+			}), T(e, r, i, a, t.previousChatId);
 		});
 	}
 	return Object.freeze({
 		exportCurrent: y,
 		preview: b,
-		importPreview: T,
-		undo: E,
+		importPreview: E,
+		undo: D,
 		getState: () => ({ active: p }),
 		getActivityState: m.getActivityState,
 		subscribeActivity: m.subscribeActivity
@@ -35768,7 +35781,7 @@ function CE({ runtime: e, documentRef: t = globalThis.document, confirmImpl: n =
 	}), _("撤销上次导入", async () => {
 		!await n({
 			title: "撤销上次导入",
-			body: "恢复本次导入前的记忆。仅在聊天正文仍一致时执行；导入的记忆副本也会保留。",
+			body: "恢复本次导入前的记忆。仅在导入后的记忆和聊天正文均未变化时执行；导入的记忆副本也会保留。",
 			confirmText: "撤销导入",
 			cancelText: "取消"
 		}) || f || (await e.undo(), m = null, u.replaceChildren(), f || (l.textContent = "已恢复导入前的记忆，请重新打开聊天或刷新页面。"));

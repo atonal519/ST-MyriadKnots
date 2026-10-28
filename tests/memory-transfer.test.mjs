@@ -1,3 +1,7 @@
+import { readTimeBody } from '../src/v3/time-body.js';
+import { replayTimeBatches } from '../src/v3/time-engine.js';
+import { createPeopleWorkspaceRuntime } from '../src/v3/people-workspace.js';
+import { PEOPLE_PROFILE_FIELDS } from '../src/v3/people-profile-fields.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTransfer, parseMemoryPackage, transferWitness } from '../src/memory-transfer.js';
@@ -55,11 +59,11 @@ function backendHarness() {
 
 const TARGET = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const IMPORTED = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-async function fixture({ excluded = false, body = '她把钥匙放进木盒。', wrappers = {} } = {}) {
+async function fixture({ excluded = false, body = '她把钥匙放进木盒。', wrappers = {}, chat = null, extractIndex = 0, transferOptions = {} } = {}) {
   const backend = backendHarness();
   let currentWrappers = wrappers;
   const sanitizerOptions = () => currentWrappers;
-  const ctx = context('old-chat', SOURCE, [user('旧档开场'), assistant(body), user('继续'), assistant('最新一楼'), user('钥匙呢？')]);
+  const ctx = context('old-chat', SOURCE, chat ?? [user('旧档开场'), assistant(body), user('继续'), assistant('最新一楼'), user('钥匙呢？')]);
   if (excluded) ctx.chat[3].extra = { qianqianjie_memory_excluded: true };
   let selected = ctx;
   const host = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => selected } } });
@@ -71,7 +75,7 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
     generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
     generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { summary: '钥匙在木盒里。' } : { noMaterialChange: true } }) });
   await memory.start();
-  await memory.extractFloor(memory.getState().floors[0].floorId, { analyzeState: false });
+  await memory.extractFloor(memory.getState().floors[extractIndex].floorId, { analyzeState: false });
   await memory.analyzeNextState();
   const graph = await store.readReachable({ mode: 'full' });
   const coordinator = createChatIdentityCoordinator({ client: backend.client });
@@ -81,10 +85,10 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
   const session = createChatSession({ contextProvider: () => selected, identityCoordinator: coordinator });
   await session.prepare();
   let api = targetChatApi(selected);
-  const runtime = createMemoryTransfer({ client: backend.client, session, hostAdapter: host, sanitizerOptions, freshUuid: () => IMPORTED,
+  const runtime = createMemoryTransfer({ client: backend.client, session, hostAdapter: host, sanitizerOptions, freshUuid: () => IMPORTED, ...transferOptions,
     fetchImpl: (...args) => api.fetch(...args), onSettled: async () => { session.invalidate(); await session.prepare(); } });
   const exported = await runtime.exportCurrent();
-  return { backend, ctx, host, graph, memory, runtime, exported, session,
+  return { backend, ctx, host, graph, memory, foundation, store, runtime, exported, session,
     async target({ changed = false } = {}) {
       selected = context('imported-chat', TARGET, structuredClone(ctx.chat), 'updated-avatar.png');
       selected.name2 = '新版角色'; selected.characters[0].name = '新版角色'; selected.characters[0].data.description = '作者更新后的设定';
@@ -472,9 +476,9 @@ test('undo rejects an advanced memory root even when story text is unchanged', a
   assert.equal(f.api.saves, saves); assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
 });
 
-test('source changed without reconciliation cannot be exported with stale memories', async () => {
+test('an unanchored changed source has no proven binding for export', async () => {
   const f = await fixture(); f.ctx.chat[1].mes = 'changed'; f.ctx.chat[1].swipes[0] = 'changed';
-  await assert.rejects(f.runtime.exportCurrent(), /记忆中的楼层与聊天正文不一致/);
+  await assert.rejects(f.runtime.exportCurrent(), /记忆中的楼层.*绑定/);
 });
 
 test('cross-host timestamp, visibility, absent/default swipe index and unselected history changes preserve real memory/CSE', async () => {
@@ -736,7 +740,7 @@ test('different custom wrapper rules reject preview until source and destination
   const exported = await f.runtime.exportCurrent();
   await f.target(); f.setWrappers({});
   const before = structuredClone([...f.backend.records]);
-  await assert.rejects(f.runtime.preview(exported.text), /第 1 楼.*核对正文及清洗设置/);
+  await assert.rejects(f.runtime.preview(exported.text), /第 1 楼.*绑定|楼层.*绑定/);
   assert.deepEqual([...f.backend.records], before);
   assert.equal(f.api.saves, 0);
   f.setWrappers(wrappers);
@@ -745,10 +749,711 @@ test('different custom wrapper rules reject preview until source and destination
   assert.deepEqual(reexported.graph.floorMemories.map(item => item.id), f.graph.floorMemories.map(item => item.id));
 });
 
-test('valid floor anchors do not permit exporting a changed story body as matching memory', async () => {
+test('retained anchored memories round trip after host body or selected reply changes', async t => {
+  for (const change of ['body', 'selected']) await t.test(change, async () => {
+    const f = await fixture(), first = f.graph.floors[0];
+    f.ctx.chat[1].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: SOURCE, floorId: first.id } };
+    if (change === 'selected') {
+      f.ctx.chat[1].swipes.push('宿主当前选中的另一条回答。');
+      f.ctx.chat[1].swipe_id = 1;
+      f.ctx.chat[1].mes = f.ctx.chat[1].swipes[1];
+    } else f.ctx.chat[1].mes = f.ctx.chat[1].swipes[0] = '宿主保留的新正文，已有记忆不重做。';
+    assert.equal((await f.foundation.refreshStatus()).status, 'ready');
+    const retained = await f.store.readReachable({ mode: 'full' });
+    assert.equal(retained.floors[0].content.canonicalContent, first.content.canonicalContent);
+    const before = structuredClone([...f.backend.records]);
+    const exported = await f.runtime.exportCurrent();
+    assert.deepEqual([...f.backend.records], before, 'export copies the retained graph without refreshing its contents');
+    assert.deepEqual(Object.keys(JSON.parse(exported.text)).sort(), [
+      'format', 'formatVersion', 'pluginVersion', 'exportedAt', 'source', 'messages', 'markers', 'records', 'prequel', 'calendar', 'checksum',
+    ].sort(), 'no source settings snapshot or new package field');
+    const target = await f.target();
+    target.chat[1].extra.qianqianjie_floor = { schemaVersion: 1, chatId: TARGET, floorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+    f.api.reloadFromContext();
+    await f.runtime.importPreview(await f.runtime.preview(exported.text));
+    const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+    const cold = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+    assert.equal((await cold.start()).status, 'ready');
+    const restored = await store.readReachable({ mode: 'full' });
+    assert.deepEqual(restored.floorMemories.map(memory => memory.summary), retained.floorMemories.map(memory => memory.summary));
+    assert.deepEqual(restored.stateDeltas.map(delta => delta.id), retained.stateDeltas.map(delta => delta.id));
+    assert.equal(restored.floors[0].content.canonicalContent, first.content.canonicalContent);
+    const again = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+    assert.deepEqual(again.graph.floorMemories.map(memory => memory.id), retained.floorMemories.map(memory => memory.id));
+  });
+});
+
+test('moved floor bindings export markers at actual positions and survive a cold import', async () => {
   const f = await fixture();
-  f.ctx.chat[1].extra ??= {};
-  f.ctx.chat[1].extra.qianqianjie_floor = { schemaVersion: 1, chatId: SOURCE, floorId: f.graph.floors[0].id };
-  f.ctx.chat[1].mes = f.ctx.chat[1].swipes[0] = '她把钥匙扔进湖里。';
-  await assert.rejects(f.runtime.exportCurrent(), /记忆中的楼层与聊天正文不一致/);
+  for (const floor of f.graph.floors) f.ctx.chat[floor.hostLocator.messageIndex].extra = {
+    qianqianjie_floor: { schemaVersion: 1, chatId: SOURCE, floorId: floor.id },
+  };
+  f.ctx.chat.unshift(user('宿主前插的一条消息'));
+  assert.equal((await f.foundation.inspect('moved-export')).status, 'ready');
+  assert.equal((await f.store.readReachable({ mode: 'full' })).floors[0].hostLocator.messageIndex, 1, 'stored graph has not rebound yet');
+  const before = structuredClone([...f.backend.records]);
+  const exported = await f.runtime.exportCurrent();
+  assert.deepEqual([...f.backend.records], before);
+  const value = JSON.parse(exported.text);
+  assert.equal(value.markers[1].extra.qianqianjie_floor, undefined);
+  assert.equal(value.markers[2].extra.qianqianjie_floor.floorId, f.graph.floors[0].id);
+  const target = await f.target();
+  for (const message of target.chat) if (message.extra) delete message.extra.qianqianjie_floor;
+  f.api.reloadFromContext();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const cold = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await cold.start()).status, 'ready');
+  const restored = await store.readReachable({ mode: 'full' });
+  assert.equal(restored.floors[0].hostLocator.messageIndex, 2);
+  assert.deepEqual(restored.floorMemories.map(memory => memory.id), f.graph.floorMemories.map(memory => memory.id));
+  const again = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.equal(again.value.markers[2].extra.qianqianjie_floor.floorId, f.graph.floors[0].id);
+});
+
+test('missing, foreign, conflicting and duplicated bindings do not export retained memories', async t => {
+  for (const kind of ['missing', 'foreign', 'conflict', 'duplicate']) await t.test(kind, async () => {
+    const f = await fixture(), first = f.graph.floors[0];
+    f.ctx.chat[1].mes = f.ctx.chat[1].swipes[0] = '无法按正文重新匹配的宿主内容。';
+    if (kind !== 'missing') f.ctx.chat[1].extra = { qianqianjie_floor: { schemaVersion: 1,
+      chatId: kind === 'foreign' ? TARGET : SOURCE,
+      floorId: kind === 'conflict' ? 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' : first.id } };
+    if (kind === 'duplicate') f.ctx.chat[3].extra = { qianqianjie_floor: { ...f.ctx.chat[1].extra.qianqianjie_floor } };
+    const before = structuredClone([...f.backend.records]);
+    await assert.rejects(f.runtime.exportCurrent(), /楼层.*绑定|记忆中的楼层/);
+    assert.deepEqual([...f.backend.records], before);
+  });
+});
+
+
+test('only repeated manual summary edits at message six survive cold import and reexport', async () => {
+  const f = await fixture({ extractIndex: 3, chat: [assistant('第零楼'), user('继续一'), assistant('第二楼'), user('继续三'),
+    assistant('第四楼'), user('继续五'), assistant('她把钥匙放进木盒。'), user('继续七'), assistant('最新尾楼')] });
+  const floor = f.graph.floors.find(item => item.hostLocator.messageIndex === 6);
+  assert.ok(floor);
+  const beforeBody = structuredClone(f.ctx.chat);
+  await f.memory.editSummary(floor.id, '人工摘要第一稿。');
+  await f.memory.editSummary(floor.id, '人工摘要第二稿，钥匙仍由她保管。');
+  assert.deepEqual(f.ctx.chat, beforeBody, 'editing summaries does not edit chat text or selected replies');
+  const retained = await f.store.readReachable({ mode: 'full' });
+  const expected = retained.floorMemories.find(item => item.floorId === floor.id);
+  assert.equal(expected.summary.userText, '人工摘要第二稿，钥匙仍由她保管。');
+  const before = structuredClone([...f.backend.records]);
+  const exported = await f.runtime.exportCurrent();
+  assert.deepEqual([...f.backend.records], before);
+  const target = await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  const cold = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
+    generateAnalysisTask: async () => assert.fail('loading imported state does not analyze again'),
+    generateUtilityTask: async () => assert.fail('loading imported summaries does not call a model') });
+  await cold.start();
+  assert.equal(cold.getState().floors.find(item => item.floorId === floor.id).summary, expected.summary.userText);
+  const again = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(again.graph.floorMemories.find(item => item.floorId === floor.id).summary, expected.summary);
+  assert.equal(again.graph.floors.find(item => item.id === floor.id).hostLocator.messageIndex, 6);
+});
+
+test('existing swipe representations and mes fields retain their selected-body semantics', async t => {
+  for (const shape of ['without-swipes', 'with-swipes', 'mes-diverges']) await t.test(shape, async () => {
+    const f = await fixture();
+    if (shape === 'without-swipes') { delete f.ctx.chat[1].swipes; delete f.ctx.chat[1].swipe_id; }
+    if (shape === 'mes-diverges') f.ctx.chat[1].mes = '宿主当前展示文字，选中候选仍为原文。';
+    const exported = await f.runtime.exportCurrent();
+    const target = await f.target();
+    if (shape === 'without-swipes') { target.chat[1].swipes = [target.chat[1].mes]; target.chat[1].swipe_id = 0; }
+    if (shape === 'with-swipes') { delete target.chat[1].swipes; delete target.chat[1].swipe_id; }
+    f.api.reloadFromContext();
+    await f.runtime.importPreview(await f.runtime.preview(exported.text));
+    const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+    const cold = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+    assert.equal((await cold.start()).status, 'ready');
+    const again = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+    assert.deepEqual(again.graph.floorMemories.map(item => item.summary), f.graph.floorMemories.map(item => item.summary));
+    if (shape === 'mes-diverges') assert.equal(target.chat[1].mes, f.ctx.chat[1].mes);
+  });
+});
+
+test('frozen history exports without its old chat body and survives cold import', async () => {
+  const f = await fixture();
+  const descriptor = createMigrationDescriptor({ id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', chatId: SOURCE,
+    source: f.session.identity(), reachable: f.graph, createdAt: NOW });
+  await f.store.putRecord(descriptor);
+  const root = await f.store.readRoot();
+  await f.store.commitRoot({ ...root.data, migrationDescriptorId: descriptor.id }, root.revision);
+  f.ctx.chat.splice(0, f.ctx.chat.length, user('新聊天的开场'), assistant('尚未稳定的新尾楼'));
+  const before = structuredClone([...f.backend.records]);
+  const exported = await f.runtime.exportCurrent();
+  assert.deepEqual([...f.backend.records], before);
+  const parsed = await parseMemoryPackage(exported.text);
+  assert.deepEqual(parsed.graph.migrationDescriptor.frozenFloorIds, f.graph.floors.map(item => item.id));
+  assert.equal(parsed.value.markers.some(item => item.extra.qianqianjie_floor), false, 'frozen floors get no fabricated current-chat markers');
+  const target = await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const cold = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await cold.start()).status, 'ready');
+  const again = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(again.graph.floorMemories.map(item => item.id), f.graph.floorMemories.map(item => item.id));
+  assert.deepEqual(again.graph.stateDeltas.map(item => item.id), f.graph.stateDeltas.map(item => item.id));
+  assert.deepEqual(again.graph.migrationDescriptor.frozenFloorIds, descriptor.frozenFloorIds);
+});
+
+test('aggregate source snapshots remain historical when anchored member bodies change', async () => {
+  const chat = [user('开场')];
+  for (let index = 0; index < 5; index++) chat.push(assistant(`第${index}份正文`), user(`继续${index}`));
+  chat.push(assistant('尚未稳定的尾楼'));
+  const f = await fixture({ chat });
+  const memory = createV3MemoryRuntime({ foundationRuntime: f.foundation, store: f.store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateUtilityTask: async () => ({ jsonData: { summary: '历史多楼合并摘要。' } }) });
+  await memory.start();
+  await memory.startHistoricalRebuild({ aggregate: true });
+  const retained = await f.store.readReachable({ mode: 'full' });
+  const aggregate = retained.floorMemories.find(item => item.sourceFloorIds?.length > 1);
+  assert.ok(aggregate, JSON.stringify(memory.getState().lastAutoMemory));
+  for (const floor of retained.floors) f.ctx.chat[floor.hostLocator.messageIndex].extra = {
+    qianqianjie_floor: { schemaVersion: 1, chatId: SOURCE, floorId: floor.id },
+  };
+  const member = retained.floors.find(item => item.id === aggregate.sourceFloorIds[0]);
+  f.ctx.chat[member.hostLocator.messageIndex].mes = f.ctx.chat[member.hostLocator.messageIndex].swipes[0] = '宿主保留已修改的成员正文。';
+  const before = structuredClone([...f.backend.records]);
+  const exported = await f.runtime.exportCurrent();
+  assert.deepEqual([...f.backend.records], before);
+  const target = await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const cold = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await cold.start()).status, 'ready');
+  const again = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  const restored = again.graph.floorMemories.find(item => item.id === aggregate.id);
+  assert.deepEqual(restored.sourceFloorSnapshots, aggregate.sourceFloorSnapshots);
+  assert.deepEqual(restored.summary, aggregate.summary);
+});
+
+test('undo restores only unchanged candidate replies without transplanting old anchors', async t => {
+  for (const change of ['unchanged', 'replaced', 'reordered']) await t.test(change, async () => {
+    const f = await fixture(), target = await f.target();
+    const oldAnchor = { schemaVersion: 1, chatId: TARGET, floorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+    target.chat[1].swipes.push('原先的候选甲', '原先的候选乙');
+    target.chat[1].swipe_info = [{ extra: {} }, { extra: { qianqianjie_floor: oldAnchor } }, { extra: {} }];
+    f.api.reloadFromContext();
+    await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+    if (change === 'replaced') target.chat[1].swipes[1] = '后来替换的候选';
+    if (change === 'reordered') [target.chat[1].swipes[1], target.chat[1].swipes[2]] = [target.chat[1].swipes[2], target.chat[1].swipes[1]];
+    target.chat[1].swipe_info[1].extra.otherPlugin = { retained: true };
+    f.api.reloadFromContext();
+    const selected = target.chat[1].swipes[0];
+    await f.runtime.undo();
+    assert.equal(target.chat[1].swipes[0], selected);
+    assert.deepEqual(target.chat[1].swipe_info[1].extra.qianqianjie_floor, change === 'unchanged' ? oldAnchor : undefined);
+    assert.deepEqual(f.api.persistedMessages[1].swipe_info[1].extra.qianqianjie_floor, change === 'unchanged' ? oldAnchor : undefined);
+    assert.deepEqual(target.chat[1].swipe_info[1].extra.otherPlugin, { retained: true });
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  });
+});
+
+
+test('public manual timeline edits and summary survive import and reexport without models', async () => {
+  const f = await fixture(), sourceChatId = f.session.identity().chatId;
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => f.ctx, newUuid: uuidFactory(), logger: { warn() {} } });
+  await foundation.start();
+  const packet = { summary: '钥匙事项与木盒记录。', qianshi: { events: [
+    { key: 'matter', title: '归还钥匙', description: '她准备归还钥匙。', status: 'planned', matter: true, storyTime: '2026-04-05 08:00', scheduledTime: '2026-04-06 09:00', object: '钥匙' },
+    { key: 'kept', title: '取出木盒', description: '她取出了木盒。', status: 'occurred', matter: false, storyTime: '2026-04-05 09:00' },
+    { key: 'unknown', title: '时间待核对', description: '手动清空时间的记录。', status: 'occurred', matter: false, storyTime: '2026-04-05 09:30' },
+    { key: 'wrong', title: '误记记录', description: '需要手动删除的误记。', status: 'occurred', matter: false, storyTime: '2026-04-05 10:00' },
+  ], order: [] } };
+  let allowModel = true, modelCalls = 0;
+  const generate = async () => {
+    assert.equal(allowModel, true, 'manual timeline edits and transfer must not call models');
+    modelCalls += 1;
+    return { jsonData: packet };
+  };
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: generate, generateAnalysisTask: generate,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await memory.start();
+  await memory.extractFloor(f.graph.floors[0].id, { analyzeState: false });
+  allowModel = false;
+  const callsBefore = modelCalls, chatBefore = structuredClone(f.ctx.chat);
+  const initial = memory.getQianshiSnapshot();
+  const origin = initial.events.find(event => event.title === '归还钥匙');
+  const kept = initial.events.find(event => event.title === '取出木盒');
+  const unknown = initial.events.find(event => event.title === '时间待核对');
+  const wrong = initial.events.find(event => event.title === '误记记录');
+  const editInput = event => ({ eventId: event.id,
+    expected: { memoryId: event.sourceFloorMemoryId, title: event.title, description: event.description, object: event.object,
+      status: event.status, actionStatus: event.actionStatus ?? event.status, storyTime: event.storyTime, scheduledTime: event.scheduledTime },
+    title: event.title, description: event.description, object: event.object });
+  await memory.editQianshiEventText({ ...editInput(origin), status: 'inProgress', actionStatus: 'occurred', storyTime: '2026-04-07 12:34:56', scheduledTime: null });
+  let matter = memory.getQianshiSnapshot().matters.find(item => item.matterId === origin.matterId);
+  await memory.setQianshiMatterFollowing({ matterId: matter.matterId, following: false, expectedFollowing: matter.following });
+  matter = memory.getQianshiSnapshot().matters.find(item => item.matterId === origin.matterId);
+  await memory.setQianshiMatterStatus({ matterId: matter.matterId, status: 'completed', expectedStatus: matter.status, expectedManualStatus: matter.manualStatusOverride });
+  await memory.deleteQianshiEvent({ eventId: wrong.id });
+  await memory.editQianshiEventText({ ...editInput(memory.getQianshiSnapshot().events.find(event => event.id === unknown.id)), storyTime: null });
+  await memory.editSummary(f.graph.floors[0].id, '人工改写摘要，保留手改时间线。');
+  const before = memory.getQianshiSnapshot(), sourceGraph = await store.readReachable({ mode: 'full' });
+  const sourceMemory = sourceGraph.floorMemories.find(item => item.floorId === f.graph.floors[0].id);
+  const timelineIds = snapshot => snapshot.timeline.segments.flatMap(segment => segment.groups.flatMap(group => group.eventIds));
+  assert.deepEqual(timelineIds(before), [kept.id, origin.id], 'manual time changes determine timeline ordering');
+  assert.deepEqual(before.timeline.undatedEventIds, [unknown.id]);
+  assert.ok(sourceMemory.qianshiDelta.deletedEventIds.includes(wrong.id));
+  assert.deepEqual(f.ctx.chat, chatBefore);
+  assert.equal(modelCalls, callsBefore);
+  const sourceRecordsBefore = structuredClone([...f.backend.records].filter(([key]) => key.startsWith(`chat-${sourceChatId}/`)));
+  const exported = await f.runtime.exportCurrent();
+  const target = await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  const transferred = reexported.graph.floorMemories.find(item => item.floorId === sourceMemory.floorId);
+  assert.deepEqual(transferred.qianshiDelta, sourceMemory.qianshiDelta);
+  assert.deepEqual(transferred.summary, sourceMemory.summary);
+  const targetStore = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const targetFoundation = createFoundationRuntime({ hostAdapter: f.host, store: targetStore, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetFoundation.start();
+  const targetMemory = createV3MemoryRuntime({ foundationRuntime: targetFoundation, store: targetStore, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: generate, generateAnalysisTask: generate,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetMemory.start();
+  const after = targetMemory.getQianshiSnapshot();
+  for (const field of ['events', 'matters', 'relations', 'timeline', 'currentProgress']) assert.deepEqual(after[field], before[field]);
+  assert.deepEqual([...f.backend.records].filter(([key]) => key.startsWith(`chat-${sourceChatId}/`)), sourceRecordsBefore);
+  assert.equal(modelCalls, callsBefore);
+});
+
+test('manual memory fields and linked exact text survive transfer without source or model changes', async () => {
+  const originalQuote = '八点在东门', secondQuote = '备用会面地点';
+  const f = await fixture({ body: `裴晚生留下字条“${originalQuote}”，另一张写着“${secondQuote}”。` });
+  const sourceChatId = f.session.identity().chatId;
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => f.ctx, newUuid: uuidFactory(), logger: { warn() {} } });
+  await foundation.start();
+  const packet = { summary: '裴晚生留下约定字条。', people: [{ name: '裴晚生' }, { name: '林岚', role: 'user' }],
+    commitments: [{ issuer: '裴晚生', content: originalQuote, exactQuote: originalQuote }],
+    privateCognition: [{ owner: '裴晚生', content: originalQuote, visibility: 'private' }],
+    informationTransfers: [{ from: '裴晚生', to: ['林岚'], claimText: originalQuote, channel: 'written', exactQuote: originalQuote }],
+    exactQuotes: [{ exactText: originalQuote, speaker: '裴晚生' }, { exactText: secondQuote, speaker: '裴晚生' }] };
+  let allowModel = true, calls = 0;
+  const generate = async () => { assert.equal(allowModel, true); calls += 1; return { jsonData: packet }; };
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: generate, generateAnalysisTask: generate,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await memory.start(); await memory.extractFloor(f.graph.floors[0].id, { analyzeState: false });
+  allowModel = false;
+  const callsBefore = calls, chatBefore = structuredClone(f.ctx.chat);
+  const initial = memory.getState().floors[0], anchor = initial.memory.exactAnchors.find(item => item.exactText === originalQuote);
+  const removed = initial.memory.exactAnchors.find(item => item.exactText === secondQuote);
+  const userId = memory.getState().memoryEntities.find(item => item.specialRole === 'user').entityId;
+  const revisedQuote = '明早九点在西门\n<content>保留字面标签</content>!?';
+  await memory.editMemory(initial.floorId, { summary: '手工核对的摘要。', revisionNote: '手动修订完整资料',
+    timeText: '2026年10月28日 09:15', originalTimeText: '时间未明确', timeChanged: true,
+    locations: [{ name: '手填西门' }], participantNames: ['裴晚生', '林岚', '手工新增人物'],
+    exactAnchors: [{ anchorId: anchor.anchorId, carrier: '裴晚生的字条', exactText: revisedQuote, knownEntityIds: [userId] }] });
+  const state = memory.getState(), saved = state.floors[0].memory;
+  assert.equal(saved.chronology[0].time.sourceText, '2026年10月28日 09:15');
+  assert.equal(saved.locations[0].name, '手填西门');
+  assert.ok(state.memoryEntities.some(item => item.displayName === '手工新增人物' && saved.participants.some(participant => participant.entityId === item.entityId)));
+  assert.equal(saved.exactAnchors[0].exactText, revisedQuote);
+  assert.deepEqual(saved.exactAnchors[0].knownEntityIds, [userId]);
+  assert.ok(saved.suppressedExactAnchorIds.includes(anchor.anchorId));
+  assert.ok(saved.suppressedExactAnchorIds.includes(removed.anchorId));
+  assert.equal(saved.commitments[0].content, revisedQuote);
+  assert.equal(saved.privateCognition[0].content, revisedQuote);
+  assert.equal(saved.informationTransfers[0].claimText, revisedQuote);
+  await memory.restoreAi(initial.floorId);
+  assert.equal(memory.getState().floors[0].memory.summary.effectiveSource, 'ai');
+  await memory.editSummary(initial.floorId, '最终人工摘要。', '最终人工修订说明');
+  const sourceGraph = await store.readReachable({ mode: 'full' });
+  const sourceMemory = sourceGraph.floorMemories.find(item => item.floorId === initial.floorId);
+  const sourceRecordsBefore = structuredClone([...f.backend.records].filter(([key]) => key.startsWith(`chat-${sourceChatId}/`)));
+  const exported = await f.runtime.exportCurrent(); await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  const transferred = reexported.graph.floorMemories.find(item => item.floorId === sourceMemory.floorId);
+  assert.deepEqual({ ...transferred, chatId: sourceChatId }, sourceMemory);
+  assert.deepEqual(reexported.graph.entities.map(item => ({ ...item, chatId: sourceChatId })), sourceGraph.entities);
+  assert.deepEqual(f.ctx.chat, chatBefore);
+  assert.deepEqual([...f.backend.records].filter(([key]) => key.startsWith(`chat-${sourceChatId}/`)), sourceRecordsBefore);
+  assert.equal(calls, callsBefore);
+});
+
+test('manual character state add edit and explicit clear survive transfer and cold reload without models', async () => {
+  const f = await fixture(), sourceChatId = f.session.identity().chatId;
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => f.ctx, newUuid: uuidFactory(), logger: { warn() {} } });
+  await foundation.start();
+  const generate = async () => assert.fail('manual correction and transfer must not invoke models');
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: generate, generateAnalysisTask: generate,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await memory.start();
+  let state = memory.getState(), subject = state.cseSubjects[0];
+  const otherId = f.graph.entities.find(item => item.entityType === 'person' && item.id !== subject.subjectEntityId).id;
+  const editInput = (state, subject, patch) => ({ expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint,
+    core: subject.core.map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: null })),
+    adaptive: subject.adaptive.map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })),
+    situational: subject.situational.map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })), ...patch });
+  state = await memory.correctSubjectState(subject.subjectEntityId, editInput(state, subject, {
+    core: [{ itemId: null, text: '人工核心性格', visibility: 'authorial', towardEntityId: null }],
+    adaptive: [{ itemId: null, text: '手工新增信任关系', visibility: 'private', towardEntityId: otherId }],
+    situational: [{ itemId: null, text: '等待归还钥匙', visibility: 'observable', towardEntityId: null }] }));
+  subject = state.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId);
+  state = await memory.correctSubjectState(subject.subjectEntityId, editInput(state, subject, { core: [],
+    situational: [{ itemId: subject.situational[0].id, text: '已经收好钥匙', visibility: 'private', towardEntityId: null }] }));
+  subject = state.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId);
+  assert.deepEqual(subject.core, []);
+  assert.equal(subject.adaptive[0].towardEntityId, otherId);
+  assert.equal(subject.situational[0].text, '已经收好钥匙');
+  const sourceGraph = await store.readReachable({ mode: 'full' });
+  const sourceRecordsBefore = structuredClone([...f.backend.records].filter(([key]) => key.startsWith(`chat-${sourceChatId}/`)));
+  const exported = await f.runtime.exportCurrent(), target = await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(reexported.graph.stateDeltas.map(item => ({ ...item, chatId: sourceChatId })), sourceGraph.stateDeltas);
+  assert.deepEqual(reexported.graph.currentStates.map(item => ({ ...item, chatId: sourceChatId })), sourceGraph.currentStates);
+  const targetStore = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const targetFoundation = createFoundationRuntime({ hostAdapter: f.host, store: targetStore, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetFoundation.start();
+  const targetMemory = createV3MemoryRuntime({ foundationRuntime: targetFoundation, store: targetStore, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: generate, generateAnalysisTask: generate,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetMemory.start();
+  const restoredSubject = targetMemory.getState().cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId);
+  for (const layer of ['core', 'adaptive', 'situational']) assert.deepEqual(restoredSubject[layer], subject[layer]);
+  assert.deepEqual([...f.backend.records].filter(([key]) => key.startsWith(`chat-${sourceChatId}/`)), sourceRecordsBefore);
+});
+
+
+test('explicitly cleared memory time places participants and exact text remain cleared after transfer', async () => {
+  const f = await fixture(), sourceChatId = f.session.identity().chatId;
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => f.ctx, newUuid: uuidFactory(), logger: { warn() {} } });
+  await foundation.start();
+  const generate = async () => assert.fail('manual clearing and transfer must not call models');
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: generate, generateAnalysisTask: generate,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await memory.start();
+  const floor = memory.getState().floors[0];
+  await memory.editMemory(floor.floorId, { summary: floor.summary, timeText: '2026年10月28日 09:15', originalTimeText: '时间未明确', timeChanged: true,
+    locations: [{ name: '准备清空的地点' }], participantNames: ['准备清空的参与人'],
+    exactAnchors: [{ anchorId: null, carrier: '准备清空的便条', exactText: '手工便条全文', knownEntityIds: [] }] });
+  await memory.editMemory(floor.floorId, { summary: floor.summary, timeText: '', originalTimeText: '2026年10月28日 09:15', timeChanged: true,
+    locations: [], participantNames: [], exactAnchors: [] });
+  const sourceGraph = await store.readReachable({ mode: 'full' }), sourceMemory = sourceGraph.floorMemories.find(item => item.floorId === floor.floorId);
+  assert.equal(sourceMemory.chronology[0].time.kind, 'unknown');
+  assert.equal(sourceMemory.chronology[0].time.sourceText, '时间未明确');
+  for (const field of ['locations', 'participants', 'exactAnchors']) assert.deepEqual(sourceMemory[field], []);
+  const exported = await f.runtime.exportCurrent(); await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual({ ...reexported.graph.floorMemories.find(item => item.floorId === floor.floorId), chatId: sourceChatId }, sourceMemory);
+});
+
+test('manual error marking is preserved by transfer without regenerating or deleting memory', async () => {
+  const f = await fixture(), sourceChatId = f.session.identity().chatId;
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => f.ctx, newUuid: uuidFactory(), logger: { warn() {} } });
+  await foundation.start();
+  const generate = async () => assert.fail('manual error marking and transfer must not call models');
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: generate, generateAnalysisTask: generate,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await memory.start();
+  const floorId = memory.getState().floors[0].floorId;
+  await memory.markError(floorId);
+  const sourceGraph = await store.readReachable({ mode: 'full' }), sourceMemory = sourceGraph.floorMemories.find(item => item.floorId === floorId);
+  assert.equal(sourceMemory.recordStatus, 'invalidated');
+  const exported = await f.runtime.exportCurrent(); await f.target();
+  const preview = await f.runtime.preview(exported.text);
+  assert.equal(preview.summaries, 0);
+  await f.runtime.importPreview(preview);
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual({ ...reexported.graph.floorMemories.find(item => item.floorId === floorId), chatId: sourceChatId }, sourceMemory);
+});
+
+test('manual prequel calendar and explicit clears survive transfer and undo without changing other chats', async t => {
+  for (const prequel of ['人工前情：旧案已结，钥匙仍在木盒。', '', null]) await t.test(String(prequel), async () => {
+    const calendars = new Map([[SOURCE, { months: 4, prefix: '启航' }], [TARGET, { months: 12, prefix: '旧历' }]]);
+    if (prequel === null) calendars.delete(SOURCE);
+    const f = await fixture({ transferOptions: {
+      captureCalendar: chatId => calendars.get(chatId) ?? null,
+      persistCalendar: async (chatId, calendar) => { calendars.set(chatId, structuredClone(calendar)); },
+    } });
+    if (prequel !== null) f.ctx.chatMetadata.qianqianjiePrequel = prequel;
+    const sourceRecords = structuredClone([...f.backend.records]);
+    const exported = await f.runtime.exportCurrent();
+    assert.deepEqual([...f.backend.records], sourceRecords);
+    const target = await f.target();
+    target.chatMetadata.qianqianjiePrequel = '导入前目标聊天的手工前情';
+    f.api.reloadFromContext();
+    await f.runtime.importPreview(await f.runtime.preview(exported.text));
+    assert.equal(target.chatMetadata.qianqianjiePrequel, prequel === null ? undefined : prequel);
+    assert.deepEqual(calendars.get(TARGET), { months: 12, prefix: '旧历' });
+    assert.deepEqual(calendars.get(SOURCE), prequel === null ? undefined : { months: 4, prefix: '启航' });
+    const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+    assert.equal(reexported.value.prequel, prequel);
+    assert.deepEqual(reexported.value.calendar, prequel === null ? null : { months: 4, prefix: '启航' });
+    await f.runtime.undo();
+    assert.equal(target.chatMetadata.qianqianjiePrequel, '导入前目标聊天的手工前情');
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+    assert.deepEqual(calendars.get(TARGET), { months: 12, prefix: '旧历' });
+  });
+});
+
+
+test('all manual people fields, selections, order, avatar and merge deletion chains survive cold transfer', async t => {
+  const f = await fixture();
+  const names = ['人物甲', '人物乙', '人物丙', '人物丁', '人物戊', '人物己', '人物庚', '人物辛'];
+  await f.memory.editMemory(f.graph.floors[0].id, { summary: f.memory.getState().floors[0].summary, participantNames: names });
+  const sourceBody = structuredClone(f.ctx.chat);
+  const peopleStore = createPeopleWorkspaceStore({ client: f.backend.client });
+  let modelCalls = 0;
+  const noModel = async () => { modelCalls += 1; assert.fail('manual people transfer must not request a model'); };
+  const people = createPeopleWorkspaceRuntime({ store: peopleStore, session: f.session,
+    foundationRuntime: f.foundation, foundationStore: f.store, hostAdapter: f.host, memoryRuntime: f.memory,
+    generateUtilityTask: noModel, sourcePermissions: { filterCandidates: ({ candidates }) => candidates },
+    contextProvider: () => f.ctx, logger: { warn() {} } });
+  t.after(() => people.destroy());
+  await people.refresh();
+  const ids = names.map(name => people.getState().people.find(person => person.entityDisplayName === name)?.entityId);
+  assert.ok(ids.every(Boolean), JSON.stringify(people.getState().people.map(person => person.entityDisplayName)));
+  for (const [index, id] of ids.entries()) {
+    const fields = Object.fromEntries(PEOPLE_PROFILE_FIELDS.map(field => [field, `${names[index]}-${field}-人工值`]));
+    await people.saveProfile(id, fields, { manualFields: PEOPLE_PROFILE_FIELDS });
+  }
+  const [a, b, c, d, e, g, h, i] = ids;
+  await people.saveProfile(a, { aliases: '', notes: '', appearance: '' }, { manualFields: ['aliases', 'notes', 'appearance'] });
+  const cleared = people.getState().profilesByEntityId[a];
+  for (const field of PEOPLE_PROFILE_FIELDS) {
+    assert.equal(cleared[field], ['aliases', 'notes', 'appearance'].includes(field) ? '' : `${names[0]}-${field}-人工值`, field);
+    assert.ok(cleared.manualFields.includes(field), field);
+  }
+  assert.equal(cleared.source, 'manual');
+  await people.saveAvatar(a, 'data:image/png;base64,QUFB');
+  await people.saveAvatar(b, 'data:image/png;base64,QkJC');
+  await people.saveAvatar(c, 'data:image/png;base64,Q0ND');
+  await people.saveAvatar(d, 'data:image/png;base64,RERE');
+  await people.saveAvatar(e, 'data:image/png;base64,RUVF');
+  await people.setSelectedEntityIds(ids);
+  await people.setPersonOrderEntityIds([...ids].reverse());
+  const sourceProfile = structuredClone(people.getState().profilesByEntityId[b]);
+  const targetName = people.getState().profilesByEntityId[c].name;
+  await people.mergePeople(b, c, 'source');
+  assert.equal(people.getState().profilesByEntityId[c].name, targetName);
+  for (const field of PEOPLE_PROFILE_FIELDS.filter(field => field !== 'name')) assert.equal(people.getState().profilesByEntityId[c][field], sourceProfile[field], field);
+  assert.equal(people.getState().avatarsByEntityId[c], 'data:image/png;base64,QkJC');
+  const chosenTarget = structuredClone(people.getState().profilesByEntityId[e]);
+  await people.mergePeople(d, e, 'target');
+  for (const field of PEOPLE_PROFILE_FIELDS) assert.equal(people.getState().profilesByEntityId[e][field], chosenTarget[field], field);
+  assert.equal(people.getState().avatarsByEntityId[e], 'data:image/png;base64,RUVF');
+  await people.mergePeople(g, h, 'source');
+  await people.mergePeople(h, i, 'target');
+  assert.equal(people.getState().identityRedirectsByEntityId[g], i);
+  assert.equal(people.getState().identityRedirectsByEntityId[h], i);
+  await people.deletePerson(i);
+  await people.setSelectedEntityIds([a, c, e]);
+  await people.setPersonOrderEntityIds([e, c, a]);
+  people.invalidate();
+  await people.refresh();
+  const beforeState = people.getState();
+  assert.deepEqual(beforeState.selectedEntityIds, [a, c, e]);
+  assert.deepEqual(beforeState.personOrderEntityIds, [e, c, a]);
+  for (const id of [b, d, g, h, i]) assert.equal(beforeState.people.some(person => person.entityId === id), false);
+  assert.ok(beforeState.deletedEntityIds.includes(i));
+  const sourceWorkspace = (await peopleStore.read(f.session.identity())).data;
+  const sourceRecords = structuredClone([...f.backend.records].filter(([key]) => key.startsWith(`chat-${SOURCE}/`)));
+  people.destroy();
+  const exported = await f.runtime.exportCurrent();
+  assert.deepEqual(JSON.parse(exported.text).records.find(record => record.id === 'v3-people-workspace').data, sourceWorkspace);
+  assert.deepEqual(f.ctx.chat, sourceBody);
+  assert.deepEqual([...f.backend.records].filter(([key]) => key.startsWith(`chat-${SOURCE}/`)), sourceRecords);
+  const target = await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const targetStore = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const targetFoundation = createFoundationRuntime({ hostAdapter: f.host, store: targetStore, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetFoundation.start();
+  const targetMemory = createV3MemoryRuntime({ foundationRuntime: targetFoundation, store: targetStore, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), generateUtilityTask: noModel, generateAnalysisTask: noModel,
+    newUuid: uuidFactory(), logger: { warn() {} } });
+  await targetMemory.start();
+  const targetPeople = createPeopleWorkspaceRuntime({ store: peopleStore, session: f.session,
+    foundationRuntime: targetFoundation, foundationStore: targetStore, hostAdapter: f.host, memoryRuntime: targetMemory,
+    generateUtilityTask: noModel, sourcePermissions: { filterCandidates: ({ candidates }) => candidates },
+    contextProvider: () => target, logger: { warn() {} } });
+  t.after(() => targetPeople.destroy());
+  await targetPeople.refresh();
+  const actual = targetPeople.getState();
+  for (const field of ['selectedEntityIds', 'personOrderEntityIds', 'profilesByEntityId', 'avatarsByEntityId', 'identityRedirectsByEntityId', 'deletedEntityIds']) assert.deepEqual(actual[field], beforeState[field], field);
+  for (const id of [b, d, g, h, i]) assert.equal(actual.people.some(person => person.entityId === id), false, 'merged and deleted people do not reappear');
+  assert.deepEqual(actual.people.map(person => person.entityId), beforeState.people.map(person => person.entityId));
+  assert.deepEqual((await peopleStore.read(f.session.identity())).data, { ...sourceWorkspace, chatId: IMPORTED });
+  const again = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(again.value.records.find(record => record.id === 'v3-people-workspace').data, { ...sourceWorkspace, chatId: IMPORTED });
+  assert.deepEqual(f.ctx.chat, sourceBody);
+  assert.deepEqual([...f.backend.records].filter(([key]) => key.startsWith(`chat-${SOURCE}/`)), sourceRecords);
+  assert.equal(modelCalls, 0);
+});
+
+
+test('所有时间事项人工字段经公开编辑与冷加载完整迁移', async () => {
+  const body = '<!-- QQJ-start | date=2026-05-01 | weekday=周一 | time=08:00 -->阿岚的手腕擦伤仍疼，阿雪的膝盖擦伤。阿岚每七天检查伤口，并约好五月十日归还钥匙。<!-- QQJ-end | date=2026-05-01 | weekday=周一 | time=09:00 -->';
+  const f = await fixture({ body, chat: [{ is_user: false, is_system: false, mes: body, swipes: [body], swipe_id: 0 }, { is_user: true, is_system: false, mes: '继续', send_date: 'manual-time-test' }] });
+  const foundationStore = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const timeStore = createTimeStore({ client: f.backend.client });
+  let allowModel = true, calls = 0;
+  const generate = async task => {
+    assert.equal(allowModel, true, '人工编辑、迁移及冷读不得请求模型'); calls += 1;
+    const request = JSON.parse(task.taskMessages[0].content);
+    if (request.currentReview) return { changes: request.trackedItems.map(item => ({ itemId: item.id, progression: item.type === 'deadline' ? '' : '可能仍有轻微不适，恢复尚未确认。', assessmentReason: item.type === 'deadline' ? '等待归还观察' : '' })) };
+    return { changes: [
+      ['阿岚', 'body', '手腕擦伤', '手腕擦伤仍疼痛', null, ''],
+      ['阿雪', 'body', '膝盖擦伤', '膝盖擦伤', null, ''],
+      ['阿岚', 'cycle', '伤口检查', '每七天检查伤口', 7, ''],
+      ['阿岚', 'deadline', '归还钥匙', '约定归还钥匙', null, '2026-05-10 12:00'],
+    ].map(([subjectName, type, label, observation, periodDays, dueTime]) => ({ itemId: null, subjectEntityId: null, subjectName, type, label, observation, occurrenceTime: '2026-05-01 08:00', dueTime, periodDays, status: 'active', stateRefs: [], progression: type === 'deadline' ? '' : '仍待后续观察确认。', sourceKeys: [request.observations[0].sourceKey] })) };
+  };
+  const options = { store: timeStore, foundationStore, hostAdapter: f.host, session: f.session, getReachable: () => f.graph,
+    getMemoryState: () => ({ memorySyncStatus: 'idle' }), isEnabled: () => true, newUuid: uuidFactory(), logger: { warn() {} }, generateTimeTask: generate };
+  const time = createTimeRuntime(options);
+  await time.organize(await time.prepareHistoryPlan());
+  assert.equal(time.getState().trackedItems.length, 4);
+  allowModel = false;
+  const seededCalls = calls;
+  const all = () => [...time.getState().trackedItems, ...time.getState().stoppedItems];
+  const byLabel = label => all().find(item => item.label === label);
+  const edit = async (item, fields) => { await time.editItem(item.id, fields, item.observationKey); return all().find(value => value.id === item.id); };
+  let bodyItem = byLabel('手腕擦伤');
+  assert.ok(bodyItem.projection, '正文带真实时间，模型种子应产生当前有效推测');
+  bodyItem = await edit(bodyItem, { projectionText: '人工修订：仍有轻微不适，是否恢复尚待确认。' });
+  assert.equal(bodyItem.projection, '人工修订：仍有轻微不适，是否恢复尚待确认。');
+  bodyItem = await edit(bodyItem, { subjectEntityId: byLabel('膝盖擦伤').subjectEntityId });
+  assert.equal(bodyItem.subjectEntityId, byLabel('膝盖擦伤').subjectEntityId);
+  assert.equal(bodyItem.projection, '人工修订：仍有轻微不适，是否恢复尚待确认。');
+  const deadline = await edit(byLabel('归还钥匙'), { label: '人工期限名称', observation: '人工核实：钥匙仍在木盒，等待归还。',
+    observationTime: '2026-05-01 09:15', occurrenceTime: '2026-04-30 20:00', dueTime: '2026-05-12 18:00', periodDays: 3, status: 'paused' });
+  assert.equal(deadline.observationTime.date, '2026-05-01'); assert.equal(deadline.occurrenceTime.date, '2026-04-30'); assert.equal(deadline.dueTime.date, '2026-05-12');
+  assert.equal(deadline.label, '人工期限名称'); assert.equal(deadline.observation, '人工核实：钥匙仍在木盒，等待归还。'); assert.equal(deadline.periodDays, 3); assert.equal(deadline.status, 'paused');
+  let cycle = await edit(byLabel('伤口检查'), { periodDays: 9, occurrenceTime: '2026-05-02 08:00' });
+  assert.equal(cycle.periodDays, 9);
+  await time.editItems([bodyItem, cycle].map(item => ({ itemId: item.id, observationKey: item.observationKey, fields: { status: 'paused' } })));
+  const paused = all().filter(item => [bodyItem.id, cycle.id].includes(item.id)); assert.ok(paused.every(item => item.status === 'paused'));
+  await time.editItems(paused.map(item => ({ itemId: item.id, observationKey: item.observationKey, fields: { status: 'active' } })));
+  await edit(all().find(item => item.id === deadline.id), { status: 'completed' });
+  await edit(all().find(item => item.id === deadline.id), { status: 'active' });
+  // Final independent projection edit survives as a user value alongside edited facts.
+  // Pausing correctly clears its estimate; another body item still retains a valid projection.
+  const otherBody = byLabel('膝盖擦伤'); assert.ok(otherBody.projection);
+  await edit(otherBody, { projectionText: '人工保留的当前膝盖推测。' });
+  assert.equal(calls, seededCalls);
+  const before = await timeStore.read(SOURCE);
+  const beforeBody = await readTimeBody(f.graph, f.host.snapshot());
+  const expectedItems = replayTimeBatches(before.batches, beforeBody);
+  const exported = await f.runtime.exportCurrent();
+  await f.target(); await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const importedStore = createTimeStore({ client: f.backend.client });
+  const importedGraph = await createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() }).readReachable({ mode: 'full' });
+  const cold = createTimeRuntime({ ...options, store: importedStore, getReachable: () => importedGraph });
+  await cold.refreshStatus({ force: true });
+  const after = await importedStore.read(IMPORTED);
+  assert.deepEqual(after.head, { ...before.head, chatId: IMPORTED });
+  assert.deepEqual(after.batches, before.batches.map(batch => ({ ...batch, chatId: IMPORTED })));
+  const importedBody = await readTimeBody(importedGraph, f.host.snapshot());
+  assert.deepEqual(replayTimeBatches(after.batches, importedBody), expectedItems);
+  assert.equal([...cold.getState().trackedItems, ...cold.getState().stoppedItems].find(item => item.label === '膝盖擦伤').projection, '人工保留的当前膝盖推测。');
+  const reexported = JSON.parse((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(reexported.records.find(item => item.id === 'v3-time-head').data, after.head);
+  for (const batch of after.batches) assert.deepEqual(reexported.records.find(item => item.id === batch.id).data, batch);
+  assert.equal(calls, seededCalls);
+  return { seededCalls, manualEditsWithoutModel: true, items: expectedItems.length, timeBatches: after.batches.length,
+    fields: ['label', 'observation', 'observationTime', 'occurrenceTime', 'dueTime', 'periodDays', 'subjectEntityId', 'status', 'projectionText'], publicApis: ['editItem', 'editItems', 'refreshStatus'] };
+});
+
+test('公开排除楼入口的标记导入与撤销完整往返', async () => {
+  const f = await fixture();
+  const result = await f.memory.setMemoryExcluded(3, true);
+  assert.equal(result.status, 'persisted');
+  assert.equal(f.ctx.chat[3].extra.qianqianjie_memory_excluded, true);
+  f.api.reloadFromContext();
+  const exported = await f.runtime.exportCurrent();
+  const target = await f.target(); delete target.chat[3].extra.qianqianjie_memory_excluded; f.api.reloadFromContext();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  assert.equal(target.chat[3].extra.qianqianjie_memory_excluded, true);
+  await f.runtime.undo(); assert.equal(target.chat[3].extra.qianqianjie_memory_excluded, undefined);
+  return { publicApi: 'memory.setMemoryExcluded', importedAndUndone: true };
+});
+
+test('人工解除时间事项归并经迁移冷加载保留独立事项', async () => {
+  const chat = [];
+  for (let n = 1; n <= 3; n += 1) {
+    const body = `<!-- QQJ-start | date=2026-05-0${n} | weekday=周一 | time=08:00 -->阿岚同一场景中手腕和膝盖都有轻微擦伤。<!-- QQJ-end | date=2026-05-0${n} | weekday=周一 | time=09:00 -->`;
+    chat.push({ is_user: false, is_system: false, mes: body, swipes: [body], swipe_id: 0 }, { is_user: true, is_system: false, mes: '继续', send_date: `merge-${n}` });
+  }
+  const f = await fixture({ chat }), timeStore = createTimeStore({ client: f.backend.client });
+  const foundationStore = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  let calls = 0, allowModel = true;
+  const options = { store: timeStore, foundationStore, hostAdapter: f.host, session: f.session, getReachable: () => f.graph, getMemoryState: () => ({ memorySyncStatus: 'idle' }),
+    isEnabled: () => true, newUuid: uuidFactory(), logger: { warn() {} }, generateTimeTask: async task => {
+      assert.equal(allowModel, true); calls += 1; const request = JSON.parse(task.taskMessages[0].content);
+      if (request.currentReview) return { changes: request.trackedItems.map(item => ({ itemId: item.id, progression: '共同影响可能仍然存在，待新观察确认。', assessmentReason: '' })),
+        merges: [{ itemId: request.trackedItems[0].id, mergedItemIds: [request.trackedItems[1].id], description: '同一场景的共同轻微影响，保留手腕与膝盖各自观察。' }] };
+      return { changes: request.observations.map((row, n) => ({ itemId: null, subjectEntityId: null, subjectName: '阿岚', type: 'body', label: `轻微影响${n}`, observation: n === 0 ? '同一场景手腕擦伤' : '同一场景膝盖擦伤',
+        occurrenceTime: '', dueTime: '', periodDays: null, status: 'active', stateRefs: [], progression: '', sourceKeys: [row.sourceKey] })) };
+    } };
+  const time = createTimeRuntime(options); await time.organize(await time.prepareHistoryPlan());
+  let member = time.getState().stoppedItems.find(item => item.mergedInto); assert.ok(member, JSON.stringify(time.getState()));
+  const parentId = member.mergedInto, memberId = member.id; allowModel = false; const seededCalls = calls;
+  await time.editItem(member.id, { status: 'active', label: '人工恢复为独立事项' }, member.observationKey);
+  const restored = time.getState().trackedItems.find(item => item.id === memberId), parent = time.getState().trackedItems.find(item => item.id === parentId);
+  assert.equal(restored.mergedInto, null); assert.equal(parent.hasMergedMembers, false); assert.equal(parent.mergeDescription, null); assert.equal(parent.projection, null);
+  const before = await timeStore.read(SOURCE), expected = replayTimeBatches(before.batches, await readTimeBody(f.graph, f.host.snapshot()));
+  const exported = await f.runtime.exportCurrent(); await f.target(); await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const graph = await createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() }).readReachable({ mode: 'full' });
+  const importedStore = createTimeStore({ client: f.backend.client }), cold = createTimeRuntime({ ...options, store: importedStore, getReachable: () => graph }); await cold.refreshStatus({ force: true });
+  const after = await importedStore.read(IMPORTED); assert.deepEqual(after.head, { ...before.head, chatId: IMPORTED }); assert.deepEqual(after.batches, before.batches.map(batch => ({ ...batch, chatId: IMPORTED })));
+  assert.deepEqual(replayTimeBatches(after.batches, await readTimeBody(graph, f.host.snapshot())), expected);
+  assert.equal(cold.getState().trackedItems.find(item => item.id === memberId).label, '人工恢复为独立事项');
+  const reexported = JSON.parse((await f.runtime.exportCurrent()).text); for (const batch of after.batches) assert.deepEqual(reexported.records.find(item => item.id === batch.id).data, batch);
+  assert.equal(calls, seededCalls); return { publicApi: 'editItem(status=active)', manualUnmergePreserved: true, seededCalls, timeBatches: after.batches.length };
+});
+
+test('undo preserves new manual people time calendar and prequel edits when the core root is unchanged', async t => {
+  for (const field of ['people', 'time', 'calendar', 'prequel']) await t.test(field, async () => {
+    const calendars = new Map();
+    const f = await fixture({ transferOptions: {
+      captureCalendar: chatId => calendars.get(chatId) ?? null,
+      persistCalendar: async (chatId, calendar) => calendars.set(chatId, calendar),
+    } });
+    const target = await f.target();
+    await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+    const root = structuredClone(f.backend.records.get(`chat-${IMPORTED}/v3-root`));
+    if (field === 'people') {
+      await createPeopleWorkspaceStore({ client: f.backend.client }).put(f.session.identity(), {
+        schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: IMPORTED, selectedEntityIds: [], personOrderEntityIds: [],
+        profilesByEntityId: {}, avatarsByEntityId: {}, avatarSourcesByEntityId: {}, identityRedirectsByEntityId: {},
+        deletedEntityIds: [], profileMaterialProgressByEntityId: {}, createdAt: NOW, updatedAt: NOW,
+      }, 0);
+    }
+    if (field === 'time') {
+      const store = createTimeStore({ client: f.backend.client }), id = 'v3-time-batch-dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      await store.putBatch(IMPORTED, { schemaVersion: 1, chatId: IMPORTED, id, changes: [] });
+      await store.putHead(IMPORTED, { schemaVersion: 1, chatId: IMPORTED, batchIds: [id] }, 0);
+    }
+    if (field === 'calendar') calendars.set(IMPORTED, { months: 4, prefix: '人工改历' });
+    if (field === 'prequel') { target.chatMetadata.qianqianjiePrequel = '导入后新写的人工前情'; f.api.reloadFromContext(); }
+    assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/v3-root`), root);
+    const records = structuredClone([...f.backend.records]), saves = f.api.saves;
+    await assert.rejects(f.runtime.undo(), /导入后的.*已变化/);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+    assert.deepEqual([...f.backend.records], records);
+    assert.equal(f.api.saves, saves);
+    if (field === 'calendar') assert.deepEqual(calendars.get(IMPORTED), { months: 4, prefix: '人工改历' });
+    if (field === 'prequel') assert.equal(target.chatMetadata.qianqianjiePrequel, '导入后新写的人工前情');
+  });
 });

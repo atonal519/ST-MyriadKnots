@@ -3906,6 +3906,61 @@ test('前文核对失败页面说明未保存并给出已审核的真实菜单�
   assert.doesNotMatch(text, /人物身份目录已被并发修改/);
 });
 
+test('导入导出结束后管理页立即恢复按钮与真实空闲提示，不重读后端', () => {
+  let transferring = true, refreshes = 0;
+  const state = { status: 'ready', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT,
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', rememberedCount: 1, stableCount: 2,
+    unprocessedCount: 1, csePendingCount: 0, floors: [], metrics: {}, cseRebuildStatus: 'idle', rebuildStatus: 'pendingRebuild' };
+  const runtime = { getState: () => ({ ...state, mainGenerationActive: transferring }),
+    async refreshStatus() { refreshes += 1; return this.getState(); }, confirmLatest: async () => state,
+    startHistoricalRebuild: async () => state };
+  const memoryManagement = { getState: () => ({ status: 'idle', workBusy: transferring }),
+    deleteCurrent: async () => ({}), fullRebuild: async () => ({}) };
+  const view = createV3FoundationView({ runtime, memoryManagement, documentRef });
+  const container = new Node('main'); view.mount(container, { page: 'management' });
+  view.setActivity({ busy: true, phase: 'migrating', copy: '正在搬家' });
+  assert.equal(flatten(container).find(node => node.textContent === '刷新状态').disabled, true);
+  transferring = false;
+  view.setActivity({ busy: false, phase: null, copy: '' });
+  assert.equal(flatten(container).find(node => node.textContent === '刷新状态').disabled, false);
+  assert.equal(flatten(container).find(node => node.textContent === '补齐缺失').disabled, false);
+  assert.equal(flatten(container).find(node => node.textContent === '完全重构').disabled, false);
+  assert.equal(flatten(container).find(node => node.textContent === '删除当前聊天记忆').disabled, false);
+  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /正文正在生成/u);
+  assert.equal(refreshes, 0);
+  view.deactivate();
+});
+
+test('导入导出结束保留千结页节点和前情弹窗中的未保存输入', () => {
+  let transferring = true;
+  const state = { status: 'ready', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT,
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', rememberedCount: 0, stableCount: 0,
+    unprocessedCount: 0, csePendingCount: 0, floors: [], metrics: {}, cseRebuildStatus: 'idle', rebuildStatus: 'caughtUp' };
+  const runtime = { getState: () => ({ ...state, mainGenerationActive: transferring }),
+    refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.mount(container, { page: 'memories' });
+  const memoriesPage = container.children[0], replacements = container.replaceCount;
+  view.setActivity({ busy: true, phase: 'migrating', copy: '正在搬家' }); transferring = false;
+  view.setActivity({ busy: false, phase: null, copy: '' });
+  assert.equal(container.children[0], memoriesPage); assert.equal(container.replaceCount, replacements);
+  view.deactivate();
+
+  transferring = true;
+  const recallRuntime = { getState: () => ({}), getPrequel: () => ({ hostChatId: 'chat-file', text: '已保存前情' }),
+    savePrequel: async text => ({ hostChatId: 'chat-file', text }) };
+  const managementView = createV3FoundationView({ runtime, recallRuntime, documentRef });
+  managementView.mount(container, { page: 'management' });
+  flatten(container).find(node => node.textContent === '编辑前情').click();
+  const editor = editorContent(), input = flatten(editor).find(node => node.tag === 'textarea');
+  input.value = '还没有保存的前情修改'; input.fire('input');
+  managementView.setActivity({ busy: true, phase: 'migrating', copy: '正在搬家' }); transferring = false;
+  managementView.setActivity({ busy: false, phase: null, copy: '' });
+  assert.equal(editorContent(), editor); assert.equal(flatten(editorContent()).find(node => node.tag === 'textarea'), input);
+  assert.equal(input.value, '还没有保存的前情修改');
+  cancelEditor(); managementView.deactivate();
+});
+
 test('工作提示等待全部活动结束，核验中不把旧needsReview当作用户操作指引', () => {
   const state = { status: 'needsReview', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT,
     memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', rememberedCount: 0, stableCount: 0,

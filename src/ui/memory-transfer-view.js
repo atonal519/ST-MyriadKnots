@@ -53,7 +53,7 @@ export function createMemoryTransferView({ runtime, documentRef = globalThis.doc
     const result = await runtime.importPreview(selected); plan = null; preview.replaceChildren();
     if (!disposed) status.textContent = `已恢复 ${result.summaries} 条摘要。请重新打开聊天或刷新页面，让各面板显示导入后的状态。`;
   }), button('撤销上次导入', async () => {
-    const confirmed = await confirmImpl({ title: '撤销上次导入', body: '恢复本次导入前的记忆。仅在聊天正文仍一致时执行；导入的记忆副本也会保留。', confirmText: '撤销导入', cancelText: '取消' });
+    const confirmed = await confirmImpl({ title: '撤销上次导入', body: '恢复本次导入前的记忆。仅在导入后的记忆和聊天正文均未变化时执行；导入的记忆副本也会保留。', confirmText: '撤销导入', cancelText: '取消' });
     if (!confirmed || disposed) return;
     await runtime.undo(); plan = null; preview.replaceChildren();
     if (!disposed) status.textContent = '已恢复导入前的记忆，请重新打开聊天或刷新页面。';

@@ -2499,5 +2499,14 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function deactivate() { refreshManagementProgress = null; active = false; vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
   function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null; if (active && container) render(foundationState); }
-  return Object.freeze({ setActivity(value) { pluginActivity = value; if (refreshFeedback !== null && feedback === refreshFeedback) { feedback = refreshResult(foundationState); refreshFeedback = pluginActivity.busy || refreshSyncing(foundationState) ? feedback : null; } if (active && container) { updateHealth(foundationState); updatePageFeedback(foundationState); updateManagementFeedback(foundationState); if (page === 'management') refreshManagementProgress?.(); } }, mount, activate, deactivate, render, setPage, getPage: () => page });
+  return Object.freeze({ setActivity(value) {
+    const becameIdle = pluginActivity.busy === true && value.busy === false;
+    pluginActivity = value;
+    if (refreshFeedback !== null && feedback === refreshFeedback) { feedback = refreshResult(foundationState); refreshFeedback = pluginActivity.busy || refreshSyncing(foundationState) ? feedback : null; }
+    if (active && container) {
+      if (becameIdle && page === 'management' && (foundationState.mainGenerationActive === true || managementState?.workBusy === true)) { render(runtime.getState()); return; }
+      updateHealth(foundationState); updatePageFeedback(foundationState); updateManagementFeedback(foundationState);
+      if (page === 'management') refreshManagementProgress?.();
+    }
+  }, mount, activate, deactivate, render, setPage, getPage: () => page });
 }
