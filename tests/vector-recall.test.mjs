@@ -276,6 +276,37 @@ test('向量原文reader逐次轻读root并仅借用完全匹配的已验证来�
   assert.equal(reachableReads, 1, 'root版本不匹配只触发既有完整校验回退');
 });
 
+test('向量root等待读取结束后取最新已验证图，启动期间完成加载不重复读全图', async () => {
+  const reachable = await vectorReachableFixture();
+  let current = null, release, reachableReads = 0, snapshotReads = 0;
+  const root = new Promise(resolve => { release = resolve; });
+  const store = { readRoot: () => root, readReachable: async () => { reachableReads++; return reachable; } };
+  const pending = readVectorSource({ store, targetIdentity: { chatId: 'chat' }, getReachable: () => { snapshotReads++; return current; } });
+  assert.equal(snapshotReads, 0);
+  current = reachable;
+  release({ status: 'ready', data: reachable.root, revision: reachable.rootRevision });
+  const result = await pending;
+  assert.equal(result.status, 'ready');
+  assert.equal(snapshotReads, 1);
+  assert.equal(reachableReads, 0);
+  assert.equal(result.sourceReadAttempts.exitPoint, 'validatedSnapshot');
+  const selected = selectRecallMemories(reachable);
+  assert.deepEqual(result.rawSources, (await projectVectorSources(selected.activeMemories, selected.floors, { includeSummaries: false })).rawSources);
+});
+
+test('向量延后取图仍逐项核验root版本与目标，失配照常读取正式图', async () => {
+  const reachable = await vectorReachableFixture();
+  for (const mutate of [value => { value.root.chatId = 'other-chat'; }, value => { value.rootRevision++; }, value => { value.root.headCheckpointId = 'changed'; }, value => { value.root.narrativeGeneration++; }, value => { value.root.sourceSnapshotFingerprint = 'changed'; }]) {
+    const changed = structuredClone(reachable); mutate(changed);
+    let reads = 0;
+    const result = await readVectorSource({ targetIdentity: { chatId: 'chat' }, getReachable: () => changed,
+      store: { readRoot: async () => ({ status: 'ready', data: reachable.root, revision: reachable.rootRevision }), readReachable: async () => { reads++; return reachable; } } });
+    assert.equal(result.status, 'ready');
+    assert.equal(reads, 1);
+    assert.equal(result.sourceReadAttempts.exitPoint, 'ready');
+  }
+});
+
 test('正式vector build两阶段都复用命中快照，不读完整图或完整召回DTO', async () => {
   const reachable = await vectorReachableFixture(), records = new Map();
   let rootReads = 0, reachableReads = 0, embeds = 0;
@@ -786,6 +817,7 @@ test('后台embedding挂起期间旧manifest仍可召回，增量未提交且查
 test('白鳥 HTTP 合同：首次不存在返回404可建立，读取不带recordId的信封可恢复缓存', async () => {
   const records = new Map();
   const client = createBackendClient({ baseUrl: 'https://offline.invalid', fetchImpl: async (url, options) => {
+    if (new URL(url).pathname === '/v1/health') return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true } });
     const [, namespace, collection, recordId] = new URL(url).pathname.match(/^\/v1\/records\/([^/]+)\/([^/]+)\/([^/]+)$/u);
     const key = `${namespace}/${collection}/${recordId}`;
     if (options.method === 'PUT') {

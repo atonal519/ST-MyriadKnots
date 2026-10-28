@@ -10,6 +10,8 @@ import { estimateRecallTokens, selectRecall, buildRecallQueryContext } from '../
 import { projectInlineRecallReceipt } from '../src/ui/inline-projection.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
 import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
+import { createTauriBackendFetch } from '../src/tauri-backend.js';
+import { createBackendClient } from '../src/backend-client.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', PERSON = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 class UiNode {
   constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.textContent = ''; this.className = ''; this.disabled = false; this.value = ''; this.open = false; this.attributes = {}; }
@@ -50,10 +52,70 @@ async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), s
     generateTimeTask:async task=>{calls++;assert.equal(task.transportBudget.remaining,1);assert.equal(task.transportRetries,0);assert.ok(estimateRecallTokens(task.systemPrompt+task.taskMessages[0].content)<=TIME_INPUT_TOKENS);return generate(JSON.parse(task.taskMessages[0].content),calls,task);}};
   if (memoryActivityStateProvider) options.getMemoryActivityState = memoryActivityStateProvider;
   let runtime=createTimeRuntime(options);
-  return {source,chat,store,back,seal,hostAdapter,get runtime(){return runtime;},reload(){runtime=createTimeRuntime(options);return runtime;},calls:()=>calls,setChat:value=>chatId=value,setEnabled:value=>on=value,setSync:value=>sync=value,body:()=>readTimeBody(source,hostAdapter.snapshot(),{sanitizerOptions:sanitizer,storyClockReferenceTags:tags})};
+  return {source,chat,store,back,seal,hostAdapter,foundationStore:options.foundationStore,get runtime(){return runtime;},reload(){runtime=createTimeRuntime(options);return runtime;},calls:()=>calls,setChat:value=>chatId=value,setEnabled:value=>on=value,setSync:value=>sync=value,body:()=>readTimeBody(source,hostAdapter.snapshot(),{sanitizerOptions:sanitizer,storyClockReferenceTags:tags})};
 }
 const reviewModel = (request,patch={}) => ({changes:request.trackedItems.map(item=>({itemId:item.id,progression:'截至当前可能仍有轻微不适，未确认恢复。',assessmentReason:'',...patch}))});
 const bodyModel = (request,patch={}) => request.currentReview ? reviewModel(request,patch) : ({changes:[{itemId:null,subjectEntityId:null,subjectName:'阿岚',type:'body',label:'手腕擦伤',observation:'手腕擦伤仍疼痛',occurrenceTime:'昨天',dueTime:'',periodDays:null,status:'active',stateRefs:[],progression:'疼痛可能逐渐减轻，仍待新观察确认',sourceKeys:[request.observations[0].sourceKey],...patch}]});
+
+test('TT后台慢批读期间，千事模型返回后的来源核验仍能读取root并保存本批', { timeout: 5000 }, async () => {
+  const slots = new Map(), slowGroups = Array.from({ length: 8 }, () => {
+    let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release };
+  });
+  let slow = false, entered, submitted = 0, blockedRoots = 0, pendingBatch = null;
+  const firstGroup = new Promise(resolve => { entered = resolve; });
+  const slotKey = options => `${options.table}/${options.key}`;
+  const native = {
+    async tryGetJson(options) {
+      const value = slots.get(slotKey(options));
+      const recordId = value?.serialized ? JSON.parse(value.serialized).recordId : '';
+      if (slow && recordId.startsWith('background-')) {
+        const index = submitted++;
+        if (submitted === 8) entered();
+        await slowGroups[Math.floor(index / 8)].promise;
+      }
+      return value ? { found: true, value: structuredClone(value) } : { found: false };
+    },
+    async setJson(options) { slots.set(slotKey(options), structuredClone(options.value)); },
+    async deleteJson(options) { slots.delete(slotKey(options)); },
+    async listKeys() { return []; }, async listTables() { return []; },
+  };
+  const fetchImpl = createTauriBackendFetch({ globalRef: { crypto: globalThis.crypto,
+    __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: native } } } } });
+  const client = createBackendClient({ fetchImpl, timeoutMs: 180 });
+  const ids = Array.from({ length: 64 }, (_, index) => `background-${index}`);
+  await client.health();
+  for (const id of ids) await client.put('background-chat', id, { id }, 0);
+  const h = await harness({ count: 1, generate: async () => {
+    slow = true;
+    pendingBatch = client.getMany('background-chat', ids);
+    pendingBatch.catch(() => {});
+    await firstGroup;
+    return { changes: [] };
+  } });
+  await client.put('validation-chat', 'v3-root', h.source.root, 0);
+  h.foundationStore.readRoot = () => {
+    const reading = client.get('validation-chat', 'v3-root');
+    if (slow) {
+      blockedRoots++;
+      // Queue the foreground root before allowing the current native group to finish.
+      setImmediate(() => slowGroups[Math.floor((submitted - 1) / 8)].release());
+    }
+    return reading;
+  };
+  try {
+    await h.runtime.organize(await h.runtime.prepareHistoryPlan());
+    const saved = await h.store.read(CHAT);
+    assert.ok(blockedRoots >= 2, '模型返回后仍执行原有两次来源核验');
+    assert.equal(saved.batches.length, 1);
+    assert.equal(saved.batches[0].changes.length, 0);
+    assert.equal(saved.head.lastRun.status, 'empty');
+    assert.equal(h.runtime.getState().last.failure, undefined);
+    assert.ok(submitted < 64, '千事提交不必等待整份后台批读');
+  } finally {
+    slowGroups.forEach(group => group.release());
+    await Promise.allSettled([pendingBatch]);
+  }
+});
 
 test('等待诊断边界下一组来源校验失败不继承上一组saving阶段',async()=>{
   const h=await harness({count:21,generate:()=>({changes:[]})});

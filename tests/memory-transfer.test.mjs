@@ -14,6 +14,8 @@ import { createChatIdentityCoordinator } from '../src/chat-identity.js';
 import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import { sha256 } from '../src/identity.js';
 import { stableJson } from '../src/memory-transfer-json.js';
+import { writeMemoryBundle } from '../src/memory-transfer-bundle.js';
+import { MEMORY_VOLUME_BYTES } from '../src/memory-transfer-volumes.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 import { createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
@@ -86,17 +88,395 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
   await session.prepare();
   let api = targetChatApi(selected);
   const runtime = createMemoryTransfer({ client: backend.client, session, hostAdapter: host, sanitizerOptions, freshUuid: () => IMPORTED, ...transferOptions,
-    fetchImpl: (...args) => api.fetch(...args), onSettled: async () => { session.invalidate(); await session.prepare(); } });
+    fetchImpl: (...args) => api.fetch(...args), onSettled: async options => {
+      session.invalidate(); await session.prepare(); await transferOptions.onSettled?.(options);
+    } });
   const exported = await runtime.exportCurrent();
   return { backend, ctx, host, graph, memory, foundation, store, runtime, exported, session,
-    async target({ changed = false } = {}) {
+    async target({ changed = false, savedQqj = null } = {}) {
       selected = context('imported-chat', TARGET, structuredClone(ctx.chat), 'updated-avatar.png');
       selected.name2 = '新版角色'; selected.characters[0].name = '新版角色'; selected.characters[0].data.description = '作者更新后的设定';
       if (changed) selected.chat[1].mes = '改写的正文';
-      await session.prepare(); api = targetChatApi(selected); return selected;
+      if (savedQqj) { selected.chatMetadata.qianqianjie = structuredClone(savedQqj); api = targetChatApi(selected); }
+      await session.prepare(); if (!savedQqj) api = targetChatApi(selected); return selected;
     }, get api() { return api; }, setApi(value) { api = value; }, select(value) { selected = value; }, setWrappers(value) { currentWrappers = value; },
   };
 }
+
+function streamingFixture(f) {
+  const list = f.backend.client.list, scans = [];
+  f.backend.client.iterRecords = async function* (collection, options = {}) {
+    scans.push({ collection, options });
+    assert.equal(options.requireStreaming, true, 'large transfers require the bounded backend iterator');
+    for (const record of await list(collection)) yield record;
+  };
+  f.backend.client.list = async () => assert.fail('volume transfer must not load a whole collection');
+  return scans;
+}
+async function volumeFiles(runtime, options = { partBytes: 4096 }) {
+  const files = [];
+  for await (const output of runtime.exportVolumes(options)) {
+    const file = new File([output.blob], output.filename);
+    if (!output.manifest) file.text = () => assert.fail('binary volumes must be read by bounded byte ranges');
+    files.push(file);
+  }
+  assert.ok(files.at(-1).name.endsWith('.qqj-memory.index.json'), 'the final file seals the completed archive');
+  return files;
+}
+
+test('volume export validates the tail in bounded batches and reports every finishing phase before its manifest', async () => {
+  const chat = [user('开始')];
+  for (let index = 0; index < 130; index++) chat.push(assistant(`第${index + 1}份记录。`), user(`继续${index}`));
+  const f = await fixture({ chat }); streamingFixture(f);
+  const progress = [], before = structuredClone([...f.backend.records]);
+  f.backend.calls.length = 0;
+  const files = await volumeFiles(f.runtime, { partBytes: 512, onProgress: value => progress.push(value) });
+  const batches = f.backend.calls.filter(call => call[0] === 'getMany');
+  assert.ok(batches.some(call => call[2].length === 64), 'tail graph validation must use the existing batch API');
+  for (const [, collection, ids] of batches) {
+    assert.ok(ids.length <= 64);
+    const rawBytes = ids.reduce((sum, id) => sum + Buffer.byteLength(JSON.stringify(f.backend.records.get(`${collection}/${id}`).data)), 0);
+    assert.ok(rawBytes <= MEMORY_VOLUME_BYTES);
+  }
+  assert.deepEqual([...new Set(progress.map(value => value.phase))], ['records', 'graph', 'auxiliary', 'conversation', 'avatars', 'verify', 'manifest']);
+  assert.ok(progress.some(value => value.phase === 'graph' && value.completed >= 130));
+  assert.ok(progress.some(value => value.phase === 'verify' && value.completed > 0));
+  assert.deepEqual(progress.at(-1), { phase: 'manifest', completed: 1, total: 1 });
+  for (const value of progress) assert.ok(Number.isSafeInteger(value.completed) && value.completed >= 0
+    && (value.total === null || Number.isSafeInteger(value.total) && value.total >= 0));
+  assert.deepEqual([...f.backend.records], before, 'export validation never writes formal records');
+  const manifest = await files.at(-1).text(); assert.doesNotMatch(manifest, /onProgress/);
+  const plan = await f.runtime.previewVolumes(files); assert.equal(plan.messages, chat.length);
+});
+
+test('volume graph batches account for UTF8 bytes and read an oversized record alone', async () => {
+  const chat = [user('开始'), assistant('已记忆的小楼。'), user('继续')];
+  for (const count of [1500000, 1500000, 3000000]) chat.push(assistant('甲'.repeat(count)), user('继续下一楼'));
+  const f = await fixture({ chat }); streamingFixture(f);
+  const floorIds = f.graph.floors.slice(1).map(floor => `v3-floor-${floor.id}`);
+  const sizes = new Map(floorIds.map(id => [id, Buffer.byteLength(JSON.stringify(f.backend.records.get(`chat-${SOURCE}/${id}`).data))]));
+  assert.ok(sizes.get(floorIds[0]) < MEMORY_VOLUME_BYTES && sizes.get(floorIds[0]) * 2 > MEMORY_VOLUME_BYTES);
+  assert.ok(sizes.get(floorIds[2]) > MEMORY_VOLUME_BYTES);
+  const batchRead = f.backend.client.getMany;
+  f.backend.client.getMany = async (collection, ids, options) => {
+    assert.ok(ids.length <= 64);
+    assert.ok(ids.reduce((sum, id) => sum + Buffer.byteLength(JSON.stringify(f.backend.records.get(`${collection}/${id}`).data)), 0) <= MEMORY_VOLUME_BYTES);
+    assert.equal(ids.includes(floorIds[2]), false, 'a single record larger than one volume must not enter getMany');
+    return batchRead(collection, ids, options);
+  };
+  f.backend.calls.length = 0;
+  let manifest = false;
+  for await (const file of f.runtime.exportVolumes()) if (file.manifest) manifest = true;
+  assert.equal(manifest, true);
+  const batches = f.backend.calls.filter(call => call[0] === 'getMany');
+  assert.ok(batches.some(call => call[2].includes(floorIds[0])));
+  assert.ok(batches.some(call => call[2].includes(floorIds[1])));
+  assert.equal(batches.some(call => call[2].includes(floorIds[0]) && call[2].includes(floorIds[1])), false);
+  assert.equal(f.backend.calls.filter(call => call[0] === 'get' && call[2] === floorIds[2]).length, 1);
+});
+
+test('volume export still rejects a new auxiliary record discovered in its second complete scan', async () => {
+  const f = await fixture(), list = f.backend.client.list, progress = [];
+  let scans = 0, manifest = false;
+  f.backend.client.iterRecords = async function* (collection) {
+    scans++;
+    if (scans === 2) {
+      const id = 'v3-time-batch-dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      f.backend.records.set(`${collection}/${id}`, { revision: 1, data: { schemaVersion: 1, chatId: SOURCE, id, changes: [] } });
+    }
+    yield* await list(collection);
+  };
+  await assert.rejects(async () => {
+    for await (const file of f.runtime.exportVolumes({ partBytes: 512, onProgress: value => progress.push(value) })) manifest ||= file.manifest;
+  }, /导出期间记忆发生变化/);
+  assert.equal(scans, 2); assert.equal(manifest, false);
+  assert.ok(progress.some(value => value.phase === 'verify'));
+  assert.equal(f.runtime.getState().active, false);
+});
+
+test('volume export cancels an in-flight graph batch and releases its captured session', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const original = f.backend.client.getMany;
+  let announce;
+  const started = new Promise(resolve => { announce = resolve; });
+  f.backend.client.getMany = async (collection, ids, { signal }) => {
+    if (ids.length === 1 && ids[0] === 'v3-root') return original(collection, ids);
+    announce();
+    await new Promise((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  const iterator = f.runtime.exportVolumes({ partBytes: 512 });
+  const consuming = (async () => { for await (const unused of iterator) {} })();
+  const rejected = assert.rejects(consuming, error => error.name === 'AbortError');
+  await started; await iterator.return(); await rejected;
+  assert.equal(f.runtime.getState().active, false); assert.equal(f.session.identity().chatId, SOURCE);
+});
+
+test('volume graph batches preserve missing, HTTP, transport and revision-change failures without a manifest', async t => {
+  for (const fault of ['missing', 'http', 'transport', 'revision']) await t.test(fault, async () => {
+    const f = await fixture(); streamingFixture(f);
+    const original = f.backend.client.getMany, before = structuredClone([...f.backend.records]);
+    const failure = new Error('batch transport failed'); let reads = 0, manifest = false;
+    f.backend.client.getMany = async (...args) => {
+      if (args[1].length === 1 && args[1][0] === 'v3-root') return original(...args);
+      reads++;
+      if (fault === 'transport') throw failure;
+      const results = await original(...args);
+      if (fault === 'revision') results[0].envelope.revision++;
+      else results[0] = { recordId: results[0].recordId, status: fault === 'missing' ? 404 : 500 };
+      return results;
+    };
+    await assert.rejects(async () => {
+      for await (const file of f.runtime.exportVolumes({ partBytes: 512 })) manifest ||= file.manifest;
+    }, error => fault === 'transport' ? error === failure : fault === 'revision'
+      ? /导出期间记忆发生变化/.test(error.message) : error.status === (fault === 'missing' ? 404 : 500));
+    assert.equal(reads, 1, 'a failed graph batch is not retried or reread through single GET');
+    assert.equal(manifest, false); assert.equal(f.runtime.getState().active, false); assert.equal(f.api.saves, 0);
+    assert.deepEqual([...f.backend.records], before);
+  });
+});
+
+test('batched and legacy single-read volume exports are byte-identical after manual summary and prequel edits', async () => {
+  const f = await fixture({ transferOptions: { now: () => new Date(NOW) } }); streamingFixture(f);
+  await f.memory.editSummary(f.memory.getState().floors[0].floorId, '用户手改：钥匙仍在衣袋中。');
+  f.ctx.chatMetadata.qianqianjiePrequel = '用户手填的前情'; f.api.reloadFromContext();
+  const before = structuredClone([...f.backend.records]), options = { partBytes: 512 };
+  const batched = await volumeFiles(f.runtime, options), getMany = f.backend.client.getMany;
+  delete f.backend.client.getMany;
+  let legacy;
+  try { legacy = await volumeFiles(f.runtime, options); }
+  finally { f.backend.client.getMany = getMany; }
+  assert.deepEqual(batched.map(file => file.name), legacy.map(file => file.name));
+  for (let index = 0; index < batched.length; index++) {
+    assert.deepEqual(new Uint8Array(await batched[index].arrayBuffer()), new Uint8Array(await legacy[index].arrayBuffer()));
+  }
+  assert.deepEqual([...f.backend.records], before, 'both paths keep all source records and manual fields unchanged');
+});
+
+test('单文件流式包经正式runtime预览导入和撤销，保留人工摘要与前情', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const floorId = f.memory.getState().floors[0].floorId;
+  await f.memory.editSummary(floorId, '用户手填：钥匙在衣袋中。');
+  f.ctx.chatMetadata.qianqianjiePrequel = '手动前情'; f.api.reloadFromContext();
+  const chunks = []; let closed = false;
+  const metadata = await writeMemoryBundle(f.runtime.exportVolumes({ partBytes: 512 }), {
+    async write(blob) { chunks.push(blob); }, async close() { closed = true; }, async abort() { assert.fail('完整导出不能中止'); },
+  });
+  assert.equal(closed, true);
+  const file = new File(chunks, metadata.filename);
+  assert.match(file.name, /\.qqj-memory$/);
+  file.arrayBuffer = () => assert.fail('预览不得读取整个大文件');
+  file.text = () => assert.fail('预览不得把大文件读成文本');
+  const before = structuredClone(f.ctx.chat);
+  const plan = await f.runtime.previewVolumes([file]);
+  await f.runtime.importPreview(plan);
+  assert.equal(f.ctx.chatMetadata.qianqianjiePrequel, '手动前情');
+  assert.deepEqual(f.ctx.chat.map(message => message.mes), before.map(message => message.mes));
+  const restoredSummary = [...f.backend.records.values()].map(record => record.data)
+    .find(record => record.chatId === IMPORTED && record.recordType === 'floorMemory');
+  assert.equal(restoredSummary.summary.userText, '用户手填：钥匙在衣袋中。');
+  await f.runtime.undo();
+  assert.equal(f.ctx.chatMetadata.qianqianjie.chatId, SOURCE);
+  assert.equal(f.ctx.chatMetadata.qianqianjiePrequel, '手动前情');
+});
+
+test('volume runtime round trip streams records and preserves memory, time, people, vectors and host fields', async () => {
+  const calendars = new Map([[SOURCE, { months: 4, prefix: '测试历' }], [TARGET, { months: 12, prefix: '旧历' }]]);
+  const f = await fixture({ excluded: true, transferOptions: { captureCalendar: id => calendars.get(id) ?? null,
+    persistCalendar: async (id, calendar) => calendars.set(id, calendar) } }), scans = streamingFixture(f);
+  f.ctx.chat[1].extra ??= {}; f.ctx.chat[1].extra.variables = { keeps: 'source variable' };
+  f.ctx.chatMetadata.qianqianjiePrequel = '手动前情';
+  f.api.reloadFromContext();
+  const people = { schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: SOURCE,
+    selectedEntityIds: [], personOrderEntityIds: [], profilesByEntityId: {}, avatarsByEntityId: {}, avatarSourcesByEntityId: {},
+    identityRedirectsByEntityId: {}, deletedEntityIds: [], profileMaterialProgressByEntityId: {}, createdAt: NOW, updatedAt: NOW };
+  const batchId = 'v3-time-batch-dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-people-workspace', people, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, batchId, { schemaVersion: 1, chatId: SOURCE, id: batchId, changes: [] }, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-time-head', { schemaVersion: 1, chatId: SOURCE, batchIds: [batchId], bodyStart: 0 }, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, 'qqj-vector-index', { schemaVersion: 1, recordType: 'vectorCache', chatId: SOURCE,
+    narrativeGeneration: f.graph.root.narrativeGeneration, modelKey: `sha256:${'a'.repeat(64)}`, dimensions: 1024, shardIds: [], chunkCount: 0 }, 0);
+  const before = structuredClone([...f.backend.records]);
+  const files = await volumeFiles(f.runtime); assert.ok(files.length > 2);
+  assert.deepEqual([...f.backend.records], before, 'export is read-only');
+  const target = await f.target(); target.chatMetadata.otherPlugin = { keep: true }; f.api.reloadFromContext();
+  const preview = await f.runtime.previewVolumes(files);
+  assert.equal(preview.messages, target.chat.length); assert.equal(preview.summaries, 1); assert.equal(preview.states, 1);
+  assert.equal(f.api.saves, 0);
+  const result = await f.runtime.importPreview(preview);
+  assert.equal(result.chatId, IMPORTED); assert.equal(f.session.identity().chatId, IMPORTED);
+  assert.equal(target.chatMetadata.qianqianjiePrequel, '手动前情');
+  assert.deepEqual(calendars.get(IMPORTED), { months: 4, prefix: '测试历' });
+  assert.deepEqual(target.chatMetadata.otherPlugin, { keep: true });
+  assert.deepEqual(target.chat[1].extra.variables, { keeps: 'source variable' });
+  assert.equal(target.chat[3].extra.qianqianjie_memory_excluded, true);
+  for (const id of ['v3-people-workspace', batchId, 'v3-time-head', 'qqj-vector-index']) {
+    const original = f.backend.records.get(`chat-${SOURCE}/${id}`).data;
+    assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/${id}`).data, { ...original, chatId: IMPORTED });
+  }
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const cold = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await cold.start()).status, 'ready');
+  const restored = await store.readReachable({ mode: 'full' });
+  assert.deepEqual(restored.floorMemories.map(item => item.summary), f.graph.floorMemories.map(item => item.summary));
+  assert.deepEqual(restored.stateDeltas.map(item => item.id), f.graph.stateDeltas.map(item => item.id));
+  assert.equal(f.backend.records.get(`chat-${IMPORTED}/self-use-memory-transfer-rollback-v1`).data.streaming, true);
+  await f.runtime.undo(); assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  assert.deepEqual(calendars.get(TARGET), { months: 12, prefix: '旧历' });
+  assert.ok(scans.some(scan => scan.collection === `chat-${IMPORTED}`), 'new-copy and undo checks use the same bounded iterator');
+});
+
+test('volume runtime preserves avatar bytes and crops while uploading shared originals once', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const personId = '33333333-3333-4333-8333-333333333333';
+  const originalPath = '/user/images/qqj-avatars/qqj-avatar-volume-source.png';
+  const newPath = '/user/images/qqj-avatars/qqj-avatar-volume-imported.png';
+  const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 255, 128, 17]);
+  const crop = { aspectRatio: 1, zoom: 1.2, offsetX: 0.1, offsetY: -0.1 }, thumbnail = 'data:image/png;base64,iVBORw0KGgo=';
+  const workspace = { schemaVersion: 3, kind: 'qqj-v3-people-workspace', chatId: SOURCE,
+    selectedEntityIds: [personId], personOrderEntityIds: [personId], profilesByEntityId: {},
+    avatarsByEntityId: { [personId]: thumbnail }, avatarSourcesByEntityId: { [personId]: { path: originalPath, mimeType: 'image/png', crop } },
+    identityRedirectsByEntityId: {}, deletedEntityIds: [], profileMaterialProgressByEntityId: {}, createdAt: NOW, updatedAt: NOW };
+  const snapshotId = 'v3-people-snapshot-44444444-4444-4444-8444-444444444444';
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-people-workspace', workspace, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, snapshotId, { schemaVersion: 1, kind: 'qqj-v3-frozen-people-snapshot', chatId: SOURCE, sourceChatId: SOURCE, workspace: structuredClone(workspace) }, 0);
+  const images = new Map([[originalPath, imageBytes]]), uploads = [];
+  const withImages = api => ({ ...api, async fetch(url, options = {}) {
+    if (images.has(url)) return { ok: true, async arrayBuffer() { return images.get(url).slice().buffer; } };
+    if (url === '/api/images/upload') {
+      const bytes = Uint8Array.from(atob(JSON.parse(options.body).image), char => char.charCodeAt(0));
+      uploads.push(bytes); images.set(newPath, bytes); return { ok: true, async json() { return { path: newPath }; } };
+    }
+    return api.fetch(url, options);
+  } });
+  f.setApi(withImages(f.api)); const files = await volumeFiles(f.runtime);
+  await f.target(); f.setApi(withImages(f.api));
+  await f.runtime.importPreview(await f.runtime.previewVolumes(files));
+  assert.equal(uploads.length, 1); assert.deepEqual(uploads[0], imageBytes);
+  for (const id of ['v3-people-workspace', snapshotId]) {
+    const value = f.backend.records.get(`chat-${IMPORTED}/${id}`).data, people = value.workspace ?? value;
+    assert.equal(people.chatId, IMPORTED); assert.equal(people.avatarsByEntityId[personId], thumbnail);
+    assert.deepEqual(people.avatarSourcesByEntityId[personId], { path: newPath, mimeType: 'image/png', crop });
+  }
+});
+
+test('volume runtime undo retains imported auxiliary edits and cancellation releases the captured session', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const timeStore = createTimeStore({ client: f.backend.client });
+  await timeStore.putHead(SOURCE, { schemaVersion: 1, chatId: SOURCE, batchIds: [] }, 0);
+  const cancelled = f.runtime.exportVolumes({ partBytes: 1024 });
+  assert.equal((await cancelled.next()).done, false); assert.equal(f.runtime.getState().active, true);
+  await cancelled.return(); assert.equal(f.runtime.getState().active, false); assert.equal(f.session.identity().chatId, SOURCE);
+  const files = await volumeFiles(f.runtime), target = await f.target();
+  await f.runtime.importPreview(await f.runtime.previewVolumes(files));
+  const beforeRoot = structuredClone(f.backend.records.get(`chat-${IMPORTED}/v3-root`));
+  const head = f.backend.records.get(`chat-${IMPORTED}/v3-time-head`);
+  await timeStore.putHead(IMPORTED, { ...head.data, bodyStart: 1 }, head.revision);
+  const before = structuredClone([...f.backend.records]), saves = f.api.saves;
+  await assert.rejects(f.runtime.undo(), /导入后的.*已变化/);
+  assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/v3-root`), beforeRoot);
+  assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED); assert.equal(f.api.saves, saves);
+  assert.deepEqual([...f.backend.records], before);
+});
+
+test('volume runtime cancellation aborts an in-flight backend read before releasing the session', async () => {
+  const f = await fixture(); streamingFixture(f);
+  let announce;
+  const started = new Promise(resolve => { announce = resolve; });
+  f.backend.client.iterRecords = async function* (_collection, { signal, requireStreaming }) {
+    assert.equal(requireStreaming, true); assert.ok(signal);
+    announce();
+    await new Promise((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  const exporting = f.runtime.exportVolumes(), pending = exporting.next();
+  const rejected = assert.rejects(pending, error => error.name === 'AbortError');
+  await started; await exporting.return(); await rejected;
+  assert.equal(f.runtime.getState().active, false); assert.equal(f.session.identity().chatId, SOURCE);
+  assert.equal(f.api.saves, 0);
+});
+
+test('volume runtime rejects missing or mixed volumes and changed chat without publishing memory', async t => {
+  for (const change of ['missing', 'mixed', 'chat']) await t.test(change, async () => {
+    const f = await fixture(); streamingFixture(f);
+    let files = await volumeFiles(f.runtime); const target = await f.target();
+    if (change === 'missing') files = files.filter((_, index) => index !== 0);
+    if (change === 'mixed') {
+      const replacement = new Uint8Array(await files[0].arrayBuffer()); replacement[0] ^= 1;
+      files[0] = new File([replacement], files[0].name);
+    }
+    if (change === 'chat') { target.chat[1].mes = '另一份正文'; f.api.reloadFromContext(); }
+    const before = structuredClone([...f.backend.records]);
+    await assert.rejects(f.runtime.previewVolumes(files));
+    assert.deepEqual([...f.backend.records], before); assert.equal(f.api.saves, 0);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  });
+});
+
+test('volume runtime rechecks cleaning settings and failed staging keeps the current chat intact', async t => {
+  for (const change of ['wrappers', 'write']) await t.test(change, async () => {
+    const wrappers = { keepTags: 'scene', extraTags: 'thinking' };
+    const f = await fixture({ body: '<scene>她把钥匙放进木盒。</scene><thinking>思考内容</thinking>', wrappers });
+    streamingFixture(f);
+    const files = await volumeFiles(f.runtime), target = await f.target();
+    const plan = await f.runtime.previewVolumes(files);
+    if (change === 'wrappers') f.setWrappers({});
+    if (change === 'write') {
+      const put = f.backend.client.put;
+      f.backend.client.put = async (...args) => { if (args[0] === `chat-${IMPORTED}` && args[1].startsWith('v3-floor-memory-')) throw new Error('test write failed'); return put(...args); };
+    }
+    await assert.rejects(f.runtime.importPreview(plan));
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+    await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
+  });
+});
+
+test('volume runtime rechecks bytes after preview before any import write', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const files = await volumeFiles(f.runtime), target = await f.target();
+  const plan = await f.runtime.previewVolumes(files), part = files.find(file => !file.name.endsWith('.json'));
+  const originalArrayBuffer = part.arrayBuffer.bind(part);
+  part.arrayBuffer = async () => {
+    const bytes = new Uint8Array(await originalArrayBuffer()); bytes[0] ^= 1; return bytes.buffer;
+  };
+  const records = structuredClone([...f.backend.records]), chat = structuredClone(target.chat), metadata = structuredClone(target.chatMetadata);
+  await assert.rejects(f.runtime.importPreview(plan), /已变化|校验失败/);
+  assert.deepEqual([...f.backend.records], records);
+  assert.deepEqual(target.chat, chat); assert.deepEqual(target.chatMetadata, metadata);
+  assert.equal(f.api.saves, 0);
+});
+
+test('volume runtime settled callback distinguishes bounded operations from ordinary transfers', async () => {
+  const legacyModes = [];
+  const legacy = await fixture({ transferOptions: { onSettled: options => legacyModes.push(options.streaming) } });
+  assert.deepEqual(legacyModes, [false]); legacyModes.length = 0;
+  const exported = await legacy.runtime.exportCurrent();
+  await legacy.target(); await legacy.runtime.importPreview(await legacy.runtime.preview(exported.text)); await legacy.runtime.undo();
+  assert.deepEqual(legacyModes, [false, false, false], 'ordinary export, import and undo retain their normal refresh');
+
+  const modes = [];
+  const modern = await fixture({ transferOptions: { onSettled: options => modes.push(options.streaming) } });
+  assert.deepEqual(modes, [false]); modes.length = 0; streamingFixture(modern);
+  const files = await volumeFiles(modern.runtime);
+  const cancelled = modern.runtime.exportVolumes({ partBytes: 1024 });
+  assert.equal((await cancelled.next()).done, false); await cancelled.return();
+  await modern.target(); await modern.runtime.importPreview(await modern.runtime.previewVolumes(files)); await modern.runtime.undo();
+  assert.deepEqual(modes, [true, true, true, true], 'completed export, cancelled export, import and undo use the bounded refresh');
+
+  const failedModes = [];
+  const failed = await fixture({ transferOptions: { onSettled: options => failedModes.push(options.streaming) } });
+  streamingFixture(failed); const failedFiles = await volumeFiles(failed.runtime); failedModes.length = 0;
+  await failed.target(); const failedPlan = await failed.runtime.previewVolumes(failedFiles);
+  const put = failed.backend.client.put;
+  failed.backend.client.put = async (...args) => { if (args[0] === `chat-${IMPORTED}`) throw new Error('test staging failure'); return put(...args); };
+  await assert.rejects(failed.runtime.importPreview(failedPlan), /test staging failure/);
+  assert.deepEqual(failedModes, [true], 'failed staged import also avoids reloading the complete graph');
+  assert.equal(failed.api.saves, 0); assert.equal(failed.session.identity().chatId, TARGET);
+});
 
 test('real memory and CSE round trip onto an updated card, without analysis calls or original writes', async () => {
   const f = await fixture(), target = await f.target();
@@ -125,6 +505,313 @@ test('real memory and CSE round trip onto an updated card, without analysis call
   assert.ok(f.backend.records.has(`chat-${IMPORTED}/v3-root`), 'undo preserves imported memory too');
 });
 
+function coldSwipeTarget(f, target, prepare = () => {}) {
+  const message = target.chat[1], anchor = { schemaVersion: 1, chatId: SOURCE, floorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+  message.swipes = [message.mes, '未选中的另一版回复', '仍未加载的回复'];
+  message.swipe_id = 0;
+  message.swipe_info = [{ extra: structuredClone(message.extra ?? {}) }, { extra: { qianqianjie_floor: anchor, keep: '未选回复资料' } }, { extra: { keep: '冷回复资料' } }];
+  prepare(message);
+  f.api.reloadFromContext();
+  let source, sourceId = 0, reloads = 0;
+  const load = () => {
+    // TT's source is an opened immutable file, not the latest pathname content.
+    source = f.api.persistedMessages; sourceId++;
+    target.chat.splice(0, target.chat.length, ...structuredClone(source));
+    target.chatMetadata = f.api.persistedHeader.chat_metadata;
+    const current = target.chat[1];
+    for (let index = 1; index < current.swipes.length; index++) { current.swipes[index] = null; current.swipe_info[index] = null; }
+    current.tt_swipe_cold = { sourceId, record: 2 };
+  };
+  target.reloadCurrentChat = async () => { reloads++; load(); };
+  load();
+  return { reloads: () => reloads, hydrate() {
+    const current = target.chat[1], original = source[1];
+    for (const key of ['swipes', 'swipe_info']) for (let i = 0; i < original[key].length; i++) current[key][i] ??= structuredClone(original[key][i]);
+    delete current.tt_swipe_cold;
+  } };
+}
+
+test('TT cold swipe placeholders import and reload the saved source without hydrating all replies', async t => {
+  for (const format of ['ordinary', 'volume']) await t.test(format, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target(), cold = coldSwipeTarget(f, target);
+    const preview = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const result = await f.runtime.importPreview(preview);
+    assert.equal(result.reload, false); assert.equal(cold.reloads(), 1);
+    assert.equal(f.session.identity().chatId, IMPORTED);
+    assert.equal(target.chat[1].swipes[1], null); assert.equal(target.chat[1].swipe_info[1], null, '保持宿主冷回复，不把历史正文全部装回页面');
+    assert.equal(f.api.persistedMessages[1].swipe_info[1].extra.qianqianjie_floor, undefined);
+    cold.hydrate();
+    assert.equal(target.chat[1].swipe_info[1].extra.qianqianjie_floor, undefined, '新source不能回填旧QQJ锚点');
+    assert.equal(target.chat[1].swipe_info[1].extra.keep, '未选回复资料');
+    f.api.reloadFromContext();
+    assert.equal(f.api.persistedHeader.chat_metadata.qianqianjie.chatId, IMPORTED);
+    assert.equal(f.api.persistedMessages[1].extra.qianqianjie_floor.chatId, IMPORTED);
+    const graph = await createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() }).readReachable({ mode: 'full' });
+    assert.equal(graph.status, 'ready'); assert.equal(graph.floorMemories.length, 1);
+  });
+});
+
+test('TT cold swipe undo reloads the restored source and preserves original alternative metadata', async t => {
+  for (const format of ['ordinary', 'volume']) await t.test(format, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target(), cold = coldSwipeTarget(f, target);
+    const original = f.api.persistedMessages;
+    const preview = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    await f.runtime.importPreview(preview); await f.runtime.undo();
+    assert.equal(cold.reloads(), 2); assert.equal(f.session.identity().chatId, TARGET);
+    assert.equal(target.chat[1].swipe_info[1], null);
+    cold.hydrate();
+    assert.deepEqual(target.chat[1].swipe_info[1], original[1].swipe_info[1]);
+    assert.deepEqual(f.api.persistedMessages[1].swipe_info[1], original[1].swipe_info[1]);
+  });
+});
+
+test('TT cold swipe comparison preserves live selected and loaded QQJ edits and requires a real placeholder', async t => {
+  const changes = {
+    loaded: target => { target.chat[1].swipe_info[1] = { extra: { qianqianjie_memory_excluded: true } }; target.chat[1].swipes[1] = '未选中的另一版回复'; },
+    selected: target => { target.chat[1].swipe_info[0].extra.qianqianjie_memory_excluded = true; },
+    noReference: target => { delete target.chat[1].tt_swipe_cold; },
+    invalidReference: target => { target.chat[1].tt_swipe_cold.sourceId = 'not-a-resource'; },
+  };
+  for (const [name, change] of Object.entries(changes)) await t.test(name, async () => {
+    const f = await fixture(), target = await f.target(); coldSwipeTarget(f, target); change(target);
+    const plan = await f.runtime.preview(f.exported.text), before = f.backend.calls.filter(call => call[0] === 'put').length;
+    await assert.rejects(f.runtime.importPreview(plan), /当前聊天尚未保存完成/);
+    assert.equal(f.backend.calls.filter(call => call[0] === 'put').length, before); assert.equal(f.api.saves, 0);
+  });
+});
+
+test('TT cold swipe import still stops page edits and saved ownership changes during staging', async t => {
+  for (const format of ['ordinary', 'volume']) for (const location of ['page', 'file']) await t.test(`${format}: ${location}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target(), cold = coldSwipeTarget(f, target), api = f.api;
+    let staged = false;
+    f.setApi({ ...api, async fetch(url, options) {
+      const response = await api.fetch(url, options);
+      if (staged && location === 'file' && url === '/api/chats/get') {
+        const payload = await response.json(); payload[2].swipe_info[1].extra.qianqianjie_memory_excluded = true;
+        return { ok: true, async json() { return payload; } };
+      }
+      return response;
+    } });
+    const put = f.backend.client.put;
+    f.backend.client.put = async (...args) => {
+      const result = await put(...args);
+      if (args[0] === `chat-${IMPORTED}` && !staged) {
+        staged = true;
+        if (location === 'page') { target.chat[1].swipe_info[1] = { extra: { qianqianjie_memory_excluded: true } }; target.chat[1].swipes[1] = '未选中的另一版回复'; }
+      }
+      return result;
+    };
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    await assert.rejects(f.runtime.importPreview(plan), location === 'page' ? /聊天已切换或内容有变化/ : /聊天文件在导入期间有变化/);
+    assert.equal(api.saves, 0); assert.equal(cold.reloads(), 0); assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  });
+});
+
+test('TT cold reload preserves live nonQQJ edits created while the saved copy is published', async () => {
+  const f = await fixture(), target = await f.target();
+  target.chatMetadata.otherPlugin = { remove: true }; target.chat[1].legacyFlag = 'remove';
+  target.chat[1].extra = { ...target.chat[1].extra, removeMe: true };
+  const api = targetChatApi(target, { afterSave() {
+    delete target.chatMetadata.otherPlugin; delete target.chat[1].legacyFlag; delete target.chat[1].extra.removeMe;
+    target.chatMetadata.pocketPhone = { createdWhileSaving: true };
+    target.chat[1].extra = { ...target.chat[1].extra, variables: { createdWhileSaving: true } };
+    target.chat[1].swipes[1] = '保存时手改的未选回复';
+    target.chat[1].swipe_info[1] = { extra: { pocketPhone: { createdWhileSaving: true } } };
+  } });
+  f.setApi(api); const cold = coldSwipeTarget(f, target);
+  await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+  assert.equal(cold.reloads(), 1);
+  assert.deepEqual(target.chatMetadata.pocketPhone, { createdWhileSaving: true });
+  assert.equal(Object.hasOwn(target.chatMetadata, 'otherPlugin'), false); assert.equal(Object.hasOwn(target.chat[1], 'legacyFlag'), false);
+  assert.equal(Object.hasOwn(target.chat[1].extra, 'removeMe'), false);
+  assert.deepEqual(target.chat[1].extra.variables, { createdWhileSaving: true });
+  assert.equal(target.chat[1].swipes[1], '保存时手改的未选回复');
+  assert.deepEqual(target.chat[1].swipe_info[1].extra.pocketPhone, { createdWhileSaving: true });
+  assert.equal(Object.hasOwn(target.chat[1].swipe_info[1].extra, 'keep'), false);
+  assert.equal(target.chat[1].swipe_info[1].extra.qianqianjie_floor, undefined);
+  assert.equal(target.chat[1].swipes[2], null); assert.equal(target.chat[1].swipe_info[2], null);
+  cold.hydrate();
+  assert.equal(target.chat[1].swipes[1], '保存时手改的未选回复');
+  assert.equal(target.chat[1].swipe_info[1].extra.qianqianjie_floor, undefined);
+});
+
+test('TT cold reload merges unsaved drafts with newer listener additions changes and deletions', async t => {
+  const baseline = { draftChanged: 'saved', draftDeleted: 'saved', listenerChanged: 'saved', listenerDeleted: 'saved', conflict: 'saved',
+    nested: { draftChanged: 'saved', draftDeleted: 'saved', listenerChanged: 'saved', listenerDeleted: 'saved', conflict: 'saved', stable: 'saved' } };
+  const expected = { draftChanged: 'draft', draftAdded: 'draft', listenerChanged: 'listener', listenerAdded: 'listener', conflict: 'listener',
+    nested: { draftChanged: 'draft', draftAdded: 'draft', listenerChanged: 'listener', listenerAdded: 'listener', conflict: 'listener', stable: 'saved' } };
+  const containers = target => [target.chat[1], target.chat[1].extra, target.chatMetadata,
+    target.chat[1].swipe_info[1], target.chat[1].swipe_info[1].extra];
+  const edit = (value, source) => {
+    value[`${source}Added`] = source; value[`${source}Changed`] = source; delete value[`${source}Deleted`]; value.conflict = source;
+    value.nested[`${source}Added`] = source; value.nested[`${source}Changed`] = source; delete value.nested[`${source}Deleted`]; value.nested.conflict = source;
+  };
+  const fields = [...Object.keys(baseline), 'draftAdded', 'listenerAdded'];
+  for (const format of ['ordinary', 'volume']) for (const operation of ['import', 'undo']) await t.test(`${format}: ${operation}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target();
+    if (operation === 'undo') {
+      const cold = coldSwipeTarget(f, target);
+      await f.runtime.importPreview(format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text));
+      cold.hydrate();
+    }
+    target.chat[1].extra ??= {};
+    for (const value of [target.chat[1], target.chat[1].extra, target.chatMetadata]) Object.assign(value, structuredClone(baseline));
+    let loadedAlternative;
+    const api = targetChatApi(target, { afterSave() {
+      target.chat[1].swipes[1] = '保存期间未选回复草稿';
+      target.chat[1].swipe_info[1] = structuredClone(loadedAlternative);
+      for (const value of containers(target)) edit(value, 'draft');
+    } });
+    f.setApi(api);
+    const cold = coldSwipeTarget(f, target, message => {
+      Object.assign(message.swipe_info[1], structuredClone(baseline));
+      Object.assign(message.swipe_info[1].extra, structuredClone(baseline));
+      delete message.swipe_info[1].extra.qianqianjie_floor;
+    });
+    loadedAlternative = api.persistedMessages[1].swipe_info[1];
+    const reload = target.reloadCurrentChat;
+    let refreshedReference, listenerFailure;
+    target.reloadCurrentChat = async () => {
+      try {
+        await reload();
+        target.chat[1].swipes[1] = '重载监听器最新未选回复';
+        target.chat[1].swipe_info[1] = structuredClone(api.persistedMessages[1].swipe_info[1]);
+        for (const value of containers(target)) edit(value, 'listener');
+        refreshedReference = structuredClone(target.chat[1].tt_swipe_cold);
+      } catch (error) { listenerFailure = error; throw error; }
+    };
+    const result = operation === 'undo' ? await f.runtime.undo()
+      : await f.runtime.importPreview(format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text));
+    assert.equal(listenerFailure, undefined);
+    assert.equal(result.reload, false);
+    for (const [index, value] of containers(target).entries()) {
+      assert.deepEqual(Object.fromEntries(fields.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]])), expected, `container ${index}`);
+    }
+    assert.equal(target.chatMetadata.qianqianjie.chatId, operation === 'undo' ? TARGET : IMPORTED);
+    assert.deepEqual(target.chat[1].tt_swipe_cold, refreshedReference);
+    assert.equal(target.chat[1].swipes[1], '重载监听器最新未选回复');
+    assert.equal(target.chat[1].swipes[2], null); assert.equal(target.chat[1].swipe_info[2], null);
+    cold.hydrate();
+    assert.equal(target.chat[1].swipes[1], '重载监听器最新未选回复');
+    assert.equal(target.chat[1].swipe_info[2].extra.keep, '冷回复资料');
+  });
+});
+
+test('TT cold reload never restores captured live fields into a different selected chat', async () => {
+  const f = await fixture(), target = await f.target(); coldSwipeTarget(f, target);
+  target.chat[1].extra = { ...target.chat[1].extra, variables: { capturedChat: true } };
+  const other = context('other', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', [assistant('另一个聊天')]);
+  other.chatMetadata.otherPlugin = { otherChat: true };
+  const reload = target.reloadCurrentChat;
+  target.reloadCurrentChat = async () => { await reload(); f.select(other); };
+  const result = await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+  assert.equal(result.reload, true); assert.equal(f.api.persistedHeader.chat_metadata.qianqianjie.chatId, IMPORTED);
+  assert.equal(other.chatMetadata.qianqianjie.chatId, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+  assert.deepEqual(other.chatMetadata.otherPlugin, { otherChat: true });
+  assert.equal(other.chat[0].mes, '另一个聊天'); assert.equal(other.chat[0].extra?.variables, undefined);
+});
+
+test('derived file ownership from session preparation permits import, cold load and undo', async t => {
+  const stored = [
+    ['missing file', { schemaVersion: 2, chatId: TARGET }],
+    ['old file', { schemaVersion: 2, chatId: TARGET, file: { characterLocator: 'old-avatar.png', hostChatId: 'old-file' } }],
+    ['legacy schema', { schemaVersion: 1, chatId: TARGET }],
+  ];
+  for (const format of ['ordinary', 'volume']) for (const [name, savedQqj] of stored) await t.test(`${format}: ${name}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target({ savedQqj });
+    assert.deepEqual(f.api.persistedHeader.chat_metadata.qianqianjie, savedQqj, 'the file was captured before prepare updated live metadata');
+    assert.deepEqual(target.chatMetadata.qianqianjie, { ...savedQqj, schemaVersion: 2,
+      file: { characterLocator: 'updated-avatar.png', hostChatId: 'imported-chat' } });
+    assert.equal(f.api.saves, 0, 'identity preparation must not save the entire chat');
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const result = await f.runtime.importPreview(plan);
+    assert.equal(result.summaries, 1); assert.equal(f.session.identity().chatId, IMPORTED);
+    const cold = await createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() }).readReachable({ mode: 'full' });
+    assert.equal(cold.status, 'ready'); assert.equal(cold.root.chatId, IMPORTED);
+    assert.deepEqual(cold.floorMemories.map(item => item.summary), f.graph.floorMemories.map(item => item.summary));
+    let firstRead = true;
+    const undoApi = targetChatApi(target, { beforeGet({ header }) {
+      if (firstRead) { firstRead = false; delete header.chat_metadata.qianqianjie.file; }
+    } });
+    f.setApi(undoApi); await f.runtime.undo();
+    assert.equal(f.session.identity().chatId, TARGET);
+    assert.deepEqual(undoApi.persistedHeader.chat_metadata.qianqianjie, savedQqj);
+  });
+});
+
+test('derived file ownership never hides real saved story or QQJ changes', async t => {
+  const changes = {
+    body: ({ messages }) => { messages[1].mes = '存档中另一段正文'; },
+    selectedReply: ({ messages }) => { messages[1].swipes.push('存档中另一条选中回复'); messages[1].swipe_id = 1; },
+    ownedMessage: ({ messages }) => { messages[1].extra ??= {}; messages[1].extra.qianqianjie_memory_excluded = true; },
+    prequel: ({ header }) => { header.chat_metadata.qianqianjiePrequel = '存档中尚未同步的人工前情'; },
+    qqjBusiness: ({ header }) => { header.chat_metadata.qianqianjie.manualNote = '存档中的业务字段'; },
+    unknownSchema: ({ header }) => { header.chat_metadata.qianqianjie.schemaVersion = 3; },
+  };
+  for (const format of ['ordinary', 'volume']) for (const [name, change] of Object.entries(changes)) await t.test(`${format}: ${name}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target({ savedQqj: { schemaVersion: 2, chatId: TARGET } });
+    f.setApi(targetChatApi(target, { beforeGet: change }));
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const before = f.backend.calls.filter(call => call[0] === 'put').length;
+    await assert.rejects(f.runtime.importPreview(plan), /当前聊天尚未保存完成/);
+    assert.equal(f.backend.calls.filter(call => call[0] === 'put').length, before);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+  });
+});
+
+test('saved file ownership changed during staging still prevents publication', async t => {
+  for (const format of ['ordinary', 'volume']) await t.test(format, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target({ savedQqj: { schemaVersion: 2, chatId: TARGET } });
+    let staged = false;
+    const api = targetChatApi(target, { beforeGet({ header }) {
+      if (staged) header.chat_metadata.qianqianjie.file = { characterLocator: 'another-avatar.png', hostChatId: 'another-file' };
+    } });
+    f.setApi(api);
+    const put = f.backend.client.put;
+    f.backend.client.put = async (...args) => { const result = await put(...args); if (args[0] === `chat-${IMPORTED}`) staged = true; return result; };
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    await assert.rejects(f.runtime.importPreview(plan), /聊天文件在导入期间有变化/);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(api.saves, 0);
+  });
+});
+
+test('a preview can be retried when import is rejected before entering its task', async t => {
+  for (const format of ['ordinary', 'volume']) for (const phase of ['busy', 'quiesce']) await t.test(`${format}: ${phase}`, async () => {
+    let busy = false, failQuiesce = false;
+    const f = await fixture({ transferOptions: { isBusy: () => busy, quiesce: async () => {
+      if (failQuiesce) throw new Error('test quiesce failed');
+    } } });
+    let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target();
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const writes = f.backend.calls.filter(call => call[0] === 'put').length;
+    busy = phase === 'busy'; failQuiesce = phase === 'quiesce';
+    await assert.rejects(f.runtime.importPreview(plan), phase === 'busy' ? /请等待聊天生成/ : /test quiesce failed/);
+    assert.equal(f.backend.calls.filter(call => call[0] === 'put').length, writes);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+    busy = false; failQuiesce = false;
+    const result = await f.runtime.importPreview(plan);
+    assert.equal(result.summaries, 1); assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+    assert.equal(f.session.identity().chatId, IMPORTED);
+    await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
+  });
+});
+
 test('tampering, missing graph records, incompatible chat and consumed previews are rejected', async () => {
   const f = await fixture(); await f.target({ changed: true });
   await assert.rejects(f.runtime.preview(f.exported.text), /当前聊天与记忆包不一致/);
@@ -137,6 +824,7 @@ test('tampering, missing graph records, incompatible chat and consumed previews 
   target.chat.push(user('new message'));
   await assert.rejects(f.runtime.importPreview(plan), /有变化/);
   assert.equal(f.api.saves, 0);
+  target.chat.pop(); await f.runtime.importPreview(plan);
   await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
 });
 
@@ -146,6 +834,7 @@ test('staging failure and a chat switch never publish over the old or another ch
   f.backend.client.put = async (...args) => { if (args[0] === `chat-${IMPORTED}`) throw new Error('disk full'); return put(...args); };
   await assert.rejects(f.runtime.importPreview(plan), /disk full/);
   assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+  await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
   f.backend.client.put = put;
   const next = await f.runtime.preview(f.exported.text);
   f.backend.client.put = async (...args) => {
@@ -198,6 +887,50 @@ test('hidden messages, local time records, vector cache and arbitrary non-QQJ me
   assert.deepEqual(target.chat[1].extra.variables, { home: 'new home' }); assert.deepEqual(target.chatMetadata.otherPlugin, { targetValue: true });
   assert.equal(f.backend.records.get(`chat-${IMPORTED}/v3-time-head`).data.chatId, IMPORTED);
   assert.equal(f.backend.records.get(`chat-${IMPORTED}/qqj-vector-index`).data.modelKey, `sha256:${'a'.repeat(64)}`);
+});
+
+test('import finishes without rereading a populated collection and keeps returned auxiliary revisions', async () => {
+  const f = await fixture();
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-time-head', { schemaVersion: 1, chatId: SOURCE, batchIds: [], bodyStart: 0 }, 0);
+  const exported = await f.runtime.exportCurrent(), target = await f.target();
+  const list = f.backend.client.list, put = f.backend.client.put;
+  let emptyLists = 0;
+  f.backend.client.list = async collection => {
+    if (collection === `chat-${IMPORTED}`) {
+      if ([...f.backend.records.keys()].some(key => key.startsWith(`${collection}/`))) {
+        throw Object.assign(new Error('读取记忆超时'), { code: 'BACKEND_TIMEOUT' });
+      }
+      emptyLists += 1;
+    }
+    return list(collection);
+  };
+  f.backend.client.put = async (...args) => {
+    const result = await put(...args);
+    if (args[0] === `chat-${IMPORTED}` && args[1] === 'v3-time-head') {
+      f.backend.records.get(`${args[0]}/${args[1]}`).revision = 7;
+      return { ...result, revision: 7 };
+    }
+    return result;
+  };
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  assert.equal(emptyLists, 1);
+  assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+  assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/self-use-memory-transfer-rollback-v1`).data.importedAuxiliaryRevisions,
+    { 'v3-time-head': 7 });
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await foundation.start()).status, 'ready');
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
+    generateAnalysisTask: async () => assert.fail('cold import must not reanalyze'),
+    generateUtilityTask: async () => assert.fail('cold import must not resummarize') });
+  await memory.start();
+  assert.equal(memory.getState().rememberedCount, 1);
+  assert.deepEqual((await store.readReachable({ mode: 'full' })).floorMemories.map(item => item.summary),
+    f.graph.floorMemories.map(item => item.summary));
+  f.backend.client.list = list;
+  await f.runtime.undo();
+  assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
 });
 
 test('time batch IDs round trip with their head and migration references', async t => {
@@ -1497,5 +2230,25 @@ test('undo preserves new manual people time calendar and prequel edits when the 
     assert.equal(f.api.saves, saves);
     if (field === 'calendar') assert.deepEqual(calendars.get(IMPORTED), { months: 4, prefix: '人工改历' });
     if (field === 'prequel') assert.equal(target.chatMetadata.qianqianjiePrequel, '导入后新写的人工前情');
+  });
+});
+
+test('undo preserves changes and deletion of imported auxiliary records while the core root is unchanged', async t => {
+  for (const change of ['edit', 'delete']) await t.test(change, async () => {
+    const f = await fixture();
+    const timeStore = createTimeStore({ client: f.backend.client });
+    await timeStore.putHead(SOURCE, { schemaVersion: 1, chatId: SOURCE, batchIds: [], bodyStart: 0 }, 0);
+    const exported = await f.runtime.exportCurrent(), target = await f.target();
+    await f.runtime.importPreview(await f.runtime.preview(exported.text));
+    const root = structuredClone(f.backend.records.get(`chat-${IMPORTED}/v3-root`));
+    const key = `chat-${IMPORTED}/v3-time-head`, importedHead = f.backend.records.get(key);
+    if (change === 'edit') await timeStore.putHead(IMPORTED, { ...importedHead.data, bodyStart: 1 }, importedHead.revision);
+    else f.backend.records.delete(key);
+    assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/v3-root`), root);
+    const records = structuredClone([...f.backend.records]), saves = f.api.saves;
+    await assert.rejects(f.runtime.undo(), /导入后的.*已变化/);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+    assert.deepEqual([...f.backend.records], records);
+    assert.equal(f.api.saves, saves);
   });
 });

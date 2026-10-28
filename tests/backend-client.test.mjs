@@ -22,6 +22,34 @@ function withGlobals(values, callback) {
 
 const asBytes = body => typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
 
+test('TT默认客户端识别原生批读能力，每批仅一次请求且不走HTTP或批写', async () => {
+  const slots = new Map(); let healthReads = 0, nativeReads = 0;
+  const key = options => `${options.namespace}/${options.table}/${options.key}`;
+  const store = {
+    async tryGetJson(options) { nativeReads++; return slots.has(key(options)) ? { found: true, value: structuredClone(slots.get(key(options))) } : { found: false }; },
+    async setJson(options) { slots.set(key(options), structuredClone(options.value)); },
+    async deleteJson(options) { slots.delete(key(options)); },
+    async listKeys() { assert.fail('批读不得扫描整份集合'); },
+    async listTables() { healthReads++; return []; },
+  };
+  await withGlobals({ __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store } } }, fetch: () => assert.fail('TT不得访问HTTP后端') }, async () => {
+    const client = createBackendClient({ headers: () => assert.fail('原生接口不读取HTTP请求头') });
+    await client.put('chat', 'first', { summary: '人工摘要🙂' }, 0);
+    await client.put('chat', 'second', { state: '手动状态' }, 0);
+    nativeReads = 0;
+    const records = await client.getMany('chat', ['second', 'missing', 'first']);
+    assert.deepEqual(records.map(record => [record.recordId, record.status]), [['second', 200], ['missing', 404], ['first', 200]]);
+    assert.deepEqual(records[0].envelope.data, { state: '手动状态' });
+    assert.deepEqual(records[2].envelope.data, { summary: '人工摘要🙂' });
+    assert.equal(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.post, 1, '使用已实现的record-batch接口');
+    assert.equal(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.get, 0, '不再拆成独立GET');
+    assert.equal(nativeReads, 3); assert.equal(healthReads, 1);
+    await client.getMany('chat', ['first']);
+    assert.equal(healthReads, 1, '后续批次复用能力结果');
+    assert.equal(await client.putMany('chat', [{ recordId: 'never', data: {}, expectedRevision: 0 }]), null, '原生写入仍使用原单条CAS');
+  });
+});
+
 test('batch PUT sends one acknowledged package and uses only cached capability', async () => {
   const calls = []; let active = 0, maxActive = 0;
   const client = createBackendClient({ fetchImpl: async (url, options) => {
@@ -650,4 +678,67 @@ test('记录迭代在旧后端能力缺失时保留 collection list 回落', asy
   assert.deepEqual(result, records);
   assert.equal(calls.some(url => url.endsWith('/v1/records/qianqianjie/chat-x')), true);
   assert.equal(calls.some(url => url.includes('/v1/record-ids/')), false);
+});
+
+test('轻量ID清单不要求批读能力，流式枚举按已有单记录GET分批读取', async () => {
+  const calls = [], ids = Array.from({ length: 65 }, (_, index) => `id-${index}`);
+  const client = createBackendClient({ fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith('/v1/health')) return Response.json(batchHealth({ recordIdList: true }));
+    if (url.includes('/v1/record-ids/')) return Response.json(ids);
+    const recordId = decodeURIComponent(url.split('/').at(-1));
+    return Response.json({ revision: 1, data: { recordId } });
+  } });
+  const iterator = client.iterRecords('chat-x', { requireStreaming: true });
+  assert.equal((await iterator.next()).value.recordId, 'id-0');
+  assert.equal(calls.filter(call => call.url.includes('/v1/records/')).length, 64);
+  assert.equal(calls.some(call => call.url.endsWith('/v1/records/qianqianjie/chat-x')), false);
+  const remaining = [];
+  for await (const item of iterator) remaining.push(item.recordId);
+  assert.deepEqual(remaining, ids.slice(1));
+  assert.equal(calls.filter(call => call.url.includes('/v1/records/')).length, 65);
+});
+
+test('请求流式枚举时老HTTP后端在读取完整集合前提示更新白鸟', async () => {
+  const calls = [];
+  const client = createBackendClient({ fetchImpl: async url => {
+    calls.push(url);
+    return Response.json(batchHealth({}));
+  } });
+  await assert.rejects(client.iterRecords('chat-x', { requireStreaming: true }).next(), /更新.*白鸟|白鸟.*更新/);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].endsWith('/v1/health'));
+});
+
+test('冷启动共享能力探测不被旧聊天取消，新聊天仍可接力批读', async () => {
+  for (const kind of ['getMany', 'iterRecords']) {
+    const calls = [], controller = new AbortController();
+    const reason = new DOMException('oldChatClosed', 'AbortError');
+    let releaseHealth, startedResolve;
+    const started = new Promise(resolve => { startedResolve = resolve; });
+    const client = createBackendClient({ fetchImpl: async (url, options) => {
+      calls.push(url);
+      if (url.endsWith('/v1/health')) return new Promise((resolve, reject) => {
+        releaseHealth = () => resolve(Response.json(batchHealth({ recordBatchRead: true, recordIdList: true })));
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        startedResolve();
+      });
+      assert.match(url, /record-batch\/qianqianjie\/chat-new$/);
+      return Response.json(JSON.parse(options.body).recordIds.map(recordId => ({ recordId, status: 200, envelope: { revision: 1, data: { recordId } } })));
+    } });
+    const previous = kind === 'getMany'
+      ? client.getMany('chat-old', ['old-record'], { signal: controller.signal })
+      : client.iterRecords('chat-old', { signal: controller.signal }).next();
+    await started;
+    const current = client.getMany('chat-new', ['new-record']);
+    const outcomes = Promise.allSettled([previous, current]);
+    controller.abort(reason); releaseHealth();
+    const [oldOutcome, newOutcome] = await outcomes;
+    assert.equal(oldOutcome.status, 'rejected', kind);
+    assert.equal(oldOutcome.reason, reason, '旧聊天保留自身取消结果');
+    assert.equal(newOutcome.status, 'fulfilled', `${kind}共享探测后新聊天不受旧signal连带取消`);
+    assert.deepEqual(newOutcome.value.map(record => record.recordId), ['new-record']);
+    assert.equal(calls.filter(url => url.endsWith('/v1/health')).length, 1, '不重试能力探测');
+    assert.equal(calls.some(url => url.includes('chat-old')), false, '旧聊天取消后不再请求记录');
+  }
 });

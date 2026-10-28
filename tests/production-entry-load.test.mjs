@@ -23,6 +23,7 @@ import { createPluginUpdates } from '../src/plugin-updates.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { sanitizeMemoryContent } from '../src/memory-content-sanitizer.js';
 import { createTauriBackendFetch } from '../src/tauri-backend.js';
+import { localForageHarness } from './helpers/indexeddb-harness.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
@@ -451,6 +452,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const backendDataRequestPaths = [];
   let backendTrashGcPostCalls = 0;
   let localForageCreateCalls = 0;
+  const ttIdb = tauri ? localForageHarness() : null;
   let mesAppendCalls = 0;
   let styleAppendCalls = 0;
   let observerInstances = 0;
@@ -474,7 +476,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     createElement: tag => ({ tag, dataset: {}, style: {}, children: [], append(...nodes) { this.children.push(...nodes); }, replaceChildren(...nodes) { this.children = [...nodes]; }, addEventListener() {}, querySelector: () => null }),
   } : undefined;
   const context = createContext({
-    ...(tauri ? { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } } } : {}),
+    ...(tauri ? { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } },
+      location: { origin: 'tauri://localhost' }, indexedDB: ttIdb.indexedDB, IDBKeyRange: ttIdb.keyRange } : {}),
     console: testConsole, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval,
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
@@ -550,8 +553,9 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
     if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
-    else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
-    else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: {}, DOMPurify: {}, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => { localForageCreateCalls += 1; return { async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }; } } });
+    else if (hostPath === '/scripts/utils.js') module = synthetic(identifier, { download: async () => assert.fail('启动不应下载记忆文件') });
+    else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => tauri ? 'default-user' : 'isolated-test-user' });
+    else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: {}, DOMPurify: {}, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: config => { localForageCreateCalls += 1; return ttIdb ? ttIdb.localForage.createInstance(config) : { async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }; } } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '' } });
     else if (hostPath === '/scripts/extensions.js') {
       const qqjSettings = seededSettings.qianqianjie; qqjSettings.pluginEnabled = enabled;
@@ -728,8 +732,11 @@ test('TT production bundle reads the file identity graph through native store wi
   assert.equal(result.chatReadCalls, 0);
   assert.equal(result.chatSaveCalls, 0);
   assert.equal([...result.ttRecords.values()].some(value => (value.format === 'qqj-tt-json-v2' ? JSON.parse(value.serialized) : value).collection === 'chat-identity-bindings'), false);
-  assert.equal(result.backendCalls, 0);
-  assert.equal(result.localForageCreateCalls, 0, 'TT生产入口始终不创建浏览器cache实例');
+  assert.equal(result.backendHealthCalls, 0);
+  // A real origin also enables the existing local diagnostics configuration check.
+  assert.ok(result.fetchRequests.every(request => request.method === 'GET' && request.url.endsWith('/diagnostics.local.json')),
+    'TT正式记忆不得走HTTP，唯一允许的全局fetch是读取本地诊断配置');
+  assert.equal(result.localForageCreateCalls, 1, 'TT生产入口在实际账户和origin作用域下启用同一IndexedDB派生cache');
   assert.equal(result.interceptorType, 'function');
 });
 
@@ -884,6 +891,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
     const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
     if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
+    else if (hostPath === '/scripts/utils.js') module = synthetic(identifier, { download: async () => assert.fail('隔离加载不应下载文件') });
     else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
     else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: {}, DOMPurify: {}, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '' } });
@@ -898,7 +906,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const entryPath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : bundlePath;
   const entry = await load(pathToFileURL(entryPath).href);
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
-  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier).filter(specifier => specifier !== '/scripts/power-user.js'), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js', '/lib.js', '/scripts/user.js']);
+  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier).filter(specifier => specifier !== '/scripts/power-user.js'), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js', '/lib.js', '/scripts/user.js', '/scripts/utils.js']);
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   assert.equal(entry.status, 'evaluated');
@@ -997,6 +1005,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     return module;
   };
   define('/scripts/personas.js', { user_avatar: 'me.png' });
+  const hostDownload = async () => assert.fail('接线时不应发起文件下载');
+  define('/scripts/utils.js', { download: hostDownload });
   define('/scripts/user.js', { getCurrentUserHandle: () => 'isolated-test-user' });
   const hostLocalForage = { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) };
   define('/lib.js', { showdown: {}, DOMPurify: {}, localforage: hostLocalForage });
@@ -1018,7 +1028,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('./src/plugin-updates.js', { createPluginUpdates: () => ({}) });
   define('./src/avatar-generation.js', { createAvatarGenerator: () => ({}) });
   define('./src/avatar-image-store.js', { createAvatarImageStore: () => ({}) });
-  define('./src/tauri-backend.js', { isTauriTavern: () => false });
+  let nativeTauri = false;
+  define('./src/tauri-backend.js', { isTauriTavern: () => nativeTauri });
   define('./src/private-recall-diagnostics.js', { createPrivateRecallDiagnostics: () => ({ start: async () => false, dispose() {} }) });
   define('./src/bootstrap.js', { bootstrap: options => { bootstrapOptions = options; return { refresh() {}, setEnabled() {}, openMemory() { openMemoryCalls += 1; } }; } });
   const productionSettings = { generalPrompt: '旧通用附加残留', processingPrompt: '  破限接线\n', summaryPrompt: '摘要指导', csePrompt: 'CSE 指导', profilePrompt: '人物资料指导', storyClockReferenceTags: 'Ti,时标', storyCalendars: {} };
@@ -1154,12 +1165,34 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(startupDiagnostic.failure.name, 'TypeError');
   assert.doesNotMatch(JSON.stringify(startupDiagnostic), /PRIVATE source startup binding detail/u, '真实 index startup provider 只给安全诊断字段');
 
-  await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
+  const vectorSourceOptions = await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
+  assert.equal(typeof vectorSourceOptions.getReachable, 'function');
+  assert.equal(vectorSourceOptions.getReachable(), productionReachable);
   assert.equal(bootstrapOptions.memoryTransfer, memoryTransferRuntime);
+  assert.equal(bootstrapOptions.hostDownload, hostDownload, 'ST/TT宿主保存工具透传给导出界面');
   assert.ok(pluginActivitySources.includes(memoryTransferRuntime), '导入导出使用现有活动状态显示');
   assert.equal(memoryTransferOptions.client, backendClient);
   assert.equal(memoryTransferOptions.pluginVersion, '0.1.9-test');
   assert.equal(memoryTransferOptions.captureCalendar('test'), null);
+  const settledReads = [];
+  const settleSession = memoryTransferOptions.session;
+  const previousPrepare = settleSession.prepare, previousMemoryRefresh = v3MemoryRuntime.refreshStatus;
+  const previousPeopleRefresh = peopleWorkspaceRuntime.refresh, previousTimeRefresh = timeRuntime.refreshStatus;
+  try {
+    settleSession.prepare = async options => { assert.equal(options.entryPoint, 'memoryTransfer'); settledReads.push('session'); return { status: 'ready' }; };
+    v3MemoryRuntime.refreshStatus = async () => { settledReads.push('memory'); };
+    peopleWorkspaceRuntime.refresh = async options => { assert.equal(options.refreshMemory, false); settledReads.push('people'); };
+    timeRuntime.refreshStatus = async options => { assert.equal(options.force, true); settledReads.push('time'); };
+    await memoryTransferOptions.onSettled({ streaming: true });
+    assert.deepEqual(settledReads, ['session'], '分卷导入导出结束只准备身份，不立刻重读整份记忆与时间图');
+    settledReads.length = 0;
+    await memoryTransferOptions.onSettled();
+    assert.deepEqual(settledReads, ['session', 'memory', 'people', 'time'], '普通旧包保留原有结束刷新流程');
+  } finally {
+    settleSession.prepare = previousPrepare;
+    if (previousMemoryRefresh === undefined) delete v3MemoryRuntime.refreshStatus; else v3MemoryRuntime.refreshStatus = previousMemoryRefresh;
+    peopleWorkspaceRuntime.refresh = previousPeopleRefresh; timeRuntime.refreshStatus = previousTimeRefresh;
+  }
   assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
   transferActive = true;
   assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '导入导出期间阻止新的记忆任务');
@@ -1425,6 +1458,16 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   await bootstrapOptions.onPluginEnabledChange(false);
   assert.equal(bootstrapOptions.pluginDiagnosticProvider(), null, '成功的后续总开关操作清除已知旧失败');
 
+  nativeTauri = true;
+  const ttEntry = new SourceTextModule(entrySource, { context, identifier: pathToFileURL(resolve(root, 'index.js')).href });
+  await ttEntry.link(specifier => modules.get(specifier));
+  await ttEntry.evaluate();
+  await new Promise(resolvePromise => setImmediate(resolvePromise));
+  assert.equal(coreCacheFactoryCalls, 2, 'TT也按同一开关创建既有core cache');
+  assert.equal(foundationStoreOptions.at(-1).coreRecordCache, coreRecordCache);
+  await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
+  assert.equal(foundationStoreOptions.at(-1).coreRecordCache, coreRecordCache, 'TT向量来源复用同一cache');
+
   productionSettings.coreCacheEnabled = false;
   const previousStoreCount = foundationStoreOptions.length;
   const disabledEntry = new SourceTextModule(entrySource, { context, identifier: pathToFileURL(resolve(root, 'index.js')).href });
@@ -1435,7 +1478,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   });
   await disabledEntry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
-  assert.equal(coreCacheFactoryCalls, 1, '设置关闭后生产入口不创建第二个cache实例');
+  assert.equal(coreCacheFactoryCalls, 2, 'TT设置关闭后生产入口不再创建cache实例');
   await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
   assert.equal(foundationStoreOptions.length, previousStoreCount + 2);
   assert.equal(foundationStoreOptions.at(-2).coreRecordCache, null, '关闭后主要Store接收null');

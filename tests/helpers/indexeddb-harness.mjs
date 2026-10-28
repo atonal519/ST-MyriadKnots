@@ -1,5 +1,7 @@
 export function indexedDbHarness(data) {
   let failPut = null;
+  let failGet = null, hangGet = false;
+  const transactions = [];
   const clone = value => value === undefined ? undefined : structuredClone(value);
   const schedule = callback => queueMicrotask(callback);
   const request = (transaction, action) => {
@@ -20,6 +22,8 @@ export function indexedDbHarness(data) {
     objectStoreNames: { contains: name => name === 'core_records' },
     close() {},
     transaction(_storeName, mode) {
+      const trace = { mode, gets: [] };
+      transactions.push(trace);
       const tx = { mode, pending: 0, aborted: false, completed: false, oncomplete: null, onerror: null, onabort: null,
         snapshot: new Map(),
         remember(key) { if (!this.snapshot.has(key)) this.snapshot.set(key, data.has(key) ? clone(data.get(key)) : undefined); },
@@ -36,7 +40,11 @@ export function indexedDbHarness(data) {
         },
       };
       tx.objectStore = () => ({
-        get(key) { return request(tx, () => clone(data.get(key))); },
+        get(key) {
+          trace.gets.push(key);
+          if (hangGet) { hangGet = false; tx.pending += 1; return {}; }
+          return request(tx, () => { if (failGet) { const error = failGet; failGet = null; throw error; } return clone(data.get(key)); });
+        },
         put(value, key) { return request(tx, () => { if (failPut && key.startsWith(failPut.prefix)) { const error = failPut.error; failPut = null; throw error; } tx.remember(key); data.set(key, clone(value)); return key; }); },
         delete(key) { return request(tx, () => { tx.remember(key); return data.delete(key); }); },
         openCursor(range) {
@@ -83,6 +91,9 @@ export function indexedDbHarness(data) {
     } },
     keyRange: { bound: (lower, upper) => ({ lower, upper }) },
     failNextPut: (error, prefix = '') => { failPut = { error, prefix }; },
+    failNextGet: error => { failGet = error; },
+    hangNextGet: () => { hangGet = true; },
+    transactions,
   };
 }
 

@@ -8767,7 +8767,8 @@ test('历史重建中关闭会使旧响应失效，重新开启后从 reachable 
 
   h.setEnabled(true);
   await h.runtime.setEnabled(true);
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await waitFor(() => h.runtime.getState().memorySnapshotStatus === 'ready'
+    && h.runtime.getState().memorySyncStatus === 'idle', '重新启用后的记忆读取未完成');
   assert.equal(h.calls.length, 1, '重新开启不得恢复已经失效的运行时授权');
   assert.equal(h.runtime.getState().rebuildStatus, 'pendingRebuild');
   await h.runtime.startHistoricalRebuild();

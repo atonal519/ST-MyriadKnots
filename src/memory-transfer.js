@@ -14,6 +14,9 @@ import { MESSAGE_MEMORY_EXCLUSION_KEY } from './v3/memory-exclusion.js';
 import { stableJson } from './memory-transfer-json.js';
 import { createActivitySignal } from './plugin-activity.js';
 import { createAvatarImageStore } from './avatar-image-store.js';
+import { createMemoryVolumes, openMemoryVolumes, MEMORY_VOLUME_BYTES } from './memory-transfer-volumes.js';
+import { openMemoryBundle } from './memory-transfer-bundle.js';
+import { validateTransferGraph, transferRecordKey } from './memory-transfer-graph.js';
 
 export const MEMORY_PACKAGE_LIMIT = 64 * 1024 * 1024;
 const FORMAT = 'qqj-core-chat-memory', VERSION = 2, ROLLBACK = 'self-use-memory-transfer-rollback-v1';
@@ -32,6 +35,20 @@ const peopleWorkspaces = records => records.flatMap(item => item.id === 'v3-peop
   : item.id.startsWith('v3-people-snapshot-') ? [item.data.workspace] : []);
 const MESSAGE_KEYS = [ANCHOR, HIDDEN, RECEIPT, 'qianqianjie_migration_alias', MESSAGE_MEMORY_EXCLUSION_KEY];
 const HEADER_KEYS = ['qianqianjie', 'qianqianjiePrequel'];
+function validateVolumeRecord(item, chatId) {
+  check(item && typeof item.id === 'string' && item.data?.chatId === chatId, '记忆记录归属不一致。');
+  if (coreTypes.has(item.data.recordType)) {
+    check(transferRecordKey(item.data) === item.id, '记忆记录编号不匹配。');
+    return;
+  }
+  check(isAux(item.id), '记忆包包含不支持的记录类型。');
+  if (item.id === 'v3-people-workspace') validatePeopleWorkspace(item.data, chatId);
+  else if (item.id.startsWith('v3-people-snapshot-')) {
+    check(item.data.kind === 'qqj-v3-frozen-people-snapshot' && isUuid(item.data.sourceChatId), '人物历史副本无效。');
+    validatePeopleWorkspace(item.data.workspace, chatId);
+  } else if (item.id.startsWith('qqj-vector-')) check(vectorRecordOwned({ recordId: item.id, data: item.data }), '向量记录无效。');
+  else check(item.data.schemaVersion === 1 && (item.id === 'v3-time-head' ? Array.isArray(item.data.batchIds) : item.data.id === item.id), '时间记录无效。');
+}
 function storyProjection(message) {
   const normalize = text => String(text ?? '').replace(/\r\n?/g, '\n');
   const selected = selectAssistantMessage(message);
@@ -41,11 +58,35 @@ function storyProjection(message) {
 function sameConversation(left, right) {
   const selectedIndex = message => { const selected = selectAssistantMessage(message); return selected ? selected.selectedSwipeIndex ?? 0 : null; };
   return Array.isArray(left) && Array.isArray(right) && left.length === right.length
-    && same(left.map(storyProjection), right.map(storyProjection)) && same(left.map(selectedIndex), right.map(selectedIndex));
+    && left.every((message, index) => same(storyProjection(message), storyProjection(right[index]))
+      && selectedIndex(message) === selectedIndex(right[index]));
 }
 const sameMetadata = (left, right) => sameQqjChatMetadata(left, right, { includeFile: true, includePrequel: true });
 const sameInputs = (left, right) => sameConversation(left.chat, right.chat) && sameChatQqjData(left.chat, right.chat)
   && sameMetadata(left.header.chat_metadata, right.header.chat_metadata);
+function hasColdSwipes(message) {
+  const reference = message?.tt_swipe_cold, selected = message?.swipe_id;
+  return Number.isSafeInteger(reference?.sourceId) && reference.sourceId >= 0 && Number.isSafeInteger(reference.record) && reference.record > 0
+    && Number.isSafeInteger(selected) && selected >= 0 && Array.isArray(message.swipes) && Array.isArray(message.swipe_info)
+    && message.swipes.length === message.swipe_info.length && typeof message.swipes[selected] === 'string'
+    && message.swipe_info[selected] !== null && typeof message.swipe_info[selected] === 'object'
+    && message.swipe_info.some((swipe, index) => index !== selected && swipe === null && message.swipes[index] === null);
+}
+function sameCapturedInputs(saved, captured) {
+  // TT leaves unloaded alternative slots null. Compare their saved ownership
+  // without loading their bodies into the live chat or replacing loaded edits.
+  const chat = captured.chat.map((message, index) => hasColdSwipes(message) ? { ...message,
+    swipe_info: message.swipe_info.map((swipe, n) => swipe === null && message.swipes[n] === null
+      ? { extra: mergeOwned({}, saved.chat[index]?.swipe_info?.[n]?.extra, MESSAGE_KEYS) } : swipe) } : message);
+  const page = { chat, header: { chat_metadata: captured.metadata } };
+  if (sameInputs(saved, page)) return true;
+  // Session preparation refreshes this derived file hint before the next host save.
+  const metadata = saved.header.chat_metadata;
+  if (![1, 2].includes(metadata.qianqianjie?.schemaVersion)) return false;
+  const prepared = { ...metadata, qianqianjie: { ...metadata.qianqianjie, schemaVersion: 2,
+    file: chatFileFromHost(captured.identity) } };
+  return sameInputs({ chat: saved.chat, header: { chat_metadata: prepared } }, page);
+}
 function mergeOwned(base, expected, keys) {
   const result = { ...base };
   for (const key of keys) {
@@ -58,6 +99,45 @@ function mergeMessage(base, expected) {
   return { ...base, extra: mergeOwned(base.extra, expected?.extra, MESSAGE_KEYS),
     ...(Array.isArray(base.swipe_info) ? { swipe_info: base.swipe_info.map((swipe, index) => ({ ...swipe,
       extra: mergeOwned(swipe?.extra, expected?.swipe_info?.[index]?.extra, MESSAGE_KEYS) })) } : {}) };
+}
+
+const missingReloadField = Symbol('missing reload field');
+function mergeReloadFields(saved, draft, latest) {
+  const equal = (left, right) => left === missingReloadField || right === missingReloadField ? left === right : same(left, right);
+  if (equal(draft, saved)) return latest;
+  if (equal(latest, saved)) return draft;
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (object(draft) && object(latest) && (saved === missingReloadField || object(saved))) {
+    const keys = new Set([...Object.keys(saved === missingReloadField ? {} : saved), ...Object.keys(draft), ...Object.keys(latest)]);
+    const field = (value, key) => Object.hasOwn(value, key) ? value[key] : missingReloadField;
+    return Object.fromEntries([...keys].flatMap(key => {
+      const value = mergeReloadFields(saved === missingReloadField ? saved : field(saved, key), field(draft, key), field(latest, key));
+      return value === missingReloadField ? [] : [[key, value]];
+    }));
+  }
+  return latest;
+}
+function mergeColdReloadMessage(saved, live, refreshed) {
+  const merged = mergeReloadFields(saved, live, refreshed);
+  const restored = { ...merged, extra: mergeOwned(merged.extra, refreshed.extra, MESSAGE_KEYS) };
+  for (const key of ['swipes', 'swipe_info']) if (Array.isArray(live[key]) && Array.isArray(refreshed[key])) {
+    const values = new Array(Math.max(live[key].length, refreshed[key].length));
+    for (let index = 0; index < values.length; index++) {
+      const beforeCold = live.swipes?.[index] === null && live.swipe_info?.[index] === null;
+      const afterCold = refreshed.swipes?.[index] === null && refreshed.swipe_info?.[index] === null;
+      // Cold nulls are unknown slots, not edits that delete a loaded reply.
+      const field = message => Object.hasOwn(message[key] ?? {}, index) ? message[key][index] : missingReloadField;
+      const base = field(saved);
+      const value = beforeCold && afterCold ? null : mergeReloadFields(base, beforeCold ? base : field(live), afterCold ? base : field(refreshed));
+      if (value !== missingReloadField) values[index] = key === 'swipe_info' && value !== null
+        ? { ...value, extra: mergeOwned(value.extra, saved.swipe_info?.[index]?.extra, MESSAGE_KEYS) } : value;
+    }
+    while (values.length && !Object.hasOwn(values, values.length - 1)) values.pop();
+    restored[key] = values;
+  }
+  delete restored.tt_swipe_cold;
+  if (Object.hasOwn(refreshed, 'tt_swipe_cold')) restored.tt_swipe_cold = refreshed.tt_swipe_cold;
+  return restored;
 }
 
 // V1 mixed body and host bookkeeping into one irreversible hash. Keep its exact
@@ -73,6 +153,13 @@ export async function transferWitness(chat, { version = VERSION } = {}) {
     userNameWithoutTimestamp: message.is_user && !message.send_date ? String(message.name ?? '').trim().slice(0, 200) : null,
     narrator: message.extra?.type === 'narrator',
   }))));
+}
+
+async function volumeWitness(chat) {
+  check(Array.isArray(chat) && chat.length > 0, '聊天内容为空。');
+  const witnesses = [];
+  for (const message of chat) witnesses.push(await sha256(stableJson(storyProjection(message))));
+  return witnesses;
 }
 
 function memoryClient(records, chatId) {
@@ -128,6 +215,11 @@ export async function parseMemoryPackage(input) {
   check(value.prequel === null || typeof value.prequel === 'string', '前情内容无效。');
   check(value.calendar === null || normalizeStoryCalendar(value.calendar), '故事历法设置无效。');
   const graph = await validateRecords(value.records, value.source.chatId);
+  validateMarkers(value, graph);
+  return { value, graph };
+}
+
+function validateMarkers(value, graph) {
   const aliases = new Set((graph.migrationDescriptor?.carriedAliases ?? []).map(alias => alias.aliasId));
   for (const markers of value.markers) {
     check(markers && typeof markers.extra === 'object' && Array.isArray(markers.swipes), '楼层标记格式无效。');
@@ -139,7 +231,6 @@ export async function parseMemoryPackage(input) {
       if (alias) check(aliases.has(alias), '搬家楼层标记无效。');
     }
   }
-  return { value, graph };
 }
 
 async function verifyConversation(graph, chat, sanitizerOptions) {
@@ -193,7 +284,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       && sameConversation(snap.chat, captured.chat) && sameChatQqjData(snap.chat, captured.chat)
       && sameMetadata(snap.context.chatMetadata, captured.metadata), '聊天已切换或内容有变化，请重新选择记忆包并预览。');
   };
-  async function exclusive(captured, task) {
+  async function exclusive(captured, task, options = {}) {
     check(!active && !isBusy(), '请等待聊天生成和记忆任务完成后再操作。'); current(captured);
     active = true;
     activity.notifyActivity();
@@ -204,7 +295,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       return await task();
     } finally {
       if (suspended) session.resume(captured.identity.chatId);
-      try { await onSettled(); } catch { /* Saved state can be reloaded from the host. */ }
+      try { await onSettled({ streaming: options.streaming === true }); } catch { /* Saved state can be reloaded from the host. */ }
       active = false;
       activity.notifyActivity();
     }
@@ -212,19 +303,26 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
   async function exportCurrent() {
     const captured = capture();
     return exclusive(captured, async () => {
-      const collected = new Map();
-      const tracking = { ...client, async get(collection, id) { const result = await client.get(collection, id); collected.set(id, result); return result; } };
+      const collected = new Map(); let collectedBytes = 0;
+      const collect = (id, result) => {
+        if (!collected.has(id)) collectedBytes += bytes({ id, data: result.data });
+        check(collectedBytes <= MEMORY_PACKAGE_LIMIT, '普通记忆包超过 64 MB，请使用“自动导出大记忆包”。');
+        collected.set(id, result);
+      };
+      const tracking = { ...client, async get(collection, id) { const result = await client.get(collection, id); collect(id, result); return result; } };
       if (client.getMany) tracking.getMany = async (collection, ids) => {
         const results = await client.getMany(collection, ids);
-        for (const item of results) if (item.status === 200) collected.set(item.recordId, item.envelope);
+        for (const item of results) if (item.status === 200) collect(item.recordId, item.envelope);
         return results;
       };
       const store = createFoundationStore({ client: tracking, contextProvider: () => captured.identity });
       const graph = await store.readReachable({ mode: 'full' });
       check(graph.status === 'ready' && graph.checkpoint && !graph.root.activeRunId, '当前记忆尚未准备好，请先刷新状态或补齐缺失。');
-      const list = await client.list(`chat-${captured.identity.chatId}`);
-      check(Array.isArray(list), '存储接口未返回记录清单。');
-      for (const record of list) if (isAux(record.recordId) && record.data?.chatId === captured.identity.chatId) collected.set(record.recordId, record);
+      let auxiliaryCount = 0;
+      for await (const record of iterateCollection(`chat-${captured.identity.chatId}`)) if (isAux(record.recordId)) {
+        auxiliaryCount++;
+        if (record.data?.chatId === captured.identity.chatId) collect(record.recordId, record);
+      }
       const records = [...collected].map(([id, record]) => ({ id, data: clone(record.data) }));
       await validateRecords(records, captured.identity.chatId);
       const bindings = await verifyConversation(graph, captured.chat, sanitizerOptions());
@@ -238,9 +336,13 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         for (let offset = 0; offset < data.length; offset += 32768) binary += String.fromCharCode(...data.subarray(offset, offset + 32768));
         avatarImages.push({ path: source.path, mimeType: source.mimeType, data: btoa(binary) });
       }
-      const verify = await client.list(`chat-${captured.identity.chatId}`);
-      check([...collected].every(([id, old]) => verify.some(item => item.recordId === id && item.revision === old.revision && same(item.data, old.data)))
-        && verify.filter(item => isAux(item.recordId)).length === list.filter(item => isAux(item.recordId)).length, '导出期间记忆发生变化，请重试。');
+      let verified = 0, verifiedAuxiliary = 0;
+      for await (const item of iterateCollection(`chat-${captured.identity.chatId}`)) {
+        if (isAux(item.recordId)) verifiedAuxiliary++;
+        const old = collected.get(item.recordId); if (!old) continue;
+        check(item.revision === old.revision && same(item.data, old.data), '导出期间记忆发生变化，请重试。'); verified++;
+      }
+      check(verified === collected.size && verifiedAuxiliary === auxiliaryCount, '导出期间记忆发生变化，请重试。');
       current(captured);
       const payload = { format: FORMAT, formatVersion: VERSION, pluginVersion, exportedAt: now().toISOString(),
         source: { chatId: captured.identity.chatId, character: captured.target.characterName },
@@ -248,9 +350,14 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         prequel: typeof captured.metadata.qianqianjiePrequel === 'string' ? captured.metadata.qianqianjiePrequel : null,
         calendar: clone(captureCalendar(captured.identity.chatId)), ...(avatarImages.length ? { avatarImages } : {}) };
       const value = { ...payload, checksum: await sha256(stableJson(payload)) };
-      check(bytes(value) <= MEMORY_PACKAGE_LIMIT, '导出数据超过第一版支持的 64 MB。');
+      check(bytes(value) <= MEMORY_PACKAGE_LIMIT, '普通记忆包超过 64 MB，请使用“自动导出大记忆包”。');
       return { filename: `千千结记忆-${now().toISOString().replace(/[:.]/g, '-')}.qqj-memory.json`, text: JSON.stringify(value) };
     });
+  }
+  async function* iterateCollection(collection) {
+    if (typeof client.iterRecords === 'function') { yield* client.iterRecords(collection); return; }
+    const records = await client.list(collection);
+    check(Array.isArray(records), '存储接口未返回记录清单。'); yield* records;
   }
   async function preview(input) {
     check(!active && !isBusy(), '请等待聊天生成和记忆任务完成后再导入。');
@@ -274,19 +381,175 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     previews.set(result, { captured, value, graph, oldRoot });
     return result;
   }
-  async function optionalGet(collection, id) {
+  async function checkAuxiliaryLinks(graph, ids, readRecord) {
+    const present = new Set(ids), refs = graph.migrationDescriptor?.recordRefs;
+    const time = present.has('v3-time-head') ? await readRecord('v3-time-head') : null;
+    const vector = present.has('qqj-vector-index') ? await readRecord('qqj-vector-index') : null;
+    for (const id of [...(time?.batchIds ?? []), ...(vector?.shardIds ?? []), ...(refs?.timeBatchIds ?? []),
+      ...(refs?.peopleSnapshotIds ?? []), ...(refs?.vectorShardIds ?? [])]) {
+      check(present.has(id), '记忆包缺少关联的时间、人物或向量记录。');
+    }
+  }
+  async function* volumeEntries(captured, signal, onProgress) {
+    const collection = `chat-${captured.identity.chatId}`;
+    const report = (phase, completed, total = null) => onProgress?.({ phase, completed, total });
+    report('records', 0);
+    const rootEnvelope = await optionalGet(collection, 'v3-root', { signal }), root = rootEnvelope?.data;
+    check(root?.headCheckpointId && !root.activeRunId, '当前记忆尚未准备好，请先刷新状态或补齐缺失。');
+    const checkpoint = (await client.get(collection, `v3-checkpoint-${root.headCheckpointId}`, { signal })).data;
+    const refs = checkpoint.producedRefs;
+    const coreIds = new Set(['v3-root', `v3-checkpoint-${root.headCheckpointId}`, `v3-run-${checkpoint.runId}`,
+      ...(root.baselineId ? [`v3-baseline-${root.baselineId}`] : []),
+      ...(root.migrationDescriptorId ? [`v3-migration-${root.migrationDescriptorId}`] : []),
+      ...refs.floors.map(id => `v3-floor-${id}`), ...refs.floorMemories.map(id => `v3-floor-memory-${id}`),
+      ...refs.entities.map(id => `v3-entity-${id}`), ...refs.stateDeltas.map(id => `v3-state-delta-${id}`),
+      ...refs.currentStates.map(id => `v3-current-state-${id}`), ...refs.indexes]);
+    const revisions = new Map(), sources = new Map();
+    let scanned = 0;
+    check(typeof client.iterRecords === 'function', '请更新白鸟数据后端后使用分卷导出。');
+    for await (const envelope of client.iterRecords(collection, { signal, requireStreaming: true })) {
+      report('records', ++scanned);
+      if (!coreIds.has(envelope.recordId) && !(isAux(envelope.recordId) && envelope.data?.chatId === captured.identity.chatId)) continue;
+      const item = { id: envelope.recordId, data: envelope.data };
+      validateVolumeRecord(item, captured.identity.chatId);
+      check(!revisions.has(item.id), '存储清单含有重复记录。');
+      revisions.set(item.id, { revision: envelope.revision, bytes: bytes(item.data) });
+      for (const workspace of peopleWorkspaces([item])) for (const source of Object.values(workspace.avatarSourcesByEntityId ?? {})) sources.set(source.path, source);
+      yield { kind: 'record', ...item };
+    }
+    check([...coreIds].every(id => revisions.has(id)) && revisions.get('v3-root')?.revision === rootEnvelope.revision,
+      '导出期间记忆发生变化，请重新导出。');
+    let readPhase = 'graph', readCount = 0;
+    report(readPhase, readCount);
+    const checkedData = (id, envelope) => {
+      check(envelope && envelope.revision === revisions.get(id)?.revision, '导出期间记忆发生变化，请重新导出。');
+      report(readPhase, ++readCount);
+      return envelope.data;
+    };
+    const readRecord = async id => {
+      const envelope = await client.get(collection, id, { signal });
+      return checkedData(id, envelope);
+    };
+    const readRecords = async function* (ids) {
+      if (typeof client.getMany !== 'function') { for (const id of ids) yield await readRecord(id); return; }
+      let batch = [], batchBytes = 0;
+      const readBatch = async function* () {
+        const result = await client.getMany(collection, batch, { signal });
+        check(Array.isArray(result) && result.length === batch.length, '存储批量读取结果无效。');
+        for (let index = 0; index < batch.length; index++) {
+          const item = result[index], id = batch[index];
+          check(item?.recordId === id, '存储批量读取结果无效。');
+          if (item.status !== 200) throw Object.assign(new Error(item.message || '读取记忆记录失败。'), { status: item.status });
+          try { yield checkedData(id, item.envelope); }
+          finally { result[index] = null; }
+        }
+      };
+      for (const id of ids) {
+        const size = revisions.get(id)?.bytes;
+        check(Number.isSafeInteger(size), '导出期间记忆发生变化，请重新导出。');
+        if (batch.length && (batch.length === 64 || batchBytes + size > MEMORY_VOLUME_BYTES)) {
+          yield* readBatch(); batch = []; batchBytes = 0;
+        }
+        if (size > MEMORY_VOLUME_BYTES) { yield await readRecord(id); continue; }
+        batch.push(id); batchBytes += size;
+      }
+      if (batch.length) yield* readBatch();
+    };
+    const graph = await validateTransferGraph({ chatId: captured.identity.chatId, recordIds: revisions.keys(), readRecord, readRecords });
+    readPhase = 'auxiliary'; readCount = 0; report(readPhase, readCount);
+    await checkAuxiliaryLinks(graph, revisions.keys(), readRecord);
+    report('conversation', 0, captured.chat.length);
+    const bindings = await verifyConversation(graph, captured.chat, sanitizerOptions());
+    report('conversation', captured.chat.length, captured.chat.length);
+    let avatars = 0; report('avatars', avatars, sources.size);
+    for (const source of sources.values()) {
+      const response = await fetchImpl(source.path, { headers: captured.target.requestHeaders, signal });
+      check(response?.ok, '人物头像原图读取失败，请检查原图后重新导出。');
+      const data = new Uint8Array(await response.arrayBuffer()); let binary = '';
+      for (let offset = 0; offset < data.length; offset += 32768) binary += String.fromCharCode(...data.subarray(offset, offset + 32768));
+      report('avatars', ++avatars, sources.size);
+      yield { kind: 'avatar', path: source.path, mimeType: source.mimeType, data: btoa(binary) };
+    }
+    let verified = 0; scanned = 0; report('verify', scanned);
+    for await (const envelope of client.iterRecords(collection, { signal, requireStreaming: true })) {
+      report('verify', ++scanned);
+      if (!coreIds.has(envelope.recordId) && !(isAux(envelope.recordId) && envelope.data?.chatId === captured.identity.chatId)) continue;
+      check(revisions.get(envelope.recordId)?.revision === envelope.revision, '导出期间记忆发生变化，请重新导出。'); verified++;
+    }
+    check(verified === revisions.size, '导出期间记忆发生变化，请重新导出。'); current(captured);
+    report('manifest', 0, 1);
+    yield { kind: 'header', value: { format: FORMAT, formatVersion: 3, pluginVersion, exportedAt: now().toISOString(),
+      source: { chatId: captured.identity.chatId, character: captured.target.characterName }, messages: await volumeWitness(captured.chat),
+      markers: exportMarkers(captured.chat, graph, bindings),
+      prequel: typeof captured.metadata.qianqianjiePrequel === 'string' ? captured.metadata.qianqianjiePrequel : null,
+      calendar: clone(captureCalendar(captured.identity.chatId)) } };
+  }
+  async function* exportVolumeIterator({ partBytes, signal, onProgress } = {}) {
+    const captured = capture();
+    check(!active && !isBusy(), '请等待聊天生成和记忆任务完成后再操作。'); current(captured);
+    active = true; activity.notifyActivity(); let suspended = false;
+    try {
+      session.suspend(captured.identity.chatId); suspended = true; await quiesce(); current(captured);
+      for await (const part of createMemoryVolumes(volumeEntries(captured, signal, onProgress), { archiveId: freshUuid(), partBytes,
+        source: { chatId: captured.identity.chatId, character: captured.target.characterName }, exportedAt: now().toISOString() })) {
+        current(captured);
+        if (part.manifest) onProgress?.({ phase: 'manifest', completed: 1, total: 1 });
+        yield part;
+      }
+    } finally {
+      if (suspended) session.resume(captured.identity.chatId);
+      try { await onSettled({ streaming: true }); } catch { /* Saved state can be reloaded from the host. */ }
+      active = false; activity.notifyActivity();
+    }
+  }
+  function exportVolumes(options = {}) {
+    const controller = new AbortController(), iterator = exportVolumeIterator({ ...options, signal: controller.signal });
+    return { next: () => iterator.next(), return() { controller.abort(); return iterator.return(); }, [Symbol.asyncIterator]() { return this; } };
+  }
+  async function previewVolumes(files) {
+    check(!active && !isBusy(), '请等待聊天生成和记忆任务完成后再导入。');
+    const captured = capture();
+    const selected = Array.from(files), options = { onRecord: (item, chatId) => validateVolumeRecord(item, chatId) };
+    const archive = selected.length === 1 && /\.qqj-memory$/i.test(selected[0].name ?? '')
+      ? await openMemoryBundle(selected[0], options) : await openMemoryVolumes(selected, options);
+    const value = archive.header;
+    check(value.format === FORMAT && value.formatVersion === 3 && value.source.chatId === archive.manifest.source.chatId,
+      '分卷聊天说明无效。');
+    check(Array.isArray(value.messages) && Array.isArray(value.markers) && value.messages.length === value.markers.length
+      && value.messages.every(hash => /^[a-f0-9]{64}$/.test(hash)), '聊天核对信息无效。');
+    check(value.prequel === null || typeof value.prequel === 'string', '前情内容无效。');
+    check(value.calendar === null || normalizeStoryCalendar(value.calendar), '故事历法设置无效。');
+    check(captured.chat.length === value.messages.length, '当前聊天与分卷的聊天数量不同，请打开对应的完整聊天。');
+    const actual = await volumeWitness(captured.chat), mismatch = actual.findIndex((hash, index) => hash !== value.messages[index]);
+    check(mismatch < 0, `当前聊天与记忆包不一致：第 ${mismatch} 楼的发言方、正文或当前选中的回复不同（楼号从 0 开始）。`);
+    const graph = await validateTransferGraph({ chatId: value.source.chatId, recordIds: archive.recordIds, readRecord: archive.readRecord });
+    await checkAuxiliaryLinks(graph, archive.recordIds, archive.readRecord);
+    validateMarkers(value, graph);
+    const sourceChat = captured.chat.map((message, index) => ({ ...message, extra: mergeOwned(message.extra, value.markers[index].extra, MESSAGE_KEYS) }));
+    await verifyConversation(graph, sourceChat, sanitizerOptions()); current(captured);
+    const oldRoot = await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root'); current(captured);
+    const result = Object.freeze({ character: value.source.character, messages: value.messages.length,
+      summaries: graph.summaryCount, states: graph.stateCount, replacesMemory: Boolean(oldRoot?.data?.headCheckpointId), exportedAt: value.exportedAt });
+    previews.set(result, { captured, value, graph, oldRoot, archive }); return result;
+  }
+  async function optionalGet(collection, id, options = {}) {
     try {
       if (id === 'v3-root' && typeof client.getMany === 'function') {
-        const [item] = await client.getMany(collection, [id]);
+        const [item] = await client.getMany(collection, [id], options);
         check(item?.recordId === id && [200, 404].includes(item.status), '当前记忆根读取失败，请稍后重试。');
         return item.status === 404 ? null : item.envelope;
       }
-      return await client.get(collection, id);
+      return await client.get(collection, id, options);
     } catch (error) { if (error.status === 404) return null; throw error; }
   }
-  async function auxiliaryRevisions(chatId) {
-    return Object.fromEntries((await client.list(`chat-${chatId}`)).filter(item => isAux(item.recordId))
+  async function auxiliaryRevisions(chatId, streaming = false) {
+    if (!streaming) return Object.fromEntries((await client.list(`chat-${chatId}`)).filter(item => isAux(item.recordId))
       .map(item => [item.recordId, item.revision]));
+    const revisions = {};
+    for await (const item of client.iterRecords(`chat-${chatId}`, { requireStreaming: true })) {
+      if (isAux(item.recordId)) revisions[item.recordId] = item.revision;
+    }
+    return revisions;
   }
   async function publish(captured, initial, header, messages, chatId) {
     current(captured);
@@ -306,6 +569,28 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     try {
       current(captured);
       const snapshot = hostAdapter.snapshot();
+      if (snapshot.chat.some(hasColdSwipes)) {
+        // Its source holds the old opened file even after the saved path changes.
+        // The host reload cancels pending saves and binds a fresh cold source.
+        const liveMessages = clone(snapshot.chat), liveMetadata = cloneHostJsonMetadata(snapshot.context.chatMetadata);
+        await snapshot.context.reloadCurrentChat();
+        const refreshed = hostAdapter.snapshot(), character = refreshed.context.characters?.[refreshed.context.characterId];
+        if (refreshed.chatId !== captured.identity.hostChatId || character?.avatar !== captured.target.avatarUrl
+          || !same(refreshed.userIdentity, captured.persona) || refreshed.context.chatMetadata?.qianqianjie?.chatId !== chatId
+          || !sameCapturedInputs(saved, { ...captured, identity: { ...captured.identity, chatId }, chat: refreshed.chat, metadata: refreshed.context.chatMetadata })) return { reload: true };
+        // Merge unsaved drafts against the published copy; later reload listeners
+        // own their new changes, including deletions of individual nested fields.
+        refreshed.chat.forEach((message, index) => {
+          const restored = mergeColdReloadMessage(saved.chat[index], liveMessages[index], message);
+          for (const key of Object.keys(message)) delete message[key];
+          Object.assign(message, restored);
+        });
+        const metadata = refreshed.context.chatMetadata;
+        const restoredMetadata = mergeOwned(mergeReloadFields(saved.header.chat_metadata, liveMetadata, metadata), metadata, [...HEADER_KEYS, 'integrity']);
+        for (const key of Object.keys(metadata)) delete metadata[key];
+        Object.assign(metadata, restoredMetadata);
+        return { reload: false };
+      }
       snapshot.chat.forEach((message, index) => {
         const expected = saved.chat[index];
         message.extra = mergeOwned(message.extra, expected?.extra, MESSAGE_KEYS);
@@ -319,14 +604,98 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     } catch { return { reload: true }; }
     return { reload: false };
   }
-  async function importPreview(previewValue) {
-    const plan = previews.get(previewValue);
-    check(plan, '预览已失效，请重新选择文件。'); previews.delete(previewValue);
-    const { captured, value, graph, oldRoot } = plan;
+  async function completeImport(captured, initial, value, chatId, root, importedAuxiliaryRevisions, summaries, streaming = false) {
+    if (value.calendar) await persistCalendar(chatId, value.calendar);
+    const createdAt = now().toISOString();
+    await client.put(CHAT_IDENTITY_COLLECTION, `binding-${chatId}`, { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId,
+      owner: { hostChatId: captured.identity.hostChatId, characterLocator: captured.identity.characterLocator, personaLocator: captured.identity.personaLocator },
+      state: 'ready', sourceChatId: value.source.chatId, createdAt, updatedAt: createdAt }, 0);
+    const header = clone(initial.header), messages = clone(initial.chat);
+    header.chat_metadata.qianqianjie = { ...header.chat_metadata.qianqianjie, schemaVersion: 2, chatId, file: chatFileFromHost(captured.identity) };
+    if (value.prequel === null) delete header.chat_metadata.qianqianjiePrequel; else header.chat_metadata.qianqianjiePrequel = value.prequel;
+    messages.forEach((message, index) => {
+      const apply = (extra, markers) => {
+        const next = { ...extra }; delete next[RECEIPT]; delete next[ANCHOR]; delete next[HIDDEN]; delete next.qianqianjie_migration_alias; delete next[MESSAGE_MEMORY_EXCLUSION_KEY];
+        for (const key of [ANCHOR, HIDDEN, 'qianqianjie_migration_alias', MESSAGE_MEMORY_EXCLUSION_KEY]) if (key === MESSAGE_MEMORY_EXCLUSION_KEY ? markers?.[key] === true : markers?.[key] !== undefined) {
+          next[key] = clone(markers[key]);
+          if (next[key]?.chatId === value.source.chatId) next[key].chatId = chatId;
+        }
+        return next;
+      };
+      message.extra = apply(message.extra, value.markers[index].extra);
+      if (Array.isArray(message.swipe_info)) message.swipe_info.forEach((swipe, n) => {
+        // V2 permits a different history/order of unselected alternatives.
+        // Never transplant an old alternative's anchor onto an unrelated one.
+        swipe.extra = apply(swipe.extra, value.formatVersion === 1 ? value.markers[index].swipes?.[n] : null);
+      });
+    });
+    await client.put(`chat-${chatId}`, ROLLBACK, { schemaVersion: 1, chatId, previousChatId: captured.identity.chatId,
+      header: initial.header, messages: initial.chat, witnessVersion: 2, ...(streaming ? { streaming: true } : {}),
+      importedMessages: streaming ? await volumeWitness(messages) : await transferWitness(messages, { version: 2 }), importedRoot: root,
+      importedAuxiliaryRevisions, importedCalendar: clone(captureCalendar(chatId)), importedPrequel: value.prequel }, 0);
+    const result = await publish(captured, initial, header, messages, chatId);
+    return { ...result, chatId, summaries };
+  }
+  async function importVolumePlan({ captured, value, graph, oldRoot, archive }, previewValue) {
     return exclusive(captured, async () => {
+      previews.delete(previewValue);
       check(same(oldRoot, await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root')), '预览后记忆发生变化，请重新预览。');
       const initial = await readTargetChat(captured.target, { fetchImpl });
-      check(sameInputs(initial, { chat: captured.chat, header: { chat_metadata: captured.metadata } }), '当前聊天尚未保存完成，请稍后重新预览。');
+      check(sameCapturedInputs(initial, captured), '当前聊天尚未保存完成，请稍后重新预览。');
+      const sourceChat = captured.chat.map((message, index) => ({ ...message,
+        extra: mergeOwned(message.extra, value.markers[index].extra, MESSAGE_KEYS) }));
+      await verifyConversation(graph, sourceChat, sanitizerOptions());
+      await archive.verify(); current(captured);
+      const chatId = freshUuid(); check(isUuid(chatId) && chatId !== captured.identity.chatId && chatId !== value.source.chatId, '新记忆编号无效。');
+      for await (const unused of client.iterRecords(`chat-${chatId}`, { requireStreaming: true })) {
+        throw fail('新记忆编号已存在，请重试。');
+      }
+      const uploaded = new Map(), avatarStore = createAvatarImageStore({ fetchImpl, headers: () => captured.target.requestHeaders });
+      for (const path of archive.avatarPaths) {
+        current(captured);
+        const image = await archive.readAvatar(path), binary = atob(image.data);
+        const data = Uint8Array.from(binary, char => char.charCodeAt(0));
+        uploaded.set(path, await avatarStore.upload(new Blob([data], { type: image.mimeType })));
+      }
+      const importedAuxiliaryRevisions = {}, ids = archive.recordIds.filter(id => id !== 'v3-root');
+      // At most four record bodies are being decoded/saved. No foundation-store
+      // instance is used here because its confirmed-content cache retains a graph.
+      for (let offset = 0; offset < ids.length; offset += 64) {
+        current(captured);
+        const batch = ids.slice(offset, offset + 64); let cursor = 0, failure = null;
+        await Promise.all(Array.from({ length: Math.min(4, batch.length) }, async () => {
+          while (!failure) {
+            const index = cursor++; if (index >= batch.length) return;
+            try {
+              const item = rehomeRecord({ id: batch[index], data: await archive.readRecord(batch[index]) }, chatId);
+              for (const workspace of peopleWorkspaces([item])) for (const source of Object.values(workspace.avatarSourcesByEntityId ?? {})) {
+                if (uploaded.has(source.path)) source.path = uploaded.get(source.path).path;
+              }
+              const saved = await client.put(`chat-${chatId}`, item.id, item.data, 0);
+              check(same(saved.data, item.data), '新副本的存储返回内容不一致，未切换当前记忆。');
+              if (isAux(item.id)) importedAuxiliaryRevisions[item.id] = saved.revision;
+            } catch (error) { failure ??= error; }
+          }
+        }));
+        if (failure) throw failure;
+      }
+      current(captured);
+      const root = rehomeRecord({ id: 'v3-root', data: await archive.readRecord('v3-root') }, chatId).data;
+      const committed = await client.put(`chat-${chatId}`, 'v3-root', root, 0);
+      check(same(committed.data, root), '新副本的存储返回内容不一致，未切换当前记忆。');
+      return completeImport(captured, initial, value, chatId, committed.data, importedAuxiliaryRevisions, previewValue.summaries, true);
+    }, { streaming: true });
+  }
+  async function importPreview(previewValue) {
+    const plan = previews.get(previewValue);
+    check(plan, '预览已失效，请重新选择文件。');
+    if (plan.archive) return importVolumePlan(plan, previewValue);
+    const { captured, value, graph, oldRoot } = plan;
+    return exclusive(captured, async () => {
+      previews.delete(previewValue);
+      check(same(oldRoot, await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root')), '预览后记忆发生变化，请重新预览。');
+      const initial = await readTargetChat(captured.target, { fetchImpl });
+      check(sameCapturedInputs(initial, captured), '当前聊天尚未保存完成，请稍后重新预览。');
       const sourceChat = captured.chat.map((message, index) => ({ ...message,
         extra: mergeOwned(message.extra, value.markers[index].extra, MESSAGE_KEYS) }));
       await verifyConversation(graph, sourceChat, sanitizerOptions());
@@ -356,63 +725,38 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         const saved = await store.putRecords(batch.map(item => item.data));
         check(saved.length === batch.length && saved.every(item => ['saved', 'reused'].includes(item.status)), '新副本的存储返回内容不一致，未切换当前记忆。');
       }
+      const importedAuxiliaryRevisions = {};
       for (const item of records.filter(item => !coreTypes.has(item.data.recordType))) {
         current(captured);
         const saved = await client.put(`chat-${chatId}`, item.id, item.data, 0);
         check(same(saved.data, item.data), '新副本的存储返回内容不一致，未切换当前记忆。');
+        importedAuxiliaryRevisions[item.id] = saved.revision;
       }
       current(captured);
       const root = records.find(item => item.id === 'v3-root').data;
       const committed = await store.commitRoot(root, 0);
       check(committed.status === 'saved', '新副本写入冲突，未切换当前记忆。');
-      if (value.calendar) await persistCalendar(chatId, value.calendar);
-      const createdAt = now().toISOString();
-      await client.put(CHAT_IDENTITY_COLLECTION, `binding-${chatId}`, { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId,
-        owner: { hostChatId: captured.identity.hostChatId, characterLocator: captured.identity.characterLocator, personaLocator: captured.identity.personaLocator },
-        state: 'ready', sourceChatId: value.source.chatId, createdAt, updatedAt: createdAt }, 0);
-      const header = clone(initial.header), messages = clone(initial.chat);
-      header.chat_metadata.qianqianjie = { ...header.chat_metadata.qianqianjie, schemaVersion: 2, chatId, file: chatFileFromHost(captured.identity) };
-      if (value.prequel === null) delete header.chat_metadata.qianqianjiePrequel; else header.chat_metadata.qianqianjiePrequel = value.prequel;
-      messages.forEach((message, index) => {
-        const apply = (extra, markers) => {
-          const next = { ...extra }; delete next[RECEIPT]; delete next[ANCHOR]; delete next[HIDDEN]; delete next.qianqianjie_migration_alias; delete next[MESSAGE_MEMORY_EXCLUSION_KEY];
-          for (const key of [ANCHOR, HIDDEN, 'qianqianjie_migration_alias', MESSAGE_MEMORY_EXCLUSION_KEY]) if (key === MESSAGE_MEMORY_EXCLUSION_KEY ? markers?.[key] === true : markers?.[key] !== undefined) {
-            next[key] = clone(markers[key]);
-            if (next[key]?.chatId === value.source.chatId) next[key].chatId = chatId;
-          }
-          return next;
-        };
-        message.extra = apply(message.extra, value.markers[index].extra);
-        if (Array.isArray(message.swipe_info)) message.swipe_info.forEach((swipe, n) => {
-          // V2 permits a different history/order of unselected alternatives.
-          // Never transplant an old alternative's anchor onto an unrelated one.
-          swipe.extra = apply(swipe.extra, value.formatVersion === 1 ? value.markers[index].swipes?.[n] : null);
-        });
-      });
-      await client.put(`chat-${chatId}`, ROLLBACK, { schemaVersion: 1, chatId, previousChatId: captured.identity.chatId,
-        header: initial.header, messages: initial.chat, witnessVersion: 2,
-        importedMessages: await transferWitness(messages, { version: 2 }), importedRoot: committed.data ?? root,
-        importedAuxiliaryRevisions: await auxiliaryRevisions(chatId), importedCalendar: clone(captureCalendar(chatId)), importedPrequel: value.prequel }, 0);
-      const result = await publish(captured, initial, header, messages, chatId);
-      return { ...result, chatId, summaries: previewValue.summaries };
+      return completeImport(captured, initial, value, chatId, committed.data ?? root, importedAuxiliaryRevisions, previewValue.summaries);
     });
   }
   async function undo() {
-    const captured = capture();
+    const captured = capture(), settled = { streaming: false };
     return exclusive(captured, async () => {
       const rollback = (await optionalGet(`chat-${captured.identity.chatId}`, ROLLBACK))?.data;
+      settled.streaming = rollback?.streaming === true;
       check(rollback?.schemaVersion === 1 && rollback.chatId === captured.identity.chatId, '当前聊天没有可撤销的导入。');
-      check(same(await transferWitness(captured.chat, { version: rollback.witnessVersion ?? 1 }), rollback.importedMessages), '导入后已继续聊天或修改正文。请先导出当前记忆；本次不覆盖新剧情。');
+      const witness = rollback.streaming ? await volumeWitness(captured.chat) : await transferWitness(captured.chat, { version: rollback.witnessVersion ?? 1 });
+      check(same(witness, rollback.importedMessages), '导入后已继续聊天或修改正文。请先导出当前记忆；本次不覆盖新剧情。');
       const currentRoot = await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root');
       check(rollback.importedRoot && same(currentRoot?.data, rollback.importedRoot), '导入后的记忆已变化，请先导出当前记忆；本次没有撤销。');
       if (rollback.importedAuxiliaryRevisions) {
-        check(same(await auxiliaryRevisions(captured.identity.chatId), rollback.importedAuxiliaryRevisions)
+        check(same(await auxiliaryRevisions(captured.identity.chatId, rollback.streaming === true), rollback.importedAuxiliaryRevisions)
           && same(captureCalendar(captured.identity.chatId), rollback.importedCalendar)
           && (typeof captured.metadata.qianqianjiePrequel === 'string' ? captured.metadata.qianqianjiePrequel : null) === rollback.importedPrequel,
         '导入后的记忆已变化，请先导出当前记忆；本次没有撤销。');
       }
       const initial = await readTargetChat(captured.target, { fetchImpl });
-      check(sameInputs(initial, { chat: captured.chat, header: { chat_metadata: captured.metadata } }), '当前聊天尚未保存完成，请稍后重试。');
+      check(sameCapturedInputs(initial, captured), '当前聊天尚未保存完成，请稍后重试。');
       const header = clone(initial.header), messages = clone(initial.chat);
       header.chat_metadata.qianqianjie = clone(rollback.header.chat_metadata.qianqianjie);
       if (rollback.header.chat_metadata.qianqianjiePrequel === undefined) delete header.chat_metadata.qianqianjiePrequel;
@@ -431,8 +775,8 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         });
       });
       return publish(captured, initial, header, messages, rollback.previousChatId);
-    });
+    }, settled);
   }
-  return Object.freeze({ exportCurrent, preview, importPreview, undo, getState: () => ({ active }),
+  return Object.freeze({ exportCurrent, exportVolumes, preview, previewVolumes, importPreview, undo, getState: () => ({ active }),
     getActivityState: activity.getActivityState, subscribeActivity: activity.subscribeActivity });
 }

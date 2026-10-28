@@ -193,6 +193,116 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('切聊天时即使没有请求新统计，activity也取消旧手动扫描', async () => {
+  const f = fixture(), otherId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  let selected = { ...f.session.identity() }, announce, release;
+  const entered = new Promise(resolve => { announce = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  let produced = 0, aborted = 0;
+  f.session.identity = () => selected;
+  f.hostAdapter.snapshot = () => ({ chatId: selected.hostChatId, context: { chatMetadata: { qianqianjie: { chatId: selected.chatId } } } });
+  f.client.iterRecords = async function* (_collection, { signal } = {}) {
+    produced++; yield structuredClone(f.records()[0]);
+    announce();
+    await new Promise((resolve, reject) => {
+      const abort = () => { aborted++; reject(signal.reason); };
+      if (signal?.aborted) { abort(); return; }
+      signal?.addEventListener('abort', abort, { once: true });
+      gate.then(() => { signal?.removeEventListener('abort', abort); resolve(); });
+    });
+    for (const item of f.records().slice(1)) { produced++; yield structuredClone(item); }
+  };
+  const pending = f.manager.scan(), result = pending.then(value => ({ value }), error => ({ error }));
+  try {
+    await entered;
+    selected = { ...selected, chatId: otherId, hostChatId: 'other-host' };
+    f.setBusy(false);
+    await tick();
+    assert.equal(aborted, 1, '不依赖新聊天再次调用scan');
+    assert.equal((await result).error?.code, 'QQJ_STORAGE_CHAT_CHANGED');
+    assert.equal(produced, 1, '取消后不再读取旧聊天的后续记录');
+    assert.equal(f.manager.getActivityState().busy, false);
+    assert.equal(f.manager.getState().chatId, otherId);
+    assert.equal(f.manager.getState().status, 'idle');
+    f.setBusy(false);
+    await tick();
+    assert.equal(aborted, 1, '后续通知不会重复取消已结束的扫描');
+  } finally {
+    release(); await Promise.allSettled([pending]); f.manager.dispose();
+  }
+});
+
+test('切聊天后新的手动统计取消旧只读扫描，旧finally不清掉新扫描', async t => {
+  for (const streaming of [true, false]) await t.test(streaming ? 'iterRecords' : 'legacy list', async () => {
+    const f = fixture(), otherId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    let selected = { ...f.session.identity() }, announceA, releaseA, releaseB;
+    const enteredA = new Promise(resolve => { announceA = resolve; });
+    const gateA = new Promise(resolve => { releaseA = resolve; });
+    const gateB = new Promise(resolve => { releaseB = resolve; });
+    const calls = { startedA: 0, startedB: 0, abortedA: 0, producedA: 0 };
+    const wait = (gate, signal, onAbort = () => {}) => new Promise((resolve, reject) => {
+      const abort = () => { onAbort(); reject(signal.reason); };
+      if (signal?.aborted) { abort(); return; }
+      signal?.addEventListener('abort', abort, { once: true });
+      gate.then(() => { signal?.removeEventListener('abort', abort); resolve(); });
+    });
+    const recordsFor = chatId => f.records().map(item => {
+      const value = structuredClone(item);
+      if (value.data.chatId === CHAT) value.data.chatId = chatId;
+      return value;
+    });
+    f.session.identity = () => selected;
+    f.hostAdapter.snapshot = () => ({ chatId: selected.hostChatId, context: { chatMetadata: { qianqianjie: { chatId: selected.chatId } } } });
+    f.store.readReachable = async () => reachable(selected.chatId);
+    if (streaming) f.client.iterRecords = async function* (collection, { signal } = {}) {
+      if (collection === `chat-${CHAT}`) {
+        calls.startedA++;
+        const records = recordsFor(CHAT); calls.producedA++; yield records[0];
+        announceA(); await wait(gateA, signal, () => { calls.abortedA++; });
+        for (const item of records.slice(1)) { calls.producedA++; yield item; }
+      } else {
+        calls.startedB++; await gateB;
+        yield* recordsFor(otherId);
+      }
+    };
+    else f.client.list = async (collection, { signal } = {}) => {
+      if (collection === `chat-${CHAT}`) {
+        calls.startedA++; announceA(); await wait(gateA, signal, () => { calls.abortedA++; });
+        calls.producedA += f.records().length;
+        return recordsFor(CHAT);
+      }
+      calls.startedB++; await gateB; return recordsFor(otherId);
+    };
+    const first = f.manager.scan(), firstResult = first.then(value => ({ value }), error => ({ error }));
+    let second;
+    try {
+      await enteredA;
+      const producedBeforeSwitch = calls.producedA;
+      selected = { ...selected, chatId: otherId, hostChatId: 'other-host' };
+      second = f.manager.scan();
+      await tick();
+      assert.equal(calls.startedB, 1, 'B不能继续等待A的operation.promise');
+      const stale = await firstResult;
+      assert.equal(stale.error?.code, 'QQJ_STORAGE_CHAT_CHANGED');
+      assert.equal(calls.abortedA, 1);
+      assert.equal(calls.producedA, producedBeforeSwitch, '取消后不读取A的后续记录');
+      assert.equal(f.manager.getActivityState().busy, true, 'A的finally不清除正在等待的B扫描');
+      assert.equal(f.manager.getState().status, 'scanning');
+      assert.equal(f.manager.getState().chatId, otherId);
+      releaseB();
+      const result = await second;
+      assert.equal(result.identity.chatId, otherId);
+      assert.equal(f.manager.getState().status, 'ready');
+      assert.equal(f.manager.getState().stats.total.count, f.records().length);
+      assert.equal(f.manager.getActivityState().busy, false);
+    } finally {
+      releaseA(); releaseB();
+      await Promise.allSettled([first, second]);
+      f.manager.dispose();
+    }
+  });
+});
+
 test('旧后端确认不支持回收站清理后，多次 activity 不会重复调度且事件循环可继续', async () => {
   const f = fixture({ trashGcSupport: false });
   let checkingTransitions = 0;

@@ -106,7 +106,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
     diagnostic[requestDiagnostic.method === 'GET' || requestDiagnostic.method === 'POST' ? 'latestRead' : 'latestWrite'] = record;
     if (outcome !== 'success') diagnostic.lastFailure = record;
   };
-  const request = async (path, options = {}, requestDiagnostic = null, requestTimeoutMs = timeoutMs) => {
+  const request = async (path, options = {}, requestDiagnostic = null, requestTimeoutMs = timeoutMs, responseProvider = fetchImpl) => {
     const startedAt = Date.now();
     const action = requestDiagnostic ? ACTION_FOR_METHOD[requestDiagnostic.method] ?? null : null;
     let http400Diagnostic = null;
@@ -146,7 +146,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException('Aborted', 'AbortError');
       let response;
       try {
-        response = await fetchImpl(`${baseUrl}${path}`, { ...requestOptions, signal: controller.signal, headers: requestHeaders });
+        response = await responseProvider(`${baseUrl}${path}`, { ...requestOptions, signal: controller.signal, headers: requestHeaders });
       } catch (error) {
         fetchFailed = true;
         throw error;
@@ -190,11 +190,10 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
   const key = (collection, recordId) => `${collectionKey(collection)}/${encodeURIComponent(recordId)}`;
   const recordIdsKey = collection => `/v1/record-ids/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}`;
   const recordBatchKey = collection => `/v1/record-batch/${encodeURIComponent(NAMESPACE)}/${encodeURIComponent(collection)}`;
-  const negotiateCapabilities = async signal => {
+  const negotiateCapabilities = async () => {
     if (capabilities) return capabilities;
-    if (useTauri) return null;
     if (!capabilityRequest) {
-      capabilityRequest = Promise.resolve().then(async () => { await client.health({ signal }); return capabilities; })
+      capabilityRequest = Promise.resolve().then(async () => { await client.health(); return capabilities; })
         .finally(() => { capabilityRequest = null; });
     }
     return capabilityRequest;
@@ -228,7 +227,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
     async get(collection, recordId, { signal } = {}) { return request(key(collection, recordId), { signal }, { method: 'GET', recordType: recordTypeFromId(recordId) }); },
     async getMany(collection, recordIds, { signal, negotiate = true } = {}) {
       if (!Array.isArray(recordIds) || recordIds.length < 1 || recordIds.length > 64 || recordIds.some(id => typeof id !== 'string')) throw new TypeError('recordIds must contain 1..64 strings');
-      if (negotiate) await negotiateCapabilities(signal);
+      if (negotiate) await negotiateCapabilities();
       if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       if (capabilities?.recordBatchRead) {
         const body = await request(recordBatchKey(collection), { method: 'POST', body: JSON.stringify({ recordIds }), signal }, { method: 'POST', recordType: 'collection' });
@@ -250,10 +249,22 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       return results;
     },
-    async *iterRecords(collection, { signal } = {}) {
-      await negotiateCapabilities(signal);
+    async *iterRecords(collection, { signal, requireStreaming = false } = {}) {
+      if (typeof fetchImpl.iterRecords === 'function') {
+        const source = fetchImpl.iterRecords(NAMESPACE, collection, { signal });
+        try {
+          while (true) {
+            const next = await request(collectionKey(collection), { signal }, { method: 'GET', recordType: 'collection' }, timeoutMs,
+              async (_url, options) => ({ ok: true, status: 200, json: () => source.next(options.signal) }));
+            if (next.done) return;
+            yield next.value;
+          }
+        } finally { await source.return(); }
+      }
+      await negotiateCapabilities();
       if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
-      if (capabilities?.recordBatchRead !== true || capabilities?.recordIdList !== true) {
+      if (capabilities?.recordIdList !== true) {
+        if (requireStreaming) throw new Error('当前记忆存储后端不支持分批读取，请更新白鸟数据后端后重试。');
         const records = await this.list(collection, { signal });
         if (!Array.isArray(records)) throw new Error('后端没有返回有效的记录清单');
         yield* records; return;
