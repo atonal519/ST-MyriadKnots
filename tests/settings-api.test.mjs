@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { applyPluginEnabledImmediately, createSettingsStore, DEFAULT_SETTINGS, normalizeAutoHideKeepAiCount, normalizeAutoMemoryBatchSize } from '../src/settings.js';
 import { BASE_PROCESSING_PROMPT } from '../src/shared-processing-prompt.js';
 import { createApiResolver, createApiTools, createTaskRouter } from '../src/api-routing.js';
@@ -309,7 +311,7 @@ test('千千结主配置独立，显式预设从共享池即时解析；失效�
   assert.equal(calls, 0); assert.equal(settings.get().selectedSevenDaysPresetId, selected.id);
 });
 
-test('只双向共享 schedule-planner 预设池；千千结主配置与两边用途保持独立', async () => {
+test('只双向共享 schedule-planner 预设池；千千结主配置与两边用途保持独立', async t => {
   const keep = { ...configured('保留', 'keep'), vendor: { nested: true } };
   const target = { ...configured('待改', 'target'), targetUnknown: 'KEEP_ME' };
   const extensionSettings = { qianqianjie: { apiUrl: 'https://qqj.old/v1', apiKey: 'QQJ_OLD', apiModel: 'qqj-old', summaryPresetId: 'keep' }, 'schedule-planner': { apiUrl: 'https://main.old/v1', apiKey: 'OLD', apiModel: 'old', apiPresetActiveId: 'keep', utilityPresetId: 'target', apiPresets: [keep, target], unknownTop: { keep: true } } };
@@ -320,22 +322,33 @@ test('只双向共享 schedule-planner 预设池；千千结主配置与两边�
   assert.equal(extensionSettings['schedule-planner'].apiUrl, 'https://main.old/v1'); assert.equal(extensionSettings['schedule-planner'].apiPresetActiveId, 'keep'); assert.equal(extensionSettings['schedule-planner'].utilityPresetId, 'target');
   assert.equal(settings.mainConfig().url, 'https://qqj.new/v1'); assert.equal(settings.summaryPresetId(), 'keep');
 
-  const source = await readFile(new URL('../../ST-SevenDaysCal/runtime/settings.js', import.meta.url), 'utf8');
-  globalThis.__QQJ_SEVEN_TEST_SETTINGS__ = extensionSettings; globalThis.__QQJ_SEVEN_TEST_SAVES__ = 0;
-  const executable = source
-    .replace("'../utils/shared-processing-prompt.js'", JSON.stringify(new URL('../../ST-SevenDaysCal/utils/shared-processing-prompt.js', import.meta.url).href))
-    .replace("'../utils/shared-body-wrappers.js'", JSON.stringify(new URL('../../ST-SevenDaysCal/utils/shared-body-wrappers.js', import.meta.url).href))
-    .replace("import { extension_settings } from '../../../../extensions.js';", 'const extension_settings = globalThis.__QQJ_SEVEN_TEST_SETTINGS__;')
-    .replace("import { saveSettingsDebounced } from '../../../../../script.js';", 'const saveSettingsDebounced = () => { globalThis.__QQJ_SEVEN_TEST_SAVES__ += 1; };');
-  const seven = await import(`data:text/javascript;base64,${Buffer.from(executable).toString('base64')}`);
-  assert.deepEqual(seven.loadCfg(), { url: 'https://main.old/v1', key: 'OLD', model: 'old', excludeParams: [], timeoutSec: 180, stream: false, spAdditionalParams: '' });
-  assert.deepEqual(seven.loadApiPresets().find(item => item.id === 'target'), extensionSettings['schedule-planner'].apiPresets[1]);
-  seven.upsertApiPreset('构画侧已改', { url: 'https://seven.changed/v1', key: 'SEVEN_KEY', model: 'seven-model', excludeParams: ['top_p'], timeoutSec: 88, stream: false }, 'target');
-  assert.deepEqual(settings.sharedPresets().find(item => item.id === 'target'), { id: 'target', name: '构画侧已改', url: 'https://seven.changed/v1', key: 'SEVEN_KEY', model: 'seven-model', excludeParams: ['top_p'], timeoutSec: 88, stream: false, targetUnknown: 'KEEP_ME' });
-  settings.renameSharedPreset('target', '千千结改名'); assert.equal(seven.loadApiPresets().find(item => item.id === 'target').name, '千千结改名');
-  settings.deleteSharedPreset('target'); assert.equal(seven.loadApiPresets().some(item => item.id === 'target'), false); assert.deepEqual(seven.loadApiPresets()[0], keep);
-  assert.equal(extensionSettings['schedule-planner'].utilityPresetId, 'target'); assert.equal(extensionSettings['schedule-planner'].apiPresetActiveId, 'target', '构画自己编辑预设时仍可维护自己的活动指针');
-  delete globalThis.__QQJ_SEVEN_TEST_SETTINGS__; delete globalThis.__QQJ_SEVEN_TEST_SAVES__;
+  await t.test('构画真实设置模块与千千结双向共享预设', async t => {
+    const configuredRoot = process.env.QQJ_SEVEN_DAYS_CAL_ROOT;
+    const sourceUrl = configuredRoot ? pathToFileURL(resolve(configuredRoot, 'runtime/settings.js'))
+      : new URL('../../ST-SevenDaysCal/runtime/settings.js', import.meta.url);
+    let source;
+    try { source = await readFile(sourceUrl, 'utf8'); }
+    catch (error) {
+      if (error.code !== 'ENOENT' || configuredRoot) throw error;
+      t.skip('可选跨插件集成需要 ST-SevenDaysCal 源码；可用 QQJ_SEVEN_DAYS_CAL_ROOT 指定目录。');
+      return;
+    }
+    globalThis.__QQJ_SEVEN_TEST_SETTINGS__ = extensionSettings; globalThis.__QQJ_SEVEN_TEST_SAVES__ = 0;
+    t.after(() => { delete globalThis.__QQJ_SEVEN_TEST_SETTINGS__; delete globalThis.__QQJ_SEVEN_TEST_SAVES__; });
+    const executable = source
+      .replace("'../utils/shared-processing-prompt.js'", JSON.stringify(new URL('../utils/shared-processing-prompt.js', sourceUrl).href))
+      .replace("'../utils/shared-body-wrappers.js'", JSON.stringify(new URL('../utils/shared-body-wrappers.js', sourceUrl).href))
+      .replace("import { extension_settings } from '../../../../extensions.js';", 'const extension_settings = globalThis.__QQJ_SEVEN_TEST_SETTINGS__;')
+      .replace("import { saveSettingsDebounced } from '../../../../../script.js';", 'const saveSettingsDebounced = () => { globalThis.__QQJ_SEVEN_TEST_SAVES__ += 1; };');
+    const seven = await import(`data:text/javascript;base64,${Buffer.from(executable).toString('base64')}`);
+    assert.deepEqual(seven.loadCfg(), { url: 'https://main.old/v1', key: 'OLD', model: 'old', excludeParams: [], timeoutSec: 180, stream: false, spAdditionalParams: '' });
+    assert.deepEqual(seven.loadApiPresets().find(item => item.id === 'target'), extensionSettings['schedule-planner'].apiPresets[1]);
+    seven.upsertApiPreset('构画侧已改', { url: 'https://seven.changed/v1', key: 'SEVEN_KEY', model: 'seven-model', excludeParams: ['top_p'], timeoutSec: 88, stream: false }, 'target');
+    assert.deepEqual(settings.sharedPresets().find(item => item.id === 'target'), { id: 'target', name: '构画侧已改', url: 'https://seven.changed/v1', key: 'SEVEN_KEY', model: 'seven-model', excludeParams: ['top_p'], timeoutSec: 88, stream: false, targetUnknown: 'KEEP_ME' });
+    settings.renameSharedPreset('target', '千千结改名'); assert.equal(seven.loadApiPresets().find(item => item.id === 'target').name, '千千结改名');
+    settings.deleteSharedPreset('target'); assert.equal(seven.loadApiPresets().some(item => item.id === 'target'), false); assert.deepEqual(seven.loadApiPresets()[0], keep);
+    assert.equal(extensionSettings['schedule-planner'].utilityPresetId, 'target'); assert.equal(extensionSettings['schedule-planner'].apiPresetActiveId, 'target', '构画自己编辑预设时仍可维护自己的活动指针');
+  });
 });
 
 test('记忆任务路由冻结本次配置，下一次才读取变化且在途可中止', async () => {

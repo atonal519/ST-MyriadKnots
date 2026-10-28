@@ -94,7 +94,7 @@ function observeDependencyProvenanceClones(fixture) {
     }
     return cloned;
   };
-  return { counts, clonedFrozenSignatures, restore() { globalThis.structuredClone = original; }, nextCall() { phase = 1; } };
+  return { counts, clonedFrozenSignatures, restore() { globalThis.structuredClone = original; }, nextCall() { provenanceMaps.add(fixture.provenance); phase = 1; } };
 }
 
 test('extractor dependency preparation builds frozen provenance once per call and fresh on the next call', async () => {

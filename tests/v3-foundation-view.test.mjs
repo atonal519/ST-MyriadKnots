@@ -849,7 +849,8 @@ test('needsReview 终态显示准确中文和安全原因，不向页面泄露�
   const view = createV3FoundationView({ runtime, peopleRuntime: peopleRuntime([{ entityId: 'p1', displayName: '裴晚生' }]), documentRef }); view.mount(container); await view.activate();
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.match(copy, /需要核对当前聊天记忆/); assert.match(copy, /待核对原因.*楼正文指纹不一致.*实际第 23 楼.*记录 12 \/ 当前 12.*消息标识：无.*不一致：原始正文、清洗后正文/); assert.doesNotMatch(copy, /不一致：[^|]*清洗规则/); assert.match(copy, /最近记忆错误.*无/); assert.doesNotMatch(copy, /needsReview|fingerprintMismatch|AI序号/);
-  assert.match(copy, /请先点击“刷新状态”.*现有记忆会保留、正文可继续.*复制诊断反馈/);
+  assert.match(copy, /有消息与已存记录的正文版本依据不一致.*请点击“刷新状态”.*详细诊断.*复制状态诊断反馈/);
+  assert.doesNotMatch(copy, /正文可继续/u, '尚未核对的正文版本不承诺可直接继续生成');
   view.setPage('memories'); openDetails(flatten(container).find(node => String(node.className).split(' ').includes('qqj-memory-card'))); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的摘要/);
   view.setPage('people'); assert.match(flatten(container).map(node => node.textContent).join('|'), /needsReview 下仍可见的人物状态/);
 });
@@ -2336,19 +2337,21 @@ test('管理页刷新反馈跟随真实终态并保留后续操作反馈', async
     navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
   view.setPage('management'); view.mount(container);
   flatten(container).find(node => node.textContent === '刷新状态').click();
+  view.setActivity({ busy: true, phase: 'inspecting', copy: '正在核验记忆' });
+  view.setActivity({ busy: false, phase: null, copy: '' });
   state = { ...initial, memorySyncStatus: 'idle' }; listener(state);
   assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '正在刷新状态…', '本次刷新开始前排队的旧 ready/idle 通知不能结算新提示');
   releaseRefresh();
   await new Promise(resolve => setImmediate(resolve));
   listener(state);
   let feedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
-  assert.match(feedback.textContent, /后台校验仍在进行/u);
+  assert.match(feedback.textContent, /记忆资料已读入.*正在同步与核验/u);
   assert.doesNotMatch(feedback.textContent, /已记忆|已保留/u);
 
   state = reviewed; listener(state);
   feedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
-  assert.equal(feedback.textContent, '核验已结束；第 495 楼记忆标记需核对。已保留 247 楼记忆。');
-  assert.doesNotMatch(feedback.textContent, /后台校验仍在进行/u);
+  assert.match(feedback.textContent, /有消息的记忆标记无法对应.*请点击“刷新状态”/u);
+  assert.doesNotMatch(feedback.textContent, /正在同步与核验/u);
   assert.deepEqual(calls, [{ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }]);
 
   flatten(container).find(node => node.textContent === '复制状态诊断').click();
@@ -2404,10 +2407,11 @@ test('旧刷新失败不清理较新刷新的反馈所有权', async () => {
   await new Promise(resolve => setImmediate(resolve));
   pending[0].reject(new Error('older refresh failed'));
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '当前聊天已读取完成；后台校验仍在进行。');
+  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '记忆资料已读入，正在同步与核验。');
+  assert.doesNotMatch(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, /older refresh failed/u);
   state = { ...initial, status: 'needsReview', memorySyncStatus: 'needsReview', reviewReason: { code: 'markerMismatch', messageIndex: 495 }, rememberedCount: 247 };
   listener(state);
-  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '核验已结束；记忆仍需核对。已保留 247 楼记忆。');
+  assert.match(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, /有消息的记忆标记无法对应.*请点击“刷新状态”/u);
 });
 
 test('同聊天记忆同步保留千结与双丝网已确认文字，确认结果或切聊后再替换', () => {

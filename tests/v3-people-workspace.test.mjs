@@ -1623,8 +1623,8 @@ test('十楼粗扫每个请求准备与CAS保存阶段只投影一次3901规模�
   assert.equal(h.runtime.getState().profilesByEntityId[second.id].appearance, '有明确新事实');
   assert.equal(passesAtRequest, 2, '目标选择与同批请求资料各投影一次');
   assert.equal(visitsAtRequest, 2 * floors.length);
-  assert.equal(projectionPasses, 4, 'CAS updater 复用单次候选投影，之后 adopt 各自按需投影');
-  assert.equal(memoryVisits, 4 * floors.length);
+  assert.equal(projectionPasses, 5, '请求及CAS各复用单次候选投影，之后固定任务目标与当前页面各更新一次');
+  assert.equal(memoryVisits, 5 * floors.length);
 });
 
 test('新增选择只为真实空档自动首次整理，并排除宿主关闭世界书条目', async () => {
@@ -1815,11 +1815,12 @@ test('首次整理期间正文增长仍保存本次成功见证，取消再选�
 });
 
 test('取消选择会阻止首次整理迟到结果与完成进度落档', async () => {
-  let release; const gate = new Promise(resolve => { release = resolve; }); let calls = 0;
-  const h = harness({ generate: async () => { calls++; await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '迟到结果' }] } }; } });
+  let release, announceRequest; const gate = new Promise(resolve => { release = resolve; }); let calls = 0;
+  const requestStarted = new Promise(resolve => { announceRequest = resolve; });
+  const h = harness({ generate: async () => { calls++; announceRequest(); await gate; return { jsonData: { profiles: [{ personKey: 'person-1', name: '迟到结果' }] } }; } });
   const target = h.peopleEntities[0]; await h.runtime.refresh({ refreshMemory: false });
   await h.runtime.setSelectedEntityIds([target.id]); h.setMainGenerationActive(false);
-  await waitFor(() => h.runtime.getState().active?.kind === 'generating');
+  await requestStarted;
   await h.runtime.setSelectedEntityIds([]); release(); await waitFor(() => h.runtime.getState().active === null);
   assert.equal(calls, 1); assert.equal(h.runtime.getState().profilesByEntityId[target.id], undefined);
   assert.equal(h.runtime.getState().profileMaterialProgressByEntityId[target.id], undefined);
