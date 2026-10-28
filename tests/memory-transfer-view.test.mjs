@@ -46,6 +46,43 @@ test('leaving settings during confirmation prevents import', async () => {
   assert.equal(imported, false);
 });
 
+test('oversized file metadata is rejected before reading, previewing or importing', async t => {
+  for (const [label, size] of [['64 MiB + 1 byte', 64 * 1024 * 1024 + 1], ['100 MiB', 100 * 1024 * 1024],
+    ['500 MiB', 500 * 1024 * 1024], ['1 GiB', 1024 * 1024 * 1024]]) await t.test(label, async () => {
+    const calls = { text: 0, preview: 0, import: 0 };
+    const view = createMemoryTransferView({ runtime: {
+      preview: async () => { calls.preview += 1; return { messages: 2, summaries: 1, states: 0 }; },
+      importPreview: async () => { calls.import += 1; return { summaries: 1 }; },
+    }, documentRef: { createElement: tag => new Node(tag) }, confirmImpl: async () => true });
+    const nodes = flatten(view.node), input = nodes.find(node => node.type === 'file');
+    input.files = [{ size, text: async () => { calls.text += 1; return '{}'; } }];
+    input.fire('change'); await tick();
+    assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });
+    assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '记忆包不能超过 64 MB。');
+    for (const control of nodes.filter(node => node.tag === 'button' || node === input)) assert.equal(control.disabled, false);
+    nodes.find(node => node.textContent === '确认导入').fire('click'); await tick();
+    assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });
+    assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '请先选择记忆包并完成预览。');
+    view.dispose();
+  });
+});
+
+test('file metadata at exactly 64 MiB reaches preview without automatically importing', async () => {
+  const calls = { text: 0, preview: 0, import: 0 };
+  const view = createMemoryTransferView({ runtime: {
+    preview: async text => { calls.preview += 1; assert.equal(text, '{}'); return { messages: 2, summaries: 1, states: 0 }; },
+    importPreview: async () => { calls.import += 1; return { summaries: 1 }; },
+  }, documentRef: { createElement: tag => new Node(tag) } });
+  const nodes = flatten(view.node), input = nodes.find(node => node.type === 'file');
+  // Size metadata exercises the file-entry boundary; the body stays small in this UI unit test.
+  input.files = [{ size: 64 * 1024 * 1024, text: async () => { calls.text += 1; return '{}'; } }];
+  input.fire('change'); await tick();
+  assert.deepEqual(calls, { text: 1, preview: 1, import: 0 });
+  assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '预览通过，点击“确认导入”恢复。');
+  for (const control of nodes.filter(node => node.tag === 'button' || node === input)) assert.equal(control.disabled, false);
+  view.dispose();
+});
+
 test('JSON download uses a mounted anchor and keeps the blob URL available for mobile browsers', () => {
   let clicked, removed, revoked, timer, appended;
   const link = { click() { clicked = true; }, remove() { removed = true; } };

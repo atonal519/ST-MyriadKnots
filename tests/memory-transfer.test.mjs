@@ -200,6 +200,50 @@ test('hidden messages, local time records, vector cache and arbitrary non-QQJ me
   assert.equal(f.backend.records.get(`chat-${IMPORTED}/qqj-vector-index`).data.modelKey, `sha256:${'a'.repeat(64)}`);
 });
 
+test('import finishes without rereading a populated collection and keeps returned auxiliary revisions', async () => {
+  const f = await fixture();
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-time-head', { schemaVersion: 1, chatId: SOURCE, batchIds: [], bodyStart: 0 }, 0);
+  const exported = await f.runtime.exportCurrent(), target = await f.target();
+  const list = f.backend.client.list, put = f.backend.client.put;
+  let emptyLists = 0;
+  f.backend.client.list = async collection => {
+    if (collection === `chat-${IMPORTED}`) {
+      if ([...f.backend.records.keys()].some(key => key.startsWith(`${collection}/`))) {
+        throw Object.assign(new Error('读取记忆超时'), { code: 'BACKEND_TIMEOUT' });
+      }
+      emptyLists += 1;
+    }
+    return list(collection);
+  };
+  f.backend.client.put = async (...args) => {
+    const result = await put(...args);
+    if (args[0] === `chat-${IMPORTED}` && args[1] === 'v3-time-head') {
+      f.backend.records.get(`${args[0]}/${args[1]}`).revision = 7;
+      return { ...result, revision: 7 };
+    }
+    return result;
+  };
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  assert.equal(emptyLists, 1);
+  assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+  assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/self-use-memory-transfer-rollback-v1`).data.importedAuxiliaryRevisions,
+    { 'v3-time-head': 7 });
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await foundation.start()).status, 'ready');
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
+    generateAnalysisTask: async () => assert.fail('cold import must not reanalyze'),
+    generateUtilityTask: async () => assert.fail('cold import must not resummarize') });
+  await memory.start();
+  assert.equal(memory.getState().rememberedCount, 1);
+  assert.deepEqual((await store.readReachable({ mode: 'full' })).floorMemories.map(item => item.summary),
+    f.graph.floorMemories.map(item => item.summary));
+  f.backend.client.list = list;
+  await f.runtime.undo();
+  assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+});
+
 test('time batch IDs round trip with their head and migration references', async t => {
   for (const legacy of [false, true]) await t.test(legacy ? 'legacy 32hex' : 'UUID from actual time edit', async () => {
     const f = await fixture({ body: '阿岚把钥匙放进木盒。' });
@@ -1497,5 +1541,25 @@ test('undo preserves new manual people time calendar and prequel edits when the 
     assert.equal(f.api.saves, saves);
     if (field === 'calendar') assert.deepEqual(calendars.get(IMPORTED), { months: 4, prefix: '人工改历' });
     if (field === 'prequel') assert.equal(target.chatMetadata.qianqianjiePrequel, '导入后新写的人工前情');
+  });
+});
+
+test('undo preserves changes and deletion of imported auxiliary records while the core root is unchanged', async t => {
+  for (const change of ['edit', 'delete']) await t.test(change, async () => {
+    const f = await fixture();
+    const timeStore = createTimeStore({ client: f.backend.client });
+    await timeStore.putHead(SOURCE, { schemaVersion: 1, chatId: SOURCE, batchIds: [], bodyStart: 0 }, 0);
+    const exported = await f.runtime.exportCurrent(), target = await f.target();
+    await f.runtime.importPreview(await f.runtime.preview(exported.text));
+    const root = structuredClone(f.backend.records.get(`chat-${IMPORTED}/v3-root`));
+    const key = `chat-${IMPORTED}/v3-time-head`, importedHead = f.backend.records.get(key);
+    if (change === 'edit') await timeStore.putHead(IMPORTED, { ...importedHead.data, bodyStart: 1 }, importedHead.revision);
+    else f.backend.records.delete(key);
+    assert.deepEqual(f.backend.records.get(`chat-${IMPORTED}/v3-root`), root);
+    const records = structuredClone([...f.backend.records]), saves = f.api.saves;
+    await assert.rejects(f.runtime.undo(), /导入后的.*已变化/);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+    assert.deepEqual([...f.backend.records], records);
+    assert.equal(f.api.saves, saves);
   });
 });

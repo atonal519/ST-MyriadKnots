@@ -35616,7 +35616,12 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				let t = C.slice(e, e + 64), n = await b.putRecords(t.map((e) => e.data));
 				$T(n.length === t.length && n.every((e) => ["saved", "reused"].includes(e.status)), "新副本的存储返回内容不一致，未切换当前记忆。");
 			}
-			for (let t of h.filter((e) => !nE.has(e.data.recordType))) _(r), $T(eE((await e.put(`chat-${m}`, t.id, t.data, 0)).data, t.data), "新副本的存储返回内容不一致，未切换当前记忆。");
+			let w = {};
+			for (let t of h.filter((e) => !nE.has(e.data.recordType))) {
+				_(r);
+				let n = await e.put(`chat-${m}`, t.id, t.data, 0);
+				$T(eE(n.data, t.data), "新副本的存储返回内容不一致，未切换当前记忆。"), w[t.id] = n.revision;
+			}
 			_(r);
 			let E = h.find((e) => e.id === "v3-root").data, D = await b.commitRoot(E, 0);
 			$T(D.status === "saved", "新副本写入冲突，未切换当前记忆。"), i.calendar && await s(m, i.calendar);
@@ -35665,7 +35670,7 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				witnessVersion: 2,
 				importedMessages: await pE(A, { version: 2 }),
 				importedRoot: D.data ?? E,
-				importedAuxiliaryRevisions: await w(m),
+				importedAuxiliaryRevisions: w,
 				importedCalendar: ZT(o(m)),
 				importedPrequel: i.prequel
 			}, 0), {

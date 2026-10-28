@@ -356,10 +356,12 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         const saved = await store.putRecords(batch.map(item => item.data));
         check(saved.length === batch.length && saved.every(item => ['saved', 'reused'].includes(item.status)), '新副本的存储返回内容不一致，未切换当前记忆。');
       }
+      const importedAuxiliaryRevisions = {};
       for (const item of records.filter(item => !coreTypes.has(item.data.recordType))) {
         current(captured);
         const saved = await client.put(`chat-${chatId}`, item.id, item.data, 0);
         check(same(saved.data, item.data), '新副本的存储返回内容不一致，未切换当前记忆。');
+        importedAuxiliaryRevisions[item.id] = saved.revision;
       }
       current(captured);
       const root = records.find(item => item.id === 'v3-root').data;
@@ -392,7 +394,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       await client.put(`chat-${chatId}`, ROLLBACK, { schemaVersion: 1, chatId, previousChatId: captured.identity.chatId,
         header: initial.header, messages: initial.chat, witnessVersion: 2,
         importedMessages: await transferWitness(messages, { version: 2 }), importedRoot: committed.data ?? root,
-        importedAuxiliaryRevisions: await auxiliaryRevisions(chatId), importedCalendar: clone(captureCalendar(chatId)), importedPrequel: value.prequel }, 0);
+        importedAuxiliaryRevisions, importedCalendar: clone(captureCalendar(chatId)), importedPrequel: value.prequel }, 0);
       const result = await publish(captured, initial, header, messages, chatId);
       return { ...result, chatId, summaries: previewValue.summaries };
     });
