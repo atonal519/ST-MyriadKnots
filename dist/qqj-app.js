@@ -35343,12 +35343,12 @@ async function gE(e) {
 		graph: i
 	};
 }
-async function _E(e, t) {
-	let n = new Set(e.migrationDescriptor?.frozenFloorIds ?? []);
-	for (let r of e.floors) {
-		if (n.has(r.id)) continue;
-		let e = t[r.hostLocator.messageIndex], i = jt(e);
-		$T(i && `sha256:${await C(i.rawContent)}` === r.content.rawFingerprint, "记忆中的楼层与聊天正文不一致，请在旧设备刷新记忆状态后重新导出。");
+async function _E(e, t, n) {
+	let r = new Set(e.migrationDescriptor?.frozenFloorIds ?? []);
+	for (let i of e.floors) {
+		if (r.has(i.id)) continue;
+		let e = t[i.hostLocator.messageIndex], a = jt(e);
+		$T(a && (`sha256:${await C(a.rawContent)}` === i.content.rawFingerprint || `sha256:${await C(F(a.rawContent, n))}` === i.content.canonicalFingerprint), `记忆中的楼层与聊天正文不一致：第 ${i.hostLocator.messageIndex} 楼（从 0 开始）。请核对正文及清洗设置，在旧设备刷新记忆状态后重新导出。`);
 	}
 }
 function vE(e, t, n) {
@@ -35385,11 +35385,11 @@ function bE(e, t) {
 		data: n
 	};
 }
-function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quiesce: i = async () => {}, onSettled: a = async () => {}, captureCalendar: o = () => null, persistCalendar: s = async () => {}, fetchImpl: c = globalThis.fetch, freshUuid: l = () => globalThis.crypto.randomUUID(), now: u = () => /* @__PURE__ */ new Date(), pluginVersion: d = "0.7.8" } = {}) {
-	let f = !1, p = In(() => ({
-		busy: f,
-		phase: f ? "migrating" : null
-	})), m = /* @__PURE__ */ new WeakMap(), h = () => {
+function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quiesce: i = async () => {}, onSettled: a = async () => {}, captureCalendar: o = () => null, persistCalendar: s = async () => {}, sanitizerOptions: c = () => ({}), fetchImpl: l = globalThis.fetch, freshUuid: u = () => globalThis.crypto.randomUUID(), now: d = () => /* @__PURE__ */ new Date(), pluginVersion: f = "0.7.8" } = {}) {
+	let p = !1, m = In(() => ({
+		busy: p,
+		phase: p ? "migrating" : null
+	})), h = /* @__PURE__ */ new WeakMap(), g = () => {
 		let e = n.snapshot(), r = t.identity();
 		return {
 			identity: r,
@@ -35398,26 +35398,26 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 			chat: ZT(e.chat),
 			metadata: cx(e.context.chatMetadata)
 		};
-	}, g = (e) => {
+	}, _ = (e) => {
 		let t = n.snapshot(), r = t.context.characters?.[t.context.characterId];
 		$T(t.chatId === e.identity.hostChatId && r?.avatar === e.target.avatarUrl && eE(t.userIdentity, e.persona) && t.context.chatMetadata?.qianqianjie?.chatId === e.identity.chatId && cE(t.chat, e.chat) && nt(t.chat, e.chat) && lE(t.context.chatMetadata, e.metadata), "聊天已切换或内容有变化，请重新选择记忆包并预览。");
 	};
-	async function _(e, n) {
-		$T(!f && !r(), "请等待聊天生成和记忆任务完成后再操作。"), g(e), f = !0, p.notifyActivity();
+	async function v(e, n) {
+		$T(!p && !r(), "请等待聊天生成和记忆任务完成后再操作。"), _(e), p = !0, m.notifyActivity();
 		let o = !1;
 		try {
-			return t.suspend(e.identity.chatId), o = !0, await i(), g(e), await n();
+			return t.suspend(e.identity.chatId), o = !0, await i(), _(e), await n();
 		} finally {
 			o && t.resume(e.identity.chatId);
 			try {
 				await a();
 			} catch {}
-			f = !1, p.notifyActivity();
+			p = !1, m.notifyActivity();
 		}
 	}
-	async function v() {
-		let t = h();
-		return _(t, async () => {
+	async function y() {
+		let t = g();
+		return v(t, async () => {
 			let n = /* @__PURE__ */ new Map(), r = {
 				...e,
 				async get(t, r) {
@@ -35442,26 +35442,26 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				id: e,
 				data: ZT(t.data)
 			}));
-			await hE(s, t.identity.chatId), await _E(i, t.chat);
-			let l = [], f = new Map(iE(s).flatMap((e) => Object.values(e.avatarSourcesByEntityId ?? {})).map((e) => [e.path, e]));
-			for (let e of f.values()) {
-				let n = await c(e.path, { headers: t.target.requestHeaders });
+			await hE(s, t.identity.chatId), await _E(i, t.chat, c());
+			let u = [], p = new Map(iE(s).flatMap((e) => Object.values(e.avatarSourcesByEntityId ?? {})).map((e) => [e.path, e]));
+			for (let e of p.values()) {
+				let n = await l(e.path, { headers: t.target.requestHeaders });
 				$T(n?.ok, "人物头像原图读取失败，请检查原图后重新导出。");
 				let r = new Uint8Array(await n.arrayBuffer()), i = "";
 				for (let e = 0; e < r.length; e += 32768) i += String.fromCharCode(...r.subarray(e, e + 32768));
-				l.push({
+				u.push({
 					path: e.path,
 					mimeType: e.mimeType,
 					data: btoa(i)
 				});
 			}
-			let p = await e.list(`chat-${t.identity.chatId}`);
-			$T([...n].every(([e, t]) => p.some((n) => n.recordId === e && n.revision === t.revision && eE(n.data, t.data))) && p.filter((e) => rE(e.recordId)).length === a.filter((e) => rE(e.recordId)).length, "导出期间记忆发生变化，请重试。"), g(t);
-			let m = {
+			let m = await e.list(`chat-${t.identity.chatId}`);
+			$T([...n].every(([e, t]) => m.some((n) => n.recordId === e && n.revision === t.revision && eE(n.data, t.data))) && m.filter((e) => rE(e.recordId)).length === a.filter((e) => rE(e.recordId)).length, "导出期间记忆发生变化，请重试。"), _(t);
+			let h = {
 				format: GT,
 				formatVersion: KT,
-				pluginVersion: d,
-				exportedAt: u().toISOString(),
+				pluginVersion: f,
+				exportedAt: d().toISOString(),
 				source: {
 					chatId: t.identity.chatId,
 					character: t.target.characterName
@@ -35471,25 +35471,25 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				records: s,
 				prequel: typeof t.metadata.qianqianjiePrequel == "string" ? t.metadata.qianqianjiePrequel : null,
 				calendar: ZT(o(t.identity.chatId)),
-				...l.length ? { avatarImages: l } : {}
-			}, h = {
-				...m,
-				checksum: await C(HT(m))
+				...u.length ? { avatarImages: u } : {}
+			}, g = {
+				...h,
+				checksum: await C(HT(h))
 			};
-			return $T(tE(h) <= WT, "导出数据超过第一版支持的 64 MB。"), {
-				filename: `千千结记忆-${u().toISOString().replace(/[:.]/g, "-")}.qqj-memory.json`,
-				text: JSON.stringify(h)
+			return $T(tE(g) <= WT, "导出数据超过第一版支持的 64 MB。"), {
+				filename: `千千结记忆-${d().toISOString().replace(/[:.]/g, "-")}.qqj-memory.json`,
+				text: JSON.stringify(g)
 			};
 		});
 	}
-	async function y(e) {
-		$T(!f && !r(), "请等待聊天生成和记忆任务完成后再导入。");
-		let t = h(), { value: n, graph: i } = await gE(e);
+	async function b(e) {
+		$T(!p && !r(), "请等待聊天生成和记忆任务完成后再导入。");
+		let t = g(), { value: n, graph: i } = await gE(e);
 		$T(t.chat.length === n.messages.length, `当前聊天与记忆包不一致：当前 ${t.chat.length} 条，记忆包 ${n.messages.length} 条。请打开对应的完整聊天记录。`);
 		let a = (await pE(t.chat, { version: n.formatVersion })).findIndex((e, t) => e !== n.messages[t]);
-		$T(a < 0, n.formatVersion === 1 ? `旧版记忆包在第 ${a} 楼的综合校验不同，可能只是时间戳、候选编号或隐藏标记变化，不能据此判断正文不同。请两边更新插件，在旧设备重新导出记忆包后再试，无需重做摘要。` : `当前聊天与记忆包不一致：第 ${a} 楼的发言方、正文或当前选中的回复不同（楼号从 0 开始）。请核对该楼；本次未写入记忆。`), await _E(i, t.chat), g(t);
-		let o = await b(`chat-${t.identity.chatId}`, "v3-root");
-		g(t);
+		$T(a < 0, n.formatVersion === 1 ? `旧版记忆包在第 ${a} 楼的综合校验不同，可能只是时间戳、候选编号或隐藏标记变化，不能据此判断正文不同。请两边更新插件，在旧设备重新导出记忆包后再试，无需重做摘要。` : `当前聊天与记忆包不一致：第 ${a} 楼的发言方、正文或当前选中的回复不同（楼号从 0 开始）。请核对该楼；本次未写入记忆。`), await _E(i, t.chat, c()), _(t);
+		let o = await S(`chat-${t.identity.chatId}`, "v3-root");
+		_(t);
 		let s = Object.freeze({
 			character: n.source.character,
 			messages: n.messages.length,
@@ -35498,13 +35498,13 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 			replacesMemory: !!o?.data?.headCheckpointId,
 			exportedAt: n.exportedAt
 		});
-		return m.set(s, {
+		return h.set(s, {
 			captured: t,
 			value: n,
 			oldRoot: o
 		}), s;
 	}
-	async function b(t, n) {
+	async function S(t, n) {
 		try {
 			if (n === "v3-root" && typeof e.getMany == "function") {
 				let [r] = await e.getMany(t, [n]);
@@ -35516,15 +35516,15 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 			throw e;
 		}
 	}
-	async function S(e, t, r, i, a) {
-		g(e);
-		let o = await ht(e.target, { fetchImpl: c });
+	async function w(e, t, r, i, a) {
+		_(e);
+		let o = await ht(e.target, { fetchImpl: l });
 		$T(uE(t, o), "聊天文件在导入期间有变化，已停止，原记忆保留。");
 		let s = {
 			...o.header,
 			chat_metadata: dE(o.header.chat_metadata, r.chat_metadata, oE)
-		}, l = o.chat.map((e, t) => fE(e, i[t]));
-		g(e), $T((await c("/api/chats/save", {
+		}, c = o.chat.map((e, t) => fE(e, i[t]));
+		_(e), $T((await l("/api/chats/save", {
 			method: "POST",
 			cache: "no-cache",
 			headers: e.target.requestHeaders,
@@ -35532,17 +35532,17 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				ch_name: e.target.characterName,
 				file_name: e.target.hostChatId,
 				avatar_url: e.target.avatarUrl,
-				chat: [s, ...l],
+				chat: [s, ...c],
 				force: !1
 			})
 		}))?.ok, "聊天文件未能保存。原记忆数据仍保留，请重新打开聊天核对状态。");
 		let u = await ht({
 			...e.target,
 			chatId: a
-		}, { fetchImpl: c });
-		$T(lE(u.header.chat_metadata, s.chat_metadata) && nt(u.chat, l) && cE(u.chat, l), "保存后的聊天未通过核对。请重新打开聊天；原记忆仍可通过撤销导入恢复。");
+		}, { fetchImpl: l });
+		$T(lE(u.header.chat_metadata, s.chat_metadata) && nt(u.chat, c) && cE(u.chat, c), "保存后的聊天未通过核对。请重新打开聊天；原记忆仍可通过撤销导入恢复。");
 		try {
-			g(e);
+			_(e);
 			let t = n.snapshot();
 			t.chat.forEach((e, t) => {
 				let n = u.chat[t];
@@ -35557,29 +35557,29 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 		}
 		return { reload: !1 };
 	}
-	async function w(t) {
-		let n = m.get(t);
-		$T(n, "预览已失效，请重新选择文件。"), m.delete(t);
+	async function T(t) {
+		let n = h.get(t);
+		$T(n, "预览已失效，请重新选择文件。"), h.delete(t);
 		let { captured: r, value: i, oldRoot: a } = n;
-		return _(r, async () => {
-			$T(eE(a, await b(`chat-${r.identity.chatId}`, "v3-root")), "预览后记忆发生变化，请重新预览。");
-			let n = await ht(r.target, { fetchImpl: c });
+		return v(r, async () => {
+			$T(eE(a, await S(`chat-${r.identity.chatId}`, "v3-root")), "预览后记忆发生变化，请重新预览。");
+			let n = await ht(r.target, { fetchImpl: l });
 			$T(uE(n, {
 				chat: r.chat,
 				header: { chat_metadata: r.metadata }
-			}), "当前聊天尚未保存完成，请稍后重新预览。"), g(r);
-			let o = l();
+			}), "当前聊天尚未保存完成，请稍后重新预览。"), _(r);
+			let o = u();
 			$T(x(o) && o !== r.identity.chatId && o !== i.source.chatId, "新记忆编号无效。"), $T((await e.list(`chat-${o}`)).length === 0, "新记忆编号已存在，请重试。");
-			let d = i.records.map((e) => bE(e, o));
-			await hE(d, o);
+			let c = i.records.map((e) => bE(e, o));
+			await hE(c, o);
 			let f = new Map((i.avatarImages ?? []).map((e) => [e.path, e])), p = /* @__PURE__ */ new Map(), m = xx({
-				fetchImpl: c,
+				fetchImpl: l,
 				headers: () => r.target.requestHeaders
 			});
-			for (let e of iE(d)) for (let t of Object.values(e.avatarSourcesByEntityId ?? {})) {
+			for (let e of iE(c)) for (let t of Object.values(e.avatarSourcesByEntityId ?? {})) {
 				let e = f.get(t.path);
 				if (e) {
-					if (g(r), !p.has(t.path)) {
+					if (_(r), !p.has(t.path)) {
 						let n = atob(e.data), r = Uint8Array.from(n, (e) => e.charCodeAt(0));
 						p.set(t.path, await m.upload(new Blob([r], { type: t.mimeType })));
 					}
@@ -35592,17 +35592,17 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 					...r.identity,
 					chatId: o
 				})
-			}), _ = d.filter((e) => e.id !== "v3-root" && nE.has(e.data.recordType));
-			for (let e = 0; e < _.length; e += 64) {
-				g(r);
-				let t = _.slice(e, e + 64), n = await h.putRecords(t.map((e) => e.data));
+			}), g = c.filter((e) => e.id !== "v3-root" && nE.has(e.data.recordType));
+			for (let e = 0; e < g.length; e += 64) {
+				_(r);
+				let t = g.slice(e, e + 64), n = await h.putRecords(t.map((e) => e.data));
 				$T(n.length === t.length && n.every((e) => ["saved", "reused"].includes(e.status)), "新副本的存储返回内容不一致，未切换当前记忆。");
 			}
-			for (let t of d.filter((e) => !nE.has(e.data.recordType))) g(r), $T(eE((await e.put(`chat-${o}`, t.id, t.data, 0)).data, t.data), "新副本的存储返回内容不一致，未切换当前记忆。");
-			g(r);
-			let v = d.find((e) => e.id === "v3-root").data, y = await h.commitRoot(v, 0);
+			for (let t of c.filter((e) => !nE.has(e.data.recordType))) _(r), $T(eE((await e.put(`chat-${o}`, t.id, t.data, 0)).data, t.data), "新副本的存储返回内容不一致，未切换当前记忆。");
+			_(r);
+			let v = c.find((e) => e.id === "v3-root").data, y = await h.commitRoot(v, 0);
 			$T(y.status === "saved", "新副本写入冲突，未切换当前记忆。"), i.calendar && await s(o, i.calendar);
-			let C = u().toISOString();
+			let b = d().toISOString();
 			await e.put(cT, `binding-${o}`, {
 				schemaVersion: 1,
 				kind: "qqj-chat-identity-binding",
@@ -35614,16 +35614,16 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				},
 				state: "ready",
 				sourceChatId: i.source.chatId,
-				createdAt: C,
-				updatedAt: C
+				createdAt: b,
+				updatedAt: b
 			}, 0);
-			let w = ZT(n.header), T = ZT(n.chat);
-			return w.chat_metadata.qianqianjie = {
-				...w.chat_metadata.qianqianjie,
+			let C = ZT(n.header), T = ZT(n.chat);
+			return C.chat_metadata.qianqianjie = {
+				...C.chat_metadata.qianqianjie,
 				schemaVersion: 2,
 				chatId: o,
 				file: px(r.identity)
-			}, i.prequel === null ? delete w.chat_metadata.qianqianjiePrequel : w.chat_metadata.qianqianjiePrequel = i.prequel, T.forEach((e, t) => {
+			}, i.prequel === null ? delete C.chat_metadata.qianqianjiePrequel : C.chat_metadata.qianqianjiePrequel = i.prequel, T.forEach((e, t) => {
 				let n = (e, t) => {
 					let n = { ...e };
 					delete n[XT], delete n[JT], delete n[YT], delete n.qianqianjie_migration_alias, delete n[Le];
@@ -35648,20 +35648,20 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				importedMessages: await pE(T, { version: 2 }),
 				importedRoot: y.data ?? v
 			}, 0), {
-				...await S(r, n, w, T, o),
+				...await w(r, n, C, T, o),
 				chatId: o,
 				summaries: t.summaries
 			};
 		});
 	}
-	async function T() {
-		let e = h();
-		return _(e, async () => {
-			let t = (await b(`chat-${e.identity.chatId}`, qT))?.data;
+	async function E() {
+		let e = g();
+		return v(e, async () => {
+			let t = (await S(`chat-${e.identity.chatId}`, qT))?.data;
 			$T(t?.schemaVersion === 1 && t.chatId === e.identity.chatId, "当前聊天没有可撤销的导入。"), $T(eE(await pE(e.chat, { version: t.witnessVersion ?? 1 }), t.importedMessages), "导入后已继续聊天或修改正文。请先导出当前记忆；本次不覆盖新剧情。");
-			let n = await b(`chat-${e.identity.chatId}`, "v3-root");
+			let n = await S(`chat-${e.identity.chatId}`, "v3-root");
 			$T(t.importedRoot && eE(n?.data, t.importedRoot), "导入后的记忆已变化，请先导出当前记忆；本次没有撤销。");
-			let r = await ht(e.target, { fetchImpl: c });
+			let r = await ht(e.target, { fetchImpl: l });
 			$T(uE(r, {
 				chat: e.chat,
 				header: { chat_metadata: e.metadata }
@@ -35682,17 +35682,17 @@ function xE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 				e.extra = r(e.extra, t.messages[n].extra), e.swipe_info?.forEach((e, i) => {
 					e.extra = r(e.extra, t.messages[n].swipe_info?.[i]?.extra);
 				});
-			}), S(e, r, i, a, t.previousChatId);
+			}), w(e, r, i, a, t.previousChatId);
 		});
 	}
 	return Object.freeze({
-		exportCurrent: v,
-		preview: y,
-		importPreview: w,
-		undo: T,
-		getState: () => ({ active: f }),
-		getActivityState: p.getActivityState,
-		subscribeActivity: p.subscribeActivity
+		exportCurrent: y,
+		preview: b,
+		importPreview: T,
+		undo: E,
+		getState: () => ({ active: p }),
+		getActivityState: m.getActivityState,
+		subscribeActivity: m.subscribeActivity
 	});
 }
 //#endregion
@@ -56562,6 +56562,7 @@ var SF = Gj({
 });
 hP = xE({
 	client: MP,
+	sanitizerOptions: jP,
 	session: JP,
 	hostAdapter: vP,
 	pluginVersion: dl,

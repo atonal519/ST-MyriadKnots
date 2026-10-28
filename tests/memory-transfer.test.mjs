@@ -55,16 +55,18 @@ function backendHarness() {
 
 const TARGET = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const IMPORTED = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-async function fixture({ excluded = false, body = '她把钥匙放进木盒。' } = {}) {
+async function fixture({ excluded = false, body = '她把钥匙放进木盒。', wrappers = {} } = {}) {
   const backend = backendHarness();
+  let currentWrappers = wrappers;
+  const sanitizerOptions = () => currentWrappers;
   const ctx = context('old-chat', SOURCE, [user('旧档开场'), assistant(body), user('继续'), assistant('最新一楼'), user('钥匙呢？')]);
   if (excluded) ctx.chat[3].extra = { qianqianjie_memory_excluded: true };
   let selected = ctx;
   const host = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => selected } } });
   const store = createFoundationStore({ client: backend.client, contextProvider: () => identity(ctx.chatId, SOURCE) });
-  const foundation = createFoundationRuntime({ hostAdapter: host, store, contextProvider: () => ctx, newUuid: uuidFactory(), logger: { warn() {} } });
+  const foundation = createFoundationRuntime({ hostAdapter: host, store, contextProvider: () => ctx, sanitizerOptions, newUuid: uuidFactory(), logger: { warn() {} } });
   await foundation.start();
-  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: host,
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: host, sanitizerOptions,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
     generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
     generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { summary: '钥匙在木盒里。' } : { noMaterialChange: true } }) });
@@ -79,7 +81,7 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。' 
   const session = createChatSession({ contextProvider: () => selected, identityCoordinator: coordinator });
   await session.prepare();
   let api = targetChatApi(selected);
-  const runtime = createMemoryTransfer({ client: backend.client, session, hostAdapter: host, freshUuid: () => IMPORTED,
+  const runtime = createMemoryTransfer({ client: backend.client, session, hostAdapter: host, sanitizerOptions, freshUuid: () => IMPORTED,
     fetchImpl: (...args) => api.fetch(...args), onSettled: async () => { session.invalidate(); await session.prepare(); } });
   const exported = await runtime.exportCurrent();
   return { backend, ctx, host, graph, memory, runtime, exported, session,
@@ -88,7 +90,7 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。' 
       selected.name2 = '新版角色'; selected.characters[0].name = '新版角色'; selected.characters[0].data.description = '作者更新后的设定';
       if (changed) selected.chat[1].mes = '改写的正文';
       await session.prepare(); api = targetChatApi(selected); return selected;
-    }, get api() { return api; }, setApi(value) { api = value; }, select(value) { selected = value; },
+    }, get api() { return api; }, setApi(value) { api = value; }, select(value) { selected = value; }, setWrappers(value) { currentWrappers = value; },
   };
 }
 
@@ -694,4 +696,59 @@ test('people thumbnails, original image bytes and crop migrate to new host paths
   }
   const reexported = JSON.parse((await f.runtime.exportCurrent()).text);
   assert.deepEqual(reexported.avatarImages, [{ path: newPath, mimeType: 'image/png', data: Buffer.from(imageBytes).toString('base64') }]);
+});
+
+
+test('wrapper-only edits export and restore existing memory without rewriting source records', async () => {
+  const f = await fixture();
+  const original = structuredClone([...f.backend.records]);
+  f.ctx.chat[1].mes = f.ctx.chat[1].swipes[0] = '她把钥匙放进木盒。<!--仅修改包装-->';
+  const exported = await f.runtime.exportCurrent();
+  assert.deepEqual([...f.backend.records], original);
+  const { graph } = await parseMemoryPackage(exported.text);
+  assert.deepEqual(graph.floorMemories, f.graph.floorMemories);
+  await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const restored = await store.readReachable({ mode: 'full' });
+  assert.deepEqual(restored.floorMemories.map(item => item.summary), f.graph.floorMemories.map(item => item.summary));
+  assert.deepEqual(restored.stateDeltas.map(item => item.id), f.graph.stateDeltas.map(item => item.id));
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(reexported.graph.floorMemories.map(item => item.id), f.graph.floorMemories.map(item => item.id));
+});
+
+test('custom wrapper-only edits round trip and reexport with matching rules', async () => {
+  const wrappers = { keepTags: 'scene', extraTags: 'thinking' };
+  const f = await fixture({ body: '<scene>她把钥匙放进木盒。</scene><thinking>旧思考</thinking>', wrappers });
+  f.ctx.chat[1].mes = f.ctx.chat[1].swipes[0] = '<scene>她把钥匙放进木盒。</scene><thinking>新思考</thinking>';
+  const exported = await f.runtime.exportCurrent();
+  await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(reexported.graph.floorMemories.map(item => item.id), f.graph.floorMemories.map(item => item.id));
+  assert.deepEqual(reexported.graph.stateDeltas.map(item => item.id), f.graph.stateDeltas.map(item => item.id));
+});
+
+test('different custom wrapper rules reject preview until source and destination agree', async () => {
+  const wrappers = { keepTags: 'scene', extraTags: 'thinking' };
+  const f = await fixture({ body: '<scene>她把钥匙放进木盒。</scene><thinking>旧思考</thinking>', wrappers });
+  f.ctx.chat[1].mes = f.ctx.chat[1].swipes[0] = '<scene>她把钥匙放进木盒。</scene><thinking>新思考</thinking>';
+  const exported = await f.runtime.exportCurrent();
+  await f.target(); f.setWrappers({});
+  const before = structuredClone([...f.backend.records]);
+  await assert.rejects(f.runtime.preview(exported.text), /第 1 楼.*核对正文及清洗设置/);
+  assert.deepEqual([...f.backend.records], before);
+  assert.equal(f.api.saves, 0);
+  f.setWrappers(wrappers);
+  await f.runtime.importPreview(await f.runtime.preview(exported.text));
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(reexported.graph.floorMemories.map(item => item.id), f.graph.floorMemories.map(item => item.id));
+});
+
+test('valid floor anchors do not permit exporting a changed story body as matching memory', async () => {
+  const f = await fixture();
+  f.ctx.chat[1].extra ??= {};
+  f.ctx.chat[1].extra.qianqianjie_floor = { schemaVersion: 1, chatId: SOURCE, floorId: f.graph.floors[0].id };
+  f.ctx.chat[1].mes = f.ctx.chat[1].swipes[0] = '她把钥匙扔进湖里。';
+  await assert.rejects(f.runtime.exportCurrent(), /记忆中的楼层与聊天正文不一致/);
 });

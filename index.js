@@ -442,6 +442,7 @@ const storageManagement = createStorageManagement({
 });
 memoryTransfer = createMemoryTransfer({
   client: backendClient,
+  sanitizerOptions,
   session,
   hostAdapter,
   pluginVersion,

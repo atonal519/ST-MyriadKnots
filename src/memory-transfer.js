@@ -8,6 +8,7 @@ import { validatePeopleWorkspace } from './v3/people-workspace.js';
 import { vectorRecordOwned } from './v3/vector-index.js';
 import { normalizeStoryCalendar } from './v3/calendar-rules.js';
 import { selectAssistantMessage } from './v3/foundation-domain.js';
+import { sanitizeMemoryContent } from './memory-content-sanitizer.js';
 import { MESSAGE_MEMORY_EXCLUSION_KEY } from './v3/memory-exclusion.js';
 import { stableJson } from './memory-transfer-json.js';
 import { createActivitySignal } from './plugin-activity.js';
@@ -140,13 +141,14 @@ export async function parseMemoryPackage(input) {
   return { value, graph };
 }
 
-async function verifyConversation(graph, chat) {
+async function verifyConversation(graph, chat, sanitizerOptions) {
   const frozen = new Set(graph.migrationDescriptor?.frozenFloorIds ?? []);
   for (const floor of graph.floors) {
     if (frozen.has(floor.id)) continue;
     const message = chat[floor.hostLocator.messageIndex], selected = selectAssistantMessage(message);
-    check(selected && `sha256:${await sha256(selected.rawContent)}` === floor.content.rawFingerprint,
-      '记忆中的楼层与聊天正文不一致，请在旧设备刷新记忆状态后重新导出。');
+    check(selected && (`sha256:${await sha256(selected.rawContent)}` === floor.content.rawFingerprint
+      || `sha256:${await sha256(sanitizeMemoryContent(selected.rawContent, sanitizerOptions))}` === floor.content.canonicalFingerprint),
+      `记忆中的楼层与聊天正文不一致：第 ${floor.hostLocator.messageIndex} 楼（从 0 开始）。请核对正文及清洗设置，在旧设备刷新记忆状态后重新导出。`);
   }
 }
 
@@ -175,7 +177,7 @@ function rehomeRecord(item, chatId) {
 }
 
 export function createMemoryTransfer({ client, session, hostAdapter, isBusy = () => false, quiesce = async () => {},
-  onSettled = async () => {}, captureCalendar = () => null, persistCalendar = async () => {},
+  onSettled = async () => {}, captureCalendar = () => null, persistCalendar = async () => {}, sanitizerOptions = () => ({}),
   fetchImpl = globalThis.fetch, freshUuid = () => globalThis.crypto.randomUUID(), now = () => new Date(), pluginVersion = '0.7.8' } = {}) {
   let active = false;
   const activity = createActivitySignal(() => ({ busy: active, phase: active ? 'migrating' : null }));
@@ -227,7 +229,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       for (const record of list) if (isAux(record.recordId) && record.data?.chatId === captured.identity.chatId) collected.set(record.recordId, record);
       const records = [...collected].map(([id, record]) => ({ id, data: clone(record.data) }));
       await validateRecords(records, captured.identity.chatId);
-      await verifyConversation(graph, captured.chat);
+      await verifyConversation(graph, captured.chat, sanitizerOptions());
       const avatarImages = [];
       const sources = new Map(peopleWorkspaces(records).flatMap(workspace => Object.values(workspace.avatarSourcesByEntityId ?? {})).map(source => [source.path, source]));
       for (const source of sources.values()) {
@@ -262,7 +264,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     check(mismatch < 0, value.formatVersion === 1
       ? `旧版记忆包在第 ${mismatch} 楼的综合校验不同，可能只是时间戳、候选编号或隐藏标记变化，不能据此判断正文不同。请两边更新插件，在旧设备重新导出记忆包后再试，无需重做摘要。`
       : `当前聊天与记忆包不一致：第 ${mismatch} 楼的发言方、正文或当前选中的回复不同（楼号从 0 开始）。请核对该楼；本次未写入记忆。`);
-    await verifyConversation(graph, captured.chat);
+    await verifyConversation(graph, captured.chat, sanitizerOptions());
     current(captured);
     const oldRoot = await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root'); current(captured);
     const result = Object.freeze({ character: value.source.character, messages: value.messages.length,
