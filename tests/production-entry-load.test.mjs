@@ -1165,7 +1165,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(startupDiagnostic.failure.name, 'TypeError');
   assert.doesNotMatch(JSON.stringify(startupDiagnostic), /PRIVATE source startup binding detail/u, '真实 index startup provider 只给安全诊断字段');
 
-  await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
+  const vectorSourceOptions = await vectorOptions.sourceProvider({ targetIdentity: { hostChatId: 'host-chat', chatId: 'test', characterLocator: 'char.png', personaLocator: 'me.png' } });
+  assert.equal(typeof vectorSourceOptions.getReachable, 'function');
+  assert.equal(vectorSourceOptions.getReachable(), productionReachable);
   assert.equal(bootstrapOptions.memoryTransfer, memoryTransferRuntime);
   assert.equal(bootstrapOptions.hostDownload, hostDownload, 'ST/TT宿主保存工具透传给导出界面');
   assert.ok(pluginActivitySources.includes(memoryTransferRuntime), '导入导出使用现有活动状态显示');

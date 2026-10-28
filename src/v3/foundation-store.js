@@ -241,7 +241,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   function execute(task, fixedIdentity = null, signal = null) {
     if (!enabled()) return Promise.resolve({ status: 'disabled' });
     if (signal?.aborted) return Promise.resolve({ status: 'stale' });
-    const operation = { identity: fixedIdentity ?? capture(), signal, cacheScope: null, cacheVersion: null, cacheWitness: null, cacheManifest: null, cacheObserved: null, cacheHits: 0 };
+    const operation = { identity: fixedIdentity ?? capture(), signal, cacheScope: null, cacheVersion: null, cacheWitness: null, cacheManifest: null, cacheBatch: null, cacheObserved: null, cacheHits: 0 };
     try { operation.cacheVersion = coreRecordCache?.captureIdentityVersion?.(operation.identity) ?? null; } catch { operation.cacheVersion = null; }
     return (async () => {
       try { operation.cacheScope = await coreRecordCache?.scopeFor?.(operation.identity) ?? null; } catch { operation.cacheScope = null; }
@@ -287,7 +287,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
   }
   async function readManyBatched(operation, values, recordType, identityValue, reader, { settled = false } = {}) {
     const items = Array.from(values ?? []);
-    if (!items.length || operation.cacheManifest || typeof client.getMany !== 'function') {
+    if (!items.length || typeof client.getMany !== 'function') {
       return readMany(operation, items, value => reader(value, null), { settled });
     }
     const results = new Array(items.length);
@@ -296,49 +296,62 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       if (before !== 'current') throw Object.assign(new Error(`V3_${before.toUpperCase()}`), { operationStatus: before });
       const chunk = items.slice(offset, offset + 64);
       const keys = chunk.map(value => String(value).startsWith('v3-') ? String(value) : `${RECORD_PREFIX[recordType] ?? ''}${value}`);
-      let batch, transportFailure = null;
-      try { batch = await client.getMany(collection(identityValue), keys, { signal: operation.signal }); }
-      catch (reason) {
-        if (!settled) throw reason;
-        transportFailure = reason;
-      }
-      if (transportFailure) {
-        for (let index = 0; index < chunk.length; index += 1) results[offset + index] = { status: 'rejected', reason: transportFailure };
-      } else {
-        if (!Array.isArray(batch) || batch.length !== keys.length) fail('V3_STORE_BATCH_RESPONSE_INVALID');
-        const loaded = new Array(batch.length);
-        let cursor = 0;
-        await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, batch.length) }, async () => {
-          while (true) {
-            const index = cursor++;
-            if (index >= batch.length) return;
-            const item = batch[index];
-            if (!item || item.recordId !== keys[index] || ![200, 404, 500].includes(item.status)) {
-              loaded[index] = { status: 'rejected', reason: Object.assign(new TypeError('V3_STORE_BATCH_RESPONSE_INVALID'), { code: 'V3_STORE_BATCH_RESPONSE_INVALID' }) };
-              continue;
-            }
-            try { loaded[index] = { status: 'fulfilled', value: await reader(chunk[index], item) }; }
-            catch (reason) { loaded[index] = { status: 'rejected', reason }; }
+      try {
+        let cached = null;
+        if (operation.cacheManifest && CACHED_CONTENT_TYPES.has(recordType)) {
+          const cacheRead = { operation, witness: operation.cacheWitness, manifest: operation.cacheManifest, recordType };
+          let envelopes;
+          if (typeof coreRecordCache?.readRecords === 'function') {
+            try { envelopes = await coreRecordCache.readRecords(operation.cacheScope, operation.cacheWitness, recordType, keys, operation.cacheManifest); }
+            catch { envelopes = null; }
+          } else envelopes = await readMany(operation, keys, async key => {
+            try { return await coreRecordCache.readRecord(operation.cacheScope, operation.cacheWitness, recordType, key, operation.cacheManifest); }
+            catch { return null; }
+          });
+          operation.cacheBatch = new Map(keys.map((key, index) => [key, envelopes?.[index] ?? null]));
+          cached = await readMany(operation, keys, key => readCached(identityValue, key, validatorFor(recordType), cacheRead));
+        }
+        const loaded = new Array(chunk.length), missing = [];
+        for (let index = 0; index < chunk.length; index++) {
+          if (cached?.[index]) loaded[index] = { status: 'fulfilled', value: cached[index] };
+          else missing.push(index);
+        }
+        if (missing.length) {
+          const missingKeys = missing.map(index => keys[index]);
+          let batch, transportFailure = null;
+          try { batch = await client.getMany(collection(identityValue), missingKeys, { signal: operation.signal }); }
+          catch (reason) { if (!settled) throw reason; transportFailure = reason; }
+          if (transportFailure) {
+            for (const index of missing) loaded[index] = { status: 'rejected', reason: transportFailure };
+          } else {
+            if (!Array.isArray(batch) || batch.length !== missingKeys.length) fail('V3_STORE_BATCH_RESPONSE_INVALID');
+            const readResults = await readMany(operation, missing, (index, batchIndex) => {
+              const item = batch[batchIndex];
+              if (!item || item.recordId !== keys[index] || ![200, 404, 500].includes(item.status)) fail('V3_STORE_BATCH_RESPONSE_INVALID');
+              return reader(chunk[index], item);
+            }, { settled: true });
+            for (let index = 0; index < missing.length; index++) loaded[missing[index]] = readResults[index];
           }
-        }));
-        for (let index = 0; index < loaded.length; index += 1) {
+        }
+        for (let index = 0; index < loaded.length; index++) {
           const result = loaded[index];
           if (settled) results[offset + index] = result;
           else if (result.status === 'rejected') throw result.reason;
           else results[offset + index] = result.value;
         }
-      }
+      } finally { operation.cacheBatch = null; }
       const state = operationState(operation);
       if (state !== 'current') throw Object.assign(new Error(`V3_${state.toUpperCase()}`), { operationStatus: state });
     }
     return results;
   }
-  async function read(identityValue, key, validator, missingStatus = 'missing', cacheRead = null, batchItem = null, operation = null) {
-    const before = operationState(operation);
-    if (before !== 'current') throw Object.assign(new Error(`V3_${before.toUpperCase()}`), { operationStatus: before });
+  async function readCached(identityValue, key, validator, cacheRead) {
     if (cacheRead?.manifest && cacheRead.recordType && operationState(cacheRead.operation) === 'current') {
       try {
-        const cachedEnvelope = await coreRecordCache.readRecord(cacheRead.operation.cacheScope, cacheRead.witness, cacheRead.recordType, key, cacheRead.operation.cacheManifest);
+        const prefetched = cacheRead.operation.cacheBatch;
+        let cachedEnvelope;
+        if (prefetched?.has(key)) { cachedEnvelope = prefetched.get(key); prefetched.set(key, null); }
+        else cachedEnvelope = await coreRecordCache.readRecord(cacheRead.operation.cacheScope, cacheRead.witness, cacheRead.recordType, key, cacheRead.operation.cacheManifest);
         if (cachedEnvelope) {
           try {
             const safe = validateEnvelope(cachedEnvelope, validator, identityValue.chatId);
@@ -347,12 +360,19 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
             const result = { status: 'ready', ...safe, recordId: key };
             Object.defineProperty(result, 'rawEnvelope', { value: cachedEnvelope, enumerable: false });
             return rememberConfirmed(identityValue, result);
-        } catch {
+          } catch {
             await coreRecordCache.removeRecord?.(cacheRead.operation.cacheScope, cacheRead.witness, cacheRead.recordType, key);
           }
         }
       } catch { /* IDB errors are misses; the formal store remains authoritative. */ }
     }
+    return null;
+  }
+  async function read(identityValue, key, validator, missingStatus = 'missing', cacheRead = null, batchItem = null, operation = null) {
+    const before = operationState(operation);
+    if (before !== 'current') throw Object.assign(new Error(`V3_${before.toUpperCase()}`), { operationStatus: before });
+    const cached = await readCached(identityValue, key, validator, cacheRead);
+    if (cached) return cached;
     try {
       const state = operationState(operation);
       if (state !== 'current') throw Object.assign(new Error(`V3_${state.toUpperCase()}`), { operationStatus: state });

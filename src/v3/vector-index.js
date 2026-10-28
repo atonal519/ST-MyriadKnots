@@ -147,9 +147,9 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     try { return { ...await client.get(collection, recordId), recordId }; }
     catch (error) { if (error?.status === 404) return null; throw error; }
   };
-  const readRecords = async (collection, recordIds) => {
-    if (recordIds.length > 1 && typeof client.getMany === 'function') {
-      const result = await client.getMany(collection, recordIds, { negotiate: false });
+  const readRecords = async (collection, recordIds, { negotiate = false } = {}) => {
+    if ((recordIds.length > 1 || negotiate) && typeof client.getMany === 'function') {
+      const result = await client.getMany(collection, recordIds, { negotiate });
       if (!Array.isArray(result) || result.length !== recordIds.length) throw new Error('后端批量读取结果无效');
       return result.map((item, index) => {
         const recordId = recordIds[index];
@@ -228,6 +228,14 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
         if (!Number.isSafeInteger(dimensions) || dimensions < 1 || dimensions > 8192) { reportLoad({ ...diagnostic?.load, pending: null, exitReason: 'invalid' }); return; }
         const shardIds = manifest.data.shardIds, shards = new Array(shardIds.length);
         let nextShard = 0, shardsRead = 0, exitReason = null, readError = null;
+        const acceptShard = (shard, index, id) => {
+          if (!shard) { exitReason = 'missing'; return; }
+          if (!vectorRecordOwned(shard)) { exitReason = 'invalid'; return; }
+          if (ownerKey(shard.data, shard.data.modelKey) !== key) { exitReason = 'ownerMismatch'; return; }
+          shards[index] = shard.data.rows.map(row => ({ witness: row.witness, vector: decodeVector(row.vector, dimensions), shardId: id }));
+          shardsRead += 1;
+          reportLoad({ ...diagnostic?.load, shardsRead });
+        };
         const readShard = async () => {
           while (!exitReason && !readError) {
             if (!isEnabled() || captured !== epoch || active && !allowActive) { exitReason = 'cancelled'; return; }
@@ -235,19 +243,22 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
             if (index >= shardIds.length) return;
             const id = shardIds[index];
             try {
-              const shard = await readRecord(`chat-${source.chatId}`, id);
-              if (!shard) { exitReason = 'missing'; return; }
-              if (!vectorRecordOwned(shard)) { exitReason = 'invalid'; return; }
-              if (ownerKey(shard.data, shard.data.modelKey) !== key) { exitReason = 'ownerMismatch'; return; }
-              shards[index] = shard.data.rows.map(row => ({ witness: row.witness, vector: decodeVector(row.vector, dimensions), shardId: id }));
-              shardsRead += 1;
-              reportLoad({ ...diagnostic?.load, shardsRead });
+              acceptShard(await readRecord(`chat-${source.chatId}`, id), index, id);
             } catch (error) {
               readError = error;
             }
           }
         };
-        await Promise.all(Array.from({ length: Math.min(4, shardIds.length) }, () => readShard()));
+        if (typeof client.getMany === 'function') {
+          for (let start = 0; start < shardIds.length && !exitReason && !readError; start += COPY_BATCH) {
+            if (!isEnabled() || captured !== epoch || active && !allowActive) { exitReason = 'cancelled'; break; }
+            const ids = shardIds.slice(start, start + COPY_BATCH);
+            try {
+              const records = await readRecords(`chat-${source.chatId}`, ids, { negotiate: true });
+              for (let index = 0; index < records.length && !exitReason; index++) acceptShard(records[index], start + index, ids[index]);
+            } catch (error) { readError = error; }
+          }
+        } else await Promise.all(Array.from({ length: Math.min(4, shardIds.length) }, () => readShard()));
         if (readError) throw readError;
         if (exitReason) {
           if (exitReason !== 'cancelled') reportLoad({ ...diagnostic?.load, pending: null, exitReason });

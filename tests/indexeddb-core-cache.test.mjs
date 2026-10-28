@@ -9,6 +9,68 @@ const cacheOptions = h => ({ indexedDBProvider: () => h.indexedDB, keyRangeProvi
 const witness = Object.freeze({ formatVersion: 1, generationId: 'generation-A', revision: 3, headCheckpointId: 'checkpoint-A', narrativeGeneration: 2, sourceSnapshotFingerprint: 'sha256:source-A' });
 const floorEnvelope = (summary = '中性楼摘要') => ({ schemaVersion: 1, revision: 1, generationId: 'floor-generation', createdAt: '2026-10-09T00:00:00.000Z', updatedAt: '2026-10-09T00:00:00.000Z', data: { recordType: 'floor', id: 'floor-a', chatId: '123e4567-e89b-42d3-a456-426614174000', summary } });
 
+async function publishedBatch(count = 64, ioTimeoutMs = 50) {
+  const h = localForageHarness();
+  const cache = createIndexedDbCoreRecordCache({ localForage: h.localForage, ...cacheOptions(h), accountHandleProvider: () => 'user', originProvider: () => 'https://tavern.invalid', ioTimeoutMs });
+  const scope = await cache.scopeFor({ chatId: '123e4567-e89b-42d3-a456-426614174000' });
+  const records = Array.from({ length: count }, (_, index) => {
+    const envelope = floorEnvelope(`summary-${index}`);
+    envelope.data.id = `floor-${index}`;
+    return { recordId: `v3-floor-floor-${index}`, envelope };
+  });
+  assert.equal(await cache.publish(scope, witness, records, { floor: records.map(row => row.recordId) }), true);
+  const manifest = await cache.readManifest(scope, witness);
+  h.transactions.length = 0;
+  return { h, cache, scope, records, manifest };
+}
+
+test('批读64条只开启一个只读事务，按输入顺序返回；空批不读、超限拒绝', async () => {
+  const { h, cache, scope, records, manifest } = await publishedBatch();
+  const ids = records.map(row => row.recordId).reverse();
+  ids[5] = ids[0];
+  assert.deepEqual(await cache.readRecords(scope, witness, 'floor', ids, manifest), ids.map(id => records.find(row => row.recordId === id).envelope));
+  assert.equal(h.transactions.length, 1);
+  assert.equal(h.transactions[0].mode, 'readonly');
+  assert.equal(h.transactions[0].gets.length, 64);
+  assert.deepEqual(await cache.readRecords(scope, witness, 'floor', [], manifest), []);
+  await assert.rejects(cache.readRecords(scope, witness, 'floor', Array(65).fill(ids[0]), manifest), /64/);
+  assert.equal(h.transactions.length, 1);
+});
+
+test('批读保留缺失位置及manifest成员资格，账户scope和root代际不能交叉命中', async () => {
+  const { h, cache, scope, records, manifest } = await publishedBatch(4);
+  const key = id => [...h.data.keys()].find(item => item.startsWith('r:') && item.endsWith(encodeURIComponent(id)));
+  h.data.delete(key(records[1].recordId));
+  const refs = { ...manifest, recordRefs: { ...manifest.recordRefs, floor: manifest.recordRefs.floor.filter(id => id !== records[2].recordId) } };
+  assert.deepEqual(await cache.readRecords(scope, witness, 'floor', records.map(row => row.recordId), refs), [records[0].envelope, null, null, records[3].envelope]);
+  assert.equal(h.transactions[0].gets.length, 3, '不在manifest中的记录连缓存正文也不读取');
+  assert.deepEqual(await cache.readRecords(`${scope}-other-account`, witness, 'floor', [records[0].recordId], manifest), [null]);
+  assert.deepEqual(await cache.readRecords(scope, { ...witness, generationId: 'generation-B' }, 'floor', [records[0].recordId], manifest), [null]);
+});
+
+test('批读对每条保留校验和及记录绑定检查，只淘汰损坏记录', async () => {
+  const { h, cache, scope, records, manifest } = await publishedBatch(9);
+  const mutations = [row => { row.envelope.data.summary = 'bad checksum'; }, row => { row.scope = 'bad'; }, row => { row.rootGenerationId = 'bad'; }, row => { row.recordGenerationId = 'bad'; }, row => { row.revision += 1; }, row => { row.recordType = 'entity'; }, row => { row.recordId = 'bad'; }, row => { row.envelope.data.id = 'bad'; }];
+  const keys = records.map(({ recordId }) => [...h.data.keys()].find(key => key.startsWith('r:') && key.endsWith(encodeURIComponent(recordId))));
+  mutations.forEach((mutate, index) => mutate(h.data.get(keys[index])));
+  assert.deepEqual(await cache.readRecords(scope, witness, 'floor', records.map(row => row.recordId), manifest), [...Array(8).fill(null), records[8].envelope]);
+  assert.equal(cache.getStats().corruptions, 8);
+  keys.slice(0, 8).forEach(key => assert.equal(h.data.has(key), false));
+  assert.equal(h.data.has(keys[8]), true);
+});
+
+for (const failure of ['reject', 'timeout']) test(`批读事务${failure}按原策略禁用本页缓存，后续批次直接miss`, async () => {
+  const { h, cache, scope, records, manifest } = await publishedBatch(2, 15);
+  if (failure === 'reject') h.failNextGet(new Error('bulk-read-failed'));
+  else h.hangNextGet();
+  const ids = records.map(row => row.recordId);
+  assert.deepEqual(await cache.readRecords(scope, witness, 'floor', ids, manifest), [null, null]);
+  assert.equal(cache.getStats().lastFailure.phase, 'record-read');
+  const transactions = h.transactions.length;
+  assert.deepEqual(await cache.readRecords(scope, witness, 'floor', ids, manifest), [null, null]);
+  assert.equal(h.transactions.length, transactions);
+});
+
 test('独立实例只选 INDEXEDDB；scope 隔离账户和 chat，精确 root manifest 才允许缓存命中', async () => {
   const h = localForageHarness();
   let handle = 'account-a';

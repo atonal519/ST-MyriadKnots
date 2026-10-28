@@ -12,13 +12,15 @@ function sameRootVersion(rootResult, reachable, targetChatId) {
 }
 
 // A fresh root read is cheap; only borrow a graph already validated for that exact root.
-export async function readVectorSource({ store, targetIdentity, cachedReachable = null } = {}) {
+export async function readVectorSource({ store, targetIdentity, cachedReachable = null, getReachable = () => cachedReachable } = {}) {
   if (!store || typeof store.readRoot !== 'function' || typeof store.readReachable !== 'function') {
     throw new TypeError('V3 vector source store 无效');
   }
   const chatId = targetIdentity?.chatId;
   if (typeof chatId !== 'string' || !chatId) throw new TypeError('V3 vector source target 无效');
   const rootResult = await store.readRoot();
+  // Foundation may finish loading while the root read waits on native storage.
+  cachedReachable = getReachable();
   let source, exitPoint;
   if (sameRootVersion(rootResult, cachedReachable, chatId)) {
     source = cachedReachable;

@@ -204,7 +204,7 @@ const vectorIndex = createVectorIndex({
   isEnabled: settings.isEnabled,
   sourceProvider: ({ targetIdentity }) => readVectorSource({
     store: createFoundationStore({ client: backendClient, contextProvider: () => targetIdentity, isEnabled: settings.isEnabled, coreRecordCache }),
-    targetIdentity, cachedReachable: foundationRuntime.getReachable(),
+    targetIdentity, getReachable: () => foundationRuntime.getReachable(),
   }),
 });
 let v3RecallRuntime;

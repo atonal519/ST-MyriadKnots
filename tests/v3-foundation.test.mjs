@@ -3234,3 +3234,125 @@ test('只读检查微任务尚未启动就切聊时不把旧请求重新绑定�
   assert.equal(h.runtime.getState().status, 'ready');
   assert.equal(h.runtime.getState().chatId, OTHER_CHAT);
 });
+
+test('部分缓存的TT图读取仅对miss批量回源，保留命中、深校验与取消', async t => {
+  const source = harness(Array.from({ length: 67 }, (_, index) => [assistant(`缓存楼${index}`), user(`确认${index}`)]).flat(), { modernAnchors: true });
+  await source.runtime.start();
+  const memory = createV3MemoryRuntime({ foundationRuntime: source.runtime, store: source.store, hostAdapter: source.hostAdapter,
+    generateUtilityTask: async () => ({ jsonData: { summary: '保留的摘要' } }),
+    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }), logger: { warn() {} } });
+  await memory.start();
+  await memory.extractFloor(memory.getState().floors[0].floorId, { analyzeState: false });
+  await memory.analyzeNextState();
+  const slots = new Map(), slotKey = options => `${options.namespace}/${options.table}/${options.key}`;
+  const nativeCalls = []; let active = 0, maximum = 0, beforeRead = null;
+  const native = {
+    async tryGetJson(options) {
+      const stored = slots.get(slotKey(options)), slot = stored?.serialized ? JSON.parse(stored.serialized) : null;
+      nativeCalls.push(slot?.recordId ?? 'missing'); active++; maximum = Math.max(maximum, active);
+      try { await beforeRead?.(slot); await new Promise(resolve => setImmediate(resolve)); return stored ? { found: true, value: structuredClone(stored) } : { found: false }; }
+      finally { active--; }
+    },
+    async setJson(options) { slots.set(slotKey(options), structuredClone(options.value)); },
+    async deleteJson() { assert.fail('只读测试不能删除正式记录'); },
+    async listKeys() { assert.fail('已知引用不能扫描整集合'); }, async listTables() { return []; },
+  };
+  const globalRef = { crypto: globalThis.crypto, __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: native } } } };
+  const transport = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef }) });
+  for (const [key, record] of source.backend.records) {
+    const split = key.indexOf('/'); await transport.put(key.slice(0, split), key.slice(split + 1), record.data, 0);
+  }
+  const baseline = await createFoundationStore({ client: transport, contextProvider: () => ({ chatId: CHAT }) }).readReachable();
+  const envelopes = new Map([...slots.values()].map(value => { const slot = JSON.parse(value.serialized); return [slot.recordId, slot.current]; }));
+  const floorKeys = baseline.checkpoint.producedRefs.floors.map(id => `v3-floor-${id}`);
+  const refs = baseline.checkpoint.producedRefs;
+  const recordRefs = { floor: floorKeys, floorMemory: refs.floorMemories.map(id => `v3-floor-memory-${id}`),
+    entity: refs.entities.map(id => `v3-entity-${id}`), stateDelta: refs.stateDeltas.map(id => `v3-state-delta-${id}`), index: refs.indexes };
+  function target(mode, { bulk = true, batched = true } = {}) {
+    const cacheReads = [], cacheBatches = [], removed = [], batches = [];
+    const selected = key => {
+      const index = floorKeys.indexOf(key);
+      if (mode === 'io-failure') throw new Error('IDB unavailable');
+      if (mode === 'cse-miss' && key.startsWith('v3-state-delta-')) return null;
+      if (index >= 0 && (mode === 'missing' || (mode === 'partial' && index % 3 === 0))) return null;
+      const value = structuredClone(envelopes.get(key) ?? null);
+      if (value && mode === 'deep-corrupt' && index >= 0 && index < 2) value.data.content.canonicalContent = '被改坏的缓存正文';
+      return value;
+    };
+    const cache = { scopeFor: async () => 'scope', readManifest: async () => ({ recordRefs }),
+      async readRecord(_scope, _witness, _type, key) { cacheReads.push(key); return selected(key); },
+      async removeRecord(_scope, _witness, _type, key) { removed.push(key); },
+      ...(bulk ? { async readRecords(_scope, _witness, _type, keys) { cacheBatches.push(keys); return keys.map(selected); } } : {}),
+    };
+    const client = { get: (...args) => transport.get(...args), put: (...args) => transport.put(...args),
+      ...(batched ? { async getMany(collection, keys, options) { batches.push(keys); return transport.getMany(collection, keys, options); } } : {}) };
+    const store = createFoundationStore({ client, contextProvider: () => ({ chatId: CHAT }), coreRecordCache: cache });
+    return { store, client, cacheReads, cacheBatches, removed, batches };
+  }
+  for (const [mode, bulk] of [['hit', true], ['partial', true], ['missing', true], ['deep-corrupt', true], ['io-failure', true], ['partial', false]]) {
+    await t.test(`${mode}/${bulk ? 'readRecords' : 'legacy readRecord'}`, async () => {
+      const f = target(mode, { bulk }); nativeCalls.length = 0; maximum = 0;
+      const loaded = await f.store.readReachable();
+      assert.deepEqual(loaded, baseline);
+      const misses = floorKeys.filter((_, index) => mode === 'missing' || mode === 'io-failure'
+        || (mode === 'partial' && index % 3 === 0) || (mode === 'deep-corrupt' && index < 2));
+      const floorBatches = f.batches.filter(keys => keys.every(key => floorKeys.includes(key)));
+      assert.deepEqual(floorBatches.flat(), misses, '只有缺失或深校验失败的floor进入正式批读');
+      assert.deepEqual(nativeCalls.filter(key => floorKeys.includes(key)).sort(), [...misses].sort(), '命中floor不能重复读native');
+      assert.ok(f.batches.every(keys => keys.length <= 64));
+      if (misses.length > 1) { assert.ok(maximum > 1, '缺失正文真实并行读取'); assert.ok(maximum <= 8); }
+      if (bulk) { assert.equal(f.cacheReads.length, 0, '批取后不得再逐条读IDB'); assert.ok(f.cacheBatches.every(keys => keys.length <= 64)); }
+      else assert.equal(new Set(f.cacheReads).size, f.cacheReads.length, '旧mock也不二读同条缓存');
+      if (mode === 'deep-corrupt') assert.deepEqual(f.removed.sort(), floorKeys.slice(0, 2).sort());
+    });
+  }
+  await t.test('无getMany仍保持cache-first单读', async () => {
+    const f = target('partial', { batched: false }); nativeCalls.length = 0;
+    assert.deepEqual(await f.store.readReachable(), baseline);
+    assert.equal(nativeCalls.filter(key => floorKeys.includes(key)).length, floorKeys.filter((_, index) => index % 3 === 0).length);
+  });
+  await t.test('正式回源传输失败不重试，也不退回逐条读取', async () => {
+    const f = target('partial'), failure = Object.assign(new Error('formal store failed'), { status: 503 }); let attempts = 0;
+    f.client.getMany = async () => { attempts++; throw failure; };
+    nativeCalls.length = 0;
+    await assert.rejects(f.store.readReachable(), error => error === failure);
+    assert.equal(attempts, 1);
+    assert.equal(nativeCalls.some(key => floorKeys.includes(key)), false);
+  });
+  for (const status of [404, 500]) await t.test(`正式回源逐项${status}保留原错误语义`, async () => {
+    const f = target('partial'), getMany = f.client.getMany;
+    f.client.getMany = async (...args) => {
+      const rows = await getMany(...args);
+      return rows.map((row, index) => index ? row : { recordId: row.recordId, status, error: 'formal_error', message: 'formal read failed' });
+    };
+    await assert.rejects(f.store.readReachable(), error => status === 404 ? error.code === 'V3_STORE_FLOOR_MISSING' : error.status === 500);
+  });
+  await t.test('settled人物状态失败沿用既有cache bypass复核与记忆图fallback', async () => {
+    assert.ok(recordRefs.stateDelta.length > 0);
+    const f = target('cse-miss'), getMany = f.client.getMany, failure = Object.assign(new Error('CSE transport failed'), { status: 503 });
+    let failedBatches = 0;
+    f.client.getMany = async (collection, keys, options) => {
+      if (keys.some(key => key.startsWith('v3-state-delta-'))) { failedBatches++; throw failure; }
+      return getMany(collection, keys, options);
+    };
+    nativeCalls.length = 0;
+    const loaded = await f.store.readReachable({ allowRecallCseFallback: true });
+    assert.equal(loaded.status, 'ready'); assert.equal(loaded.cseUnavailable, true);
+    assert.deepEqual(loaded.floors, baseline.floors); assert.deepEqual(loaded.floorMemories, baseline.floorMemories);
+    assert.equal(failedBatches, 2, '图校验失败后保留原有的一次bypassCache正式复核');
+    assert.equal(nativeCalls.filter(key => floorKeys.includes(key)).length, floorKeys.length);
+  });
+  await t.test('取消停止后续批次且不返回半图', async () => {
+    const f = target('missing'), controller = new AbortController(); let announce, release;
+    const entered = new Promise(resolve => { announce = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    nativeCalls.length = 0;
+    beforeRead = async slot => { if (slot?.current?.data.recordType === 'floor') { announce(); await gate; } };
+    const reading = f.store.readReachable({ signal: controller.signal });
+    try {
+      await entered; controller.abort('chat changed'); const countAtCancel = nativeCalls.length; release();
+      assert.deepEqual(await reading, { status: 'stale' });
+      assert.equal(nativeCalls.length, countAtCancel);
+      assert.equal(f.batches.filter(keys => keys.some(key => floorKeys.includes(key))).length, 1);
+    } finally { release(); await Promise.allSettled([reading]); beforeRead = null; }
+  });
+});
