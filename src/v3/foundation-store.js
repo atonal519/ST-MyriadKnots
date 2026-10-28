@@ -212,9 +212,9 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     confirmedContent.set(confirmedKey(current, value.recordId), confirmedCopy(value));
     return value;
   };
-  const readConfirmed = (current, key, validator) => {
+  const readConfirmed = (current, key, validator, operation = null) => {
     const value = confirmedContent.get(confirmedKey(current, key));
-    return value ? Promise.resolve(confirmedCopy(value)) : read(current, key, validator);
+    return value ? Promise.resolve(confirmedCopy(value)) : read(current, key, validator, 'missing', null, null, operation);
   };
   const pruneConfirmed = (current, root, checkpoint) => {
     const keep = new Set([
@@ -237,10 +237,11 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     const prefix = `${collection(current)}\u0000`;
     for (const key of stagedCoreRecords.keys()) if (key.startsWith(prefix)) stagedCoreRecords.delete(key);
   };
-  const operationState = () => enabled() ? 'current' : 'disabled';
-  function execute(task, fixedIdentity = null) {
+  const operationState = operation => !enabled() ? 'disabled' : operation?.signal?.aborted ? 'stale' : 'current';
+  function execute(task, fixedIdentity = null, signal = null) {
     if (!enabled()) return Promise.resolve({ status: 'disabled' });
-    const operation = { identity: fixedIdentity ?? capture(), cacheScope: null, cacheVersion: null, cacheWitness: null, cacheManifest: null, cacheObserved: null, cacheHits: 0 };
+    if (signal?.aborted) return Promise.resolve({ status: 'stale' });
+    const operation = { identity: fixedIdentity ?? capture(), signal, cacheScope: null, cacheVersion: null, cacheWitness: null, cacheManifest: null, cacheObserved: null, cacheHits: 0 };
     try { operation.cacheVersion = coreRecordCache?.captureIdentityVersion?.(operation.identity) ?? null; } catch { operation.cacheVersion = null; }
     return (async () => {
       try { operation.cacheScope = await coreRecordCache?.scopeFor?.(operation.identity) ?? null; } catch { operation.cacheScope = null; }
@@ -296,7 +297,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       const chunk = items.slice(offset, offset + 64);
       const keys = chunk.map(value => String(value).startsWith('v3-') ? String(value) : `${RECORD_PREFIX[recordType] ?? ''}${value}`);
       let batch, transportFailure = null;
-      try { batch = await client.getMany(collection(identityValue), keys); }
+      try { batch = await client.getMany(collection(identityValue), keys, { signal: operation.signal }); }
       catch (reason) {
         if (!settled) throw reason;
         transportFailure = reason;
@@ -332,7 +333,9 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     }
     return results;
   }
-  async function read(identityValue, key, validator, missingStatus = 'missing', cacheRead = null, batchItem = null) {
+  async function read(identityValue, key, validator, missingStatus = 'missing', cacheRead = null, batchItem = null, operation = null) {
+    const before = operationState(operation);
+    if (before !== 'current') throw Object.assign(new Error(`V3_${before.toUpperCase()}`), { operationStatus: before });
     if (cacheRead?.manifest && cacheRead.recordType && operationState(cacheRead.operation) === 'current') {
       try {
         const cachedEnvelope = await coreRecordCache.readRecord(cacheRead.operation.cacheScope, cacheRead.witness, cacheRead.recordType, key, cacheRead.operation.cacheManifest);
@@ -351,6 +354,8 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       } catch { /* IDB errors are misses; the formal store remains authoritative. */ }
     }
     try {
+      const state = operationState(operation);
+      if (state !== 'current') throw Object.assign(new Error(`V3_${state.toUpperCase()}`), { operationStatus: state });
       if (batchItem?.status === 404) return { status: missingStatus };
       if (batchItem && batchItem.status !== 200) {
         const error = new Error(batchItem.message || '后端读取记录失败');
@@ -358,7 +363,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         error.code = batchItem.error;
         throw error;
       }
-      const envelope = batchItem ? batchItem.envelope : await client.get(collection(identityValue), key);
+      const envelope = batchItem ? batchItem.envelope : await client.get(collection(identityValue), key, { signal: operation?.signal });
       const safe = validateEnvelope(envelope, validator, identityValue.chatId);
       if (validator === validateFoundationFloor) await validateFoundationFloorContent(safe.data, { expectedChatId: identityValue.chatId });
       if (cacheRead?.operation?.cacheScope && cacheRead.witness && cacheRead.recordType && safe.rawEnvelope) {
@@ -373,9 +378,9 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       throw error;
     }
   }
-  async function verifyCacheRootGeneration(current) {
+  async function verifyCacheRootGeneration(current, signal = null) {
     try {
-      const envelope = await client.get(collection(current), V3_ROOT_RECORD_ID);
+      const envelope = await client.get(collection(current), V3_ROOT_RECORD_ID, { signal });
       const root = validateEnvelope(envelope, validateFoundationRoot, current.chatId);
       return { generationId: root.generationId, revision: root.revision };
     } catch (error) {
@@ -645,7 +650,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       throw error;
     }
   }
-  async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false, identity: identityOverride = null, bypassCache = false } = {}) {
+  async function readReachable({ mode = V3_READ_MODES.full, allowRecallCseFallback = false, identity: identityOverride = null, bypassCache = false, signal = null } = {}) {
     if (!Object.values(V3_READ_MODES).includes(mode)) fail('V3_STORE_READ_MODE_INVALID');
     return execute(async (current, operation) => {
     const readType = (recordType, idOrKey, batchItem = null) => {
@@ -653,14 +658,14 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       const cachedType = ['floor', 'floorMemory', 'entity', 'stateDelta', 'index'].includes(recordType) ? recordType : null;
       return read(current, key, validatorFor(recordType), 'missing', cachedType && !bypassCache
         ? { operation, witness: operation.cacheWitness, manifest: operation.cacheManifest, recordType: cachedType }
-        : null, batchItem);
+        : null, batchItem, operation);
     };
-    const rootResult = await read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized');
+    const rootResult = await read(current, V3_ROOT_RECORD_ID, validateFoundationRoot, 'uninitialized', null, null, operation);
     if (rootResult.status !== 'ready') return rootResult;
     const root = rootResult.data;
     let migrationDescriptor = null;
     if (root.migrationDescriptorId) {
-      const descriptorResult = await readConfirmed(current, `${RECORD_PREFIX.migrationDescriptor}${root.migrationDescriptorId}`, validateMigrationDescriptor);
+      const descriptorResult = await readConfirmed(current, `${RECORD_PREFIX.migrationDescriptor}${root.migrationDescriptorId}`, validateMigrationDescriptor, operation);
       if (descriptorResult.status !== 'ready' || descriptorResult.data.id !== root.migrationDescriptorId) fail('V3_STORE_MIGRATION_DESCRIPTOR_MISSING');
       migrationDescriptor = descriptorResult.data;
     }
@@ -747,7 +752,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
     let activeEntities;
     try { activeEntities = projectEntityFloorBounds(entityResults.map(result => result.data), activeFloors, activeMemories, activeDeltas); }
     catch (error) {
-      if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
+      if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true, signal });
       throw error;
     }
     const graphInput = {
@@ -766,7 +771,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       try {
         await validateCseGraph({ ...graphInput, baseline: baselineResult?.data ?? null, stateDeltas: activeDeltas, currentStates: currentStateResults.map(result => result.data) });
       } catch (error) {
-        if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
+        if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true, signal });
         throw error;
       }
     } else {
@@ -781,7 +786,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
           currentStateResults = [];
         }
       } catch {
-        if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
+        if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true, signal });
         await validateMemoryGraph(graphInput);
         baselineResult = null;
         deltaResults = [];
@@ -809,20 +814,22 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       cseUnavailable,
       migrationDescriptor,
     }); } catch (error) {
-      if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true });
+      if (operation.cacheHits > 0 && !bypassCache) return readReachable({ mode, allowRecallCseFallback, identity: current, bypassCache: true, signal });
       throw error;
     }
+    const state = operationState(operation);
+    if (state !== 'current') return { status: state };
     if (operation.cacheScope && operation.cacheWitness && reachable.status === 'ready' && !manifestNeedsReseal && !cseUnavailable) {
       const recordRefs = cacheRecordRefs(checkpoint, indexKeys);
       const missingManifestRefs = Object.entries(recordRefs).some(([type, ids]) => ids.some(id => !operation.cacheManifest?.recordRefs?.[type]?.includes(id)));
       void Promise.resolve(coreRecordCache?.maintain?.(operation.cacheScope)).catch(() => {});
       if (!operation.cacheManifest || (operation.cacheObserved?.size ?? 0) || missingManifestRefs) {
         void Promise.resolve(coreRecordCache?.publish?.(operation.cacheScope, operation.cacheWitness, [...(operation.cacheObserved?.values() ?? [])], recordRefs, operation.cacheVersion,
-          () => verifyCacheRootGeneration(current))).catch(() => {});
+          () => verifyCacheRootGeneration(current, signal))).catch(() => {});
       }
     }
     return reachable;
-    }, identityOverride);
+    }, identityOverride, signal);
   }
   const forIdentity = identityValue => {
     const fixedIdentity = identity(identityValue);

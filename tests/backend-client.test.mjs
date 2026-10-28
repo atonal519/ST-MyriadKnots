@@ -681,3 +681,36 @@ test('请求流式枚举时老HTTP后端在读取完整集合前提示更新白�
   assert.equal(calls.length, 1);
   assert.ok(calls[0].endsWith('/v1/health'));
 });
+
+test('冷启动共享能力探测不被旧聊天取消，新聊天仍可接力批读', async () => {
+  for (const kind of ['getMany', 'iterRecords']) {
+    const calls = [], controller = new AbortController();
+    const reason = new DOMException('oldChatClosed', 'AbortError');
+    let releaseHealth, startedResolve;
+    const started = new Promise(resolve => { startedResolve = resolve; });
+    const client = createBackendClient({ fetchImpl: async (url, options) => {
+      calls.push(url);
+      if (url.endsWith('/v1/health')) return new Promise((resolve, reject) => {
+        releaseHealth = () => resolve(Response.json(batchHealth({ recordBatchRead: true, recordIdList: true })));
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        startedResolve();
+      });
+      assert.match(url, /record-batch\/qianqianjie\/chat-new$/);
+      return Response.json(JSON.parse(options.body).recordIds.map(recordId => ({ recordId, status: 200, envelope: { revision: 1, data: { recordId } } })));
+    } });
+    const previous = kind === 'getMany'
+      ? client.getMany('chat-old', ['old-record'], { signal: controller.signal })
+      : client.iterRecords('chat-old', { signal: controller.signal }).next();
+    await started;
+    const current = client.getMany('chat-new', ['new-record']);
+    const outcomes = Promise.allSettled([previous, current]);
+    controller.abort(reason); releaseHealth();
+    const [oldOutcome, newOutcome] = await outcomes;
+    assert.equal(oldOutcome.status, 'rejected', kind);
+    assert.equal(oldOutcome.reason, reason, '旧聊天保留自身取消结果');
+    assert.equal(newOutcome.status, 'fulfilled', `${kind}共享探测后新聊天不受旧signal连带取消`);
+    assert.deepEqual(newOutcome.value.map(record => record.recordId), ['new-record']);
+    assert.equal(calls.filter(url => url.endsWith('/v1/health')).length, 1, '不重试能力探测');
+    assert.equal(calls.some(url => url.includes('chat-old')), false, '旧聊天取消后不再请求记录');
+  }
+});

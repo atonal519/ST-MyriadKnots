@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createBackendClient } from '../src/backend-client.js';
+import { createTauriBackendFetch } from '../src/tauri-backend.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore, reverseRefCandidateKeys } from '../src/v3/foundation-store.js';
 import { buildFoundationIndexes, createFoundationRuntime, validatePreparedFoundation } from '../src/v3/foundation-runtime.js';
@@ -3074,4 +3075,162 @@ test('固定目标管理刷新外层在真实root读取中清旧错误并发布�
   assert.equal(h.runtime.getState().lastError, null); assert.equal(h.runtime.getState().status, 'running');
   h.backend.setBeforeGet(null); release(); await reading;
   assert.equal(h.runtime.getState().status, 'ready'); assert.equal(h.runtime.getState().lastError, null);
+});
+
+test('只读检查切换聊天后停止旧图的慢 TT 读取，新聊天仍能完成检查', { timeout: 15000 }, async () => {
+  const chatA = Array.from({ length: 70 }, (_, index) => [assistant(`原聊天第${index}楼`), user(`确认${index}`)]).flat();
+  const sourceA = harness(chatA, { modernAnchors: true }); await sourceA.runtime.start();
+  const sourceB = harness([assistant('新聊天正文'), user('确认新聊天')], { modernAnchors: true });
+  sourceB.setChat(sourceB.context.chat, OTHER_CHAT); await sourceB.runtime.start();
+  const tables = new Map();
+  const table = name => { if (!tables.has(name)) tables.set(name, new Map()); return tables.get(name); };
+  let releaseRead, firstFloorResolve, delayed = false;
+  const firstFloor = new Promise(resolve => { firstFloorResolve = resolve; });
+  const readGate = new Promise(resolve => { releaseRead = resolve; });
+  const readFloors = [];
+  const nativeStore = {
+    async tryGetJson({ table: name, key }) {
+      const value = table(name).get(key);
+      const slot = value?.format === 'qqj-tt-json-v2' ? JSON.parse(value.serialized) : value;
+      if (slot?.collection === `chat-${CHAT}` && slot.recordId.startsWith('v3-floor-')) {
+        readFloors.push(slot.recordId);
+        if (delayed && readFloors.length === 1) { firstFloorResolve(); await readGate; }
+      }
+      return value === undefined ? { found: false } : { found: true, value: structuredClone(value) };
+    },
+    async setJson({ table: name, key, value }) { table(name).set(key, structuredClone(value)); },
+    async deleteJson({ table: name, key }) { table(name).delete(key); },
+    async listKeys({ table: name }) { return [...table(name).keys()]; },
+    async listTables() { return [...tables.keys()]; },
+  };
+  const client = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef: {
+    crypto: globalThis.crypto, __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: nativeStore } } },
+  } }) });
+  for (const source of [sourceA, sourceB]) for (const [key, record] of source.backend.records) {
+    const split = key.indexOf('/'); await client.put(key.slice(0, split), key.slice(split + 1), record.data, 0);
+  }
+  readFloors.length = 0; delayed = true;
+  let context = sourceA.context;
+  const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => context } } });
+  const store = createFoundationStore({ client, contextProvider: () => ({
+    hostChatId: context.chatId, chatId: context.chatMetadata.qianqianjie.chatId, characterLocator: 'character.png', personaLocator: 'persona.png',
+  }) });
+  const runtime = createFoundationRuntime({ hostAdapter, store, contextProvider: () => context, logger: { warn() {} } });
+  const oldRead = runtime.inspect('openOldChat'); await firstFloor;
+  context = sourceB.context; runtime.invalidate();
+  const newRead = runtime.inspect('openNewChat'); releaseRead();
+  await Promise.all([oldRead, newRead]);
+  assert.equal(readFloors.length, 1, '切聊后不再读取旧图尚未派发的楼层，也不继续下一批');
+  assert.equal(runtime.getState().status, 'ready');
+  assert.equal(runtime.getState().chatId, OTHER_CHAT);
+  assert.equal(runtime.getReachable().floors[0].content.canonicalContent, '新聊天正文');
+  assert.equal(client.getDiagnosticSnapshot().sinceClientCreatedRequestCounts.delete, 0);
+});
+
+test('切聊前排队的强只读刷新不在新聊天重新启动一次全图读取', async () => {
+  const h = harness([assistant('旧档正文'), user('旧档确认')], { modernAnchors: true }); await h.runtime.start();
+  const sourceB = harness([assistant('新档正文'), user('新档确认')], { modernAnchors: true });
+  sourceB.setChat(sourceB.context.chat, OTHER_CHAT); await sourceB.runtime.start();
+  for (const [key, record] of sourceB.backend.records) h.backend.records.set(key, structuredClone(record));
+  h.runtime.invalidate(); h.backend.calls.length = 0;
+  let releaseRead, startedResolve;
+  const started = new Promise(resolve => { startedResolve = resolve; });
+  const gate = new Promise(resolve => { releaseRead = resolve; });
+  h.backend.setBeforeGet(async ({ collection, key }) => {
+    if (collection === `chat-${CHAT}` && key === 'v3-root') { startedResolve(); await gate; }
+  });
+  const oldRead = h.runtime.inspect('oldCached', { allowCached: true }); await started;
+  const queuedRead = h.runtime.inspect('oldForce', { allowCached: false });
+  h.setChat(sourceB.context.chat, OTHER_CHAT); h.runtime.invalidate();
+  const newRead = h.runtime.inspect('newChat'); releaseRead();
+  await Promise.all([oldRead, queuedRead, newRead]);
+  assert.equal(h.backend.calls.filter(call => call[0] === 'get' && call[1] === `chat-${OTHER_CHAT}` && call[2] === 'v3-root').length, 1,
+    '新聊天仅执行自己的读取，旧队列不追读新档');
+  assert.equal(h.runtime.getState().status, 'ready');
+  assert.equal(h.runtime.getState().chatId, OTHER_CHAT);
+});
+
+test('排在旧聊天写入后的只读检查在切聊后不追读新聊天', async () => {
+  const sourceB = harness([assistant('新档已保存'), user('确认新档')], { modernAnchors: true });
+  sourceB.setChat(sourceB.context.chat, OTHER_CHAT); await sourceB.runtime.start();
+  const h = harness([assistant('旧档正在保存'), user('确认旧档')], { modernAnchors: true });
+  for (const [key, record] of sourceB.backend.records) h.backend.records.set(key, structuredClone(record));
+  let releaseWrite, startedResolve;
+  const started = new Promise(resolve => { startedResolve = resolve; });
+  const gate = new Promise(resolve => { releaseWrite = resolve; });
+  h.backend.setBeforePut(async ({ collection, key }) => {
+    if (collection === `chat-${CHAT}` && key === 'v3-root') { startedResolve(); await gate; }
+  });
+  const writer = h.runtime.start(); await started;
+  const queuedRead = h.runtime.inspect('waitingForOldWriter');
+  h.setChat(sourceB.context.chat, OTHER_CHAT); h.runtime.invalidate();
+  await h.runtime.inspect('newChat'); releaseWrite();
+  await Promise.all([writer, queuedRead]);
+  assert.equal(h.backend.calls.filter(call => call[0] === 'get' && call[1] === `chat-${OTHER_CHAT}` && call[2] === 'v3-root').length, 1);
+  assert.equal(h.runtime.getState().status, 'ready');
+  assert.equal(h.runtime.getState().chatId, OTHER_CHAT);
+});
+
+test('readReachable显式取消阻止后续单读或批次，且不返回半图', async () => {
+  const h = harness(Array.from({ length: 70 }, (_, index) => [assistant(`取消读取楼${index}`), user(`锚${index}`)]).flat(), { modernAnchors: true });
+  await h.runtime.start();
+  for (const batched of [false, true]) {
+    const controller = new AbortController(), reads = [], batches = [], releases = [];
+    let startedResolve;
+    const started = new Promise(resolve => { startedResolve = resolve; });
+    const client = { ...h.backend.client, async get(collection, key, options) {
+      reads.push({ key, signal: options?.signal });
+      const value = await h.backend.client.get(collection, key);
+      if (!controller.signal.aborted && key.startsWith('v3-floor-') && !key.startsWith('v3-floor-memory-')) {
+        startedResolve();
+        await new Promise(resolve => { releases.push(resolve); });
+        options?.signal?.throwIfAborted();
+      }
+      return value;
+    } };
+    if (batched) client.getMany = async (collection, keys, options) => {
+      batches.push({ keys, signal: options?.signal });
+      startedResolve();
+      if (!controller.signal.aborted) await new Promise(resolve => { releases.push(resolve); });
+      options?.signal?.throwIfAborted();
+      return Promise.all(keys.map(async recordId => ({ recordId, status: 200, envelope: await h.backend.client.get(collection, recordId) })));
+    };
+    const store = createFoundationStore({ client, contextProvider: () => ({ chatId: CHAT }) });
+    const loading = store.readReachable({ mode: 'projection', signal: controller.signal });
+    await started;
+    controller.abort('pageChanged');
+    for (const release of releases) release();
+    const result = await loading;
+    assert.equal(result.status, 'stale', batched ? '批读取消' : '单读取消');
+    assert.deepEqual(Object.keys(result), ['status'], '取消不返回半图');
+    assert.ok(reads.every(read => read.signal === controller.signal), 'root、checkpoint、run和单条读取均使用该次取消信号');
+    assert.equal(reads.some(read => read.key.startsWith('v3-index-') || read.key.startsWith('v3-floor-memory-')), false, '取消后不再读索引或记忆');
+    if (batched) { assert.equal(batches.length, 1); assert.equal(batches[0].keys.length, 64); assert.equal(batches[0].signal, controller.signal); }
+    else assert.ok(reads.filter(read => read.key.startsWith('v3-floor-')).length <= 16, '取消后不推进后续floor');
+  }
+});
+
+test('readReachable预先取消不发读取；未取消的真实后端错误仍向上传递', async () => {
+  const controller = new AbortController(); controller.abort('pageChanged');
+  let gets = 0;
+  const failure = Object.assign(new Error('storage failed'), { status: 503 });
+  const store = createFoundationStore({ client: { async get() { gets++; throw failure; }, async put() { assert.fail('只读取消不能写入'); } }, contextProvider: () => ({ chatId: CHAT }) });
+  assert.deepEqual(await store.readReachable({ signal: controller.signal }), { status: 'stale' });
+  assert.equal(gets, 0);
+  await assert.rejects(store.readReachable({ signal: new AbortController().signal }), error => error === failure);
+});
+
+test('只读检查微任务尚未启动就切聊时不把旧请求重新绑定到新聊天', async () => {
+  const sourceB = harness([assistant('新聊天原有记忆'), user('确认新档')], { modernAnchors: true });
+  sourceB.setChat(sourceB.context.chat, OTHER_CHAT); await sourceB.runtime.start();
+  const h = harness([assistant('刚离开的聊天'), user('旧档确认')], { modernAnchors: true });
+  for (const [key, record] of sourceB.backend.records) h.backend.records.set(key, structuredClone(record));
+  const oldRead = h.runtime.inspect('oldChatBeforeMicrotask');
+  h.setChat(sourceB.context.chat, OTHER_CHAT); h.runtime.invalidate();
+  const newRead = h.runtime.inspect('newChatBeforeMicrotask');
+  await Promise.all([oldRead, newRead]);
+  assert.equal(h.backend.calls.filter(call => call[0] === 'get' && call[1] === `chat-${OTHER_CHAT}` && call[2] === 'v3-root').length, 1,
+    '未启动的旧检查不应成为第二次新档检查');
+  assert.equal(h.runtime.getState().status, 'ready');
+  assert.equal(h.runtime.getState().chatId, OTHER_CHAT);
 });

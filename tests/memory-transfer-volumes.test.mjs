@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createMemoryVolumes, openMemoryVolumes } from '../src/memory-transfer-volumes.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -138,4 +139,37 @@ test('打开后的verify发现卷已变化，不重新读取清单文本', async
   changed = true;
   await assert.rejects(opened.verify(), /记忆卷已变化/);
   assert.equal(source.stats.manifestTexts, 1);
+});
+
+test('HTTP手机缺少subtle时沿用宿主SHA，跨卷中文原字节校验与WebCrypto一致且仍拒绝篡改', async () => {
+  const entries = [header, record('中文记录', '千千结🙂𠮷与人工摘要\n'.repeat(11))];
+  const standard = await volumes(entries, { partBytes: 17 });
+  const previousCrypto = globalThis.crypto, previousHost = globalThis.SillyTavern;
+  let hashCalls = 0;
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} });
+  globalThis.SillyTavern = { libs: { sha256(bytes) {
+    assert.ok(bytes instanceof Uint8Array); hashCalls++;
+    return createHash('sha256').update(bytes).digest('hex');
+  } } };
+  try {
+    const fallback = await volumes(entries, { partBytes: 17 });
+    assert.ok(fallback.length > 10);
+    for (let index = 0; index < standard.length; index++) {
+      assert.deepEqual(new Uint8Array(await fallback[index].blob.arrayBuffer()), new Uint8Array(await standard[index].blob.arrayBuffer()));
+    }
+    const source = selected(fallback), first = source.files[0]; let changed = false;
+    source.files[0] = { ...first, arrayBuffer: async () => {
+      const bytes = new Uint8Array(await first.arrayBuffer()); if (changed) bytes[0] ^= 1; return bytes.buffer;
+    } };
+    const opened = await openMemoryVolumes(source.files);
+    assert.deepEqual(await opened.readRecord('中文记录'), entries[1].data);
+    await opened.verify();
+    changed = true;
+    await assert.rejects(opened.verify(), /记忆卷已变化/);
+    await assert.rejects(openMemoryVolumes(source.files), /记忆卷校验失败/);
+    assert.ok(hashCalls > fallback.length, '导出、预览与最终核对均保留字节摘要校验');
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: previousCrypto });
+    if (previousHost === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = previousHost;
+  }
 });

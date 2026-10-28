@@ -120,21 +120,6 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     if (result?.found !== true) throw error(500, 'Invalid storage response');
     return unpack(result.value, namespace, collection, recordId);
   };
-  const scan = async (store, table, namespace, collection, signal) => {
-    const keys = await store.listKeys({ namespace: STORAGE_NAMESPACE, table });
-    if (!Array.isArray(keys)) throw error(500, 'Invalid storage listing');
-    const slots = [];
-    for (const key of keys) {
-      // Native reads cannot be cancelled once submitted, but cancellation must stop the next read.
-      abort(signal);
-      const slot = await read(store, table, key, namespace, collection);
-      abort(signal);
-      if (!slot || key !== await keyFor(slot.recordId) || table !== await tableFor(namespace, slot.collection)) throw error(500, 'Stored record identity mismatch');
-      slots.push({ table, key, slot });
-    }
-    return slots;
-  };
-
   const dispatch = async (url, init) => {
     if (typeof url !== 'string' || !url.startsWith(`${API_BASE}/v1/`)) throw error(400, 'Unsupported local backend URL');
     const parts = url.slice(`${API_BASE}/v1/`.length).split('/').map(value => {
@@ -155,7 +140,13 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     }
     const namespace = segment(parts[1]);
     if (namespace === 'system-trash') throw error(400, 'Reserved namespace');
-    // Namespace lock also protects collection/trash scans against concurrent mutation.
+    if (parts[0] === 'records' && parts.length === 3 && method === 'GET') {
+      const records = [];
+      // Release the shared queue between native records so other chats can load.
+      for await (const record of fetch.iterRecords(namespace, segment(parts[2]), { signal })) records.push(record);
+      return records.sort((a, b) => a.recordId.localeCompare(b.recordId));
+    }
+    // Native replacement can fall back to copy; reads must still wait for writes.
     return locked(globalRef, `${STORAGE_NAMESPACE}:${namespace}`, async () => {
       abort(signal);
       const permanent = parts.length === 5 && parts[4] === 'permanent';
@@ -232,11 +223,6 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
         if (permanent && method !== 'DELETE') throw error(405, 'Unsupported method');
         const collection = segment(parts[2]);
         const table = await tableFor(namespace, collection);
-        if (parts.length === 3 && method === 'GET') {
-          const slots = await scan(store, table, namespace, collection, signal);
-          return slots.filter(({ slot }) => slot.current).map(({ slot }) => ({ recordId: slot.recordId, ...slot.current }))
-            .sort((a, b) => a.recordId.localeCompare(b.recordId));
-        }
         const recordId = segment(parts[3]);
         const key = await keyFor(recordId);
         const slot = await read(store, table, key, namespace, collection, recordId)

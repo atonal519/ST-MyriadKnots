@@ -1,12 +1,10 @@
-import { isUuid, sha256 } from './identity.js';
+import { isUuid, sha256, sha256Bytes as hashBytes } from './identity.js';
 import { stableJson } from './memory-transfer-json.js';
 
 export const MEMORY_VOLUME_BYTES = 8 * 1024 * 1024;
 const FORMAT = 'qqj-core-chat-memory-volumes';
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
 const check = (ok, message) => { if (!ok) throw new Error(message); };
-const hashBytes = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256', value))]
-  .map(value => value.toString(16).padStart(2, '0')).join('');
 const join = (pieces, length) => {
   if (pieces.length === 1) return pieces[0];
   const result = new Uint8Array(length); let offset = 0;

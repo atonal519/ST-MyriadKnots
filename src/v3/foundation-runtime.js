@@ -265,6 +265,7 @@ export function createFoundationRuntime({
   let activeOperation = null;
   let scheduled = null;
   let inspectionScheduled = null;
+  let inspectionController = null;
   const activity = createActivitySignal(() => ({ busy: Boolean(activeOperation || inspectionScheduled), phase: activeOperation?.phase ?? (inspectionScheduled ? 'inspecting' : null) }));
   let dirtyReason = null;
   let dirtyStableThrough = null;
@@ -385,6 +386,8 @@ export function createFoundationRuntime({
   function invalidate() {
     sessionEpoch += 1;
     activeOperation?.controller.abort();
+    inspectionController?.abort();
+    inspectionController = null;
     activeOperation = null;
     scheduled = null;
     inspectionScheduled = null;
@@ -618,6 +621,8 @@ export function createFoundationRuntime({
   async function performInspect(reason = 'inspect', { allowCached = false } = {}) {
     if (!enabled()) return publish('disabled');
     const inspectEpoch = sessionEpoch;
+    const controller = new AbortController();
+    inspectionController = controller;
     const hadError = Boolean(lastError);
     let captured = null;
     try {
@@ -648,7 +653,7 @@ export function createFoundationRuntime({
           return publish('ready');
         }
       }
-      const loaded = await store.readReachable({ mode: 'projection' });
+      const loaded = await store.readReachable({ mode: 'projection', signal: controller.signal });
       if (inspectEpoch !== sessionEpoch) return publicState;
       inspectedStableCount = stableCountFor(candidates, loaded?.floors ?? []);
       if (['ready', 'needsReseal'].includes(loaded.status)) {
@@ -698,18 +703,19 @@ export function createFoundationRuntime({
         lastError = publicErrorMessage(error, { fallback: '读取聊天记忆失败。请稍后重试；仍失败时，请到“记忆管理”页点击“复制状态诊断”反馈。' });
         return publish('error');
       }
-    }
+    } finally { if (inspectionController === controller) inspectionController = null; }
   }
 
   function inspect(reason = 'inspect', options = {}) {
     if (!enabled()) return Promise.resolve(publish('disabled'));
+    const inspectEpoch = sessionEpoch;
     const allowCached = options.allowCached === true;
     const pendingWriter = !allowCached ? (scheduled ?? activeOperation?.promise ?? null) : null;
-    if (pendingWriter) return pendingWriter.then(() => inspect(reason, options));
+    if (pendingWriter) return pendingWriter.then(() => inspectEpoch === sessionEpoch ? inspect(reason, options) : publicState);
     if (inspectionScheduled) {
       if (!allowCached && inspectionScheduled.allowCached) {
         const predecessor = inspectionScheduled.promise;
-        const fresh = predecessor.then(() => performInspect(reason, { ...options, allowCached: false }));
+        const fresh = predecessor.then(() => inspectEpoch === sessionEpoch ? performInspect(reason, { ...options, allowCached: false }) : publicState);
         const entry = { allowCached: false, promise: null };
         entry.promise = fresh.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; activity.notifyActivity(); });
         inspectionScheduled = entry; activity.notifyActivity();
@@ -717,7 +723,7 @@ export function createFoundationRuntime({
       }
       return inspectionScheduled.promise;
     }
-    const request = Promise.resolve().then(() => performInspect(reason, options));
+    const request = Promise.resolve().then(() => inspectEpoch === sessionEpoch ? performInspect(reason, options) : publicState);
     const entry = { allowCached, promise: null };
     entry.promise = request.finally(() => { if (inspectionScheduled === entry) inspectionScheduled = null; activity.notifyActivity(); });
     inspectionScheduled = entry; activity.notifyActivity();

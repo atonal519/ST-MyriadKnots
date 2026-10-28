@@ -143,6 +143,107 @@ test('TT流式枚举等待native就绪时也按单次请求截止，不在就绪
   assert.equal(f.reads(), 1, '只有消费者随后主动读取，不补扫已经超时的迭代');
 });
 
+test('TT后台慢集合扫描逐条让出队列，当前聊天root在扫描结束前完成', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  await f.client.put('large-chat', 'v3-root', { headCheckpointId: 'current-head' }, 0);
+  const slowId = 'v3-floor-memory-slow';
+  await f.client.put('large-chat', slowId, { summary: '较大的已保存摘要' }, 0);
+  for (let i = 0; i < 50; i++) await f.client.put('large-chat', `floor-${i}`, { summary: '已保存摘要' }, 0);
+  const slowKey = `r-${createHash('sha256').update(slowId).digest('hex')}`;
+  const originalRead = f.store.tryGetJson;
+  let release, announce, gated = false, scanFinished = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const scanEntered = new Promise(resolve => { announce = resolve; });
+  f.store.tryGetJson = async options => {
+    if (options.key === slowKey && !gated) { gated = true; announce(); await gate; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+    return originalRead(options);
+  };
+  const scanning = f.client.list('large-chat').then(value => { scanFinished = true; return value; });
+  await scanEntered;
+  try {
+    const foreground = createBackendClient({ fetchImpl: f.fetchImpl, timeoutMs: 250 });
+    const reading = foreground.get('large-chat', 'v3-root');
+    release();
+    const root = await reading;
+    assert.equal(root.data.headCheckpointId, 'current-head');
+    assert.equal(scanFinished, false, 'root读取与慢扫描交替执行，不等待整份集合');
+  } finally {
+    release();
+    await scanning;
+    f.store.tryGetJson = originalRead;
+  }
+});
+
+test('TT慢集合扫描不阻塞其他聊天的root、向量和人物资料单条读取', { timeout: 5000 }, async t => {
+  const f = await fixture(t), slowId = 'v3-floor-memory-slow';
+  await f.client.put('large-chat', slowId, { summary: '后台扫描的较大摘要' }, 0);
+  for (let i = 0; i < 50; i++) await f.client.put('large-chat', `floor-${i}`, { summary: '已保存摘要' }, 0);
+  const targets = [
+    ['v3-root', { headCheckpointId: 'other-head' }],
+    ['qqj-vector-index', { shardIds: ['existing-shard'] }],
+    ['v3-people-workspace', { profilesByEntityId: { keeper: { name: '手填人物' } } }],
+  ];
+  for (const [id, data] of targets) await f.client.put('other-chat', id, data, 0);
+  const slowKey = `r-${createHash('sha256').update(slowId).digest('hex')}`;
+  const originalRead = f.store.tryGetJson;
+  let release, announce, gated = false, scanFinished = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const scanEntered = new Promise(resolve => { announce = resolve; });
+  f.store.tryGetJson = async options => {
+    if (options.key === slowKey && !gated) { gated = true; announce(); await gate; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+    return originalRead(options);
+  };
+  const scanning = f.client.list('large-chat').then(value => { scanFinished = true; return value; });
+  await scanEntered;
+  try {
+    const foreground = createBackendClient({ fetchImpl: f.fetchImpl, timeoutMs: 250 });
+    const reading = Promise.all(targets.map(([id]) => foreground.get('other-chat', id)));
+    release();
+    const found = await reading;
+    assert.deepEqual(found.map(item => item.data), targets.map(([, data]) => data));
+    assert.equal(scanFinished, false);
+  } finally {
+    release(); await scanning; f.store.tryGetJson = originalRead;
+  }
+});
+
+test('TT写入期间保持读写互斥，发布后读完整新值且并发CAS仍只有一个成功', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  const before = { version: 'old', nested: { ready: true }, rows: [1, 2, 3] };
+  const after = { version: 'new', nested: { ready: false, added: '完整字段' }, rows: [7, 8] };
+  await f.client.put('chat', 'v3-root', before, 0);
+  const originalWrite = f.store.setJson;
+  let release, announce;
+  const gate = new Promise(resolve => { release = resolve; });
+  const writeEntered = new Promise(resolve => { announce = resolve; });
+  let writing = false;
+  const originalRead = f.store.tryGetJson;
+  f.store.tryGetJson = async options => { assert.equal(writing, false, '不在native复制替换期间读取半文件'); return originalRead(options); };
+  f.store.setJson = async options => { writing = true; announce(); await gate; try { return await originalWrite(options); } finally { writing = false; } };
+  const first = f.client.put('chat', 'v3-root', after, 1);
+  await writeEntered;
+  const otherClient = createBackendClient({ fetchImpl: createTauriBackendFetch({ globalRef: f.globalRef }), timeoutMs: 250 });
+  const writes = Promise.allSettled([first, otherClient.put('chat', 'v3-root', { version: 'losing writer' }, 1)]);
+  let outcomes;
+  try {
+    const reading = otherClient.get('chat', 'v3-root');
+    release();
+    const pending = await reading;
+    assert.equal(pending.revision, 2);
+    assert.deepEqual(pending.data, after, '读取等待native写入完整发布');
+  } finally {
+    release(); outcomes = await writes; f.store.setJson = originalWrite; f.store.tryGetJson = originalRead;
+  }
+  assert.equal(outcomes[0].status, 'fulfilled');
+  assert.equal(outcomes[1].status, 'rejected');
+  assert.equal(outcomes[1].reason.status, 409);
+  const committed = await otherClient.get('chat', 'v3-root');
+  assert.equal(committed.revision, 2);
+  assert.deepEqual(committed.data, after, '提交后读取完整新代，没有部分字段或旧值覆盖');
+});
+
 test('TT preserves JSON field order through native save, cold read, list and trash restore', async t => {
   const f = await fixture(t);
   const value = { z: 1, a: [{ recordType: 'floor', recordId: 'test', itemId: null }], nested: { second: 2, first: 1 } };
