@@ -45,6 +45,7 @@ const openDetails = node => { if (!node) throw new TypeError('expected details r
 let activeEditorDialog = null;
 let lastEditorDialogError = null;
 function captureEditorDialog(options) {
+  if (!options.content || typeof options.submit !== 'function') throw new TypeError('自定义弹窗内容无效');
   activeEditorDialog?.cancel();
   lastEditorDialogError = null;
   let resolve;
@@ -55,8 +56,10 @@ function captureEditorDialog(options) {
   return promise;
 }
 function createV3FoundationView(options = {}) {
+  activeEditorDialog?.cancel();
   const customImpl = options.customImpl;
-  return createV3FoundationViewImpl({ ...options, customImpl: dialogOptions => {
+  const suppliedConfirm = options.confirmImpl;
+  const view = createV3FoundationViewImpl({ ...options, confirmImpl: suppliedConfirm ? options => { activeEditorDialog?.cancel(); return suppliedConfirm(options); } : suppliedConfirm, cancelDialogImpl: () => activeEditorDialog?.cancel(), customImpl: dialogOptions => {
     const fallback = captureEditorDialog(dialogOptions);
     if (typeof customImpl !== 'function') return fallback;
     let result;
@@ -65,6 +68,7 @@ function createV3FoundationView(options = {}) {
     Promise.resolve(result).then(value => activeEditorDialog?.options === dialogOptions && activeEditorDialog.cancel(value), () => activeEditorDialog?.options === dialogOptions && activeEditorDialog.cancel(null));
     return result;
   } });
+  return { ...view, deactivate() { activeEditorDialog?.cancel(); return view.deactivate(); } };
 }
 const editorContent = () => activeEditorDialog?.content ?? null;
 const submitEditor = () => activeEditorDialog?.submit() ?? Promise.resolve(null);
@@ -362,9 +366,9 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   assert.equal(clockReminder.hidden, false); assert.equal(clockReminder.textContent, '时间信息可能变化，请用户核实');
   timeState = { ...timeState, clockContentChanged: false }; publish(); assert.equal(clockReminder.hidden, true);
   assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(reads, 0); assert.equal(refreshes, 0);
-  let body = flatten(container).find(node => node.id === toggle.attributes['aria-controls']); assert.equal(body.hidden, true);
+  let body = flatten(container).find(node => node.id === toggle.attributes['aria-controls']); assert.notEqual(body?.parentNode, container, '近期事项正文不直接挂到main container');
   assert.ok(flatten(container).some(node => node.className === 'v3-memory-list'));
-  await toggle.click(); assert.equal(reads, 1); assert.equal(toggle.textContent, '近期事项（1）'); assert.equal(body.hidden, false);
+  await toggle.click(); body = activeEditorDialog.content; assert.equal(reads, 1); assert.equal(toggle.textContent, '近期事项（1）'); assert.equal(body.hidden, false);
   let recentText = flatten(body).map(node => node.textContent).join('|');
   assert.match(recentText, /手腕擦伤 <b>原文<\/b>/u);
   assert.doesNotMatch(recentText, /观察时间|经过时间|已过 2 天|待更新|旧推测/u);
@@ -372,7 +376,7 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   assert.equal(flatten(body).some(node => node.tag === 'details'), false, '列表不再嵌套另一折叠层');
   const list = body.children.at(-1), entry = list.children[0], listReplaceCount = list.replaceCount;
   list.scrollTop = 28; entry.scrollTop = 9;
-  await toggle.click(); assert.equal(body.hidden, true); assert.equal(toggle.attributes['aria-expanded'], 'false');
+  cancelEditor(); assert.equal(body.hidden, true); assert.equal(toggle.attributes['aria-expanded'], 'false');
   publish(); assert.equal(body.hidden, true); assert.equal(toggle.attributes['aria-expanded'], 'false', '时间通知不得重新展开已收起区域');
   timeState = { ...timeState, last: { status: 'failed', automaticFailure: true, automaticFailureMessage: '再次推演失败。', message: '原失败原因：年表读取错误' } }; publish();
   const automaticFailure = flatten(memoryToolbar).find(node => node.className.includes('qqj-time-automatic-failure'));
@@ -394,51 +398,52 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   const summaryCard = openDetails(flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'floor'));
   flatten(summaryCard).find(node => node.textContent === '编辑').click();
   const input = flatten(editorContent()).find(node => node.tag === 'textarea'); input.value = '未保存草稿'; input.fire('input'); input.focus();
+  cancelEditor(); await toggle.click();
   toggle = flatten(container).find(node => node.textContent === '近期事项（1）');
   const replaceCount = container.replaceCount;
-  let editedBody = flatten(container).find(node => node.id === 'qqj-recent-items');
+  let editedBody = activeEditorDialog?.content ?? flatten(container).find(node => node.id === 'qqj-recent-items');
   const editedList = editedBody.children.at(-1), oldEntry = editedList.children[0];
-  await flatten(container).find(node => node.textContent === '补查历史').click();
+  await flatten(editedBody).find(node => node.textContent === '补查历史').click();
   assert.notEqual(editedList.children[0], oldEntry, '真实显示内容改变才替换事项');
   assert.equal(organizes, 1); assert.equal(container.replaceCount, replaceCount); assert.equal(input.value, '未保存草稿');
   assert.equal(documentRef.activeElement, input); assert.equal(container.scrollTop, 45);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /可能有所减轻/u);
+  assert.match(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /可能有所减轻/u);
   assert.ok(flatten(container).some(node => node.attributes['data-qqj-floor-id'] === 'floor'), 'timeState 返回不得替换 memoryState');
   timeState = { ...timeState, status: 'waiting', canOrganize: false, trackedItems: null }; publish();
   emit({ ...state, memorySnapshotStatus: 'syncing', memorySyncStatus: 'syncing', memoryWorkBusy: true });
-  assert.equal(toggle.disabled, false); assert.equal(flatten(container).find(node => node.textContent === '补查历史').disabled, true);
+  assert.equal(toggle.disabled, false); assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '补查历史').disabled, true);
   timeState = { ...timeState, status: 'completed', canOrganize: true, trackedItems: [item] };
   emit({ ...state, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false });
-  assert.equal(flatten(editorContent()).find(node => node.tag === 'textarea'), input);
-  assert.equal(documentRef.activeElement, input); assert.equal(input.value, '未保存草稿');
+  assert.equal(flatten(editorContent()).some(node => node.tag === 'textarea' && node.placeholder === '输入用户修订摘要'), false, '已取消的摘要编辑窗不得被时间同步迟到重开');
+  assert.equal(input.value, '未保存草稿');
   toggle = flatten(container).find(node => node.textContent === '近期事项（1）');
-  editedBody = flatten(container).find(node => node.id === 'qqj-recent-items');
+  editedBody = activeEditorDialog?.content ?? flatten(container).find(node => node.id === 'qqj-recent-items');
   assert.equal(toggle.disabled, false);
   const readsBeforeRetoggle = reads;
-  await toggle.click(); await toggle.click(); assert.equal(reads, readsBeforeRetoggle, '折叠再展开不重复读取已整理的事项'); assert.equal(toggle.attributes['aria-expanded'], 'true');
+  cancelEditor(); await toggle.click(); assert.equal(reads, readsBeforeRetoggle, '关闭再打开不重复读取已整理的事项'); assert.equal(toggle.attributes['aria-expanded'], 'true');
   timeState = { ...timeState, trackedItems: [{ ...item, oldProjection: { text: '旧推测', applicableTime: { date: '2026-05-11' } }, assessmentReason: '没有新观察，无法判断。' }] }; publish();
-  recentText = flatten(container).map(node => node.textContent).join('|');
+  recentText = flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|');
   assert.match(recentText, /依据不足：没有新观察，无法判断/u);
   assert.doesNotMatch(recentText, /截至 2026-05-11 的旧推测|观察时间|经过时间/u);
-  assert.ok(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
+  assert.ok(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
   timeState = { ...timeState, trackedItems: [{ ...item, reviewStatus: 'omitted' }] }; publish();
-  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /本次未纳入当前推测|未获得有效推测/u, '未形成结果时不显示状态占位文案');
-  assert.equal(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '未形成结果不标成事项错误');
+  assert.doesNotMatch(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /本次未纳入当前推测|未获得有效推测/u, '未形成结果时不显示状态占位文案');
+  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '未形成结果不标成事项错误');
   timeState = { ...timeState, trackedItems: [{ ...item, failureReason: '来源编号无效。' }] }; publish();
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /更新失败/u);
-  assert.ok(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
+  assert.match(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /更新失败/u);
+  assert.ok(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'));
   timeState = { ...timeState, trackedItems: [{ ...item, reviewStatus: 'unanswered' }] }; publish();
-  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /本次未获得有效推测/u);
-  assert.equal(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '仅状态标记不显示为失败');
+  assert.doesNotMatch(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /本次未获得有效推测/u);
+  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '仅状态标记不显示为失败');
   timeState = { ...timeState, trackedItems: [item] }; publish();
-  assert.equal(flatten(container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '健康后标题恢复普通色');
+  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '甲 · 擦伤').className.includes('error'), false, '健康后标题恢复普通色');
   timeState = { ...timeState, last: { status: 'partial', message: '第2项：来源编号未在本次请求中出现。请手动继续。' } }; publish();
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /部分未更新/);
-  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /第2项：来源编号/);
-  assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, false);
+  assert.match(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /部分未更新/);
+  assert.doesNotMatch(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /第2项：来源编号/);
+  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '继续补查历史').disabled, false);
   timeState = { ...timeState, status: 'failed', trackedItems: null, last: { status: 'failed', reason: 'read', message: '读取失败' } }; publish();
-  const retry = flatten(container).find(node => node.textContent === '重试读取'); assert.equal(retry.hidden, false);
-  assert.equal(flatten(container).find(node => node.textContent === '继续补查历史').disabled, true);
+  const retry = flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '重试读取'); assert.equal(retry.hidden, false);
+  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '继续补查历史').disabled, true);
   await retry.click(); assert.equal(reads, 2); assert.equal(organizes, 1);
   view.deactivate(); assert.equal(timeListeners.size, 0); assert.equal(memoryListeners.size, 0);
   view.mount(container); assert.equal(timeListeners.size, 1); assert.equal(memoryListeners.size, 1); assert.equal(reads, 2);
@@ -467,15 +472,16 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
   const container = new Node('main'); container.scrollTop = 35;
   let confirmedCopy; const view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: options => { confirmedCopy = options; return true; } }); view.setPage('memories'); view.mount(container);
   await flatten(container).find(node => node.textContent === '近期事项（1）').click();
-  let recentText = flatten(container).map(node => node.textContent).join('|');
+  const recentBody = activeEditorDialog.content;
+  let recentText = flatten(activeEditorDialog.content).map(node => node.textContent).join('|');
   assert.match(recentText, /发生：纪元年10月4日/u, '列表显示正式发生时间并保留任意纪年');
   assert.doesNotMatch(recentText, /观察时间|次日 08:00|经过/u, '列表不展示观察时间或由观察时间推导的经过时间');
-  const itemMenu = flatten(container).find(node => node.className === 'qqj-profile-menu');
+  const itemMenu = flatten(activeEditorDialog.content).find(node => node.className === 'qqj-profile-menu');
   assert.equal(itemMenu.parentNode.className, 'qqj-recent-item-head'); assert.equal(itemMenu.parentNode.children.at(-1), itemMenu);
   assert.equal(itemMenu.children[0].textContent, '⋮'); assert.equal(itemMenu.children[0].attributes['aria-haspopup'], 'menu'); assert.match(itemMenu.children[0].attributes['aria-label'], /事项操作/u);
   assert.ok(flatten(itemMenu).filter(node => node.tag === 'button').every(node => node.className.includes('qqj-profile-menu-action') && node.attributes.role === 'menuitem'));
   itemMenu.open = true;
-  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  await flatten(recentBody).find(node => node.textContent === '编辑事项').click();
   assert.equal(itemMenu.open, false);
   const editGroups = flatten(editorContent()).filter(node => node.className.split(' ').includes('qqj-editor-group'));
   assert.equal(editGroups[0].children[0].textContent, '事项内容', '主要事件内容放在编辑窗最前');
@@ -497,34 +503,34 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
   assert.equal(documentRef.activeElement, description); assert.equal(container.replaceCount, replacements);
   name.value = '名'.repeat(150); name.fire('input'); description.value = '描'.repeat(1200); description.fire('input');
   await submitEditor(); assert.equal(item.observation.length, 1200); assert.equal(item.label.length, 150); assert.equal(item.projection, null);
-  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  await flatten(recentBody).find(node => node.textContent === '编辑事项').click();
   await submitEditor(); assert.equal(writes, 2, '原样保存不写新批次或清推测');
-  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  await flatten(recentBody).find(node => node.textContent === '编辑事项').click();
   description = flatten(editorContent()).find(node => node.attributes['aria-label'] === '观察描述'); description.value = '取消的内容'; description.fire('input');
   cancelEditor(); assert.equal(writes, 2); assert.equal(item.observation.length, 1200);
   const oldTimes = { observationTime: structuredClone(item.observationTime), occurrenceTime: structuredClone(item.occurrenceTime), dueTime: structuredClone(item.dueTime) };
-  await flatten(container).find(node => node.textContent === '编辑事项').click();
+  await flatten(activeEditorDialog.content).find(node => node.textContent === '编辑事项').click();
   const renamed = flatten(editorContent()).find(node => node.attributes['aria-label'] === '事项名称'); renamed.value = '只改名称'; renamed.fire('input');
   await submitEditor();
   assert.deepEqual(lastFields, { label: '只改名称' });
   for (const [key, value] of Object.entries(oldTimes)) assert.deepEqual(item[key], value);
-  await flatten(container).find(node => node.textContent === '暂停').click();
+  await flatten(recentBody).find(node => node.textContent === '暂停').click();
   assert.equal(flatten(container).some(node => node.textContent === '确认保存'), false, '弹窗确认后直接保存，不再嵌套确认');
   assert.equal(item.status, 'paused'); assert.equal(flatten(container).find(node => node.className.includes('qqj-profile-more')).textContent, '近期事项（0）');
-  const beforeStopped = reads; await flatten(container).find(node => node.textContent === '查看停止项（1）').click(); assert.equal(reads, beforeStopped);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /已暂停/u);
+  const beforeStopped = reads; await flatten(recentBody).find(node => node.textContent === '查看停止项（1）').click(); assert.equal(reads, beforeStopped);
+  assert.match(flatten(recentBody).map(node => node.textContent).join('|'), /已暂停/u);
   for (const status of ['completed', 'paused', 'cancelled']) {
     timeState = { ...timeState, stoppedItems: [{ ...item, type: 'cycle', status, failureReason: '旧失败', assessmentReason: '旧依据不足', reviewStatus: 'unanswered', dueTime: { date: '2026-05-15' }, periodDays: 5 }] }; emit();
-    const text = flatten(container).map(node => node.textContent).join('|');
+    const text = flatten(recentBody).map(node => node.textContent).join('|');
     assert.match(text, /已暂停|已完成|已移除/u); assert.doesNotMatch(text, /等待推算|尚未确认发生或完成|当前推测/u);
-    assert.equal(flatten(container).find(node => node.textContent.includes('甲 · 只改名称')).className.includes('error'), false, '结束事项不保留错误标题色');
+    assert.equal(flatten(recentBody).find(node => node.textContent.includes('甲 · 只改名称')).className.includes('error'), false, '结束事项不保留错误标题色');
   }
   timeState = { ...timeState, stoppedItems: [{ ...item, mergedInto: 'primary' }] }; emit();
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /已归并/u);
-  await flatten(container).find(node => node.textContent === '恢复追踪').click();
+  assert.match(flatten(recentBody).map(node => node.textContent).join('|'), /已归并/u);
+  await flatten(recentBody).find(node => node.textContent === '恢复追踪').click();
   assert.match(confirmedCopy.body, /解除归并，恢复独立跟进/u);
   assert.equal(item.status, 'active'); assert.equal(flatten(container).find(node => node.className.includes('qqj-profile-more')).textContent, '近期事项（1）');
-  await flatten(container).find(node => node.textContent === '返回追踪中事项').click(); assert.match(flatten(container).map(node => node.textContent).join('|'), /只改名称/u);
+  await flatten(recentBody).find(node => node.textContent === '返回追踪中事项').click(); assert.match(flatten(recentBody).map(node => node.textContent).join('|'), /只改名称/u);
   assert.equal(reads, beforeStopped); view.deactivate(); assert.equal(listeners.size, 0);
 });
 
@@ -545,18 +551,71 @@ test('近期事项编辑可选择现有人物并修订当前推测，不显示�
   const container = new Node('main'), view = createV3FoundationView({ runtime, timeRuntime, documentRef });
   view.setPage('memories'); view.mount(container);
   await flatten(container).find(node => node.textContent === '近期事项（1）').click();
-  await flatten(container).find(node => node.textContent === '编辑事项').click();
-  const person = flatten(editorContent()).find(node => node.attributes['aria-label'] === '人物归属');
-  assert.deepEqual(person.children.map(option => option.textContent), ['甲', '乙', '路人甲']);
+  await flatten(activeEditorDialog.content).find(node => node.textContent === '编辑事项').click();
+  const person = flatten(editorContent()).find(node => node.className === 'qqj-inline-select');
+  assert.deepEqual(flatten(person).filter(node => node.className.includes('qqj-inline-select-option')).map(option => option.textContent), ['', '甲', '乙', '路人甲']);
   assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /person-a|person-b/u);
-  person.value = 'person-b'; person.fire('change');
+  flatten(person).find(node => node.className.includes('qqj-inline-select-option') && node.attributes['data-value'] === 'person-b').click();
   const projection = flatten(editorContent()).find(node => node.attributes['aria-label'] === '当前推测');
   assert.ok(projection); projection.value = '疼痛可能已经减轻，尚未确认恢复'; projection.fire('input');
   await submitEditor();
   assert.deepEqual(savedFields, { subjectEntityId: 'person-b', projectionText: '疼痛可能已经减轻，尚未确认恢复' });
   assert.equal(item.projectionTime.clock, '09:00');
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /乙 · 擦伤/u);
+  assert.match(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /乙 · 擦伤/u);
   view.deactivate();
+});
+
+test('近期事项主清单使用独立dialog，编辑人物归属使用inline select并返回原清单', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', floors: [], memoryEntities: [{ entityId: 'person-a', displayName: '甲' }, { entityId: 'person-b', displayName: '乙' }] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const item = { id: 'recent-dialog-item', subjectEntityId: 'person-a', observationKey: 'recent-key', status: 'active', person: '甲', label: '事项', type: 'body', observation: '观察', observationTime: { date: '2026-05-11' }, occurrenceTime: { date: '2026-05-10' }, dueTime: { date: null }, projection: null };
+  const timeState = { status: 'completed', active: false, canOrganize: true, last: { status: 'completed' }, trackedItems: [item], stoppedItems: [] };
+  const timeRuntime = { getState: () => timeState, refreshStatus: async () => timeState, subscribe: () => () => {}, editItem: async () => timeState };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, timeRuntime, documentRef });
+  view.setPage('memories'); view.mount(container);
+  await flatten(container).find(node => node.textContent === '近期事项（1）').click();
+  assert.equal(activeEditorDialog.options.content.className, 'qqj-editor-dialog qqj-recent-items-dialog');
+  assert.equal(container.children.some(node => node.id === 'qqj-recent-items'), false);
+  await flatten(activeEditorDialog.content).find(node => node.textContent === '编辑事项').click();
+  assert.equal(activeEditorDialog.options.content.className, 'qqj-editor-dialog qqj-profile-form');
+  const person = flatten(editorContent()).find(node => node.className === 'qqj-inline-select');
+  assert.ok(person, '人物归属应复用有限值 inline select');
+  assert.equal(flatten(editorContent()).some(node => node.tag === 'select' && node.attributes['aria-label'] === '人物归属'), false);
+  cancelEditor();
+  assert.equal(activeEditorDialog.options.content.className, 'qqj-editor-dialog qqj-recent-items-dialog');
+  view.deactivate();
+});
+
+test('近期事项真实overlay在停用与切页时由视图关闭且不迟到重开', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', floors: [] };
+  const item = { id: 'overlay-item', observationKey: 'overlay-key', status: 'active', person: '甲', label: '事项', type: 'body', observation: '观察' };
+  const timeRuntime = { getState: () => ({ status: 'completed', canOrganize: true, trackedItems: [item], stoppedItems: [] }), subscribe: () => () => {}, refreshStatus: async () => ({}) };
+  let opened, opens = 0, cancellations = 0;
+  const view = createV3FoundationViewImpl({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state }, timeRuntime, documentRef,
+    customImpl: options => { opened = options; opens += 1; return new Promise(() => {}); }, cancelDialogImpl: () => { cancellations += 1; opened?.onClose?.(); } });
+  const container = new Node('main'); view.setPage('memories'); view.mount(container);
+  flatten(container).find(node => node.textContent === '近期事项（1）').click();
+  assert.ok(opened?.content); view.setPage('people'); assert.equal(cancellations, 1); assert.equal(opens, 1, '关闭后不应迟到重开 dialog');
+  view.deactivate(); assert.equal(cancellations, 1);
+});
+
+test('近期事项子编辑切页与确认中停用均关闭single-active overlay且不迟写', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', floors: [] };
+  const item = { id: 'overlay-item', observationKey: 'overlay-key', status: 'active', person: '甲', label: '事项', type: 'body', observation: '观察' };
+  let activeOverlay = null, opens = 0, closes = 0, releaseConfirm;
+  const customImpl = options => { activeOverlay?.onClose?.(); activeOverlay = options; opens += 1; return new Promise(() => {}); };
+  const view = createV3FoundationViewImpl({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state },
+    timeRuntime: { getState: () => ({ status: 'completed', canOrganize: true, trackedItems: [item], stoppedItems: [] }), subscribe: () => () => {}, refreshStatus: async () => {}, prepareHistoryPlan: async () => ({ floorCount: 1, batchCount: 1, apiCalls: 1 }), editItem: async () => {} }, documentRef,
+    customImpl, confirmImpl: () => { activeOverlay?.onClose?.(); activeOverlay = { onClose: () => { closes += 1; } }; return new Promise(resolve => { releaseConfirm = resolve; }); },
+    cancelDialogImpl: () => { closes += 1; activeOverlay?.onClose?.(); activeOverlay = null; } });
+  const container = new Node('main'); view.setPage('memories'); view.mount(container);
+  flatten(container).find(node => node.textContent === '近期事项（1）').click();
+  flatten(activeOverlay.content).find(node => node.textContent === '编辑事项')?.click();
+  view.setPage('people'); assert.equal(opens, 2); assert.equal(activeOverlay, null, '子编辑切页后不得重开主清单');
+  view.setPage('memories'); view.mount(container); flatten(container).find(node => node.textContent === '近期事项（1）').click();
+  flatten(activeOverlay.content).find(node => node.textContent === '补查历史').click();
+  view.deactivate(); releaseConfirm?.(false); await Promise.resolve();
+  assert.equal(activeOverlay, null); assert.equal(opens, 3); assert.equal(closes, 2, '确认中的 overlay 与主清单都应完成关闭，不得迟到重开');
 });
 
 test('近期事项精简列表保留有效推测、发生/期限、停止与年度只读结果', async () => {
@@ -575,7 +634,7 @@ test('近期事项精简列表保留有效推测、发生/期限、停止与年�
   const container = new Node('main'), view = createV3FoundationView({ runtime, timeRuntime, documentRef });
   view.setPage('memories'); view.mount(container);
   await flatten(container).find(node => node.textContent === '近期事项（4）').click();
-  const body = flatten(container).find(node => node.id === 'qqj-recent-items');
+  const body = activeEditorDialog?.content ?? flatten(container).find(node => node.id === 'qqj-recent-items');
   const list = body.children.at(-1), text = flatten(list).map(node => node.textContent).join('|');
   assert.match(text, /甲 · 周期.*共同经历的整体影响.*轻微不适.*恢复中.*当前推测：可能开始缓解.*发生：纪1年2月3日.*预计周期日：纪1年2月8日.*推算至：纪1年2月5日/u);
   assert.equal(flatten(list.children[0]).some(node => node.tag === 'img'), false, '关键词通过文本节点展示，不解释为HTML');
@@ -633,22 +692,23 @@ test('近期事项菜单确认取消零写，失败重试，同内容通知及�
       changeTime: patch => { timeState = { ...timeState, ...patch }; emitTime(); }, changeKey: () => { timeState = { ...timeState, trackedItems: [{ ...item, observationKey: 'new-key' }] }; emitTime(); },
       changeChat: () => { state = { ...state, chatId: 'another-chat' }; for (const listener of memoryListeners) listener(state); } };
   }
-  const s = await scenario(), action = label => flatten(s.container).find(node => node.textContent === label);
-  const menu = flatten(s.container).find(node => node.className === 'qqj-profile-menu'), entry = menu.parentNode.parentNode, list = entry.parentNode;
+  const s = await scenario(), action = label => flatten(activeEditorDialog?.content ?? s.container).find(node => node.textContent === label);
+  const menu = flatten(activeEditorDialog.content).find(node => node.className === 'qqj-profile-menu'), entry = menu.parentNode.parentNode, list = entry.parentNode;
   openDetails(flatten(s.container).find(node => String(node.className).split(' ').includes('qqj-memory-card')));
   const summaryMenu = flatten(s.container).find(node => node.className === 'qqj-memory-menu');
   list.scrollTop = 24; menu.open = true; let pending = action('完成').click(); assert.equal(menu.open, false);
-  assert.equal(action('编辑事项').disabled, true); assert.equal(action('移除').disabled, true);
-  await action('编辑事项').click(); assert.equal(action('保存事项'), undefined);
-  s.emitTime(); assert.equal(flatten(s.container).find(node => node.className === 'qqj-profile-menu'), menu); assert.equal(list.children[0], entry); assert.equal(list.scrollTop, 24);
+  assert.equal(activeEditorDialog, null, '真实 confirm 会替换并关闭近期事项主清单');
+  s.emitTime();
   s.confirm(false); await pending; assert.equal(s.writes(), 0); assert.equal(action('完成').disabled, false);
-  s.failNext(); pending = action('完成').click(); s.confirm(true); await pending; assert.equal(s.writes(), 1); assert.match(flatten(entry).map(node => node.textContent).join('|'), /保存失败/u);
+  assert.equal(flatten(activeEditorDialog?.content ?? s.container).find(node => node.className === 'qqj-profile-menu'), menu); assert.equal(list.children[0], entry); assert.equal(list.scrollTop, 24);
+  await action('编辑事项').click(); assert.equal(action('保存事项'), undefined); cancelEditor();
+  s.failNext(); pending = action('完成').click(); s.confirm(true); await pending; assert.equal(s.writes(), 1); const currentEntry = flatten(activeEditorDialog.content).find(node => node.className === 'settings-field' && flatten(node).some(child => child.textContent === '甲 · 擦伤')); assert.match(flatten(currentEntry).map(node => node.textContent).join('|'), /保存失败/u);
   assert.equal(action('完成').disabled, false); pending = action('完成').click(); s.confirm(true); await pending; assert.equal(s.writes(), 2);
   assert.equal(action('确认保存'), undefined); assert.equal(action('保存事项'), undefined);
   summaryMenu.open = true; s.doc.click({ composedPath: () => [] }); assert.equal(summaryMenu.open, false, '局部时间清单更新保留摘要菜单的外部关闭注册');
   assert.equal(s.doc.clickListenerCount(), 1); s.view.deactivate(); assert.equal(s.doc.clickListenerCount(), 0);
   for (const mutation of ['chat', 'key', 'busy', 'page']) {
-    const late = await scenario(); const pending = flatten(late.container).find(node => node.textContent === '移除').click();
+    const late = await scenario(); const pending = flatten(activeEditorDialog?.content ?? late.container).find(node => node.textContent === '移除').click();
     if (mutation === 'chat') late.changeChat(); else if (mutation === 'key') late.changeKey(); else if (mutation === 'busy') late.changeTime({ active: true, canOrganize: false }); else late.view.setPage('management');
     late.confirm(true); await pending; assert.equal(late.writes(), 0, `${mutation}变化后旧确认不保存`); late.view.deactivate();
   }
@@ -665,14 +725,14 @@ test('近期事项批量勾选当前列表或问题项，年度设定保持只�
     async editItems(edits) { calls.push(structuredClone(edits)); const ids = new Set(edits.map(edit => edit.itemId)); const stopped = timeState.trackedItems.filter(value => ids.has(value.id)).map(value => ({ ...value, status: edits.find(edit => edit.itemId === value.id).fields.status, observationKey: `${value.observationKey}-saved` })); timeState = { ...timeState, trackedItems: timeState.trackedItems.filter(value => !ids.has(value.id)), stoppedItems: stopped }; emitTime(); return timeState; },
     async editItem() { throw new Error('批量路径不应循环调用 editItem'); } };
   const container = new Node('main'), view = createV3FoundationView({ runtime, timeRuntime, documentRef, confirmImpl: () => true }); view.setPage('memories'); view.mount(container);
-  await flatten(container).find(node => node.textContent === '近期事项（4）').click(); await flatten(container).find(node => node.textContent === '批量管理').click();
-  assert.equal(flatten(container).filter(node => node.className === 'qqj-recent-item-select').length, 3, '年度设定没有复选框');
-  await flatten(container).find(node => node.textContent === '选择问题项').click();
-  const checks = flatten(container).filter(node => node.className === 'qqj-recent-item-select');assert.deepEqual(checks.map(node => node.checked), [false, true, true]);
-  assert.ok(flatten(container).some(node => node.textContent === '批量完成'));assert.ok(flatten(container).some(node => node.textContent === '批量移除'));
-  await flatten(container).find(node => node.textContent === '批量暂停').click();assert.equal(calls.length, 1);assert.deepEqual(calls[0].map(edit => edit.itemId), ['失败', '不足']);assert.ok(calls[0].every(edit => edit.fields.status === 'paused'));
-  await flatten(container).find(node => node.textContent === '批量管理').click();await flatten(container).find(node => node.textContent === '选择当前列表').click();
-  assert.equal(flatten(container).filter(node => node.className === 'qqj-recent-item-select' && node.checked).length, 1);assert.match(flatten(container).map(node => node.textContent).join('|'), /甲 · 生日 · 休眠.*只读事项/u);
+  await flatten(container).find(node => node.textContent === '近期事项（4）').click(); const recentBody = activeEditorDialog.content; await flatten(recentBody).find(node => node.textContent === '批量管理').click();
+  assert.equal(flatten(recentBody).filter(node => node.className === 'qqj-recent-item-select').length, 3, '年度设定没有复选框');
+  await flatten(recentBody).find(node => node.textContent === '选择问题项').click();
+  const checks = flatten(recentBody).filter(node => node.className === 'qqj-recent-item-select');assert.deepEqual(checks.map(node => node.checked), [false, true, true]);
+  assert.ok(flatten(recentBody).some(node => node.textContent === '批量完成'));assert.ok(flatten(recentBody).some(node => node.textContent === '批量移除'));
+  await flatten(recentBody).find(node => node.textContent === '批量暂停').click();assert.equal(calls.length, 1);assert.deepEqual(calls[0].map(edit => edit.itemId), ['失败', '不足']);assert.ok(calls[0].every(edit => edit.fields.status === 'paused'));
+  await flatten(recentBody).find(node => node.textContent === '批量管理').click();await flatten(recentBody).find(node => node.textContent === '选择当前列表').click();
+  assert.equal(flatten(recentBody).filter(node => node.className === 'qqj-recent-item-select' && node.checked).length, 1);assert.match(flatten(recentBody).map(node => node.textContent).join('|'), /甲 · 生日 · 休眠.*只读事项/u);
   memoryState = { ...memoryState, chatId: 'new-chat' };for (const listener of memoryListeners) listener(memoryState);
   assert.equal(flatten(container).some(node => node.className === 'qqj-recent-item-select'), false, '切聊天清空批量模式与选择');view.deactivate();
 });
@@ -3371,8 +3431,7 @@ test('视图停用期间同聊天正文改变后，重新激活仍按永久楼�
   view.deactivate();
   state = { ...state, floors: [{ ...floor, canonicalFingerprint: 'sha256:new', summary: '重 Roll 后的新摘要' }] };
   await view.activate();
-  assert.equal(flatten(editorContent()).some(node => node.tag === 'textarea'), true);
-  assert.equal(flatten(editorContent()).find(node => node.tag === 'textarea').value, '不可错存的旧草稿');
+  assert.equal(editorContent(), null, '停用期间的旧编辑窗不得在重新激活后迟到重开');
   assert.equal(saves.length, 0);
 });
 
@@ -3731,8 +3790,7 @@ test('前情仅在独立弹窗内编辑，取消不改存档且保存失败保�
   assert.match(flatten(container).map(node => node.textContent).join('|'), /当前 3 字符/);
   editor.value = '正在输入的草稿'; editor.fire('input');
   for (const listener of listeners) listener({ ...state, chatId: CHAT, status: 'ready', foundationStatus: 'ready' });
-  editor = flatten(editorContent()).find(node => String(node.className).includes('qqj-prequel-editor'));
-  assert.equal(editor.value, '正在输入的草稿', 'QQJ 身份从 null 建立时仍按宿主聊天保留草稿');
+  assert.equal(editorContent(), null, '聊天身份变化时旧前情编辑窗应由本视图关闭，不得迟到重开或提交');
   assert.match(flatten(container).map(node => node.textContent).join('|'), /召回材料估算 40 \+ 前情估算 20 = 合计 60 Token/);
   cancelEditor();
   assert.equal(saved.text, '旧前情', '取消不写入前情存档');
@@ -3837,7 +3895,7 @@ test('时间补查真实view先计划后确认，取消零整理；摘要CSE忙�
   const state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',memorySnapshotStatus:'ready',memorySyncStatus:'idle',memoryWorkBusy:true,activeCse:{phase:'analyzing'},floors:[]};let plans=0,runs=0,confirmed=false,shown;const listeners=new Set();
   const runtime={getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state,subscribe:()=>()=>{}};const timeState={status:'completed',active:false,canOrganize:true,trackedItems:[],stoppedItems:[],coverage:{checkedFloors:1,totalFloors:5,startAssistantSeq:5,earlierUnchecked:4,pendingFloors:1},last:{status:'empty'}};
   const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},prepareHistoryPlan:async()=>{plans++;return {floorCount:4,bodyBatchCount:2,batchCount:3,apiCalls:3,currentReview:true};},organize:async plan=>{runs++;assert.equal(plan.apiCalls,3);}};
-  const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);const toggle=flatten(container).find(node=>node.className.includes('qqj-profile-more'));await toggle.click();const body=flatten(container).find(node=>node.id==='qqj-recent-items'),button=flatten(body).find(node=>node.textContent==='补查历史');assert.equal(button.disabled,false);
+  const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);const toggle=flatten(container).find(node=>node.className.includes('qqj-profile-more'));await toggle.click();const body=activeEditorDialog.content,button=flatten(body).find(node=>node.textContent==='补查历史');assert.equal(button.disabled,false);
   assert.match(flatten(body).map(node=>node.textContent).join('|'),/正文已检查 1\/5 楼；此前 4 楼未检查；1 楼等待稳定/u);await button.click();assert.equal(plans,1);assert.equal(runs,0);assert.match(shown.body,/4 个 AI 楼.*2 批.*摘要 API 3 次.*一次当前事项评估/);confirmed=true;await button.click();assert.equal(runs,1);await toggle.click();assert.equal(body.hidden,true);for(const listener of listeners)listener(timeState);assert.equal(body.hidden,true);view.deactivate();
 });
 
@@ -3851,7 +3909,7 @@ test('停止项复用批量控件永久删除，取消零写，失败后同入�
   const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},
     async deleteItems(items){calls.push(structuredClone(items));if(calls.length===1)throw new Error('模拟旧记录清理失败');timeState={...timeState,pendingDeletionCount:0,stoppedItems:[],last:{status:'completed'}};for(const listener of listeners)listener(timeState);}};
   const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);
-  await flatten(container).find(node=>node.className.includes('qqj-profile-more')).click();let body=flatten(container).find(node=>node.id==='qqj-recent-items');await flatten(body).find(node=>node.textContent==='查看停止项（2）').click();
+  await flatten(container).find(node=>node.className.includes('qqj-profile-more')).click();let body=activeEditorDialog.content;await flatten(body).find(node=>node.textContent==='查看停止项（2）').click();
   await flatten(body).find(node=>node.textContent==='批量管理').click();assert.equal(flatten(body).find(node=>node.textContent==='选择问题项').hidden,true);assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').length===2);
   await flatten(body).find(node=>node.textContent==='选择当前列表').click();let remove=flatten(body).find(node=>node.textContent==='批量永久删除');assert.equal(remove.disabled,false);
   await remove.click();assert.equal(calls.length,0);assert.match(shown.body,/永久删除 2 项.*全部时间历史.*不可恢复.*不调用模型.*摘要与千事保留/u);

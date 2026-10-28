@@ -1,5 +1,6 @@
 // Recall-only presentation; source indices and UI state are scoped to the owning chat.
 import { scaleCssFontSizes } from './font-scale.js';
+import { sharedUiCss } from './shared-ui-style.js';
 
 export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   const floorIds = [...new Set([
@@ -23,7 +24,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   };
   const button = (className, text) => { const value = node('button', className, text); value.type = 'button'; return value; };
   const style = card.recallStyle ?? node('style');
-  style.textContent = scaleCssFontSizes(`
+  style.textContent = scaleCssFontSizes(`${sharedUiCss}
     .recall-design [hidden]{display:none!important}
     .recall-design{font-size:12px;line-height:1.7;padding:0 2px 3px;--soft:color-mix(in srgb,currentColor 5%,transparent);--muted:color-mix(in srgb,currentColor 57%,transparent)}
     .recall-design button{font:inherit;color:inherit;cursor:pointer;box-shadow:none;text-shadow:none}
@@ -35,7 +36,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .event-pills{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
     .event-pill{min-width:0;border:1px solid var(--qqj-inline-line);border-radius:999px;background:none;padding:5px 6px;font-size:11px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .event-pill[aria-expanded=true]{border-color:var(--qqj-inline-knot);background:color-mix(in srgb,var(--qqj-inline-knot) 10%,transparent)}
-    .event-display{margin-top:13px;padding:12px 13px;border-radius:7px;background:var(--soft)}
+    .event-display{margin-top:13px;padding:12px 13px;border-radius:var(--qqj-radius-card);background:var(--soft)}
     .recall-empty{color:var(--muted);font-size:11px;margin:0}
     .event-caption{font-size:10px;color:var(--muted);margin:0 0 8px}
     .event-copy{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
@@ -51,7 +52,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .current-copy+.current-copy{margin-top:4px}
     .people-history{margin-top:19px}
     .person-picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
-    .person-pill{display:flex;gap:6px;align-items:center;max-width:100%;border:1px solid transparent;border-radius:5px;background:none;padding:4px 9px;font-size:11px!important}
+    .person-pill{display:flex;gap:6px;align-items:center;max-width:100%;border:1px solid transparent;border-radius:var(--qqj-radius-control);background:none;padding:4px 9px;font-size:11px!important}
     .person-pill[aria-pressed=true]{background:var(--soft);border-color:var(--qqj-inline-line);font-weight:600}
     .person-count{color:var(--muted);font-size:10px;font-weight:400}
     .change-timeline{padding-left:7px}

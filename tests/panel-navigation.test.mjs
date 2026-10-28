@@ -51,8 +51,21 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const root = { innerHTML: '', querySelector: selector => nodeMap.get(selector) ?? null, querySelectorAll: selector => selector === '.tab' ? [profileTab, eventTab, qianshiTab, peopleTab, settingsTab] : [] };
   const host = new Node('host'); host.attachShadow = () => root;
   let firstElement = true;
-  const documentEvents = {};
-  const documentRef = { defaultView: { innerWidth: 390, matchMedia: () => ({ matches: true }) }, body: new Node('body'), createElement(tag) { if (firstElement) { firstElement = false; return host; } return new Node(tag); }, addEventListener(name, listener) { documentEvents[name] = listener; } };
+  const documentEvents = {}, documentListeners = new Map();
+  const documentRef = { defaultView: { innerWidth: 390, matchMedia: () => ({ matches: true }) }, body: new Node('body'), createElement(tag) { if (firstElement) { firstElement = false; return host; } return new Node(tag); },
+    addEventListener(name, listener, capture = false) {
+      if (!documentListeners.has(name)) documentListeners.set(name, []);
+      documentListeners.get(name).push({ listener, capture });
+      documentEvents[name] = event => {
+        let stopped = false;
+        const dispatched = { ...event, stopPropagation() { stopped = true; event.stopPropagation?.(); } };
+        for (const entry of [...documentListeners.get(name)].sort((left, right) => Number(right.capture) - Number(left.capture))) {
+          entry.listener(dispatched); if (stopped) break;
+        }
+      };
+    },
+    removeEventListener(name, listener, capture = false) { documentListeners.set(name, (documentListeners.get(name) ?? []).filter(entry => entry.listener !== listener || entry.capture !== capture)); },
+  };
   const drawerState = new Map();
   const drawer = ({ title, open = false, onToggle, id, level } = {}) => {
     const node = new Node('details'), drawerBody = new Node('div'), summary = new Node('summary');
@@ -72,6 +85,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     './plugin-updates-view.js': { createPluginUpdatesView: () => ({ controls: new Node(), noticeRow: new Node(), feedback: new Node(), dispose() {} }) },
     './panel.html?raw': { default: '' }, './panel.css?inline': { default: '' },
     './scrollbar-style.js': { scrollbarCss },
+    './shared-ui-style.js': { sharedUiCss: '', sharedDialogCss: '', QQJ_GEOMETRY_TOKENS: {}, QQJ_MOTION_TOKENS: {} },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
     './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {}, fontReady: Promise.resolve() }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
     './font-scale.js': { scaleCssFontSizes: css => css },

@@ -288,7 +288,7 @@ const searchSnippet = (value, query, limit = 110) => {
   return `${start > 0 ? '…' : ''}${source.slice(start, end).replace(/\s+/gu, ' ').trim()}${end < source.length ? '…' : ''}`;
 };
 
-export function createV3FoundationView({ runtime, recallRuntime = null, vectorRuntime = null, onOpenVectorSettings = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, prepareSession = null, backendDiagnosticProvider = null, pluginDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl = null } = {}) {
+export function createV3FoundationView({ runtime, recallRuntime = null, vectorRuntime = null, onOpenVectorSettings = null, peopleRuntime = null, timeRuntime = null, memoryManagement = null, sessionStateProvider = null, prepareSession = null, backendDiagnosticProvider = null, pluginDiagnosticProvider = null, pluginVersion = 'unknown', uiDiagnosticProvider = null, documentRef = globalThis.document, navigatorRef = globalThis.navigator, confirmImpl: rawConfirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}`) === true, chooseImpl = null, infoImpl = () => Promise.resolve(true), customImpl: rawCustomImpl = null, cancelDialogImpl = null } = {}) {
   if (!runtime || ['getState', 'refreshStatus', 'confirmLatest'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('V3 foundation view runtime 无效');
   if (recallRuntime && typeof recallRuntime.getState !== 'function') throw new TypeError('V3 recall view runtime 无效');
   if (peopleRuntime && typeof peopleRuntime.getState !== 'function') throw new TypeError('V3 people workspace runtime 无效');
@@ -307,8 +307,35 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null, pageFeedbackNode = null, managementFeedbackNode = null;
   let vectorIndexLink = null, vectorIndexReadErrorNode = null;
   let vectorReadArmed = false, vectorReadStarted = false, vectorReadPromise = Promise.resolve(), vectorIndexResult = null;
-  let syncingChatId = null;
-  let recentItemsOpen = false, recentItemsUi = null, showStoppedItems = false, recentItemDraft = null, recentBatchMode = false;
+  let syncingChatId = null, ownedDialogActive = false, dialogGeneration = 0;
+  const customImpl = typeof rawCustomImpl === 'function' ? options => {
+    const generation = ++dialogGeneration;
+    ownedDialogActive = true;
+    const originalOnClose = options?.onClose;
+    const wrapped = { ...options, onClose: (...args) => {
+      if (generation === dialogGeneration) ownedDialogActive = false;
+      return originalOnClose?.(...args);
+    } };
+    try { return rawCustomImpl(wrapped); }
+    catch (error) { if (generation === dialogGeneration) ownedDialogActive = false; throw error; }
+  } : null;
+  const confirmImpl = options => {
+    const generation = ++dialogGeneration;
+    let result;
+    try { result = rawConfirmImpl(options); }
+    catch (error) { if (generation === dialogGeneration) ownedDialogActive = false; throw error; }
+    ownedDialogActive = true;
+    return Promise.resolve(result).finally(() => {
+      if (generation === dialogGeneration) ownedDialogActive = false;
+    });
+  };
+  const closeOwnedDialog = () => {
+    if (!ownedDialogActive) return;
+    ownedDialogActive = false;
+    dialogGeneration += 1;
+    try { cancelDialogImpl?.(); } catch { /* dialog close is best effort during lifecycle teardown */ }
+  };
+  let recentItemsOpen = false, recentItemsUi = null, recentItemsDialogSuspended = false, showStoppedItems = false, recentItemDraft = null, recentBatchMode = false;
   let memorySearchQuery = '', memoryListPage = 0, cseSearchQuery = '';
   let renderedMemoryInputs = null, activeMemoryFloorId = null;
   let memoryWorkControls = [], memoryRowWorkControls = [], memoryRowMenus = [];
@@ -1344,7 +1371,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (ui.pendingAction || !canSave()) return;
     const pending = {}; ui.pendingAction = pending; actionFeedback.textContent = ''; updateRecentItems();
     try {
-      const confirmed = await Promise.resolve(confirmImpl({ title: `${action}时间事项`, body: `确认${action}“${item.label}”？${status === 'active' ? item.mergedInto ? '本次解除归并，恢复独立跟进；主项当前合并描述与推测失效，原观察保留。' : '恢复后可继续追踪。' : '停止项仍可查看和恢复。'}保存不调用模型，会清除旧推测。`, confirmText: action, cancelText: '取消' }));
+      const confirmed = await confirmRecentAction({ title: `${action}时间事项`, body: `确认${action}“${item.label}”？${status === 'active' ? item.mergedInto ? '本次解除归并，恢复独立跟进；主项当前合并描述与推测失效，原观察保留。' : '恢复后可继续追踪。' : '停止项仍可查看和恢复。'}保存不调用模型，会清除旧推测。`, confirmText: action, cancelText: '取消' }, ui, originalChatId, mine);
       if (!confirmed || !canSave()) return;
       await timeRuntime.editItem(item.id, { status }, item.observationKey);
     } catch (error) { if (currentUi()) actionFeedback.textContent = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; }
@@ -1362,7 +1389,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (ui.pendingAction || typeof timeRuntime?.editItems !== 'function' || !canSave()) return;
     const pending = {}; ui.pendingAction = pending; actionFeedback.textContent = ''; updateRecentItems();
     try {
-      const confirmed = await Promise.resolve(confirmImpl({ title: `批量${action}时间事项`, body: `确认${action}已选的 ${selected.length} 项？停止项仍可查看和恢复。保存不调用模型，会清除旧推测。`, confirmText: `批量${action}`, cancelText: '取消' }));
+      const confirmed = await confirmRecentAction({ title: `批量${action}时间事项`, body: `确认${action}已选的 ${selected.length} 项？停止项仍可查看和恢复。保存不调用模型，会清除旧推测。`, confirmText: `批量${action}`, cancelText: '取消' }, ui, originalChatId, mine);
       if (!confirmed || !canSave()) return;
       await timeRuntime.editItems(selected);
       if (!currentUi()) return;
@@ -1383,8 +1410,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const pending = {}; ui.pendingAction = pending; actionFeedback.textContent = ''; updateRecentItems();
     try {
       if (!timeRuntime.getState().pendingDeletionCount) {
-        const confirmed = await Promise.resolve(confirmImpl({ title: '批量永久删除时间事项',
-          body: `永久删除 ${selected.length} 项及其全部时间历史，不可恢复。不调用模型，其他事项、摘要与千事保留。`, confirmText: '永久删除', cancelText: '取消' }));
+        const confirmed = await confirmRecentAction({ title: '批量永久删除时间事项',
+          body: `永久删除 ${selected.length} 项及其全部时间历史，不可恢复。不调用模型，其他事项、摘要与千事保留。`, confirmText: '永久删除', cancelText: '取消' }, ui, originalChatId, mine);
         if (!confirmed || !canDelete()) return;
       }
       await timeRuntime.deleteItems(timeRuntime.getState().pendingDeletionCount ? [] : selected);
@@ -1397,9 +1424,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (typeof customImpl !== 'function') return;
     const timeValue = value => value?.raw || (value?.date ? `${value.date}${value.clock ? ` ${value.clock}` : ''}` : '');
     const canEditProjection = item.status === 'active' && item.type !== 'deadline' && Boolean(item.projection && item.projectionTime?.date);
-    const draft = { item, chatId, foundationState, ui: recentItemsUi, fields: { label: item.label, observation: item.observation, observationTime: timeValue(item.observationTime), occurrenceTime: timeValue(item.occurrenceTime), dueTime: timeValue(item.dueTime), periodDays: item.periodDays ?? '', subjectEntityId: item.subjectEntityId ?? '', ...(canEditProjection ? { projectionText: item.projection } : {}) }, controls: [], saving: false, error: '' };
+    const mine = epoch;
+    const draft = { item, chatId, mine, foundationState, ui: recentItemsUi, fields: { label: item.label, observation: item.observation, observationTime: timeValue(item.observationTime), occurrenceTime: timeValue(item.occurrenceTime), dueTime: timeValue(item.dueTime), periodDays: item.periodDays ?? '', subjectEntityId: item.subjectEntityId ?? '', ...(canEditProjection ? { projectionText: item.projection } : {}) }, controls: [], saving: false, error: '' };
     const initialFields = { ...draft.fields };
     recentItemDraft = draft;
+    recentItemsDialogSuspended = true;
     const editor = element('div', 'qqj-editor-dialog qqj-profile-form');
     const groups = new Map();
     const group = (name, title, collapsed = false) => { let node = groups.get(name); if (!node) { node = element(collapsed ? 'details' : 'section', 'qqj-editor-group'); node.append(collapsed ? element('summary', 'qqj-editor-group-summary', title) : element('h3', '', title)); groups.set(name, node); editor.append(node); } return node; };
@@ -1409,10 +1438,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const timeState = timeRuntime?.getState?.();
     for (const known of [...(timeState?.trackedItems ?? []), ...(timeState?.stoppedItems ?? [])]) if (String(known.subjectEntityId ?? '').startsWith('time-person-') && known.person) people.set(known.subjectEntityId, known.person);
     if (item.subjectEntityId && !people.has(item.subjectEntityId) && item.person) people.set(item.subjectEntityId, item.person);
-    const personRow = element('label', 'settings-field'), personSelect = element('select', 'settings-input'); personSelect.setAttribute('aria-label', '人物归属');
-    for (const [entityId, displayName] of people) { const option = element('option', '', displayName); option.value = entityId; personSelect.append(option); }
-    personSelect.value = draft.fields.subjectEntityId; personSelect.addEventListener('input', () => { draft.fields.subjectEntityId = personSelect.value; }); personSelect.addEventListener('change', () => { draft.fields.subjectEntityId = personSelect.value; });
-    personRow.append(element('span', '', '人物归属'), personSelect); draft.controls.push(personSelect);
+    const personRow = element('label', 'settings-field');
+    const personSelect = createInlineSelect({ documentRef, options: [...people].map(([value, label]) => ({ value, label })), value: draft.fields.subjectEntityId, ariaLabel: '人物归属', onChange: value => { draft.fields.subjectEntityId = value; } });
+    personRow.append(element('span', '', '人物归属'), personSelect.node); draft.controls.push(personSelect.node);
     if (item.hasMergedMembers === true) editor.append(element('p', 'settings-hint', '此项仍有归并成员；请先在“停止项”中恢复追踪所有成员，再修改人物归属。'));
     else if (item.mergedInto && item.status !== 'active') editor.append(element('p', 'settings-hint', '此项仍归属于其他主项；请先恢复追踪并解除归并，再修改人物归属。'));
     field('label', '事项名称'); field('observation', '观察描述', true);
@@ -1422,12 +1450,17 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     group('identity', '人物归属', true).append(personRow);
     if (canEditProjection) { field('projectionText', '当前推测', true, '当前推测', 'projection', true); const projectionInput = draft.controls.at(-1); projectionInput.maxLength = 2000; }
     editor.append(element('p', 'qqj-editor-intro', '保存不调用模型。只改人物或推测会保留原推算时间；修改其他内容会清除旧推测。'));
-    const finish = () => { recentItemDraft = null; draft.ui.listSignature = null; if (active && container && page === 'memories' && draft.foundationState !== foundationState) render(foundationState); else updateRecentItems(); };
+    const finish = () => {
+      recentItemDraft = null; draft.ui.listSignature = null; recentItemsDialogSuspended = false;
+      if (active && container && page === 'memories' && draft.foundationState !== foundationState) render(foundationState); else updateRecentItems();
+      if (active && page === 'memories' && chatId === draft.chatId && epoch === draft.mine) openRecentItemsDialog();
+    };
     let saved = false;
     void Promise.resolve(customImpl({ title: `编辑近期事项 · ${item.label}`, content: editor, confirmText: '保存事项', cancelText: '取消', submit: async () => {
       if (draft.saving) return false;
       const fields = Object.fromEntries(Object.entries(draft.fields).filter(([name, value]) => value !== initialFields[name]));
       if (!Object.keys(fields).length) { saved = true; finish(); return true; }
+      if (!active || page !== 'memories' || chatId !== draft.chatId || epoch !== draft.mine) return false;
       draft.saving = true; draft.error = '';
       try {
         await timeRuntime.editItem(item.id, fields, item.observationKey);
@@ -1438,14 +1471,35 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     for (const control of recentItemsUi.itemControls) control.disabled = true;
     updateRecentItems();
   }
+  function openRecentItemsDialog() {
+    if (typeof customImpl !== 'function' || !recentItemsUi || recentItemsDialogSuspended) return;
+    const ui = recentItemsUi, originalChatId = chatId, mine = epoch;
+    recentItemsOpen = true; updateRecentItems();
+    void Promise.resolve(customImpl({ title: '近期事项', content: ui.body, confirmText: '关闭', cancelText: '', submit: () => true, onClose: () => {
+      ui.scrollTop = Math.max(0, ui.body.parentElement?.scrollTop ?? ui.scrollTop ?? 0);
+      if (recentItemsDialogSuspended) return;
+      if (active && page === 'memories' && chatId === originalChatId && epoch === mine) { recentItemsOpen = false; updateRecentItems(); }
+    } }));
+    if (ui.body.parentElement) ui.body.parentElement.scrollTop = ui.scrollTop ?? 0;
+  }
+  async function confirmRecentAction(options, ui, originalChatId, mine) {
+    recentItemsDialogSuspended = true;
+    try { return await Promise.resolve(confirmImpl(options)); }
+    finally {
+      if (active && page === 'memories' && recentItemsUi === ui && chatId === originalChatId && epoch === mine) {
+        recentItemsDialogSuspended = false;
+        openRecentItemsDialog();
+      } else recentItemsDialogSuspended = false;
+    }
+  }
   function renderRecentItems(memorySearch) {
-    if (recentItemDraft) { recentItemsUi = recentItemDraft.ui; updateRecentItems(); return recentItemsUi.section; }
+    if (recentItemsUi && (recentItemsOpen || recentItemDraft)) { updateRecentItems(); return recentItemsUi.section; }
     const section = element('section', 'qqj-profile-toolbar');
     const actions = element('div', 'qqj-profile-toolbar-actions qqj-memory-toolbar');
     const toggle = element('button', 'secondary-action qqj-profile-more', '近期事项'); toggle.type = 'button';
     const automaticFailure = element('small', 'settings-hint qqj-time-automatic-failure', '时间自动推演这次未能完成，请打开近期事项查看或重试。'); automaticFailure.hidden = true;
     const clockReminder = element('small', 'settings-hint qqj-time-clock-reminder', '时间信息可能变化，请用户核实'); clockReminder.hidden = true;
-    const body = element('div', 'settings-block'); body.id = 'qqj-recent-items'; toggle.setAttribute('aria-controls', body.id);
+    const body = element('div', 'qqj-editor-dialog qqj-recent-items-dialog'); body.id = 'qqj-recent-items'; toggle.setAttribute('aria-haspopup', 'dialog');
     const row = element('div', 'qqj-profile-switch-row'), copy = element('div');
     const status = element('p', 'settings-result'); status.setAttribute('role', 'status');
     const organize = element('button', 'secondary-action', '补查历史'); organize.type = 'button';
@@ -1468,9 +1522,17 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     batchEntry.addEventListener('click', () => { if (batchEntry.disabled) return; recentBatchMode = !recentBatchMode; if (!recentBatchMode) selectedRecentItems.clear(); recentItemsUi.listSignature = null; updateRecentItems(); });
     batchAll.addEventListener('click', () => { if (batchAll.disabled) return; selectedRecentItems.clear(); for (const item of showStoppedItems ? timeRuntime.getState().stoppedItems ?? [] : timeRuntime.getState().trackedItems ?? []) selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
     batchProblems.addEventListener('click', () => { if (batchProblems.disabled) return; selectedRecentItems.clear(); for (const item of timeRuntime.getState().trackedItems ?? []) if (item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered') selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
-    copy.append(status, reason); row.append(copy, buttons); body.append(row, listActions, batchFeedback, list); actions.append(memorySearch, toggle, automaticFailure, clockReminder); section.append(actions, body);
+    copy.append(status, reason); row.append(copy, buttons); body.append(row, listActions, batchFeedback, list); actions.append(memorySearch, toggle, automaticFailure, clockReminder); section.append(actions);
     recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, automaticFailure, clockReminder, itemControls: [], listSignature: null };
-    toggle.addEventListener('click', () => { recentItemsOpen = !recentItemsOpen; updateRecentItems(); if (recentItemsOpen) void timeRuntime?.refreshStatus?.(); });
+    toggle.addEventListener('click', () => {
+      if (recentItemsOpen) {
+        recentItemsOpen = false;
+        updateRecentItems();
+        return;
+      }
+      openRecentItemsDialog();
+      void timeRuntime?.refreshStatus?.();
+    });
     organize.addEventListener('click', async () => {
       if (organize.disabled) return;
       const ui = recentItemsUi, mine = epoch, originalChatId = chatId;
@@ -1479,8 +1541,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         const plan = await timeRuntime?.prepareHistoryPlan?.();
         if (!plan || !active || recentItemsUi !== ui || epoch !== mine || chatId !== originalChatId) return;
         if (!plan.apiCalls) { ui.planFeedback = plan.annualSetting?.pending ? `有 ${plan.annualSetting.pending} 个年度设定来源超过单次输入预算，未截断、未标记为已处理；请缩短对应基础资料后重试。` : '当前正文与年度设定已检查，暂无需要补算的事项。'; return; }
-        const confirmed = await Promise.resolve(confirmImpl({ title: plan.retryCurrentReview ? '重新更新当前事项' : plan.supplement ? '更新当前时间事项' : '补查历史正文',
-          body: `${plan.floorCount} 个 AI 楼，正文 ${plan.bodyBatchCount ?? plan.batchCount} 批；最多调用摘要 API ${plan.apiCalls} 次。${plan.currentReview ? '含一次当前事项评估。' : ''}${plan.annualSetting?.shouldRequest ? '含一次年度设定读取。' : ''}${plan.supplement ? '正文已查，本次只更新活跃事项一次。' : '每批最多20楼，长楼分片；失败、部分完成或停止后暂停，已保存结果保留。'}不自动重试，未评估或依据不足的事项会列出。`, confirmText: '开始补查', cancelText: '取消' }));
+        const confirmed = await confirmRecentAction({ title: plan.retryCurrentReview ? '重新更新当前事项' : plan.supplement ? '更新当前时间事项' : '补查历史正文',
+          body: `${plan.floorCount} 个 AI 楼，正文 ${plan.bodyBatchCount ?? plan.batchCount} 批；最多调用摘要 API ${plan.apiCalls} 次。${plan.currentReview ? '含一次当前事项评估。' : ''}${plan.annualSetting?.shouldRequest ? '含一次年度设定读取。' : ''}${plan.supplement ? '正文已查，本次只更新活跃事项一次。' : '每批最多20楼，长楼分片；失败、部分完成或停止后暂停，已保存结果保留。'}不自动重试，未评估或依据不足的事项会列出。`, confirmText: '开始补查', cancelText: '取消' }, ui, originalChatId, mine);
         if (confirmed && active && recentItemsUi === ui && epoch === mine && chatId === originalChatId) await timeRuntime.organize(plan);
       } catch (error) { if (recentItemsUi === ui) ui.planFeedback = publicErrorMessage(error, { fallback: '历史计划读取失败，请重试。' }); }
       finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
@@ -2362,7 +2424,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (relationSwitcherNode) relationSwitcherScrollLeft = Number(relationSwitcherNode.scrollLeft) || 0;
     const previousSignature = relationSwitcherSignature, previousChatId = relationSwitcherChatId;
     relationSwitcherNode = null; vectorIndexLink = null; vectorIndexReadErrorNode = null;
-    recentItemsUi = null;
+    if (!recentItemsOpen && !recentItemDraft) recentItemsUi = null;
     forgetMemoryRows(); renderedMemoryInputs = null; memoryWorkControls = [];
     operationMenus.reset();
     recallState = recallRuntime?.getState?.() ?? recallState; peopleState = peopleRuntime?.getState?.() ?? peopleState; managementState = memoryManagement?.getState?.() ?? managementState; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null;
@@ -2406,6 +2468,10 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (syncingChatId && syncingChatId === adopted?.chatId) applySyncingPresentation();
   }
   function receiveFoundation(snapshot) {
+    if (snapshot?.chatId !== (foundationState?.chatId ?? null)) {
+      epoch += 1;
+      recentItemsOpen = false; recentItemsDialogSuspended = false; closeOwnedDialog();
+    }
     if (snapshot?.memorySnapshotStatus === 'syncing' && snapshot?.chatId && snapshot.chatId === foundationState?.chatId) {
       syncingChatId = snapshot.chatId;
       applySyncingPresentation();
@@ -2455,6 +2521,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function stopSubscription() { const release = unsubscribe; unsubscribe = null; try { release?.(); } catch { /* runtime listener cleanup is isolated from view lifecycle */ } }
   function mount(target, { page: initialPage = page } = {}) {
+    closeOwnedDialog();
     if (!['memories', 'people', 'management'].includes(initialPage)) throw new TypeError('V3 view page 无效');
     page = initialPage; stopSubscription(); operationMenus.deactivate(); cseHistoryUi = null; container = target; active = true;
     recallState = recallRuntime?.getState?.() ?? null; render(runtime.getState()); operationMenus.activate(); subscribe();
@@ -2503,8 +2570,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (foundationOutcome.status === 'rejected') { feedback = `记忆读取失败：${publicErrorMessage(foundationOutcome.reason, { fallback: '后端数据暂时无法读取。' })}；历史召回回执已独立处理。`; const result = runtime.getState(); render(result); return { status: 'error', error: foundationOutcome.reason }; }
     const result = runtime.getState(); feedback = peopleFeedback || (result?.status === 'ready' ? '记忆状态已刷新。' : statusCopy(result?.status)); receiveFoundation(result); await readVectorIndexForReadyState(foundationState); return result;
   }
-  function deactivate() { refreshManagementProgress = null; active = false; vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
-  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; page = next; if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null; if (active && container) render(foundationState); }
+  function deactivate() { refreshManagementProgress = null; active = false; recentItemsOpen = false; recentItemsDialogSuspended = false; closeOwnedDialog(); vectorReadArmed = false; epoch += 1; operationMenus.deactivate(); stopSubscription(); forgetMemoryRows(); renderedMemoryInputs = null; healthNode = null; pageFeedbackNode = null; managementFeedbackNode = null; recentItemsUi = null; }
+  function setPage(next) { if (!['memories', 'people', 'management'].includes(next)) throw new TypeError('V3 view page 无效'); if (page === next) return; const previousPage = page; page = next; if (previousPage === 'memories') { recentItemsOpen = false; recentItemsDialogSuspended = false; epoch += 1; closeOwnedDialog(); } if (page !== 'people' || peopleMode !== 'history') cseHistoryUi = null; if (active && container) render(foundationState); }
   return Object.freeze({ setActivity(value) {
     const becameIdle = pluginActivity.busy === true && value.busy === false;
     pluginActivity = value;

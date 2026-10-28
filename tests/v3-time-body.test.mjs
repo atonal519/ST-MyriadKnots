@@ -1588,8 +1588,8 @@ test('真实时间runtime DTO把归并主项状态传到编辑指引', async () 
   const view = createV3FoundationView({ runtime: foundationRuntime, timeRuntime: h.runtime, documentRef, customImpl: async options => { editor = options.content; return null; } });
   view.setPage('memories'); view.mount(container);
   await uiFlatten(container).find(node => node.textContent === `近期事项（${state.trackedItems.length}）`).click();
-  const menu = uiFlatten(container).find(node => node.className === 'qqj-profile-menu'); menu.open = true;
-  await uiFlatten(container).find(node => node.textContent === '编辑事项').click();
+  const menu = uiFlatten(editor).find(node => node.className === 'qqj-profile-menu'); menu.open = true;
+  await uiFlatten(editor).find(node => node.textContent === '编辑事项').click();
   assert.ok(uiFlatten(editor).some(node => node.textContent === '此项仍有归并成员；请先在“停止项”中恢复追踪所有成员，再修改人物归属。'), '表单消费实际 runtime DTO 并显示解除归并指引');
   view.deactivate();
 });

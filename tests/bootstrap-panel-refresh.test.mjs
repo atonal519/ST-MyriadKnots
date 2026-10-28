@@ -106,7 +106,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   assert.equal(foundationOptions.timeRuntime, timeRuntime); assert.equal(foundationOptions.runtime, memoryRuntime);
   assert.equal(typeof foundationOptions.onOpenVectorSettings, 'function'); foundationOptions.onOpenVectorSettings(); assert.equal(vectorSettingsOpened, 1, 'bootstrap 将记忆管理链接接到现有向量设置导航');
   assert.equal(foundationOptions.prepareSession, prepareSession, 'foundation/管理入口应使用生产身份准备函数');
-  assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function'); assert.equal(await foundationOptions.chooseImpl({}), 'chosen');
+  assert.deepEqual(bodyAppended, [panel.host, fabHost]); assert.equal(typeof fabOptions.onClick, 'function'); assert.equal(typeof foundationOptions.infoImpl, 'function'); assert.equal(typeof foundationOptions.cancelDialogImpl, 'function'); assert.equal(await foundationOptions.chooseImpl({}), 'chosen');
   assert.equal(foundationOptions.sessionStateProvider, sessionStateProvider); assert.deepEqual(foundationOptions.sessionStateProvider(), { status: 'preparing' }); assert.equal(sessionReads, 1);
   assert.equal(foundationOptions.backendDiagnosticProvider, backendDiagnosticProvider); assert.equal(backendReads, 0); assert.deepEqual(foundationOptions.backendDiagnosticProvider(), { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 } }); assert.equal(backendReads, 1);
   assert.equal(foundationOptions.pluginVersion, '0.1.9-test');

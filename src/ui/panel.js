@@ -14,6 +14,7 @@ import { applyPluginEnabledImmediately } from '../settings.js';
 import { scaleCssFontSizes } from './font-scale.js';
 import { createPluginUpdatesView } from './plugin-updates-view.js';
 import { isTauriTavern } from '../tauri-backend.js';
+import { sharedUiCss } from './shared-ui-style.js';
 
 const PUBLIC_API_EXAMPLE = `const bridge = globalThis.qqj_v3_public_bridge_v1;
 const status = bridge.getStatus();
@@ -81,7 +82,7 @@ export function createPanel({
   host.hidden = true;
   host.setAttribute('aria-hidden', 'true');
   const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `<style>${scrollbarCss}\n${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
+  root.innerHTML = `<style>${sharedUiCss}\n${scrollbarCss}\n${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
   const panel = root.querySelector('.panel');
   const setActivity = value => {
     panel?.setAttribute?.('aria-busy', String(value.busy === true));
