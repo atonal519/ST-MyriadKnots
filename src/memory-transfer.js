@@ -64,6 +64,29 @@ function sameConversation(left, right) {
 const sameMetadata = (left, right) => sameQqjChatMetadata(left, right, { includeFile: true, includePrequel: true });
 const sameInputs = (left, right) => sameConversation(left.chat, right.chat) && sameChatQqjData(left.chat, right.chat)
   && sameMetadata(left.header.chat_metadata, right.header.chat_metadata);
+function hasColdSwipes(message) {
+  const reference = message?.tt_swipe_cold, selected = message?.swipe_id;
+  return Number.isSafeInteger(reference?.sourceId) && reference.sourceId >= 0 && Number.isSafeInteger(reference.record) && reference.record > 0
+    && Number.isSafeInteger(selected) && selected >= 0 && Array.isArray(message.swipes) && Array.isArray(message.swipe_info)
+    && message.swipes.length === message.swipe_info.length && typeof message.swipes[selected] === 'string'
+    && message.swipe_info[selected] !== null && typeof message.swipe_info[selected] === 'object'
+    && message.swipe_info.some((swipe, index) => index !== selected && swipe === null && message.swipes[index] === null);
+}
+function sameCapturedInputs(saved, captured) {
+  // TT leaves unloaded alternative slots null. Compare their saved ownership
+  // without loading their bodies into the live chat or replacing loaded edits.
+  const chat = captured.chat.map((message, index) => hasColdSwipes(message) ? { ...message,
+    swipe_info: message.swipe_info.map((swipe, n) => swipe === null && message.swipes[n] === null
+      ? { extra: mergeOwned({}, saved.chat[index]?.swipe_info?.[n]?.extra, MESSAGE_KEYS) } : swipe) } : message);
+  const page = { chat, header: { chat_metadata: captured.metadata } };
+  if (sameInputs(saved, page)) return true;
+  // Session preparation refreshes this derived file hint before the next host save.
+  const metadata = saved.header.chat_metadata;
+  if (![1, 2].includes(metadata.qianqianjie?.schemaVersion)) return false;
+  const prepared = { ...metadata, qianqianjie: { ...metadata.qianqianjie, schemaVersion: 2,
+    file: chatFileFromHost(captured.identity) } };
+  return sameInputs({ chat: saved.chat, header: { chat_metadata: prepared } }, page);
+}
 function mergeOwned(base, expected, keys) {
   const result = { ...base };
   for (const key of keys) {
@@ -507,6 +530,32 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     try {
       current(captured);
       const snapshot = hostAdapter.snapshot();
+      if (snapshot.chat.some(hasColdSwipes)) {
+        // Its source holds the old opened file even after the saved path changes.
+        // The host reload cancels pending saves and binds a fresh cold source.
+        const liveMessages = snapshot.chat.slice(), liveMetadata = snapshot.context.chatMetadata;
+        await snapshot.context.reloadCurrentChat();
+        const refreshed = hostAdapter.snapshot(), character = refreshed.context.characters?.[refreshed.context.characterId];
+        if (refreshed.chatId !== captured.identity.hostChatId || character?.avatar !== captured.target.avatarUrl
+          || !same(refreshed.userIdentity, captured.persona) || refreshed.context.chatMetadata?.qianqianjie?.chatId !== chatId
+          || !sameCapturedInputs(saved, { ...captured, identity: { ...captured.identity, chatId }, chat: refreshed.chat, metadata: refreshed.context.chatMetadata })) return { reload: true };
+        // Retain the unrelated live edits that the ordinary merge preserves.
+        // Only unloaded slots and the cold source come from the reloaded page.
+        refreshed.chat.forEach((message, index) => {
+          const live = liveMessages[index], restored = { ...live, extra: mergeOwned(live.extra, saved.chat[index].extra, MESSAGE_KEYS) };
+          delete restored.tt_swipe_cold;
+          if (Object.hasOwn(message, 'tt_swipe_cold')) restored.tt_swipe_cold = message.tt_swipe_cold;
+          if (Array.isArray(live.swipes)) restored.swipes = live.swipes.map((swipe, n) => swipe ?? message.swipes?.[n]);
+          if (Array.isArray(live.swipe_info)) restored.swipe_info = live.swipe_info.map((swipe, n) => swipe === null ? message.swipe_info?.[n]
+            : { ...swipe, extra: mergeOwned(swipe.extra, saved.chat[index].swipe_info?.[n]?.extra, MESSAGE_KEYS) });
+          for (const key of Object.keys(message)) delete message[key];
+          Object.assign(message, restored);
+        });
+        const metadata = refreshed.context.chatMetadata, restoredMetadata = mergeOwned(liveMetadata, metadata, [...HEADER_KEYS, 'integrity']);
+        for (const key of Object.keys(metadata)) delete metadata[key];
+        Object.assign(metadata, restoredMetadata);
+        return { reload: false };
+      }
       snapshot.chat.forEach((message, index) => {
         const expected = saved.chat[index];
         message.extra = mergeOwned(message.extra, expected?.extra, MESSAGE_KEYS);
@@ -552,11 +601,12 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     const result = await publish(captured, initial, header, messages, chatId);
     return { ...result, chatId, summaries };
   }
-  async function importVolumePlan({ captured, value, graph, oldRoot, archive }, summaries) {
+  async function importVolumePlan({ captured, value, graph, oldRoot, archive }, previewValue) {
     return exclusive(captured, async () => {
+      previews.delete(previewValue);
       check(same(oldRoot, await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root')), '预览后记忆发生变化，请重新预览。');
       const initial = await readTargetChat(captured.target, { fetchImpl });
-      check(sameInputs(initial, { chat: captured.chat, header: { chat_metadata: captured.metadata } }), '当前聊天尚未保存完成，请稍后重新预览。');
+      check(sameCapturedInputs(initial, captured), '当前聊天尚未保存完成，请稍后重新预览。');
       const sourceChat = captured.chat.map((message, index) => ({ ...message,
         extra: mergeOwned(message.extra, value.markers[index].extra, MESSAGE_KEYS) }));
       await verifyConversation(graph, sourceChat, sanitizerOptions());
@@ -598,18 +648,19 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       const root = rehomeRecord({ id: 'v3-root', data: await archive.readRecord('v3-root') }, chatId).data;
       const committed = await client.put(`chat-${chatId}`, 'v3-root', root, 0);
       check(same(committed.data, root), '新副本的存储返回内容不一致，未切换当前记忆。');
-      return completeImport(captured, initial, value, chatId, committed.data, importedAuxiliaryRevisions, summaries, true);
+      return completeImport(captured, initial, value, chatId, committed.data, importedAuxiliaryRevisions, previewValue.summaries, true);
     }, { streaming: true });
   }
   async function importPreview(previewValue) {
     const plan = previews.get(previewValue);
-    check(plan, '预览已失效，请重新选择文件。'); previews.delete(previewValue);
-    if (plan.archive) return importVolumePlan(plan, previewValue.summaries);
+    check(plan, '预览已失效，请重新选择文件。');
+    if (plan.archive) return importVolumePlan(plan, previewValue);
     const { captured, value, graph, oldRoot } = plan;
     return exclusive(captured, async () => {
+      previews.delete(previewValue);
       check(same(oldRoot, await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root')), '预览后记忆发生变化，请重新预览。');
       const initial = await readTargetChat(captured.target, { fetchImpl });
-      check(sameInputs(initial, { chat: captured.chat, header: { chat_metadata: captured.metadata } }), '当前聊天尚未保存完成，请稍后重新预览。');
+      check(sameCapturedInputs(initial, captured), '当前聊天尚未保存完成，请稍后重新预览。');
       const sourceChat = captured.chat.map((message, index) => ({ ...message,
         extra: mergeOwned(message.extra, value.markers[index].extra, MESSAGE_KEYS) }));
       await verifyConversation(graph, sourceChat, sanitizerOptions());
@@ -670,7 +721,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         '导入后的记忆已变化，请先导出当前记忆；本次没有撤销。');
       }
       const initial = await readTargetChat(captured.target, { fetchImpl });
-      check(sameInputs(initial, { chat: captured.chat, header: { chat_metadata: captured.metadata } }), '当前聊天尚未保存完成，请稍后重试。');
+      check(sameCapturedInputs(initial, captured), '当前聊天尚未保存完成，请稍后重试。');
       const header = clone(initial.header), messages = clone(initial.chat);
       header.chat_metadata.qianqianjie = clone(rollback.header.chat_metadata.qianqianjie);
       if (rollback.header.chat_metadata.qianqianjiePrequel === undefined) delete header.chat_metadata.qianqianjiePrequel;

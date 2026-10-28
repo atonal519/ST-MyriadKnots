@@ -93,11 +93,12 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
     } });
   const exported = await runtime.exportCurrent();
   return { backend, ctx, host, graph, memory, foundation, store, runtime, exported, session,
-    async target({ changed = false } = {}) {
+    async target({ changed = false, savedQqj = null } = {}) {
       selected = context('imported-chat', TARGET, structuredClone(ctx.chat), 'updated-avatar.png');
       selected.name2 = '新版角色'; selected.characters[0].name = '新版角色'; selected.characters[0].data.description = '作者更新后的设定';
       if (changed) selected.chat[1].mes = '改写的正文';
-      await session.prepare(); api = targetChatApi(selected); return selected;
+      if (savedQqj) { selected.chatMetadata.qianqianjie = structuredClone(savedQqj); api = targetChatApi(selected); }
+      await session.prepare(); if (!savedQqj) api = targetChatApi(selected); return selected;
     }, get api() { return api; }, setApi(value) { api = value; }, select(value) { selected = value; }, setWrappers(value) { currentWrappers = value; },
   };
 }
@@ -430,6 +431,7 @@ test('volume runtime rechecks cleaning settings and failed staging keeps the cur
     }
     await assert.rejects(f.runtime.importPreview(plan));
     assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+    await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
   });
 });
 
@@ -503,6 +505,248 @@ test('real memory and CSE round trip onto an updated card, without analysis call
   assert.ok(f.backend.records.has(`chat-${IMPORTED}/v3-root`), 'undo preserves imported memory too');
 });
 
+function coldSwipeTarget(f, target) {
+  const message = target.chat[1], anchor = { schemaVersion: 1, chatId: SOURCE, floorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+  message.swipes = [message.mes, '未选中的另一版回复', '仍未加载的回复'];
+  message.swipe_id = 0;
+  message.swipe_info = [{ extra: structuredClone(message.extra ?? {}) }, { extra: { qianqianjie_floor: anchor, keep: '未选回复资料' } }, { extra: { keep: '冷回复资料' } }];
+  f.api.reloadFromContext();
+  let source, sourceId = 0, reloads = 0;
+  const load = () => {
+    // TT's source is an opened immutable file, not the latest pathname content.
+    source = f.api.persistedMessages; sourceId++;
+    target.chat.splice(0, target.chat.length, ...structuredClone(source));
+    target.chatMetadata = f.api.persistedHeader.chat_metadata;
+    const current = target.chat[1];
+    for (let index = 1; index < current.swipes.length; index++) { current.swipes[index] = null; current.swipe_info[index] = null; }
+    current.tt_swipe_cold = { sourceId, record: 2 };
+  };
+  target.reloadCurrentChat = async () => { reloads++; load(); };
+  load();
+  return { reloads: () => reloads, hydrate() {
+    const current = target.chat[1], original = source[1];
+    for (const key of ['swipes', 'swipe_info']) for (let i = 0; i < original[key].length; i++) current[key][i] ??= structuredClone(original[key][i]);
+    delete current.tt_swipe_cold;
+  } };
+}
+
+test('TT cold swipe placeholders import and reload the saved source without hydrating all replies', async t => {
+  for (const format of ['ordinary', 'volume']) await t.test(format, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target(), cold = coldSwipeTarget(f, target);
+    const preview = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const result = await f.runtime.importPreview(preview);
+    assert.equal(result.reload, false); assert.equal(cold.reloads(), 1);
+    assert.equal(f.session.identity().chatId, IMPORTED);
+    assert.equal(target.chat[1].swipes[1], null); assert.equal(target.chat[1].swipe_info[1], null, '保持宿主冷回复，不把历史正文全部装回页面');
+    assert.equal(f.api.persistedMessages[1].swipe_info[1].extra.qianqianjie_floor, undefined);
+    cold.hydrate();
+    assert.equal(target.chat[1].swipe_info[1].extra.qianqianjie_floor, undefined, '新source不能回填旧QQJ锚点');
+    assert.equal(target.chat[1].swipe_info[1].extra.keep, '未选回复资料');
+    f.api.reloadFromContext();
+    assert.equal(f.api.persistedHeader.chat_metadata.qianqianjie.chatId, IMPORTED);
+    assert.equal(f.api.persistedMessages[1].extra.qianqianjie_floor.chatId, IMPORTED);
+    const graph = await createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() }).readReachable({ mode: 'full' });
+    assert.equal(graph.status, 'ready'); assert.equal(graph.floorMemories.length, 1);
+  });
+});
+
+test('TT cold swipe undo reloads the restored source and preserves original alternative metadata', async t => {
+  for (const format of ['ordinary', 'volume']) await t.test(format, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target(), cold = coldSwipeTarget(f, target);
+    const original = f.api.persistedMessages;
+    const preview = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    await f.runtime.importPreview(preview); await f.runtime.undo();
+    assert.equal(cold.reloads(), 2); assert.equal(f.session.identity().chatId, TARGET);
+    assert.equal(target.chat[1].swipe_info[1], null);
+    cold.hydrate();
+    assert.deepEqual(target.chat[1].swipe_info[1], original[1].swipe_info[1]);
+    assert.deepEqual(f.api.persistedMessages[1].swipe_info[1], original[1].swipe_info[1]);
+  });
+});
+
+test('TT cold swipe comparison preserves live selected and loaded QQJ edits and requires a real placeholder', async t => {
+  const changes = {
+    loaded: target => { target.chat[1].swipe_info[1] = { extra: { qianqianjie_memory_excluded: true } }; target.chat[1].swipes[1] = '未选中的另一版回复'; },
+    selected: target => { target.chat[1].swipe_info[0].extra.qianqianjie_memory_excluded = true; },
+    noReference: target => { delete target.chat[1].tt_swipe_cold; },
+    invalidReference: target => { target.chat[1].tt_swipe_cold.sourceId = 'not-a-resource'; },
+  };
+  for (const [name, change] of Object.entries(changes)) await t.test(name, async () => {
+    const f = await fixture(), target = await f.target(); coldSwipeTarget(f, target); change(target);
+    const plan = await f.runtime.preview(f.exported.text), before = f.backend.calls.filter(call => call[0] === 'put').length;
+    await assert.rejects(f.runtime.importPreview(plan), /当前聊天尚未保存完成/);
+    assert.equal(f.backend.calls.filter(call => call[0] === 'put').length, before); assert.equal(f.api.saves, 0);
+  });
+});
+
+test('TT cold swipe import still stops page edits and saved ownership changes during staging', async t => {
+  for (const format of ['ordinary', 'volume']) for (const location of ['page', 'file']) await t.test(`${format}: ${location}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target(), cold = coldSwipeTarget(f, target), api = f.api;
+    let staged = false;
+    f.setApi({ ...api, async fetch(url, options) {
+      const response = await api.fetch(url, options);
+      if (staged && location === 'file' && url === '/api/chats/get') {
+        const payload = await response.json(); payload[2].swipe_info[1].extra.qianqianjie_memory_excluded = true;
+        return { ok: true, async json() { return payload; } };
+      }
+      return response;
+    } });
+    const put = f.backend.client.put;
+    f.backend.client.put = async (...args) => {
+      const result = await put(...args);
+      if (args[0] === `chat-${IMPORTED}` && !staged) {
+        staged = true;
+        if (location === 'page') { target.chat[1].swipe_info[1] = { extra: { qianqianjie_memory_excluded: true } }; target.chat[1].swipes[1] = '未选中的另一版回复'; }
+      }
+      return result;
+    };
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    await assert.rejects(f.runtime.importPreview(plan), location === 'page' ? /聊天已切换或内容有变化/ : /聊天文件在导入期间有变化/);
+    assert.equal(api.saves, 0); assert.equal(cold.reloads(), 0); assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  });
+});
+
+test('TT cold reload preserves live nonQQJ edits created while the saved copy is published', async () => {
+  const f = await fixture(), target = await f.target();
+  target.chatMetadata.otherPlugin = { remove: true }; target.chat[1].legacyFlag = 'remove';
+  target.chat[1].extra = { ...target.chat[1].extra, removeMe: true };
+  const api = targetChatApi(target, { afterSave() {
+    delete target.chatMetadata.otherPlugin; delete target.chat[1].legacyFlag; delete target.chat[1].extra.removeMe;
+    target.chatMetadata.pocketPhone = { createdWhileSaving: true };
+    target.chat[1].extra = { ...target.chat[1].extra, variables: { createdWhileSaving: true } };
+    target.chat[1].swipes[1] = '保存时手改的未选回复';
+    target.chat[1].swipe_info[1] = { extra: { pocketPhone: { createdWhileSaving: true } } };
+  } });
+  f.setApi(api); const cold = coldSwipeTarget(f, target);
+  await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+  assert.equal(cold.reloads(), 1);
+  assert.deepEqual(target.chatMetadata.pocketPhone, { createdWhileSaving: true });
+  assert.equal(Object.hasOwn(target.chatMetadata, 'otherPlugin'), false); assert.equal(Object.hasOwn(target.chat[1], 'legacyFlag'), false);
+  assert.equal(Object.hasOwn(target.chat[1].extra, 'removeMe'), false);
+  assert.deepEqual(target.chat[1].extra.variables, { createdWhileSaving: true });
+  assert.equal(target.chat[1].swipes[1], '保存时手改的未选回复');
+  assert.deepEqual(target.chat[1].swipe_info[1].extra.pocketPhone, { createdWhileSaving: true });
+  assert.equal(Object.hasOwn(target.chat[1].swipe_info[1].extra, 'keep'), false);
+  assert.equal(target.chat[1].swipe_info[1].extra.qianqianjie_floor, undefined);
+  assert.equal(target.chat[1].swipes[2], null); assert.equal(target.chat[1].swipe_info[2], null);
+  cold.hydrate();
+  assert.equal(target.chat[1].swipes[1], '保存时手改的未选回复');
+  assert.equal(target.chat[1].swipe_info[1].extra.qianqianjie_floor, undefined);
+});
+
+test('TT cold reload never restores captured live fields into a different selected chat', async () => {
+  const f = await fixture(), target = await f.target(); coldSwipeTarget(f, target);
+  target.chat[1].extra = { ...target.chat[1].extra, variables: { capturedChat: true } };
+  const other = context('other', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', [assistant('另一个聊天')]);
+  other.chatMetadata.otherPlugin = { otherChat: true };
+  const reload = target.reloadCurrentChat;
+  target.reloadCurrentChat = async () => { await reload(); f.select(other); };
+  const result = await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+  assert.equal(result.reload, true); assert.equal(f.api.persistedHeader.chat_metadata.qianqianjie.chatId, IMPORTED);
+  assert.equal(other.chatMetadata.qianqianjie.chatId, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+  assert.deepEqual(other.chatMetadata.otherPlugin, { otherChat: true });
+  assert.equal(other.chat[0].mes, '另一个聊天'); assert.equal(other.chat[0].extra?.variables, undefined);
+});
+
+test('derived file ownership from session preparation permits import, cold load and undo', async t => {
+  const stored = [
+    ['missing file', { schemaVersion: 2, chatId: TARGET }],
+    ['old file', { schemaVersion: 2, chatId: TARGET, file: { characterLocator: 'old-avatar.png', hostChatId: 'old-file' } }],
+    ['legacy schema', { schemaVersion: 1, chatId: TARGET }],
+  ];
+  for (const format of ['ordinary', 'volume']) for (const [name, savedQqj] of stored) await t.test(`${format}: ${name}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target({ savedQqj });
+    assert.deepEqual(f.api.persistedHeader.chat_metadata.qianqianjie, savedQqj, 'the file was captured before prepare updated live metadata');
+    assert.deepEqual(target.chatMetadata.qianqianjie, { ...savedQqj, schemaVersion: 2,
+      file: { characterLocator: 'updated-avatar.png', hostChatId: 'imported-chat' } });
+    assert.equal(f.api.saves, 0, 'identity preparation must not save the entire chat');
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const result = await f.runtime.importPreview(plan);
+    assert.equal(result.summaries, 1); assert.equal(f.session.identity().chatId, IMPORTED);
+    const cold = await createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() }).readReachable({ mode: 'full' });
+    assert.equal(cold.status, 'ready'); assert.equal(cold.root.chatId, IMPORTED);
+    assert.deepEqual(cold.floorMemories.map(item => item.summary), f.graph.floorMemories.map(item => item.summary));
+    let firstRead = true;
+    const undoApi = targetChatApi(target, { beforeGet({ header }) {
+      if (firstRead) { firstRead = false; delete header.chat_metadata.qianqianjie.file; }
+    } });
+    f.setApi(undoApi); await f.runtime.undo();
+    assert.equal(f.session.identity().chatId, TARGET);
+    assert.deepEqual(undoApi.persistedHeader.chat_metadata.qianqianjie, savedQqj);
+  });
+});
+
+test('derived file ownership never hides real saved story or QQJ changes', async t => {
+  const changes = {
+    body: ({ messages }) => { messages[1].mes = '存档中另一段正文'; },
+    selectedReply: ({ messages }) => { messages[1].swipes.push('存档中另一条选中回复'); messages[1].swipe_id = 1; },
+    ownedMessage: ({ messages }) => { messages[1].extra ??= {}; messages[1].extra.qianqianjie_memory_excluded = true; },
+    prequel: ({ header }) => { header.chat_metadata.qianqianjiePrequel = '存档中尚未同步的人工前情'; },
+    qqjBusiness: ({ header }) => { header.chat_metadata.qianqianjie.manualNote = '存档中的业务字段'; },
+    unknownSchema: ({ header }) => { header.chat_metadata.qianqianjie.schemaVersion = 3; },
+  };
+  for (const format of ['ordinary', 'volume']) for (const [name, change] of Object.entries(changes)) await t.test(`${format}: ${name}`, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target({ savedQqj: { schemaVersion: 2, chatId: TARGET } });
+    f.setApi(targetChatApi(target, { beforeGet: change }));
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const before = f.backend.calls.filter(call => call[0] === 'put').length;
+    await assert.rejects(f.runtime.importPreview(plan), /当前聊天尚未保存完成/);
+    assert.equal(f.backend.calls.filter(call => call[0] === 'put').length, before);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+  });
+});
+
+test('saved file ownership changed during staging still prevents publication', async t => {
+  for (const format of ['ordinary', 'volume']) await t.test(format, async () => {
+    const f = await fixture(); let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target({ savedQqj: { schemaVersion: 2, chatId: TARGET } });
+    let staged = false;
+    const api = targetChatApi(target, { beforeGet({ header }) {
+      if (staged) header.chat_metadata.qianqianjie.file = { characterLocator: 'another-avatar.png', hostChatId: 'another-file' };
+    } });
+    f.setApi(api);
+    const put = f.backend.client.put;
+    f.backend.client.put = async (...args) => { const result = await put(...args); if (args[0] === `chat-${IMPORTED}`) staged = true; return result; };
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    await assert.rejects(f.runtime.importPreview(plan), /聊天文件在导入期间有变化/);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(api.saves, 0);
+  });
+});
+
+test('a preview can be retried when import is rejected before entering its task', async t => {
+  for (const format of ['ordinary', 'volume']) for (const phase of ['busy', 'quiesce']) await t.test(`${format}: ${phase}`, async () => {
+    let busy = false, failQuiesce = false;
+    const f = await fixture({ transferOptions: { isBusy: () => busy, quiesce: async () => {
+      if (failQuiesce) throw new Error('test quiesce failed');
+    } } });
+    let files;
+    if (format === 'volume') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target();
+    const plan = format === 'volume' ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    const writes = f.backend.calls.filter(call => call[0] === 'put').length;
+    busy = phase === 'busy'; failQuiesce = phase === 'quiesce';
+    await assert.rejects(f.runtime.importPreview(plan), phase === 'busy' ? /请等待聊天生成/ : /test quiesce failed/);
+    assert.equal(f.backend.calls.filter(call => call[0] === 'put').length, writes);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+    busy = false; failQuiesce = false;
+    const result = await f.runtime.importPreview(plan);
+    assert.equal(result.summaries, 1); assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+    assert.equal(f.session.identity().chatId, IMPORTED);
+    await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
+  });
+});
+
 test('tampering, missing graph records, incompatible chat and consumed previews are rejected', async () => {
   const f = await fixture(); await f.target({ changed: true });
   await assert.rejects(f.runtime.preview(f.exported.text), /当前聊天与记忆包不一致/);
@@ -515,6 +759,7 @@ test('tampering, missing graph records, incompatible chat and consumed previews 
   target.chat.push(user('new message'));
   await assert.rejects(f.runtime.importPreview(plan), /有变化/);
   assert.equal(f.api.saves, 0);
+  target.chat.pop(); await f.runtime.importPreview(plan);
   await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
 });
 
@@ -524,6 +769,7 @@ test('staging failure and a chat switch never publish over the old or another ch
   f.backend.client.put = async (...args) => { if (args[0] === `chat-${IMPORTED}`) throw new Error('disk full'); return put(...args); };
   await assert.rejects(f.runtime.importPreview(plan), /disk full/);
   assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET); assert.equal(f.api.saves, 0);
+  await assert.rejects(f.runtime.importPreview(plan), /预览已失效/);
   f.backend.client.put = put;
   const next = await f.runtime.preview(f.exported.text);
   f.backend.client.put = async (...args) => {

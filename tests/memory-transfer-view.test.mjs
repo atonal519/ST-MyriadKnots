@@ -47,6 +47,47 @@ test('leaving settings during confirmation prevents import', async () => {
   assert.equal(imported, false);
 });
 
+test('确认后导入被拒时，错误显示在确认导入旁并恢复控件', async () => {
+  const failure = '请等待聊天生成和记忆任务完成后再操作。';
+  let attempted = 0;
+  const plan = { messages: 3, summaries: 1, states: 1 };
+  const view = createMemoryTransferView({ runtime: {
+    preview: async () => plan,
+    importPreview: async selected => { assert.equal(selected, plan); attempted++; throw new Error(failure); },
+  }, documentRef: { createElement: tag => new Node(tag) }, confirmImpl: async () => true });
+  const nodes = flatten(view.node), input = nodes.find(node => node.type === 'file');
+  input.files = [{ size: 2, text: async () => '{}' }]; input.fire('change'); await tick();
+  const confirm = nodes.find(node => node.textContent === '确认导入');
+  confirm.fire('click'); await tick();
+  assert.equal(attempted, 1);
+  const body = view.node.children[1], error = body.children.find(node => node.textContent === failure);
+  assert.ok(error, '保留实际导入失败原因');
+  assert.equal(body.children.indexOf(error), body.children.indexOf(confirm) - 1, '错误应紧邻导入操作，不藏在导出区');
+  assert.equal(error.role, 'status'); assert.equal(error['aria-live'], 'polite');
+  assert.equal(confirm.disabled, false); assert.equal(input.disabled, false);
+  view.dispose();
+});
+
+test('普通导出成功和失败都在导出区显示，不占用导入结果', async t => {
+  for (const fail of [false, true]) await t.test(fail ? '失败' : '成功', async () => {
+    let downloads = 0;
+    const view = createMemoryTransferView({ runtime: { async exportCurrent() {
+      if (fail) throw new Error('当前记忆尚未准备好。');
+      return { filename: 'memory.json', text: '{}' };
+    } }, documentRef: { createElement: tag => new Node(tag) }, download: () => { downloads++; } });
+    const nodes = flatten(view.node), body = view.node.children[1];
+    const button = nodes.find(node => node.textContent === '导出当前聊天记忆');
+    button.fire('click'); await tick();
+    const output = nodes.find(node => node['aria-label'] === '导出进度');
+    const input = nodes.find(node => node.type === 'file');
+    assert.match(output.textContent, fail ? /当前记忆尚未准备好/ : /记忆包已生成/);
+    assert.ok(body.children.indexOf(output) < body.children.indexOf(input));
+    assert.equal(nodes.find(node => node['aria-label'] === '导入与撤销结果').textContent, '');
+    assert.equal(downloads, fail ? 0 : 1); assert.equal(button.disabled, false);
+    view.dispose();
+  });
+});
+
 test('oversized file metadata is rejected before reading, previewing or importing', async t => {
   for (const [label, size] of [['64 MiB + 1 byte', 64 * 1024 * 1024 + 1], ['100 MiB', 100 * 1024 * 1024],
     ['500 MiB', 500 * 1024 * 1024], ['1 GiB', 1024 * 1024 * 1024]]) await t.test(label, async () => {
@@ -59,11 +100,11 @@ test('oversized file metadata is rejected before reading, previewing or importin
     input.files = [{ size, text: async () => { calls.text += 1; return '{}'; } }];
     input.fire('change'); await tick();
     assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });
-    assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '普通记忆包不能超过 64 MB，请在旧设备使用“自动导出大记忆包”。');
+    assert.equal(nodes.find(node => node.className === 'settings-result' && node['aria-label'] === '导入与撤销结果').textContent, '普通记忆包不能超过 64 MB，请在旧设备使用“自动导出大记忆包”。');
     for (const control of nodes.filter(node => !node.hidden && (node.tag === 'button' || node === input))) assert.equal(control.disabled, false);
     nodes.find(node => node.textContent === '确认导入').fire('click'); await tick();
     assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });
-    assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '请先选择记忆包并完成预览。');
+    assert.equal(nodes.find(node => node.className === 'settings-result' && node['aria-label'] === '导入与撤销结果').textContent, '请先选择记忆包并完成预览。');
     view.dispose();
   });
 });
@@ -79,7 +120,7 @@ test('file metadata at exactly 64 MiB reaches preview without automatically impo
   input.files = [{ size: 64 * 1024 * 1024, text: async () => { calls.text += 1; return '{}'; } }];
   input.fire('change'); await tick();
   assert.deepEqual(calls, { text: 1, preview: 1, import: 0 });
-  assert.equal(nodes.find(node => node.className === 'settings-result').textContent, '预览通过，点击“确认导入”恢复。');
+  assert.equal(nodes.find(node => node.className === 'settings-result' && node['aria-label'] === '导入与撤销结果').textContent, '预览通过，点击“确认导入”恢复。');
   for (const control of nodes.filter(node => !node.hidden && (node.tag === 'button' || node === input))) assert.equal(control.disabled, false);
   view.dispose();
 });
@@ -322,7 +363,7 @@ test('volume import requires the manifest and volume files together', async t =>
     const nodes = flatten(view.node), input = nodes.find(node => node.type === 'file');
     input.files = names.map(name => ({ name, size: 2, text: async () => { called += 1; return '{}'; } }));
     input.fire('change'); await tick(); assert.equal(called, 0);
-    assert.match(nodes.find(node => node.className === 'settings-result').textContent, /清单.*全部卷/);
+    assert.match(nodes.find(node => node.className === 'settings-result' && node['aria-label'] === '导入与撤销结果').textContent, /清单.*全部卷/);
     view.dispose();
   });
 });
