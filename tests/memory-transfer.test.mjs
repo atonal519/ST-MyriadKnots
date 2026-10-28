@@ -15,6 +15,7 @@ import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import { sha256 } from '../src/identity.js';
 import { stableJson } from '../src/memory-transfer-json.js';
 import { writeMemoryBundle } from '../src/memory-transfer-bundle.js';
+import { MEMORY_VOLUME_BYTES } from '../src/memory-transfer-volumes.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 import { createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
@@ -121,6 +122,137 @@ async function volumeFiles(runtime, options = { partBytes: 4096 }) {
   assert.ok(files.at(-1).name.endsWith('.qqj-memory.index.json'), 'the final file seals the completed archive');
   return files;
 }
+
+test('volume export validates the tail in bounded batches and reports every finishing phase before its manifest', async () => {
+  const chat = [user('开始')];
+  for (let index = 0; index < 130; index++) chat.push(assistant(`第${index + 1}份记录。`), user(`继续${index}`));
+  const f = await fixture({ chat }); streamingFixture(f);
+  const progress = [], before = structuredClone([...f.backend.records]);
+  f.backend.calls.length = 0;
+  const files = await volumeFiles(f.runtime, { partBytes: 512, onProgress: value => progress.push(value) });
+  const batches = f.backend.calls.filter(call => call[0] === 'getMany');
+  assert.ok(batches.some(call => call[2].length === 64), 'tail graph validation must use the existing batch API');
+  for (const [, collection, ids] of batches) {
+    assert.ok(ids.length <= 64);
+    const rawBytes = ids.reduce((sum, id) => sum + Buffer.byteLength(JSON.stringify(f.backend.records.get(`${collection}/${id}`).data)), 0);
+    assert.ok(rawBytes <= MEMORY_VOLUME_BYTES);
+  }
+  assert.deepEqual([...new Set(progress.map(value => value.phase))], ['records', 'graph', 'auxiliary', 'conversation', 'avatars', 'verify', 'manifest']);
+  assert.ok(progress.some(value => value.phase === 'graph' && value.completed >= 130));
+  assert.ok(progress.some(value => value.phase === 'verify' && value.completed > 0));
+  assert.deepEqual(progress.at(-1), { phase: 'manifest', completed: 1, total: 1 });
+  for (const value of progress) assert.ok(Number.isSafeInteger(value.completed) && value.completed >= 0
+    && (value.total === null || Number.isSafeInteger(value.total) && value.total >= 0));
+  assert.deepEqual([...f.backend.records], before, 'export validation never writes formal records');
+  const manifest = await files.at(-1).text(); assert.doesNotMatch(manifest, /onProgress/);
+  const plan = await f.runtime.previewVolumes(files); assert.equal(plan.messages, chat.length);
+});
+
+test('volume graph batches account for UTF8 bytes and read an oversized record alone', async () => {
+  const chat = [user('开始'), assistant('已记忆的小楼。'), user('继续')];
+  for (const count of [1500000, 1500000, 3000000]) chat.push(assistant('甲'.repeat(count)), user('继续下一楼'));
+  const f = await fixture({ chat }); streamingFixture(f);
+  const floorIds = f.graph.floors.slice(1).map(floor => `v3-floor-${floor.id}`);
+  const sizes = new Map(floorIds.map(id => [id, Buffer.byteLength(JSON.stringify(f.backend.records.get(`chat-${SOURCE}/${id}`).data))]));
+  assert.ok(sizes.get(floorIds[0]) < MEMORY_VOLUME_BYTES && sizes.get(floorIds[0]) * 2 > MEMORY_VOLUME_BYTES);
+  assert.ok(sizes.get(floorIds[2]) > MEMORY_VOLUME_BYTES);
+  const batchRead = f.backend.client.getMany;
+  f.backend.client.getMany = async (collection, ids, options) => {
+    assert.ok(ids.length <= 64);
+    assert.ok(ids.reduce((sum, id) => sum + Buffer.byteLength(JSON.stringify(f.backend.records.get(`${collection}/${id}`).data)), 0) <= MEMORY_VOLUME_BYTES);
+    assert.equal(ids.includes(floorIds[2]), false, 'a single record larger than one volume must not enter getMany');
+    return batchRead(collection, ids, options);
+  };
+  f.backend.calls.length = 0;
+  let manifest = false;
+  for await (const file of f.runtime.exportVolumes()) if (file.manifest) manifest = true;
+  assert.equal(manifest, true);
+  const batches = f.backend.calls.filter(call => call[0] === 'getMany');
+  assert.ok(batches.some(call => call[2].includes(floorIds[0])));
+  assert.ok(batches.some(call => call[2].includes(floorIds[1])));
+  assert.equal(batches.some(call => call[2].includes(floorIds[0]) && call[2].includes(floorIds[1])), false);
+  assert.equal(f.backend.calls.filter(call => call[0] === 'get' && call[2] === floorIds[2]).length, 1);
+});
+
+test('volume export still rejects a new auxiliary record discovered in its second complete scan', async () => {
+  const f = await fixture(), list = f.backend.client.list, progress = [];
+  let scans = 0, manifest = false;
+  f.backend.client.iterRecords = async function* (collection) {
+    scans++;
+    if (scans === 2) {
+      const id = 'v3-time-batch-dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      f.backend.records.set(`${collection}/${id}`, { revision: 1, data: { schemaVersion: 1, chatId: SOURCE, id, changes: [] } });
+    }
+    yield* await list(collection);
+  };
+  await assert.rejects(async () => {
+    for await (const file of f.runtime.exportVolumes({ partBytes: 512, onProgress: value => progress.push(value) })) manifest ||= file.manifest;
+  }, /导出期间记忆发生变化/);
+  assert.equal(scans, 2); assert.equal(manifest, false);
+  assert.ok(progress.some(value => value.phase === 'verify'));
+  assert.equal(f.runtime.getState().active, false);
+});
+
+test('volume export cancels an in-flight graph batch and releases its captured session', async () => {
+  const f = await fixture(); streamingFixture(f);
+  const original = f.backend.client.getMany;
+  let announce;
+  const started = new Promise(resolve => { announce = resolve; });
+  f.backend.client.getMany = async (collection, ids, { signal }) => {
+    if (ids.length === 1 && ids[0] === 'v3-root') return original(collection, ids);
+    announce();
+    await new Promise((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
+  const iterator = f.runtime.exportVolumes({ partBytes: 512 });
+  const consuming = (async () => { for await (const unused of iterator) {} })();
+  const rejected = assert.rejects(consuming, error => error.name === 'AbortError');
+  await started; await iterator.return(); await rejected;
+  assert.equal(f.runtime.getState().active, false); assert.equal(f.session.identity().chatId, SOURCE);
+});
+
+test('volume graph batches preserve missing, HTTP, transport and revision-change failures without a manifest', async t => {
+  for (const fault of ['missing', 'http', 'transport', 'revision']) await t.test(fault, async () => {
+    const f = await fixture(); streamingFixture(f);
+    const original = f.backend.client.getMany, before = structuredClone([...f.backend.records]);
+    const failure = new Error('batch transport failed'); let reads = 0, manifest = false;
+    f.backend.client.getMany = async (...args) => {
+      if (args[1].length === 1 && args[1][0] === 'v3-root') return original(...args);
+      reads++;
+      if (fault === 'transport') throw failure;
+      const results = await original(...args);
+      if (fault === 'revision') results[0].envelope.revision++;
+      else results[0] = { recordId: results[0].recordId, status: fault === 'missing' ? 404 : 500 };
+      return results;
+    };
+    await assert.rejects(async () => {
+      for await (const file of f.runtime.exportVolumes({ partBytes: 512 })) manifest ||= file.manifest;
+    }, error => fault === 'transport' ? error === failure : fault === 'revision'
+      ? /导出期间记忆发生变化/.test(error.message) : error.status === (fault === 'missing' ? 404 : 500));
+    assert.equal(reads, 1, 'a failed graph batch is not retried or reread through single GET');
+    assert.equal(manifest, false); assert.equal(f.runtime.getState().active, false); assert.equal(f.api.saves, 0);
+    assert.deepEqual([...f.backend.records], before);
+  });
+});
+
+test('batched and legacy single-read volume exports are byte-identical after manual summary and prequel edits', async () => {
+  const f = await fixture({ transferOptions: { now: () => new Date(NOW) } }); streamingFixture(f);
+  await f.memory.editSummary(f.memory.getState().floors[0].floorId, '用户手改：钥匙仍在衣袋中。');
+  f.ctx.chatMetadata.qianqianjiePrequel = '用户手填的前情'; f.api.reloadFromContext();
+  const before = structuredClone([...f.backend.records]), options = { partBytes: 512 };
+  const batched = await volumeFiles(f.runtime, options), getMany = f.backend.client.getMany;
+  delete f.backend.client.getMany;
+  let legacy;
+  try { legacy = await volumeFiles(f.runtime, options); }
+  finally { f.backend.client.getMany = getMany; }
+  assert.deepEqual(batched.map(file => file.name), legacy.map(file => file.name));
+  for (let index = 0; index < batched.length; index++) {
+    assert.deepEqual(new Uint8Array(await batched[index].arrayBuffer()), new Uint8Array(await legacy[index].arrayBuffer()));
+  }
+  assert.deepEqual([...f.backend.records], before, 'both paths keep all source records and manual fields unchanged');
+});
 
 test('单文件流式包经正式runtime预览导入和撤销，保留人工摘要与前情', async () => {
   const f = await fixture(); streamingFixture(f);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryTransferView, downloadMemoryPackage } from '../src/ui/memory-transfer-view.js';
-import { createMemoryVolumes } from '../src/memory-transfer-volumes.js';
+import { createMemoryVolumes, MEMORY_VOLUME_BYTES } from '../src/memory-transfer-volumes.js';
 
 class Node {
   constructor(tag) { this.tag = tag; this.children = []; this.events = {}; this.textContent = ''; }
@@ -108,6 +108,102 @@ async function waitFor(predicate) {
   while (!predicate() && Date.now() < deadline) await tick();
   assert.ok(predicate(), '导出视图未完成预期动作');
 }
+
+test('导出进度紧邻取消按钮，并通过可访问状态区域播报', () => {
+  const view = createMemoryTransferView({ runtime: {}, documentRef: { createElement: tag => new Node(tag) } });
+  const body = view.node.children[1], status = body.children.find(node => node.className === 'settings-result');
+  const cancel = body.children.findIndex(node => node.tag === 'button' && node.textContent === '取消导出');
+  assert.equal(body.children[cancel + 1], status, '进度需在导出控件旁，不藏在导入与撤销按钮下面');
+  assert.equal(status.role, 'status');
+  assert.equal(status['aria-live'], 'polite');
+  view.dispose();
+});
+
+test('核验进度未知总数不显示分母，已知总数照常显示', async () => {
+  let progress, release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const view = createMemoryTransferView({ runtime: { async *exportVolumes({ onProgress }) {
+    progress = onProgress; await waiting;
+  } }, documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => ({ mode: 'volumes', async abort() {} }) });
+  const nodes = () => flatten(view.node), status = () => nodes().find(node => node.className === 'settings-result');
+  try {
+    nodes().find(node => node.textContent === '自动导出大记忆包').fire('click');
+    await waitFor(() => typeof progress === 'function');
+    for (const total of [undefined, null]) {
+      progress({ phase: 'graph', completed: 120, total });
+      assert.equal(status().textContent, '正在核验记忆引用：120 项…');
+    }
+    progress({ phase: 'graph', completed: 120, total: 250 });
+    assert.equal(status().textContent, '正在核验记忆引用：120 / 250 项…');
+  } finally { view.dispose(); release(); await tick(); }
+});
+
+test('十一卷满8MiB后显示尾部核验进度，继续自动交付清单或取消并忽略迟到进度', async t => {
+  for (const cancel of [false, true]) await t.test(cancel ? '尾部核验时取消' : '尾部核验后保存清单', async () => {
+    const saved = [], chatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    let releaseTail, releaseSettled, reachedTail = false, returned = 0, finished = 0, progress;
+    const tail = new Promise(resolve => { releaseTail = resolve; });
+    const settled = new Promise(resolve => { releaseSettled = resolve; });
+    async function* entries(onProgress) {
+      try {
+        for (let index = 0; index < 11; index++) {
+          onProgress({ phase: 'records', completed: index + 1 });
+          const empty = { kind: 'record', id: `floor-${index}`, data: '' };
+          yield { ...empty, data: 'x'.repeat(MEMORY_VOLUME_BYTES - JSON.stringify(empty).length - 1) };
+        }
+        onProgress({ phase: 'graph', completed: 0, total: 13 }); reachedTail = true;
+        await tail;
+        onProgress({ phase: 'manifest', completed: 1, total: 1 });
+        yield { kind: 'header', value: { source: { chatId }, messages: [] } };
+      } finally { returned++; }
+    }
+    const view = createMemoryTransferView({ runtime: { async *exportVolumes(options = {}) {
+      progress = options.onProgress;
+      try {
+        yield* createMemoryVolumes(entries(progress ?? (() => {})), {
+          archiveId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', source: { chatId },
+          exportedAt: '2026-10-28T00:00:00.000Z',
+        });
+      } finally { await settled; }
+    } }, documentRef: { createElement: tag => new Node(tag) }, prepareBundleDownload: async () => ({ mode: 'volumes',
+      async saveVolume(file) {
+        assert.match(status().textContent, file.manifest ? /正在保存分卷清单/ : new RegExp(`正在保存第 ${file.part} 卷`));
+        saved.push({ filename: file.filename, size: file.blob.size, manifest: file.manifest });
+      },
+      async finish() { finished++; return { delivered: true, message: '已提交全部下载。' }; }, async abort() {} }) });
+    const nodes = () => flatten(view.node), button = text => nodes().find(node => node.tag === 'button' && node.textContent === text);
+    const status = () => nodes().find(node => node.className === 'settings-result');
+    try {
+      button('自动导出大记忆包').fire('click'); await waitFor(() => reachedTail);
+      assert.equal(saved.length, 11); assert.ok(saved.every(file => file.size === MEMORY_VOLUME_BYTES));
+      assert.equal(button('自动导出大记忆包').disabled, true); assert.equal(finished, 0);
+      assert.match(status().textContent, /核验记忆引用.*0.*13/);
+      for (const [phase, label] of [['auxiliary', '时间、人物与向量'], ['conversation', '聊天正文'], ['avatars', '人物头像'], ['verify', '复核存储记录']]) {
+        progress({ phase, completed: 5, total: 11 }); assert.match(status().textContent, new RegExp(`${label}.*5.*11`));
+      }
+      if (cancel) {
+        button('取消导出').fire('click'); await tick();
+        progress({ phase: 'graph', completed: 13, total: 13 });
+        assert.match(status().textContent, /正在取消导出/);
+      }
+      releaseTail();
+      if (!cancel) {
+        await waitFor(() => saved.at(-1)?.manifest);
+        assert.equal(finished, 0, '清单已交付也要等导出器收尾，不提前显示完成');
+        assert.equal(button('自动导出大记忆包').disabled, true);
+      }
+      releaseSettled(); await waitFor(() => !button('自动导出大记忆包').disabled);
+      assert.equal(returned, 1);
+      if (cancel) {
+        assert.equal(saved.length, 11); assert.equal(finished, 0); assert.match(status().textContent, /已取消导出/);
+      } else {
+        assert.equal(saved.length, 13); assert.equal(saved.at(-1).manifest, true);
+        assert.match(saved.at(-1).filename, /\.index\.json$/); assert.equal(finished, 1);
+        assert.match(status().textContent, /已提交全部下载/);
+      }
+    } finally { releaseTail(); releaseSettled(); view.dispose(); }
+  });
+});
 
 test('自动单包导出先选择一次目标，再逐卷写入，最后只保存一次并释放迭代器', async () => {
   const files = await exportFiles(), writes = []; let produced = 0, returned = 0, prepared = 0, closed = 0, finished = 0, metadata;

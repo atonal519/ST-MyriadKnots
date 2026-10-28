@@ -17,6 +17,7 @@ export function createMemoryTransferView({ runtime, documentRef = globalThis.doc
   const { drawer, body } = createSettingsDrawer({ documentRef, title: '记忆导入与导出', level: 'sub', id: 'qqj-settings-sub-transfer', className: 'qqj-memory-transfer', open, onToggle });
   const el = (tag, text = '', className = '') => { const node = documentRef.createElement(tag); node.textContent = text; node.className = className; return node; };
   const status = el('p', '', 'settings-result'), preview = el('div'), controls = [];
+  status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   let disposed = false, busy = false, plan = null, epoch = 0, exportSession = null;
   let cancelExportButton = null;
   function updateControls() {
@@ -51,13 +52,23 @@ export function createMemoryTransferView({ runtime, documentRef = globalThis.doc
       const target = await prepareBundleDownload();
       if (!current()) { await target.abort(); return; }
       session.target = target;
-      session.iterator = runtime.exportVolumes();
+      const phases = {
+        records: ['正在读取记忆记录', '条'], graph: ['正在核验记忆引用', '项'],
+        auxiliary: ['正在核验时间、人物与向量记录', '条'], conversation: ['正在核对聊天正文', '条'],
+        avatars: ['正在读取人物头像', '张'], verify: ['正在复核存储记录', '条'],
+      };
+      session.iterator = runtime.exportVolumes({ onProgress: ({ phase, completed, total }) => {
+        if (!current()) return;
+        status.textContent = phase === 'manifest' ? '正在生成分卷清单…'
+          : `${phases[phase][0]}：${completed}${total == null ? '' : ` / ${total}`} ${phases[phase][1]}…`;
+      } });
       status.textContent = '正在读取与写入记忆包，请稍候…';
       let metadata;
       if (target.mode === 'volumes') {
         metadata = { filename: null, parts: 0, bytes: 0 };
         for await (const file of session.iterator) {
           if (!current()) return;
+          status.textContent = file.manifest ? '正在保存分卷清单…' : `正在保存第 ${file.part} 卷…`;
           await target.saveVolume(file);
           if (!current()) return;
           metadata.bytes += file.blob.size;
@@ -108,7 +119,7 @@ export function createMemoryTransferView({ runtime, documentRef = globalThis.doc
   const startVolumeButton = volumeButton('自动导出大记忆包', exportBundle);
   controls.push(startVolumeButton);
   cancelExportButton = volumeButton('取消导出', stopExport);
-  body.append(startVolumeButton, el('p', '自动顺序导出，可处理超过 1 GB 的记忆。支持时保存为一个 .qqj-memory 文件；其他环境自动下载各卷及最后的清单，可能需要允许连续下载。无需逐卷点击，处理时只保留当前卷和单条记录。', 'settings-hint'), cancelExportButton);
+  body.append(startVolumeButton, cancelExportButton, status, el('p', '自动顺序导出，可处理超过 1 GB 的记忆。支持时保存为一个 .qqj-memory 文件；其他环境自动下载各卷及最后的清单，可能需要允许连续下载。无需逐卷点击，按小批读取与保存，不会将整个记忆包载入内存。', 'settings-hint'));
   const input = el('input', '', 'settings-input'); input.type = 'file'; input.multiple = true; input.accept = '.qqj-memory,.json,.bin,.qqj-memory.part,application/json,application/octet-stream';
   input.setAttribute('aria-label', '选择千千结记忆包'); controls.push(input);
   input.addEventListener('change', () => {
@@ -153,7 +164,7 @@ export function createMemoryTransferView({ runtime, documentRef = globalThis.doc
     if (!confirmed || disposed) return;
     await runtime.undo(); plan = null; preview.replaceChildren();
     if (!disposed) status.textContent = '已恢复导入前的记忆，请重新打开聊天或刷新页面。';
-  }), status);
+  }));
   updateControls();
   return { node: drawer, dispose() { disposed = true; epoch += 1; plan = null; void stopExport(); } };
 }

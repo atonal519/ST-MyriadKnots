@@ -14,7 +14,7 @@ import { MESSAGE_MEMORY_EXCLUSION_KEY } from './v3/memory-exclusion.js';
 import { stableJson } from './memory-transfer-json.js';
 import { createActivitySignal } from './plugin-activity.js';
 import { createAvatarImageStore } from './avatar-image-store.js';
-import { createMemoryVolumes, openMemoryVolumes } from './memory-transfer-volumes.js';
+import { createMemoryVolumes, openMemoryVolumes, MEMORY_VOLUME_BYTES } from './memory-transfer-volumes.js';
 import { openMemoryBundle } from './memory-transfer-bundle.js';
 import { validateTransferGraph, transferRecordKey } from './memory-transfer-graph.js';
 
@@ -328,8 +328,10 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       check(present.has(id), '记忆包缺少关联的时间、人物或向量记录。');
     }
   }
-  async function* volumeEntries(captured, signal) {
+  async function* volumeEntries(captured, signal, onProgress) {
     const collection = `chat-${captured.identity.chatId}`;
+    const report = (phase, completed, total = null) => onProgress?.({ phase, completed, total });
+    report('records', 0);
     const rootEnvelope = await optionalGet(collection, 'v3-root', { signal }), root = rootEnvelope?.data;
     check(root?.headCheckpointId && !root.activeRunId, '当前记忆尚未准备好，请先刷新状态或补齐缺失。');
     const checkpoint = (await client.get(collection, `v3-checkpoint-${root.headCheckpointId}`, { signal })).data;
@@ -341,52 +343,96 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       ...refs.entities.map(id => `v3-entity-${id}`), ...refs.stateDeltas.map(id => `v3-state-delta-${id}`),
       ...refs.currentStates.map(id => `v3-current-state-${id}`), ...refs.indexes]);
     const revisions = new Map(), sources = new Map();
+    let scanned = 0;
     check(typeof client.iterRecords === 'function', '请更新白鸟数据后端后使用分卷导出。');
     for await (const envelope of client.iterRecords(collection, { signal, requireStreaming: true })) {
+      report('records', ++scanned);
       if (!coreIds.has(envelope.recordId) && !(isAux(envelope.recordId) && envelope.data?.chatId === captured.identity.chatId)) continue;
       const item = { id: envelope.recordId, data: envelope.data };
       validateVolumeRecord(item, captured.identity.chatId);
-      check(!revisions.has(item.id), '存储清单含有重复记录。'); revisions.set(item.id, envelope.revision);
+      check(!revisions.has(item.id), '存储清单含有重复记录。');
+      revisions.set(item.id, { revision: envelope.revision, bytes: bytes(item.data) });
       for (const workspace of peopleWorkspaces([item])) for (const source of Object.values(workspace.avatarSourcesByEntityId ?? {})) sources.set(source.path, source);
       yield { kind: 'record', ...item };
     }
-    check([...coreIds].every(id => revisions.has(id)) && revisions.get('v3-root') === rootEnvelope.revision,
+    check([...coreIds].every(id => revisions.has(id)) && revisions.get('v3-root')?.revision === rootEnvelope.revision,
       '导出期间记忆发生变化，请重新导出。');
+    let readPhase = 'graph', readCount = 0;
+    report(readPhase, readCount);
+    const checkedData = (id, envelope) => {
+      check(envelope && envelope.revision === revisions.get(id)?.revision, '导出期间记忆发生变化，请重新导出。');
+      report(readPhase, ++readCount);
+      return envelope.data;
+    };
     const readRecord = async id => {
       const envelope = await client.get(collection, id, { signal });
-      check(envelope.revision === revisions.get(id), '导出期间记忆发生变化，请重新导出。'); return envelope.data;
+      return checkedData(id, envelope);
     };
-    const graph = await validateTransferGraph({ chatId: captured.identity.chatId, recordIds: revisions.keys(), readRecord });
+    const readRecords = async function* (ids) {
+      if (typeof client.getMany !== 'function') { for (const id of ids) yield await readRecord(id); return; }
+      let batch = [], batchBytes = 0;
+      const readBatch = async function* () {
+        const result = await client.getMany(collection, batch, { signal });
+        check(Array.isArray(result) && result.length === batch.length, '存储批量读取结果无效。');
+        for (let index = 0; index < batch.length; index++) {
+          const item = result[index], id = batch[index];
+          check(item?.recordId === id, '存储批量读取结果无效。');
+          if (item.status !== 200) throw Object.assign(new Error(item.message || '读取记忆记录失败。'), { status: item.status });
+          try { yield checkedData(id, item.envelope); }
+          finally { result[index] = null; }
+        }
+      };
+      for (const id of ids) {
+        const size = revisions.get(id)?.bytes;
+        check(Number.isSafeInteger(size), '导出期间记忆发生变化，请重新导出。');
+        if (batch.length && (batch.length === 64 || batchBytes + size > MEMORY_VOLUME_BYTES)) {
+          yield* readBatch(); batch = []; batchBytes = 0;
+        }
+        if (size > MEMORY_VOLUME_BYTES) { yield await readRecord(id); continue; }
+        batch.push(id); batchBytes += size;
+      }
+      if (batch.length) yield* readBatch();
+    };
+    const graph = await validateTransferGraph({ chatId: captured.identity.chatId, recordIds: revisions.keys(), readRecord, readRecords });
+    readPhase = 'auxiliary'; readCount = 0; report(readPhase, readCount);
     await checkAuxiliaryLinks(graph, revisions.keys(), readRecord);
+    report('conversation', 0, captured.chat.length);
     const bindings = await verifyConversation(graph, captured.chat, sanitizerOptions());
+    report('conversation', captured.chat.length, captured.chat.length);
+    let avatars = 0; report('avatars', avatars, sources.size);
     for (const source of sources.values()) {
       const response = await fetchImpl(source.path, { headers: captured.target.requestHeaders, signal });
       check(response?.ok, '人物头像原图读取失败，请检查原图后重新导出。');
       const data = new Uint8Array(await response.arrayBuffer()); let binary = '';
       for (let offset = 0; offset < data.length; offset += 32768) binary += String.fromCharCode(...data.subarray(offset, offset + 32768));
+      report('avatars', ++avatars, sources.size);
       yield { kind: 'avatar', path: source.path, mimeType: source.mimeType, data: btoa(binary) };
     }
-    let verified = 0;
+    let verified = 0; scanned = 0; report('verify', scanned);
     for await (const envelope of client.iterRecords(collection, { signal, requireStreaming: true })) {
+      report('verify', ++scanned);
       if (!coreIds.has(envelope.recordId) && !(isAux(envelope.recordId) && envelope.data?.chatId === captured.identity.chatId)) continue;
-      check(revisions.get(envelope.recordId) === envelope.revision, '导出期间记忆发生变化，请重新导出。'); verified++;
+      check(revisions.get(envelope.recordId)?.revision === envelope.revision, '导出期间记忆发生变化，请重新导出。'); verified++;
     }
     check(verified === revisions.size, '导出期间记忆发生变化，请重新导出。'); current(captured);
+    report('manifest', 0, 1);
     yield { kind: 'header', value: { format: FORMAT, formatVersion: 3, pluginVersion, exportedAt: now().toISOString(),
       source: { chatId: captured.identity.chatId, character: captured.target.characterName }, messages: await volumeWitness(captured.chat),
       markers: exportMarkers(captured.chat, graph, bindings),
       prequel: typeof captured.metadata.qianqianjiePrequel === 'string' ? captured.metadata.qianqianjiePrequel : null,
       calendar: clone(captureCalendar(captured.identity.chatId)) } };
   }
-  async function* exportVolumeIterator({ partBytes, signal } = {}) {
+  async function* exportVolumeIterator({ partBytes, signal, onProgress } = {}) {
     const captured = capture();
     check(!active && !isBusy(), '请等待聊天生成和记忆任务完成后再操作。'); current(captured);
     active = true; activity.notifyActivity(); let suspended = false;
     try {
       session.suspend(captured.identity.chatId); suspended = true; await quiesce(); current(captured);
-      for await (const part of createMemoryVolumes(volumeEntries(captured, signal), { archiveId: freshUuid(), partBytes,
+      for await (const part of createMemoryVolumes(volumeEntries(captured, signal, onProgress), { archiveId: freshUuid(), partBytes,
         source: { chatId: captured.identity.chatId, character: captured.target.characterName }, exportedAt: now().toISOString() })) {
-        current(captured); yield part;
+        current(captured);
+        if (part.manifest) onProgress?.({ phase: 'manifest', completed: 1, total: 1 });
+        yield part;
       }
     } finally {
       if (suspended) session.resume(captured.identity.chatId);

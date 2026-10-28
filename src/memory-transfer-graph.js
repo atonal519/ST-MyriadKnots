@@ -56,17 +56,35 @@ function hasOccurrence(content, quote, wanted) {
 
 // Validation retains IDs, ordering and binding metadata; record bodies are read
 // on demand, checked in their original form, and released after the current item.
-export async function validateTransferGraph({ chatId, recordIds, readRecord }) {
+export async function validateTransferGraph({ chatId, recordIds, readRecord, readRecords }) {
   const idList = Array.from(recordIds), ids = new Set(idList), checked = new Set();
   if (ids.size !== idList.length) fail('V3_TRANSFER_RECORD_DUPLICATE');
-  async function read(id, type) {
+  async function read(id, type, load = readRecord) {
     if (!ids.has(id)) fail('V3_TRANSFER_RECORD_MISSING');
-    const input = await readRecord(id);
+    const input = await load(id);
     if (!input || input.recordType !== type) fail('V3_TRANSFER_RECORD_TYPE_INVALID');
     const value = await validators[type](input, { expectedChatId: chatId });
     if (keyFor(value) !== id) fail('V3_TRANSFER_RECORD_KEY_INVALID');
     checked.add(id);
     return value;
+  }
+  async function* readGroup(recordIds, type) {
+    if (!recordIds.length) return;
+    const typeFor = id => typeof type === 'function' ? type(id) : type;
+    if (!readRecords) {
+      for (const id of recordIds) yield await read(id, typeFor(id));
+      return;
+    }
+    const missing = recordIds.findIndex(id => !ids.has(id));
+    const group = missing < 0 ? recordIds : recordIds.slice(0, missing);
+    let position = 0;
+    if (group.length) for await (const input of readRecords(group)) {
+      if (position >= group.length) fail('V3_TRANSFER_RECORD_KEY_INVALID');
+      const id = group[position++];
+      yield await read(id, typeFor(id), () => input);
+    }
+    if (position !== group.length) fail('V3_TRANSFER_RECORD_TYPE_INVALID');
+    if (missing >= 0) fail('V3_TRANSFER_RECORD_MISSING');
   }
   const root = await read('v3-root', 'root');
   if (!root.headCheckpointId || root.activeRunId) fail('V3_TRANSFER_GRAPH_NOT_READY');
@@ -80,15 +98,14 @@ export async function validateTransferGraph({ chatId, recordIds, readRecord }) {
       summarySources: descriptor.summarySources, sourceFloorProvenance: descriptor.sourceFloorProvenance, recordRefs: descriptor.recordRefs };
   })() : null;
   const indexes = [];
-  for (const key of checkpoint.producedRefs.indexes) indexes.push(await read(key, 'index'));
+  for await (const index of readGroup(checkpoint.producedRefs.indexes, 'index')) indexes.push(index);
   const floorMetas = [];
-  for (const id of checkpoint.producedRefs.floors) floorMetas.push(floorMetadata(await read(`v3-floor-${id}`, 'floor')));
+  for await (const floor of readGroup(checkpoint.producedRefs.floors.map(id => `v3-floor-${id}`), 'floor')) floorMetas.push(floorMetadata(floor));
   const floors = activeFloors(floorMetas, indexes), floorsById = new Map(floors.map(floor => [floor.id, floor]));
   const floorOrder = new Map(floors.map((floor, index) => [floor.id, index]));
   const entities = new Map();
-  for (const id of checkpoint.producedRefs.entities) {
-    const entity = await read(`v3-entity-${id}`, 'entity');
-    entities.set(id, { id, entityType: entity.entityType, narrativeGeneration: entity.narrativeGeneration,
+  for await (const entity of readGroup(checkpoint.producedRefs.entities.map(id => `v3-entity-${id}`), 'entity')) {
+    entities.set(entity.id, { id: entity.id, entityType: entity.entityType, narrativeGeneration: entity.narrativeGeneration,
       firstSeenFloorId: entity.firstSeenFloorId, lastSeenFloorId: entity.lastSeenFloorId });
   }
   await validateFoundationGraphReferences({ root, checkpoint, run, floors, indexes,
@@ -111,8 +128,8 @@ export async function validateTransferGraph({ chatId, recordIds, readRecord }) {
   const requireEntity = id => { if (!entities.has(id)) fail('V3_MEMORY_GRAPH_ENTITY_REF_INVALID'); };
   const seenMemoryFloors = new Set(), activeMemoryFloors = new Set();
   let summaryCount = 0;
-  for (const id of checkpoint.producedRefs.floorMemories) {
-    const memory = await read(`v3-floor-memory-${id}`, 'floorMemory'), floor = floorsById.get(memory.floorId);
+  for await (const memory of readGroup(checkpoint.producedRefs.floorMemories.map(id => `v3-floor-memory-${id}`), 'floorMemory')) {
+    const floor = floorsById.get(memory.floorId);
     if (!floor || memory.narrativeGeneration !== floor.narrativeGeneration || seenMemoryFloors.has(memory.floorId)) fail('V3_MEMORY_GRAPH_FLOOR_REF_INVALID');
     seenMemoryFloors.add(memory.floorId);
     const sourceIds = memorySourceFloorIds(memory);
@@ -173,8 +190,8 @@ export async function validateTransferGraph({ chatId, recordIds, readRecord }) {
   const baselineId = root.baselineId ? (await read(`v3-baseline-${root.baselineId}`, 'baseline')).id : null;
   const seenDeltaFloors = new Set(), deltaIds = new Set();
   let previousDeltaFloorIndex = -1, stateCount = 0;
-  for (const id of checkpoint.producedRefs.stateDeltas) {
-    const delta = await read(`v3-state-delta-${id}`, 'stateDelta'), position = floorOrder.get(delta.floorId);
+  for await (const delta of readGroup(checkpoint.producedRefs.stateDeltas.map(id => `v3-state-delta-${id}`), 'stateDelta')) {
+    const position = floorOrder.get(delta.floorId);
     if (position === undefined || position <= previousDeltaFloorIndex) fail('V3_CSE_GRAPH_DELTA_ORDER_INVALID');
     previousDeltaFloorIndex = position;
     if (!baselineId || delta.baselineId !== baselineId || seenDeltaFloors.has(delta.floorId)) fail('V3_CSE_GRAPH_DELTA_REF_INVALID');
@@ -191,8 +208,7 @@ export async function validateTransferGraph({ chatId, recordIds, readRecord }) {
     if (delta.recordStatus === 'active') stateCount++;
   }
   if (checkpoint.producedRefs.currentStates.length > 1) fail('V3_CSE_GRAPH_CURRENT_REF_INVALID');
-  for (const id of checkpoint.producedRefs.currentStates) {
-    const state = await read(`v3-current-state-${id}`, 'currentState');
+  for await (const state of readGroup(checkpoint.producedRefs.currentStates.map(id => `v3-current-state-${id}`), 'currentState')) {
     if (!baselineId || state.baselineId !== baselineId || state.appliedDeltaIds.some(deltaId => !deltaIds.has(deltaId))) fail('V3_CSE_GRAPH_CURRENT_REF_INVALID');
     if (state.fingerprint !== await stateFingerprint(state.subjects, state.appliedDeltaIds, state.headFloorId)) fail('V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID');
   }
@@ -207,9 +223,7 @@ export async function validateTransferGraph({ chatId, recordIds, readRecord }) {
     if (firstFloorId && generation !== floorsById.get(firstFloorId).narrativeGeneration) fail('V3_MEMORY_GRAPH_ENTITY_GENERATION_INVALID');
   }
   const unvisitedTypes = Object.keys(prefixes).filter(type => type !== 'root').sort((left, right) => prefixes[right].length - prefixes[left].length);
-  for (const id of ids) if (!checked.has(id)) {
-    const type = id === 'v3-root' ? 'root' : unvisitedTypes.find(candidate => id.startsWith(prefixes[candidate]));
-    if (type) await read(id, type);
-  }
+  const unvisitedType = id => id === 'v3-root' ? 'root' : unvisitedTypes.find(candidate => id.startsWith(prefixes[candidate]));
+  for await (const value of readGroup([...ids].filter(id => !checked.has(id) && unvisitedType(id)), unvisitedType)) { /* Validate unreferenced core records too. */ }
   return { status: 'ready', root, checkpoint, run, migrationDescriptor, floors, indexes, summaryCount, stateCount };
 }

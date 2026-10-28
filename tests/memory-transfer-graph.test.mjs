@@ -12,7 +12,7 @@ import { matchFloorCandidates } from '../src/v3/floor-binding.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
 const uuidFactory = () => { let id = 2000; return () => `${(++id).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
-async function fixture() {
+async function fixture({ body = '钥匙放在木盒里。' } = {}) {
   const records = new Map(), revisions = new Map();
   const client = {
     async get(_collection, id) {
@@ -30,7 +30,7 @@ async function fixture() {
     name1: '访客', name2: '守门人', characterId: 0, groupId: null, chatId: 'graph-test', userAvatar: 'user.png',
     characters: [{ name: '守门人', avatar: 'character.png', data: { description: '守门人' } }],
     powerUserSettings: { persona_description: '访客' }, chatMetadata: { qianqianjie: { schemaVersion: 1, chatId: CHAT } },
-    chat: [{ is_user: true, mes: '开始', send_date: '2026-09-05' }, { is_user: false, mes: '钥匙放在木盒里。', swipes: ['钥匙放在木盒里。'], swipe_id: 0 }, { is_user: true, mes: '继续', send_date: '2026-09-05T00:01:00' }],
+    chat: [{ is_user: true, mes: '开始', send_date: '2026-09-05' }, { is_user: false, mes: body, swipes: [body], swipe_id: 0 }, { is_user: true, mes: '继续', send_date: '2026-09-05T00:01:00' }],
     eventSource: { on() {} }, eventTypes: {}, async saveMetadata() {}, async saveChat() { return true; },
     getRequestHeaders() { return {}; }, getWorldInfoNames() { return []; }, async loadWorldInfoBatch() { return new Map(); },
   };
@@ -49,7 +49,7 @@ async function fixture() {
   const ids = new Set(['v3-root', `v3-checkpoint-${checkpoint.id}`, `v3-run-${checkpoint.runId}`, ...(root.baselineId ? [`v3-baseline-${root.baselineId}`] : [])]);
   for (const [kind, prefix] of [['floors', 'v3-floor-'], ['floorMemories', 'v3-floor-memory-'], ['entities', 'v3-entity-'], ['stateDeltas', 'v3-state-delta-'], ['currentStates', 'v3-current-state-']]) for (const id of checkpoint.producedRefs[kind]) ids.add(`${prefix}${id}`);
   for (const id of checkpoint.producedRefs.indexes) ids.add(id);
-  const run = () => validateTransferGraph({ chatId: CHAT, recordIds: [...ids], readRecord: async id => structuredClone(records.get(id)) });
+  const run = (options = {}) => validateTransferGraph({ chatId: CHAT, recordIds: [...ids], readRecord: async id => structuredClone(records.get(id)), ...options });
   return { graph, records, ids, store, run };
 }
 
@@ -61,6 +61,83 @@ test('stream graph validation uses real records and returns only compact floor b
   assert.equal(Object.hasOwn(result.floors[0].content, 'canonicalContent'), false);
   assert.equal(Object.hasOwn(result, 'floorMemories'), false);
   assert.equal(Object.hasOwn(result, 'stateDeltas'), false);
+});
+
+test('stream graph batches each original record group while retaining single reads and the same validation result', async () => {
+  const f = await fixture(), expected = await f.run(), groups = [], singles = [];
+  const actual = await f.run({
+    readRecord: async id => { singles.push(id); return structuredClone(f.records.get(id)); },
+    async *readRecords(ids) {
+      groups.push([...ids]);
+      for (const id of ids) yield structuredClone(f.records.get(id));
+    },
+  });
+  assert.deepEqual(actual, expected);
+  const refs = f.graph.checkpoint.producedRefs;
+  assert.deepEqual(groups.filter(ids => ids.length), [refs.indexes, refs.floors.map(id => `v3-floor-${id}`),
+    refs.entities.map(id => `v3-entity-${id}`), refs.floorMemories.map(id => `v3-floor-memory-${id}`),
+    refs.stateDeltas.map(id => `v3-state-delta-${id}`), refs.currentStates.map(id => `v3-current-state-${id}`)].filter(ids => ids.length));
+  assert.deepEqual(singles.slice(0, 3), ['v3-root', `v3-checkpoint-${f.graph.checkpoint.id}`, `v3-run-${f.graph.run.id}`]);
+  assert.ok(!singles.some(id => refs.indexes.includes(id)));
+  assert.ok(singles.includes(`v3-baseline-${f.graph.root.baselineId}`));
+});
+
+test('stream graph batch failures preserve transport errors and close the source on original validation failures', async t => {
+  await t.test('transport', async () => {
+    const f = await fixture(), failure = Object.assign(new Error('HTTP 503'), { status: 503 }); let called = false;
+    await assert.rejects(f.run({ async *readRecords() { called = true; throw failure; } }), error => error === failure);
+    assert.equal(called, true);
+  });
+  for (const kind of ['body', 'evidence', 'currentFingerprint', 'missingFloor']) await t.test(kind, async () => {
+    const f = await fixture(), floorId = `v3-floor-${f.graph.floors[0].id}`;
+    if (kind === 'body') f.records.get(floorId).content.canonicalContent = '替换的正文';
+    if (kind === 'evidence') f.records.get(`v3-floor-memory-${f.graph.floorMemories[0].id}`).summaryEvidenceRefs = [
+      { floorId: f.graph.floors[0].id, anchorId: null, quotedText: '不在原文', occurrence: 1, evidenceMode: 'explicit', supports: 'summary', sourceEntityId: null },
+    ];
+    if (kind === 'currentFingerprint') f.records.get(`v3-current-state-${f.graph.currentStates[0].id}`).fingerprint = `sha256:${'0'.repeat(64)}`;
+    if (kind === 'missingFloor') f.ids.delete(floorId);
+    const legacy = await f.run().then(() => assert.fail('invalid fixture must fail'), error => error);
+    let opened = 0, closed = 0;
+    await assert.rejects(f.run({ async *readRecords(ids) {
+      opened++;
+      try { for (const id of ids) yield structuredClone(f.records.get(id)); }
+      finally { closed++; }
+    } }), error => error.code === legacy.code);
+    assert.ok(opened > 0); assert.equal(closed, opened);
+  });
+});
+
+test('stream graph rejects incomplete, extra and reordered batch records', async t => {
+  for (const kind of ['short', 'extra', 'order']) await t.test(kind, async () => {
+    const f = await fixture(); let changed = false;
+    await assert.rejects(f.run({ async *readRecords(ids) {
+      const values = ids.map(id => structuredClone(f.records.get(id)));
+      if (!changed && ids.length > 1) {
+        changed = true;
+        if (kind === 'short') values.pop();
+        if (kind === 'extra') values.push(values[0]);
+        if (kind === 'order') [values[0], values[1]] = [values[1], values[0]];
+      }
+      yield* values;
+    } }), error => error.code === (kind === 'short' ? 'V3_TRANSFER_RECORD_TYPE_INVALID' : 'V3_TRANSFER_RECORD_KEY_INVALID'));
+    assert.equal(changed, true);
+  });
+});
+
+test('stream graph batch validation retains single large records and random evidence source reads', async () => {
+  const f = await fixture({ body: `钥匙放在木盒里。${'甲'.repeat(400000)}` });
+  const memory = f.records.get(`v3-floor-memory-${f.graph.floorMemories[0].id}`), floorId = f.graph.floors[0].id;
+  delete memory.sourceCanonicalContent; delete memory.sourceFloorSnapshots;
+  memory.summaryEvidenceRefs = [{ floorId, anchorId: null, quotedText: '钥匙放在木盒里', occurrence: 1,
+    evidenceMode: 'explicit', supports: 'summary', sourceEntityId: null }];
+  const expected = await f.run(), singles = [];
+  const actual = await f.run({
+    readRecord: async id => { singles.push(id); return structuredClone(f.records.get(id)); },
+    async *readRecords(ids) { for (const id of ids) yield structuredClone(f.records.get(id)); },
+  });
+  assert.deepEqual(actual, expected);
+  assert.equal(singles.filter(id => id === `v3-floor-${floorId}`).length, 1, 'evidence lookup still uses the original on-demand floor read');
+  assert.equal(Object.hasOwn(actual.floors[0].content, 'canonicalContent'), false);
 });
 
 test('stream graph validation rejects missing records, changed original content and invalid references', async t => {

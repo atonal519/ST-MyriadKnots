@@ -35644,22 +35644,37 @@ function pE(e, t, n) {
 	for (; (i = e.indexOf(t, i + 1)) !== -1;) if (++r === n) return !0;
 	return !1;
 }
-async function mE({ chatId: e, recordIds: t, readRecord: n }) {
-	let r = Array.from(t), i = new Set(r), a = /* @__PURE__ */ new Set();
-	i.size !== r.length && sE("V3_TRANSFER_RECORD_DUPLICATE");
-	async function o(t, r) {
-		i.has(t) || sE("V3_TRANSFER_RECORD_MISSING");
-		let o = await n(t);
-		(!o || o.recordType !== r) && sE("V3_TRANSFER_RECORD_TYPE_INVALID");
-		let s = await cE[r](o, { expectedChatId: e });
-		return uE(s) !== t && sE("V3_TRANSFER_RECORD_KEY_INVALID"), a.add(t), s;
+async function mE({ chatId: e, recordIds: t, readRecord: n, readRecords: r }) {
+	let i = Array.from(t), a = new Set(i), o = /* @__PURE__ */ new Set();
+	a.size !== i.length && sE("V3_TRANSFER_RECORD_DUPLICATE");
+	async function s(t, r, i = n) {
+		a.has(t) || sE("V3_TRANSFER_RECORD_MISSING");
+		let s = await i(t);
+		(!s || s.recordType !== r) && sE("V3_TRANSFER_RECORD_TYPE_INVALID");
+		let c = await cE[r](s, { expectedChatId: e });
+		return uE(c) !== t && sE("V3_TRANSFER_RECORD_KEY_INVALID"), o.add(t), c;
 	}
-	let s = await o("v3-root", "root");
-	(!s.headCheckpointId || s.activeRunId) && sE("V3_TRANSFER_GRAPH_NOT_READY");
-	let c = await o(`v3-checkpoint-${s.headCheckpointId}`, "checkpoint");
-	(c.narrativeGeneration !== s.narrativeGeneration || !c.capabilities.foundationReady) && sE("V3_STORE_CHECKPOINT_MISMATCH");
-	let l = await o(`v3-run-${c.runId}`, "run"), u = s.migrationDescriptorId ? await (async () => {
-		let e = await o(lc(s.migrationDescriptorId), "migrationDescriptor");
+	async function* c(e, t) {
+		if (!e.length) return;
+		let n = (e) => typeof t == "function" ? t(e) : t;
+		if (!r) {
+			for (let t of e) yield await s(t, n(t));
+			return;
+		}
+		let i = e.findIndex((e) => !a.has(e)), o = i < 0 ? e : e.slice(0, i), c = 0;
+		if (o.length) for await (let e of r(o)) {
+			c >= o.length && sE("V3_TRANSFER_RECORD_KEY_INVALID");
+			let t = o[c++];
+			yield await s(t, n(t), () => e);
+		}
+		c !== o.length && sE("V3_TRANSFER_RECORD_TYPE_INVALID"), i >= 0 && sE("V3_TRANSFER_RECORD_MISSING");
+	}
+	let l = await s("v3-root", "root");
+	(!l.headCheckpointId || l.activeRunId) && sE("V3_TRANSFER_GRAPH_NOT_READY");
+	let u = await s(`v3-checkpoint-${l.headCheckpointId}`, "checkpoint");
+	(u.narrativeGeneration !== l.narrativeGeneration || !u.capabilities.foundationReady) && sE("V3_STORE_CHECKPOINT_MISMATCH");
+	let d = await s(`v3-run-${u.runId}`, "run"), f = l.migrationDescriptorId ? await (async () => {
+		let e = await s(lc(l.migrationDescriptorId), "migrationDescriptor");
 		return {
 			id: e.id,
 			chatId: e.chatId,
@@ -35671,57 +35686,54 @@ async function mE({ chatId: e, recordIds: t, readRecord: n }) {
 			sourceFloorProvenance: e.sourceFloorProvenance,
 			recordRefs: e.recordRefs
 		};
-	})() : null, d = [];
-	for (let e of c.producedRefs.indexes) d.push(await o(e, "index"));
-	let f = [];
-	for (let e of c.producedRefs.floors) f.push(dE(await o(`v3-floor-${e}`, "floor")));
-	let p = fE(f, d), m = new Map(p.map((e) => [e.id, e])), h = new Map(p.map((e, t) => [e.id, t])), g = /* @__PURE__ */ new Map();
-	for (let e of c.producedRefs.entities) {
-		let t = await o(`v3-entity-${e}`, "entity");
-		g.set(e, {
-			id: e,
-			entityType: t.entityType,
-			narrativeGeneration: t.narrativeGeneration,
-			firstSeenFloorId: t.firstSeenFloorId,
-			lastSeenFloorId: t.lastSeenFloorId
-		});
-	}
+	})() : null, p = [];
+	for await (let e of c(u.producedRefs.indexes, "index")) p.push(e);
+	let m = [];
+	for await (let e of c(u.producedRefs.floors.map((e) => `v3-floor-${e}`), "floor")) m.push(dE(e));
+	let h = fE(m, p), g = new Map(h.map((e) => [e.id, e])), _ = new Map(h.map((e, t) => [e.id, t])), v = /* @__PURE__ */ new Map();
+	for await (let e of c(u.producedRefs.entities.map((e) => `v3-entity-${e}`), "entity")) v.set(e.id, {
+		id: e.id,
+		entityType: e.entityType,
+		narrativeGeneration: e.narrativeGeneration,
+		firstSeenFloorId: e.firstSeenFloorId,
+		lastSeenFloorId: e.lastSeenFloorId
+	});
 	await fi({
-		root: s,
-		checkpoint: c,
-		run: l,
-		floors: p,
-		indexes: d,
-		indexKeys: c.producedRefs.indexes,
-		entityIds: [...g.keys()],
+		root: l,
+		checkpoint: u,
+		run: d,
+		floors: h,
+		indexes: p,
+		indexKeys: u.producedRefs.indexes,
+		entityIds: [...v.keys()],
 		allowLegacySnapshot: !0
 	});
-	let _ = Object.fromEntries(Object.keys(s.indexManifest).map((e) => [e, []]));
-	for (let e = 0; e < d.length; e++) _[d[e].kind === "reverseRef" ? "reverseRef" : d[e].kind === "entity" ? "entity" : "floor"].push(c.producedRefs.indexes[e]);
-	Object.keys(_).some((e) => s.indexManifest[e].length !== _[e].length || s.indexManifest[e].some((t) => !_[e].includes(t))) && sE("V3_TRANSFER_GRAPH_NOT_READY");
-	let v = /* @__PURE__ */ new Map(), y = (e, t) => {
-		if (!m.has(e) || !S(t)) return;
-		let n = v.get(t), r = h.get(e);
-		v.set(t, {
-			first: n && h.get(n.first) < r ? n.first : e,
-			last: n && h.get(n.last) > r ? n.last : e
+	let y = Object.fromEntries(Object.keys(l.indexManifest).map((e) => [e, []]));
+	for (let e = 0; e < p.length; e++) y[p[e].kind === "reverseRef" ? "reverseRef" : p[e].kind === "entity" ? "entity" : "floor"].push(u.producedRefs.indexes[e]);
+	Object.keys(y).some((e) => l.indexManifest[e].length !== y[e].length || l.indexManifest[e].some((t) => !y[e].includes(t))) && sE("V3_TRANSFER_GRAPH_NOT_READY");
+	let b = /* @__PURE__ */ new Map(), x = (e, t) => {
+		if (!g.has(e) || !S(t)) return;
+		let n = b.get(t), r = _.get(e);
+		b.set(t, {
+			first: n && _.get(n.first) < r ? n.first : e,
+			last: n && _.get(n.last) > r ? n.last : e
 		});
-	}, b = (e) => {
-		g.has(e) || sE("V3_MEMORY_GRAPH_ENTITY_REF_INVALID");
-	}, x = /* @__PURE__ */ new Set(), C = /* @__PURE__ */ new Set(), w = 0;
-	for (let e of c.producedRefs.floorMemories) {
-		let t = await o(`v3-floor-memory-${e}`, "floorMemory"), n = m.get(t.floorId);
-		(!n || t.narrativeGeneration !== n.narrativeGeneration || x.has(t.floorId)) && sE("V3_MEMORY_GRAPH_FLOOR_REF_INVALID"), x.add(t.floorId);
-		let r = ea(t);
-		(r.some((e) => !m.has(e)) || r.some((e, t) => t > 0 && h.get(e) !== h.get(r[t - 1]) + 1)) && sE("V3_MEMORY_GRAPH_FLOOR_REF_INVALID");
-		for (let e of na(t, { includeReviewCandidates: !1 })) b(e);
-		for (let e of t.exactAnchors) for (let t of e.knownEntityIds ?? []) g.get(t)?.entityType !== "person" && sE("V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID");
-		for (let e of na(t)) y(t.floorId, e);
-		if (r.length > 1) {
-			let e = (e, n) => {
-				for (let r of e ?? []) for (let e of n) y(r.floorId ?? t.floorId, e);
+	}, C = (e) => {
+		v.has(e) || sE("V3_MEMORY_GRAPH_ENTITY_REF_INVALID");
+	}, w = /* @__PURE__ */ new Set(), T = /* @__PURE__ */ new Set(), E = 0;
+	for await (let e of c(u.producedRefs.floorMemories.map((e) => `v3-floor-memory-${e}`), "floorMemory")) {
+		let t = g.get(e.floorId);
+		(!t || e.narrativeGeneration !== t.narrativeGeneration || w.has(e.floorId)) && sE("V3_MEMORY_GRAPH_FLOOR_REF_INVALID"), w.add(e.floorId);
+		let n = ea(e);
+		(n.some((e) => !g.has(e)) || n.some((e, t) => t > 0 && _.get(e) !== _.get(n[t - 1]) + 1)) && sE("V3_MEMORY_GRAPH_FLOOR_REF_INVALID");
+		for (let t of na(e, { includeReviewCandidates: !1 })) C(t);
+		for (let t of e.exactAnchors) for (let e of t.knownEntityIds ?? []) v.get(e)?.entityType !== "person" && sE("V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID");
+		for (let t of na(e)) x(e.floorId, t);
+		if (n.length > 1) {
+			let t = (t, n) => {
+				for (let r of t ?? []) for (let t of n) x(r.floorId ?? e.floorId, t);
 			};
-			for (let n of t.summaryEvidenceRefs) e([n], [n.sourceEntityId]);
+			for (let n of e.summaryEvidenceRefs) t([n], [n.sourceEntityId]);
 			let n = [
 				["locations", (e) => [e.entityId, ...e.participantEntityIds ?? []]],
 				["participants", (e) => [e.entityId]],
@@ -35733,14 +35745,14 @@ async function mE({ chatId: e, recordIds: t, readRecord: n }) {
 				["openLoops", (e) => e.ownerEntityIds ?? []],
 				["cseSignals", (e) => [e.subjectEntityId, e.objectEntityId]]
 			];
-			for (let [r, i] of n) for (let n of t[r]) e(n.evidenceRefs, i(n));
-			for (let n of t.exactAnchors) e([{ floorId: n.sourceFloorId ?? t.floorId }], [n.speakerEntityId, ...n.knownEntityIds ?? []]);
+			for (let [r, i] of n) for (let n of e[r]) t(n.evidenceRefs, i(n));
+			for (let n of e.exactAnchors) t([{ floorId: n.sourceFloorId ?? e.floorId }], [n.speakerEntityId, ...n.knownEntityIds ?? []]);
 		}
-		let i = null, a = null, s = async (e) => {
-			let n = e?.floorId ?? e?.sourceFloorId ?? t.floorId, r = t.sourceFloorSnapshots?.find((e) => e.floorId === n);
-			return e?.sourceType === "precedingUser" ? r?.sourceUserInputSnapshot?.messages?.[e.sourceSnapshotIndex]?.content ?? (n === t.floorId ? t.sourceUserInputSnapshot?.messages?.[e.sourceSnapshotIndex]?.content : null) : r?.canonicalContent ?? (n === t.floorId ? t.sourceCanonicalContent : null) ?? (m.has(n) ? (i !== n && (a = (await o(`v3-floor-${n}`, "floor")).content.canonicalContent, i = n), a) : null);
-		}, c = [...t.summaryEvidenceRefs];
-		for (let e of [
+		let r = null, i = null, a = async (t) => {
+			let n = t?.floorId ?? t?.sourceFloorId ?? e.floorId, a = e.sourceFloorSnapshots?.find((e) => e.floorId === n);
+			return t?.sourceType === "precedingUser" ? a?.sourceUserInputSnapshot?.messages?.[t.sourceSnapshotIndex]?.content ?? (n === e.floorId ? e.sourceUserInputSnapshot?.messages?.[t.sourceSnapshotIndex]?.content : null) : a?.canonicalContent ?? (n === e.floorId ? e.sourceCanonicalContent : null) ?? (g.has(n) ? (r !== n && (i = (await s(`v3-floor-${n}`, "floor")).content.canonicalContent, r = n), i) : null);
+		}, o = [...e.summaryEvidenceRefs];
+		for (let t of [
 			"chronology",
 			"locations",
 			"participants",
@@ -35753,61 +35765,55 @@ async function mE({ chatId: e, recordIds: t, readRecord: n }) {
 			"openLoops",
 			"ambiguities",
 			"cseSignals"
-		]) for (let n of t[e]) c.push(...n.evidenceRefs ?? []);
-		for (let e of ["containments", "positions"]) for (let n of t.spatialFacts?.[e] ?? []) c.push(...n.evidenceRefs);
-		for (let e of c) pE(await s(e), e.quotedText, e.occurrence) || sE("V3_MEMORY_GRAPH_EVIDENCE_INVALID");
-		for (let e of t.spatialFacts?.containments ?? []) (g.get(e.placeEntityId)?.entityType !== "place" || g.get(e.parentEntityId)?.entityType !== "place") && sE("V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID");
-		for (let e of t.spatialFacts?.positions ?? []) (!["person", "group"].includes(g.get(e.subjectEntityId)?.entityType) || e.placeEntityId && g.get(e.placeEntityId)?.entityType !== "place") && sE("V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID");
-		for (let e of t.exactAnchors) e.manual !== !0 && !pE(await s(e), e.exactText, e.occurrence) && sE("V3_MEMORY_GRAPH_ANCHOR_INVALID");
-		t.recordStatus === "active" && (C.add(t.floorId), t.summary && w++);
+		]) for (let n of e[t]) o.push(...n.evidenceRefs ?? []);
+		for (let t of ["containments", "positions"]) for (let n of e.spatialFacts?.[t] ?? []) o.push(...n.evidenceRefs);
+		for (let e of o) pE(await a(e), e.quotedText, e.occurrence) || sE("V3_MEMORY_GRAPH_EVIDENCE_INVALID");
+		for (let t of e.spatialFacts?.containments ?? []) (v.get(t.placeEntityId)?.entityType !== "place" || v.get(t.parentEntityId)?.entityType !== "place") && sE("V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID");
+		for (let t of e.spatialFacts?.positions ?? []) (!["person", "group"].includes(v.get(t.subjectEntityId)?.entityType) || t.placeEntityId && v.get(t.placeEntityId)?.entityType !== "place") && sE("V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID");
+		for (let t of e.exactAnchors) t.manual !== !0 && !pE(await a(t), t.exactText, t.occurrence) && sE("V3_MEMORY_GRAPH_ANCHOR_INVALID");
+		e.recordStatus === "active" && (T.add(e.floorId), e.summary && E++);
 	}
-	let T = C.size > 0;
-	(c.capabilities.memoryReady !== T || s.capabilities.memoryReady !== T) && sE("V3_MEMORY_GRAPH_CAPABILITY_INVALID");
-	let E = s.baselineId ? (await o(`v3-baseline-${s.baselineId}`, "baseline")).id : null, D = /* @__PURE__ */ new Set(), O = /* @__PURE__ */ new Set(), k = -1, A = 0;
-	for (let e of c.producedRefs.stateDeltas) {
-		let t = await o(`v3-state-delta-${e}`, "stateDelta"), n = h.get(t.floorId);
-		(n === void 0 || n <= k) && sE("V3_CSE_GRAPH_DELTA_ORDER_INVALID"), k = n, (!E || t.baselineId !== E || D.has(t.floorId)) && sE("V3_CSE_GRAPH_DELTA_REF_INVALID"), D.add(t.floorId), O.add(t.id);
-		for (let e of ra(t)) g.has(e) || sE("V3_CSE_GRAPH_ENTITY_REF_INVALID");
-		for (let e of t.subjectSnapshots) {
-			y(t.floorId, e.subjectEntityId);
+	let D = T.size > 0;
+	(u.capabilities.memoryReady !== D || l.capabilities.memoryReady !== D) && sE("V3_MEMORY_GRAPH_CAPABILITY_INVALID");
+	let O = l.baselineId ? (await s(`v3-baseline-${l.baselineId}`, "baseline")).id : null, k = /* @__PURE__ */ new Set(), A = /* @__PURE__ */ new Set(), j = -1, M = 0;
+	for await (let e of c(u.producedRefs.stateDeltas.map((e) => `v3-state-delta-${e}`), "stateDelta")) {
+		let t = _.get(e.floorId);
+		(t === void 0 || t <= j) && sE("V3_CSE_GRAPH_DELTA_ORDER_INVALID"), j = t, (!O || e.baselineId !== O || k.has(e.floorId)) && sE("V3_CSE_GRAPH_DELTA_REF_INVALID"), k.add(e.floorId), A.add(e.id);
+		for (let t of ra(e)) v.has(t) || sE("V3_CSE_GRAPH_ENTITY_REF_INVALID");
+		for (let t of e.subjectSnapshots) {
+			x(e.floorId, t.subjectEntityId);
 			for (let n of [
-				...e.core,
-				...e.adaptive,
-				...e.situational
-			]) n.towardEntityId && y(t.floorId, n.towardEntityId);
+				...t.core,
+				...t.adaptive,
+				...t.situational
+			]) n.towardEntityId && x(e.floorId, n.towardEntityId);
 		}
-		for (let e of t.fixedChanges ?? []) {
-			y(t.floorId, e.subjectEntityId);
-			for (let n of e.items) for (let e of [n.before, n.after]) e?.towardEntityId && y(t.floorId, e.towardEntityId);
+		for (let t of e.fixedChanges ?? []) {
+			x(e.floorId, t.subjectEntityId);
+			for (let n of t.items) for (let t of [n.before, n.after]) t?.towardEntityId && x(e.floorId, t.towardEntityId);
 		}
-		t.recordStatus === "active" && A++;
+		e.recordStatus === "active" && M++;
 	}
-	c.producedRefs.currentStates.length > 1 && sE("V3_CSE_GRAPH_CURRENT_REF_INVALID");
-	for (let e of c.producedRefs.currentStates) {
-		let t = await o(`v3-current-state-${e}`, "currentState");
-		(!E || t.baselineId !== E || t.appliedDeltaIds.some((e) => !O.has(e))) && sE("V3_CSE_GRAPH_CURRENT_REF_INVALID"), t.fingerprint !== await lo(t.subjects, t.appliedDeltaIds, t.headFloorId) && sE("V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID");
+	u.producedRefs.currentStates.length > 1 && sE("V3_CSE_GRAPH_CURRENT_REF_INVALID");
+	for await (let e of c(u.producedRefs.currentStates.map((e) => `v3-current-state-${e}`), "currentState")) (!O || e.baselineId !== O || e.appliedDeltaIds.some((e) => !A.has(e))) && sE("V3_CSE_GRAPH_CURRENT_REF_INVALID"), e.fingerprint !== await lo(e.subjects, e.appliedDeltaIds, e.headFloorId) && sE("V3_CSE_GRAPH_CURRENT_FINGERPRINT_INVALID");
+	let N = T.size > 0 && [...T].every((e) => k.has(e));
+	(u.capabilities.cseReady !== N || l.capabilities.cseReady !== N) && sE("V3_CSE_GRAPH_CAPABILITY_INVALID");
+	for (let e of v.values()) {
+		let t = b.get(e.id), n = t?.first ?? ((e.firstSeenFloorId === null || g.has(e.firstSeenFloorId)) && (e.lastSeenFloorId === null || g.has(e.lastSeenFloorId)) ? e.firstSeenFloorId : null), r = t ? g.get(t.first).narrativeGeneration : e.narrativeGeneration;
+		n && !g.has(n) && sE("V3_MEMORY_GRAPH_ENTITY_FLOOR_INVALID"), n && r !== g.get(n).narrativeGeneration && sE("V3_MEMORY_GRAPH_ENTITY_GENERATION_INVALID");
 	}
-	let j = C.size > 0 && [...C].every((e) => D.has(e));
-	(c.capabilities.cseReady !== j || s.capabilities.cseReady !== j) && sE("V3_CSE_GRAPH_CAPABILITY_INVALID");
-	for (let e of g.values()) {
-		let t = v.get(e.id), n = t?.first ?? ((e.firstSeenFloorId === null || m.has(e.firstSeenFloorId)) && (e.lastSeenFloorId === null || m.has(e.lastSeenFloorId)) ? e.firstSeenFloorId : null), r = t ? m.get(t.first).narrativeGeneration : e.narrativeGeneration;
-		n && !m.has(n) && sE("V3_MEMORY_GRAPH_ENTITY_FLOOR_INVALID"), n && r !== m.get(n).narrativeGeneration && sE("V3_MEMORY_GRAPH_ENTITY_GENERATION_INVALID");
-	}
-	let M = Object.keys(lE).filter((e) => e !== "root").sort((e, t) => lE[t].length - lE[e].length);
-	for (let e of i) if (!a.has(e)) {
-		let t = e === "v3-root" ? "root" : M.find((t) => e.startsWith(lE[t]));
-		t && await o(e, t);
-	}
+	let P = Object.keys(lE).filter((e) => e !== "root").sort((e, t) => lE[t].length - lE[e].length), F = (e) => e === "v3-root" ? "root" : P.find((t) => e.startsWith(lE[t]));
+	for await (let e of c([...a].filter((e) => !o.has(e) && F(e)), F));
 	return {
 		status: "ready",
-		root: s,
-		checkpoint: c,
-		run: l,
-		migrationDescriptor: u,
-		floors: p,
-		indexes: d,
-		summaryCount: w,
-		stateCount: A
+		root: l,
+		checkpoint: u,
+		run: d,
+		migrationDescriptor: f,
+		floors: h,
+		indexes: p,
+		summaryCount: E,
+		stateCount: M
 	};
 }
 //#endregion
@@ -36152,71 +36158,114 @@ function YE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 			...i?.vectorShardIds ?? []
 		]) wE(r.has(e), "记忆包缺少关联的时间、人物或向量记录。");
 	}
-	async function* T(t, n) {
-		let r = `chat-${t.identity.chatId}`, i = await k(r, "v3-root", { signal: n }), a = i?.data;
-		wE(a?.headCheckpointId && !a.activeRunId, "当前记忆尚未准备好，请先刷新状态或补齐缺失。");
-		let s = (await e.get(r, `v3-checkpoint-${a.headCheckpointId}`, { signal: n })).data, u = s.producedRefs, p = /* @__PURE__ */ new Set([
+	async function* T(t, n, r) {
+		let i = `chat-${t.identity.chatId}`, a = (e, t, n = null) => r?.({
+			phase: e,
+			completed: t,
+			total: n
+		});
+		a("records", 0);
+		let s = await k(i, "v3-root", { signal: n }), u = s?.data;
+		wE(u?.headCheckpointId && !u.activeRunId, "当前记忆尚未准备好，请先刷新状态或补齐缺失。");
+		let p = (await e.get(i, `v3-checkpoint-${u.headCheckpointId}`, { signal: n })).data, m = p.producedRefs, h = /* @__PURE__ */ new Set([
 			"v3-root",
-			`v3-checkpoint-${a.headCheckpointId}`,
-			`v3-run-${s.runId}`,
-			...a.baselineId ? [`v3-baseline-${a.baselineId}`] : [],
-			...a.migrationDescriptorId ? [`v3-migration-${a.migrationDescriptorId}`] : [],
-			...u.floors.map((e) => `v3-floor-${e}`),
-			...u.floorMemories.map((e) => `v3-floor-memory-${e}`),
-			...u.entities.map((e) => `v3-entity-${e}`),
-			...u.stateDeltas.map((e) => `v3-state-delta-${e}`),
-			...u.currentStates.map((e) => `v3-current-state-${e}`),
-			...u.indexes
-		]), m = /* @__PURE__ */ new Map(), h = /* @__PURE__ */ new Map();
+			`v3-checkpoint-${u.headCheckpointId}`,
+			`v3-run-${p.runId}`,
+			...u.baselineId ? [`v3-baseline-${u.baselineId}`] : [],
+			...u.migrationDescriptorId ? [`v3-migration-${u.migrationDescriptorId}`] : [],
+			...m.floors.map((e) => `v3-floor-${e}`),
+			...m.floorMemories.map((e) => `v3-floor-memory-${e}`),
+			...m.entities.map((e) => `v3-entity-${e}`),
+			...m.stateDeltas.map((e) => `v3-state-delta-${e}`),
+			...m.currentStates.map((e) => `v3-current-state-${e}`),
+			...m.indexes
+		]), g = /* @__PURE__ */ new Map(), v = /* @__PURE__ */ new Map(), y = 0;
 		wE(typeof e.iterRecords == "function", "请更新白鸟数据后端后使用分卷导出。");
-		for await (let i of e.iterRecords(r, {
+		for await (let r of e.iterRecords(i, {
 			signal: n,
 			requireStreaming: !0
 		})) {
-			if (!p.has(i.recordId) && !(OE(i.recordId) && i.data?.chatId === t.identity.chatId)) continue;
+			if (a("records", ++y), !h.has(r.recordId) && !(OE(r.recordId) && r.data?.chatId === t.identity.chatId)) continue;
 			let e = {
-				id: i.recordId,
-				data: i.data
+				id: r.recordId,
+				data: r.data
 			};
-			ME(e, t.identity.chatId), wE(!m.has(e.id), "存储清单含有重复记录。"), m.set(e.id, i.revision);
-			for (let t of kE([e])) for (let e of Object.values(t.avatarSourcesByEntityId ?? {})) h.set(e.path, e);
+			ME(e, t.identity.chatId), wE(!g.has(e.id), "存储清单含有重复记录。"), g.set(e.id, {
+				revision: r.revision,
+				bytes: EE(e.data)
+			});
+			for (let t of kE([e])) for (let e of Object.values(t.avatarSourcesByEntityId ?? {})) v.set(e.path, e);
 			yield {
 				kind: "record",
 				...e
 			};
 		}
-		wE([...p].every((e) => m.has(e)) && m.get("v3-root") === i.revision, "导出期间记忆发生变化，请重新导出。");
-		let g = async (t) => {
-			let i = await e.get(r, t, { signal: n });
-			return wE(i.revision === m.get(t), "导出期间记忆发生变化，请重新导出。"), i.data;
-		}, v = await mE({
+		wE([...h].every((e) => g.has(e)) && g.get("v3-root")?.revision === s.revision, "导出期间记忆发生变化，请重新导出。");
+		let b = "graph", x = 0;
+		a(b, x);
+		let S = (e, t) => (wE(t && t.revision === g.get(e)?.revision, "导出期间记忆发生变化，请重新导出。"), a(b, ++x), t.data), w = async (t) => {
+			let r = await e.get(i, t, { signal: n });
+			return S(t, r);
+		}, T = await mE({
 			chatId: t.identity.chatId,
-			recordIds: m.keys(),
-			readRecord: g
+			recordIds: g.keys(),
+			readRecord: w,
+			readRecords: async function* (t) {
+				if (typeof e.getMany != "function") {
+					for (let e of t) yield await w(e);
+					return;
+				}
+				let r = [], a = 0, o = async function* () {
+					let t = await e.getMany(i, r, { signal: n });
+					wE(Array.isArray(t) && t.length === r.length, "存储批量读取结果无效。");
+					for (let e = 0; e < r.length; e++) {
+						let n = t[e], i = r[e];
+						if (wE(n?.recordId === i, "存储批量读取结果无效。"), n.status !== 200) throw Object.assign(Error(n.message || "读取记忆记录失败。"), { status: n.status });
+						try {
+							yield S(i, n.envelope);
+						} finally {
+							t[e] = null;
+						}
+					}
+				};
+				for (let e of t) {
+					let t = g.get(e)?.bytes;
+					if (wE(Number.isSafeInteger(t), "导出期间记忆发生变化，请重新导出。"), r.length && (r.length === 64 || a + t > 8388608) && (yield* o(), r = [], a = 0), t > 8388608) {
+						yield await w(e);
+						continue;
+					}
+					r.push(e), a += t;
+				}
+				r.length && (yield* o());
+			}
 		});
-		await C(v, m.keys(), g);
-		let y = await GE(v, t.chat, c());
-		for (let e of h.values()) {
+		b = "auxiliary", x = 0, a(b, x), await C(T, g.keys(), w), a("conversation", 0, t.chat.length);
+		let E = await GE(T, t.chat, c());
+		a("conversation", t.chat.length, t.chat.length);
+		let D = 0;
+		a("avatars", D, v.size);
+		for (let e of v.values()) {
 			let r = await l(e.path, {
 				headers: t.target.requestHeaders,
 				signal: n
 			});
 			wE(r?.ok, "人物头像原图读取失败，请检查原图后重新导出。");
-			let i = new Uint8Array(await r.arrayBuffer()), a = "";
-			for (let e = 0; e < i.length; e += 32768) a += String.fromCharCode(...i.subarray(e, e + 32768));
-			yield {
+			let i = new Uint8Array(await r.arrayBuffer()), o = "";
+			for (let e = 0; e < i.length; e += 32768) o += String.fromCharCode(...i.subarray(e, e + 32768));
+			a("avatars", ++D, v.size), yield {
 				kind: "avatar",
 				path: e.path,
 				mimeType: e.mimeType,
-				data: btoa(a)
+				data: btoa(o)
 			};
 		}
-		let b = 0;
-		for await (let i of e.iterRecords(r, {
+		let O = 0;
+		y = 0, a("verify", y);
+		for await (let r of e.iterRecords(i, {
 			signal: n,
 			requireStreaming: !0
-		})) !p.has(i.recordId) && !(OE(i.recordId) && i.data?.chatId === t.identity.chatId) || (wE(m.get(i.recordId) === i.revision, "导出期间记忆发生变化，请重新导出。"), b++);
-		wE(b === m.size, "导出期间记忆发生变化，请重新导出。"), _(t), yield {
+		})) a("verify", ++y), !(!h.has(r.recordId) && !(OE(r.recordId) && r.data?.chatId === t.identity.chatId)) && (wE(g.get(r.recordId)?.revision === r.revision, "导出期间记忆发生变化，请重新导出。"), O++);
+		wE(O === g.size, "导出期间记忆发生变化，请重新导出。"), _(t), a("manifest", 0, 1), yield {
 			kind: "header",
 			value: {
 				format: gE,
@@ -36228,29 +36277,33 @@ function YE({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quies
 					character: t.target.characterName
 				},
 				messages: await BE(t.chat),
-				markers: qE(t.chat, v, y),
+				markers: qE(t.chat, T, E),
 				prequel: typeof t.metadata.qianqianjiePrequel == "string" ? t.metadata.qianqianjiePrequel : null,
 				calendar: SE(o(t.identity.chatId))
 			}
 		};
 	}
-	async function* E({ partBytes: e, signal: n } = {}) {
-		let o = g();
-		wE(!p && !r(), "请等待聊天生成和记忆任务完成后再操作。"), _(o), p = !0, m.notifyActivity();
-		let s = !1;
+	async function* E({ partBytes: e, signal: n, onProgress: o } = {}) {
+		let s = g();
+		wE(!p && !r(), "请等待聊天生成和记忆任务完成后再操作。"), _(s), p = !0, m.notifyActivity();
+		let c = !1;
 		try {
-			t.suspend(o.identity.chatId), s = !0, await i(), _(o);
-			for await (let t of $T(T(o, n), {
+			t.suspend(s.identity.chatId), c = !0, await i(), _(s);
+			for await (let t of $T(T(s, n, o), {
 				archiveId: u(),
 				partBytes: e,
 				source: {
-					chatId: o.identity.chatId,
-					character: o.target.characterName
+					chatId: s.identity.chatId,
+					character: s.target.characterName
 				},
 				exportedAt: d().toISOString()
-			})) _(o), yield t;
+			})) _(s), t.manifest && o?.({
+				phase: "manifest",
+				completed: 1,
+				total: 1
+			}), yield t;
 		} finally {
-			s && t.resume(o.identity.chatId);
+			c && t.resume(s.identity.chatId);
 			try {
 				await a({ streaming: !0 });
 			} catch {}
@@ -36683,7 +36736,9 @@ function nD({ runtime: e, documentRef: t = globalThis.document, confirmImpl: n =
 	}), u = (e, n = "", r = "") => {
 		let i = t.createElement(e);
 		return i.textContent = n, i.className = r, i;
-	}, d = u("p", "", "settings-result"), f = u("div"), p = [], m = !1, h = !1, g = null, _ = 0, v = null, y = null;
+	}, d = u("p", "", "settings-result"), f = u("div"), p = [];
+	d.setAttribute("role", "status"), d.setAttribute("aria-live", "polite");
+	let m = !1, h = !1, g = null, _ = 0, v = null, y = null;
 	function b() {
 		p.forEach((e) => {
 			e.disabled = h || v !== null;
@@ -36710,19 +36765,30 @@ function nD({ runtime: e, documentRef: t = globalThis.document, confirmImpl: n =
 				await r.abort();
 				return;
 			}
-			t.target = r, t.iterator = e.exportVolumes(), d.textContent = "正在读取与写入记忆包，请稍候…";
-			let i;
+			t.target = r;
+			let i = {
+				records: ["正在读取记忆记录", "条"],
+				graph: ["正在核验记忆引用", "项"],
+				auxiliary: ["正在核验时间、人物与向量记录", "条"],
+				conversation: ["正在核对聊天正文", "条"],
+				avatars: ["正在读取人物头像", "张"],
+				verify: ["正在复核存储记录", "条"]
+			};
+			t.iterator = e.exportVolumes({ onProgress: ({ phase: e, completed: t, total: r }) => {
+				n() && (d.textContent = e === "manifest" ? "正在生成分卷清单…" : `${i[e][0]}：${t}${r == null ? "" : ` / ${r}`} ${i[e][1]}…`);
+			} }), d.textContent = "正在读取与写入记忆包，请稍候…";
+			let o;
 			if (r.mode === "volumes") {
-				i = {
+				o = {
 					filename: null,
 					parts: 0,
 					bytes: 0
 				};
 				for await (let e of t.iterator) {
-					if (!n() || (await r.saveVolume(e), !n())) return;
-					i.bytes += e.blob.size, e.manifest ? i.filename = e.filename.replace(/\.index\.json$/i, "") : i.parts++, d.textContent = e.manifest ? "清单已提交，正在完成导出…" : `已提交第 ${e.part} 卷，正在继续导出…`;
+					if (!n() || (d.textContent = e.manifest ? "正在保存分卷清单…" : `正在保存第 ${e.part} 卷…`, await r.saveVolume(e), !n())) return;
+					o.bytes += e.blob.size, e.manifest ? o.filename = e.filename.replace(/\.index\.json$/i, "") : o.parts++, d.textContent = e.manifest ? "清单已提交，正在完成导出…" : `已提交第 ${e.part} 卷，正在继续导出…`;
 				}
-			} else i = await aE(t.iterator, r.writable, {
+			} else o = await aE(t.iterator, r.writable, {
 				signal: t.controller.signal,
 				onProgress: (e) => {
 					n() && (d.textContent = e.manifest ? "已写入清单，正在完成记忆包…" : `已写入第 ${e.part} 卷，正在继续导出…`);
@@ -36730,8 +36796,8 @@ function nD({ runtime: e, documentRef: t = globalThis.document, confirmImpl: n =
 			});
 			if (!n()) return;
 			d.textContent = "正在完成保存，请稍候…";
-			let o = await r.finish(i);
-			n() && (d.textContent = o?.delivered === !1 ? o.message ?? "已取消导出。" : `${o?.message ?? (r.mode === "volumes" ? "已提交全部分卷下载，请允许连续下载并保留清单和全部卷。" : "大记忆包已保存。")}请同时保留这一刻的酒馆 JSONL 聊天导出文件。`);
+			let s = await r.finish(o);
+			n() && (d.textContent = s?.delivered === !1 ? s.message ?? "已取消导出。" : `${s?.message ?? (r.mode === "volumes" ? "已提交全部分卷下载，请允许连续下载并保留清单和全部卷。" : "大记忆包已保存。")}请同时保留这一刻的酒馆 JSONL 聊天导出文件。`);
 		} catch (e) {
 			if (n() && (d.textContent = e?.name === "AbortError" ? "已取消导出。" : e.message), !t.cancelled) try {
 				await t.target?.abort();
@@ -36769,7 +36835,7 @@ function nD({ runtime: e, documentRef: t = globalThis.document, confirmImpl: n =
 		}), n;
 	}
 	let E = T("自动导出大记忆包", S);
-	p.push(E), y = T("取消导出", x), l.append(E, u("p", "自动顺序导出，可处理超过 1 GB 的记忆。支持时保存为一个 .qqj-memory 文件；其他环境自动下载各卷及最后的清单，可能需要允许连续下载。无需逐卷点击，处理时只保留当前卷和单条记录。", "settings-hint"), y);
+	p.push(E), y = T("取消导出", x), l.append(E, y, d, u("p", "自动顺序导出，可处理超过 1 GB 的记忆。支持时保存为一个 .qqj-memory 文件；其他环境自动下载各卷及最后的清单，可能需要允许连续下载。无需逐卷点击，按小批读取与保存，不会将整个记忆包载入内存。", "settings-hint"));
 	let D = u("input", "", "settings-input");
 	return D.type = "file", D.multiple = !0, D.accept = ".qqj-memory,.json,.bin,.qqj-memory.part,application/json,application/octet-stream", D.setAttribute("aria-label", "选择千千结记忆包"), p.push(D), D.addEventListener("change", () => {
 		let t = Array.from(D.files ?? []);
@@ -36812,7 +36878,7 @@ function nD({ runtime: e, documentRef: t = globalThis.document, confirmImpl: n =
 			confirmText: "撤销导入",
 			cancelText: "取消"
 		}) || m || (await e.undo(), g = null, f.replaceChildren(), m || (d.textContent = "已恢复导入前的记忆，请重新打开聊天或刷新页面。"));
-	}), d), b(), {
+	})), b(), {
 		node: c,
 		dispose() {
 			m = !0, _ += 1, g = null, x();
