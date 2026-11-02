@@ -4,6 +4,15 @@ import { readFile } from 'node:fs/promises';
 import { applyAppearance, createAppearanceController, resolveAppearance } from '../src/ui/appearance.js';
 import { fixedFontScale, scaleCssFontSizes, scaleCssSpacing } from '../src/ui/font-scale.js';
 
+test('文字按钮的固定内距不再被通用间距转换重复缩放，字号仍沿外观倍率', () => {
+  const source = '.tab{padding:calc(11px * var(--qqj-button-scale,.85)) calc(13px * var(--qqj-button-scale,.85));font-size:13px}.body{padding:8px}';
+  const result = scaleCssSpacing(scaleCssFontSizes(source));
+  assert.match(result, /padding:calc\(11px \* var\(--qqj-button-scale,\.85\)\) calc\(13px \* var\(--qqj-button-scale,\.85\)\);/u);
+  assert.match(result, /font-size:calc\(13px \* var\(--qqj-ui-fixed-scale,1\)\)/u);
+  assert.match(result, /\.body\{padding:calc\(8px \* var\(--qqj-ui-scale,1\)\)\}/u);
+  assert.equal(scaleCssSpacing(result), result);
+});
+
 test('面板标题与人物名沿用用户字体，不再由固定宋体覆盖', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.doesNotMatch(css, /宋体,"Songti SC",serif/u);

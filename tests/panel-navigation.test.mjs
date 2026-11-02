@@ -300,7 +300,12 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   assert.equal(calls.length, callsBeforeHelp, '打开静态教程不得读取或激活记忆runtime');
   assert.equal(helpDialog.title, '千千结使用说明'); assert.equal(helpDialog.confirmText, '关闭'); assert.equal(helpDialog.cancelText, '');
   const helpSections = flatten(helpDialog.content).filter(node => node.tag === 'details');
-  assert.equal(helpSections.length, 10); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
+  assert.equal(helpSections.length, 11); assert.equal(helpSections[0].open, true); assert.ok(helpSections.slice(1).every(node => node.open === false));
+  const placeGuide = helpSections.find(node => node.children[0].textContent === '千窗：地点与地图');
+  assert.ok(placeGuide);
+  const placeGuideCopy = flatten(placeGuide).map(node => node.textContent).join('|');
+  assert.match(placeGuideCopy, /添加子地点.*未归属地点.*18张通用图/u);
+  assert.match(placeGuideCopy, /每次调用一次摘要 API.*不需要先补完逐楼摘要/u);
   assert.equal(helpSections.at(-1).children[0].textContent, '排障手册');
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /保留包裹符.*清洗包裹符.*人物状态重构/);
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /近期事项.*关键词只概括事项类型与宽泛主题，推测状态另列/u);
@@ -448,7 +453,8 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   assert.match(panelHtml, /class="icon-btn close"[\s\S]*?M3\.5 3\.5l17 17M20\.5 3\.5l-17 17/);
   assert.doesNotMatch(panelHtml, /status-(?:line|dot|label)/, '导航下方不应再渲染重复页名与装饰菱形');
   assert.doesNotMatch(panelCss, /\.status-(?:line|dot|label)\b/, '重复状态行的专用样式应一并删除');
-  assert.match(panelCss, /\.icon-btn svg\{[^}]*stroke-width:1\.8[^}]*width:calc\(18px \* var\(--qqj-ui-scale,1\)\)/);
+  assert.match(panelCss, /\.icon-btn svg\{[^}]*stroke-width:1\.8[^}]*width:calc\(18px \* var\(--qqj-button-scale,\.85\)\)/);
+  assert.doesNotMatch(panelCss, /\.qqj-cse-help\{[^}]*(?:width|height):/u, '信息范围说明使用文字按钮尺寸');
   assert.match(panelCss, /\.qqj-person-summary,\.qqj-section-summary\{[^}]*flex-wrap:wrap/,
     'summary 标题、状态和回执按钮在高倍率或窄面板中应能换行');
   assert.match(panelCss, /\.qqj-person-summary strong,\.qqj-section-summary strong\{[^}]*flex:1 1 8em;min-width:min\(100%,8em\)/,

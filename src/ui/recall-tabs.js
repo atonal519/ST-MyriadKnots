@@ -30,7 +30,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .recall-design button{font:inherit;color:inherit;cursor:pointer;box-shadow:none;text-shadow:none}
     .recall-design button:focus-visible,.recall-design summary:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:3px}
     .recall-tabs{display:grid;grid-template-columns:1fr 1fr;gap:20px;border-bottom:1px solid var(--qqj-inline-line);margin-bottom:15px}
-    .recall-design .recall-tab{position:relative;border:0;background:none;padding:5px 10px 11px;font-size:var(--qqj-font-subheading);letter-spacing:.24em;color:var(--qqj-control-fg,var(--qqj-action-color));opacity:var(--qqj-control-opacity,1)}
+    .recall-design .recall-tab{position:relative;border:0;background:none;padding:calc(5px * var(--qqj-button-scale,.85)) calc(10px * var(--qqj-button-scale,.85)) calc(11px * var(--qqj-button-scale,.85));font-size:var(--qqj-font-subheading);letter-spacing:.24em;color:var(--qqj-control-fg,var(--qqj-action-color));opacity:var(--qqj-control-opacity,1)}
     .recall-tab[aria-selected=true]{opacity:var(--qqj-control-opacity,1);font-weight:650}
     .recall-tab[aria-selected=true]::after{content:'';position:absolute;bottom:-1px;left:22%;right:22%;height:2px;background:var(--qqj-inline-knot);border-radius:2px}
     .event-pills{display:flex;flex-wrap:wrap;gap:var(--qqj-space-group)}
@@ -52,7 +52,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     .current-copy+.current-copy{margin-top:4px}
     .people-history{margin-top:19px}
     .person-picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
-    .recall-design .person-pill{display:flex;gap:6px;align-items:center;max-width:100%;border:1px solid transparent;min-height:var(--qqj-compact-height);border-radius:var(--qqj-radius-pill);padding:var(--qqj-compact-pad-y) var(--qqj-compact-pad-x);font-size:var(--qqj-font-caption);line-height:var(--qqj-compact-line);white-space:normal;overflow-wrap:anywhere;font-weight:500;color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,var(--qqj-chip-background));border-color:var(--qqj-control-border,var(--qqj-inline-line))}
+    .recall-design .person-pill{display:flex;gap:calc(6px * var(--qqj-button-scale,.85));align-items:center;max-width:100%;border:1px solid transparent;min-height:var(--qqj-compact-height);border-radius:var(--qqj-radius-pill);padding:var(--qqj-compact-pad-y) var(--qqj-compact-pad-x);font-size:var(--qqj-font-caption);line-height:var(--qqj-compact-line);white-space:normal;overflow-wrap:anywhere;font-weight:500;color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,var(--qqj-chip-background));border-color:var(--qqj-control-border,var(--qqj-inline-line))}
     .recall-design .person-pill[aria-pressed=true]{font-weight:700;color:var(--qqj-inline-knot);border-color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,var(--qqj-chip-background))}
     .person-count{color:var(--muted);font-size:var(--qqj-font-caption);font-weight:400}
     .change-timeline{padding-left:7px}

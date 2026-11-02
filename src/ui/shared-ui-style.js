@@ -44,6 +44,7 @@ const sharedTokens = Object.freeze({
   font_body: 'calc(13px * var(--qqj-ui-scale,1))',
   font_caption: 'calc(12px * var(--qqj-ui-scale,1))',
   font_meta: 'calc(11px * var(--qqj-ui-scale,1))',
+  button_scale: '.85',
   control_height: 'calc(36px * var(--qqj-ui-scale,1))',
   control_line: 'calc(20px * var(--qqj-ui-scale,1))',
   control_pad_y: 'calc(8px * var(--qqj-ui-scale,1) - 1px)',
@@ -57,8 +58,8 @@ const sharedTokens = Object.freeze({
   badge_line: 'calc(16px * var(--qqj-ui-scale,1))',
   badge_pad_y: 'calc(2px * var(--qqj-ui-scale,1) - 1px)',
   badge_pad_x: 'calc(6px * var(--qqj-ui-scale,1))',
-  icon_size: 'calc(32px * var(--qqj-ui-scale,1))',
-  menu_icon_size: 'calc(28px * var(--qqj-ui-scale,1))',
+  icon_size: 'calc(32px * var(--qqj-button-scale,.85))',
+  menu_icon_size: 'calc(28px * var(--qqj-button-scale,.85))',
   space_small: 'calc(4px * var(--qqj-ui-scale,1))',
   space_group: 'calc(8px * var(--qqj-ui-scale,1))',
   space_section: 'calc(12px * var(--qqj-ui-scale,1))',
@@ -73,6 +74,11 @@ const navigation = '.tab,.recall-tab,.qqj-profile-tab,.qqj-relation-person,.even
 const pills = '.qqj-profile-tab,.qqj-relation-person,.event-pill,.person-pill';
 const controls = `${secondary},${menu},${icons},${navigation},.primary-action,.danger-action,.sp-dialog-button-primary,.qqj-inline-select-trigger`;
 const selected = '.active,[aria-selected="true"],[aria-pressed="true"],[aria-expanded="true"]';
+// Preserve the current 85% control geometry while text continues to follow appearance.
+// Fields and surrounding layout keep their own scale; text buttons grow from content.
+const buttonGeometryCss = `
+:where(button,a.secondary-action,.qqj-memory-menu-toggle,.qqj-profile-menu-toggle){--qqj-control-height:0px;--qqj-control-line:calc(var(--qqj-font-body) * 20 / 13);--qqj-control-pad-y:calc(8px * var(--qqj-button-scale,.85) - 1px);--qqj-control-pad-x:calc(10px * var(--qqj-button-scale,.85));--qqj-compact-height:0px;--qqj-compact-line:calc(var(--qqj-font-caption) * 1.5);--qqj-compact-pad-y:calc(5px * var(--qqj-button-scale,.85) - 1px);--qqj-compact-pad-x:calc(8px * var(--qqj-button-scale,.85));--qqj-radius-control:calc(8px * var(--qqj-button-scale,.85));--qqj-radius-compact:calc(8px * 28 / 36 * var(--qqj-button-scale,.85));--qqj-radius-option:calc(6px * var(--qqj-button-scale,.85));--qqj-space-small:calc(4px * var(--qqj-button-scale,.85));--qqj-space-group:calc(8px * var(--qqj-button-scale,.85))}
+`;
 // Consumers use these local state values so a more specific component rule cannot
 // turn a disabled or dangerous control back into an ordinary enabled action.
 const interactionColorCss = `
@@ -93,9 +99,9 @@ const popoverMotionCss = `
 const disclosureArrowCss = `
 .settings-drawer-summary::before,.settings-group-summary::before,.settings-sub-summary::before,.qqj-inline-select-chevron,.qqj-model-list-chevron,.qqj-memory-chevron,.qqj-person-summary::before,.qqj-section-summary::before,.qqj-cse-floor-summary::before,.qqj-cse-floor-state-summary::before,.qqj-memory-key-quotes-summary::before,.qqj-window-unassigned-summary::before,.qqj-window-summary::before,.qqj-editor-group-summary::before,.qqj-help-section-summary::before{display:inline-flex;align-items:center;justify-content:center;flex:0 0 var(--qqj-font-heading);width:var(--qqj-font-heading);height:var(--qqj-font-heading);margin:0;font-size:var(--qqj-font-heading);font-weight:400;line-height:1;vertical-align:middle;transform-origin:center}
 `;
-export const sharedUiCss = `:host{${cssVars(sharedTokens)}}${interactionColorCss}${popoverMotionCss}${disclosureArrowCss}`;
+export const sharedUiCss = `:host{${cssVars(sharedTokens)}}${buttonGeometryCss}${interactionColorCss}${popoverMotionCss}${disclosureArrowCss}`;
 export const sharedDialogCss = `.sp-root{${cssVars({ ...sharedTokens,
   color_text: 'var(--sp-on-surface)', color_muted: 'var(--sp-subtle)', color_accent: 'var(--sp-primary)',
   color_danger: 'var(--sp-danger)', color_success: 'var(--sp-success)', color_surface: 'var(--sp-sheet-bg)',
   color_line: 'var(--sp-divider)', color_on_accent: 'var(--sp-on-primary)',
-})}}${interactionColorCss}${popoverMotionCss}${disclosureArrowCss}`;
+})}}${buttonGeometryCss}${interactionColorCss}${popoverMotionCss}${disclosureArrowCss}`;
