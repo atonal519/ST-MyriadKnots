@@ -840,7 +840,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.0.1');
+  assert.equal(manifest.version, '1.0.2');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -1432,6 +1432,10 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(backgroundStarts[1]?.[0], 'people');
   assert.equal(backgroundStarts[1]?.[1]?.refreshMemory, false, '人物 workspace 应复用刚完成的记忆快照');
   assert.equal(backgroundStarts.length, 2, '同一身份成功链只准备一次记忆和一次人物 workspace');
+  await lifecycleOptions.onPrepared({ result: { status: 'ready', identity: { chatId: 'test' }, branchPrepared: true }, isCurrent: () => true, explicitEnable: false });
+  assert.equal(memoryStartOptions.at(-1).reconcileFoundation, true, '198新分支成功才把正常登记意图传到memory.start');
+  await lifecycleOptions.onPrepared({ result: { status: 'ready', identity: { chatId: 'test' } }, isCurrent: () => true, explicitEnable: false });
+  assert.notEqual(memoryStartOptions.at(-1).reconcileFoundation, true, '普通准备保持只读');
   assert.deepEqual(runtimeEnables, ['lifecycle:true', 'recall:true'], '启用链不得在 lifecycle 回调后重复 setEnabled 读取 memory/people');
   assert.equal(peopleStoreOptions.client, backendClient);
   assert.equal(peopleWorkspaceOptions.generateUtilityTask, peopleUtilityTask);

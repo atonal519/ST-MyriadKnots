@@ -27,6 +27,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   let markerKey=null,positionKey=null,browseScopeId=undefined,browse=null,mapBrowse=null,query='';
   let organizationController=null,organizeAction=null;
   let sheets=null,activeSheetId=null,sheetSnapshot=null,displayById=new Map(),sheetRow=null,assetDrawKey=null;
+  let sheetSwitcher=null,sheetScrollLeft=0;
   const currentSheet=()=>sheets?.sheets.find(sheet=>sheet.id===activeSheetId);
   const browseFor=id=>{
     const source=sheetSnapshot??snapshot,root=currentSheet()?.rootPlaceId??currentSheet()?.cityId;
@@ -54,14 +55,16 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     activeSheetId=id;browseScopeId=undefined;query='';search.value='';highlightedMapRootId=null;localSelections.clear();openIds.clear();unassignedOpen=false;markerKey=null;renderData();update();
   }
   function renderSheets(){
+    if(sheetSwitcher?.parentNode===sheetRow)sheetScrollLeft=Number(sheetSwitcher.scrollLeft)||0;
+    sheetSwitcher=null;
     sheetRow.replaceChildren();sheetRow.hidden=sheets.sheets.length<2;page.setAttribute('data-city-sheet',activeSheetId??'');
-    if(!sheetRow.hidden){const bar=el('nav','qqj-profile-switcher qqj-window-city-switcher');bar.setAttribute('aria-label','地图');for(const sheet of sheets.sheets){const tab=button('qqj-profile-tab qqj-window-city-tab'+(sheet.id===activeSheetId?' active':''),sheet.label,()=>selectSheet(sheet.id));tab.setAttribute('data-city-sheet-target',sheet.id);tab.setAttribute('aria-pressed',String(sheet.id===activeSheetId));bar.append(tab);}sheetRow.append(bar);}
+    if(!sheetRow.hidden){const bar=el('nav','qqj-profile-switcher qqj-window-city-switcher');bar.setAttribute('aria-label','地图');for(const sheet of sheets.sheets){const tab=button('qqj-profile-tab qqj-window-city-tab'+(sheet.id===activeSheetId?' active':''),sheet.label,()=>selectSheet(sheet.id));tab.setAttribute('data-city-sheet-target',sheet.id);tab.setAttribute('aria-pressed',String(sheet.id===activeSheetId));bar.append(tab);}sheetRow.append(bar);bar.scrollLeft=sheetScrollLeft;sheetScrollLeft=Number(bar.scrollLeft)||0;sheetSwitcher=bar;bar.addEventListener('scroll',()=>{if(sheetSwitcher===bar)sheetScrollLeft=Number(bar.scrollLeft)||0;});}
   }
   function resetChat(next) {
     if (chatId === next) return;
     if(active && !(preparing && chatId===null && next!==null)) { epoch++; preparing=false; failure=null; }
     organizationController?.abort();
-    chatId = next;sheets=null;activeSheetId=null;sheetSnapshot=null;displayById=new Map();assetDrawKey=null; highlightedMapRootId = null; renderedRevision = null; openIds = new Set(); localSelections = new Map(); unassignedOpen=false;query='';if(search)search.value='';browseScopeId=undefined;browse=null;mapBrowse=null;markerKey=null;positionKey=null;byId = new Map();
+    chatId = next;sheets=null;activeSheetId=null;sheetSnapshot=null;displayById=new Map();assetDrawKey=null;sheetSwitcher=null;sheetScrollLeft=0; highlightedMapRootId = null; renderedRevision = null; openIds = new Set(); localSelections = new Map(); unassignedOpen=false;query='';if(search)search.value='';browseScopeId=undefined;browse=null;mapBrowse=null;markerKey=null;positionKey=null;byId = new Map();
     basemap = QIANCHUANG_BASEMAPS[settings?.get?.()?.qianchuangBasemaps?.[chatId]] ? settings.get().qianchuangBasemaps[chatId] : 'modern';
     drawBasemap();
   }
@@ -324,6 +327,6 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     }catch(error){if(active&&mine===epoch)failure=publicErrorMessage(error,{fallback:'地点资料暂时无法读取，请重试。'});return {status:'error'};}
     finally{if(active&&mine===epoch){preparing=false;update();}}
   }
-  function deactivate(){operationMenus.deactivate();active=false;epoch++;unsubscribe?.();unsubscribe=null;unsubscribeCatalog?.();unsubscribeCatalog=null;}
+  function deactivate(){if(sheetSwitcher)sheetScrollLeft=Number(sheetSwitcher.scrollLeft)||0;sheetSwitcher=null;operationMenus.deactivate();active=false;epoch++;unsubscribe?.();unsubscribe=null;unsubscribeCatalog?.();unsubscribeCatalog=null;}
   return Object.freeze({mount,activate,deactivate});
 }

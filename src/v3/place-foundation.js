@@ -29,7 +29,9 @@ function pathEvidence(entry, scope) {
     const candidates = choices.filter(binding => ref.source === 'storedPlaceEvidence' ? binding.evidenceKey === ref.sourceKey
       : (!ref.sourceFloorKey || binding.floorKey === ref.sourceFloorKey) && (!Number.isSafeInteger(ref.sourceSnapshotIndex) || binding.sourceSnapshotIndex === ref.sourceSnapshotIndex));
     const match = allowOmission => candidates.flatMap(binding => {
+      if(binding.requiresExactQuote&&(typeof ref.exactQuote!=='string'||!ref.exactQuote.trim()||ref.exactQuote.length>2000))return [];
       const segments=locatePlaceQuote(binding.canonicalContent,ref.source === 'storedPlaceEvidence' && !Object.hasOwn(ref,'exactQuote') ? binding.canonicalContent : ref.exactQuote,{allowWhitespace:true,allowOmission});
+      if(binding.requiresExactQuote&&segments?.some(segment=>segment.quote.length>2000))return [];
       return segments?[{binding,segments}]:[];
     });
     const strict = match(false), matches = strict.length ? strict : (ref.sourceFloorKey || ref.source === 'storedPlaceEvidence' && ref.sourceKey) ? match(true) : [];
@@ -121,7 +123,7 @@ export function mergePlaceFoundation(workspace,patch={entities:[],facts:[]},remo
  const hints=new Map();for(const fact of [...prior.facts,...(patch.facts??[])])if(fact.kind==='place'){
   const row=hints.get(fact.placeEntityId)??{};
   if(['area','site','interior'].includes(fact.mapRole))row.mapRole=fact.mapRole;
-  if(['city','country','scope'].includes(fact.mapLevel))row.mapLevel=fact.mapLevel;
+  if([null,'city','country','scope'].includes(fact.mapLevel))row.mapLevel=fact.mapLevel;
   if(Object.hasOwn(fact,'facilities'))row.facilities=fact.facilities;
   if(validQianchuangMapStyle(fact.mapStyle)){if(row.mapStyle!==fact.mapStyle)delete row.mapAssetId;row.mapStyle=fact.mapStyle;if(!validQianchuangMapLayout(row.mapLayout,row.mapStyle))delete row.mapLayout;}
   if(validQianchuangMapLayout(fact.mapLayout,row.mapStyle??workspace.mapStyle)){if(row.mapLayout!==fact.mapLayout)delete row.mapAssetId;row.mapLayout=fact.mapLayout;}
@@ -202,7 +204,13 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
   const freshEntities = [];
   const originalParents = scope.parentEntityIdsByPlaceId ?? new Map();
   const lineage = entityId => { const ids = new Set(); let current = entityId; while (current && !ids.has(current)) { ids.add(current); const next = originalParents.get(current); current = next?.size === 1 ? [...next][0] : null; } return ids; };
-  for (const [index, entry] of (Array.isArray(result.placePaths) ? result.placePaths : []).entries()) {
+  for (const [index, rawEntry] of (Array.isArray(result.placePaths) ? result.placePaths : []).entries()) {
+    const entry=Array.isArray(rawEntry?.path)?{...rawEntry,path:rawEntry.path.map(segment=>{
+      if(!segment||typeof segment!=='object'||Object.hasOwn(segment,'name')||typeof segment.sameAsPlaceKey!=='string')return segment;
+      const matches=(scope.placeCatalogBindings??[]).filter(binding=>binding.entityKey===segment.sameAsPlaceKey),binding=matches.length===1?matches[0]:null;
+      const name=binding?.labels?.[0];
+      return typeof name==='string'&&byId.get(binding.entityId)?.entityType==='place'?{...segment,name}:segment;
+    })}:rawEntry;
     const resolved = pathEvidence(entry, scope);
     if (!entry || !Array.isArray(entry.path) || !entry.path.length || entry.path.length > 12 || !resolved.length || resolved.some(ref => !ref)
       || entry.path.some(segment => !segment || typeof segment.name !== 'string' || !segment.name.trim() || segment.name.length > 500)) {
@@ -307,11 +315,11 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
             source: autoSource });
         }
       }
-      if (autoSource || facilities !== undefined || mapStyle || mapLayout || ['area','site','interior'].includes(segment.mapRole) || ['city','country','scope'].includes(segment.mapLevel)) {
+      if (autoSource || facilities !== undefined || mapStyle || mapLayout || ['area','site','interior'].includes(segment.mapRole) || [null,'city','country','scope'].includes(segment.mapLevel)) {
         const displaySource = autoSource ?? { ...primary.source, ...(resolved.length > 1 ? { references: resolved.map(ref => ref.source) } : {}) };
         replaceFields.push({ entityId, kind: 'place' });
         const itemId = await deterministicUuid(['v3-worldbook-place', displaySource.locator, displaySource.fingerprint, entityId, 'place']);
-        facts.set(itemId, { ...facts.get(itemId), itemId, kind: 'place', placeEntityId: entityId, ...(facilities !== undefined ? {facilities} : {}), ...(mapStyle?{mapStyle}:{}),...(mapLayout?{mapLayout}:{}), ...(['area','site','interior'].includes(segment.mapRole) ? { mapRole: segment.mapRole } : {}), ...(['city','country','scope'].includes(segment.mapLevel)?{mapLevel:segment.mapLevel}:{}), knownFromFloorId: scope.floorId ?? null,
+        facts.set(itemId, { ...facts.get(itemId), itemId, kind: 'place', placeEntityId: entityId, ...(facilities !== undefined ? {facilities} : {}), ...(mapStyle?{mapStyle}:{}),...(mapLayout?{mapLayout}:{}), ...(['area','site','interior'].includes(segment.mapRole) ? { mapRole: segment.mapRole } : {}), ...([null,'city','country','scope'].includes(segment.mapLevel)?{mapLevel:segment.mapLevel}:{}), knownFromFloorId: scope.floorId ?? null,
           source: displaySource });
       }
       if (typeof description === 'string' && description.trim()) {

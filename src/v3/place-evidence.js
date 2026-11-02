@@ -18,3 +18,22 @@ export function locatePlaceQuote(content, quote, { allowWhitespace = false, allo
   }
   return located;
 }
+import { projectVectorSources } from './vector-source.js';
+
+
+export async function collectMissingPlaceSources({ entities, entityKeys, bodySources, floors, memoriesByFloor }) {
+  const covered = new Set(bodySources.flatMap(source => source.placeKeys ?? []));
+  const places = entities.filter(entity => entity.entityType === 'place' && entityKeys.has(entity.id));
+  const needed = new Set(places.filter(entity => !covered.has(entityKeys.get(entity.id)) && entity.firstSeenFloorId).map(entity => entity.firstSeenFloorId));
+  if (!needed.size) return [];
+  const memories = [...new Map([...needed].flatMap(floorId => { const memory = memoriesByFloor.get(floorId); return memory ? [[memory.id, memory]] : []; })).values()];
+  const { rawSources } = await projectVectorSources(memories, floors, { includeSummaries: false });
+  const seen = new Set();
+  return rawSources.flatMap(source => {
+    if (!needed.has(source.floorId) || seen.has(source.floorId)) return [];
+    seen.add(source.floorId);
+    return [{ floorId: source.floorId, memoryId: source.floorMemoryId, sourceType: 'assistant', rawFingerprint: source.floorMemoryId,
+      canonicalContent: source.canonicalContent, requiresExactQuote: true,
+      placeKeys: places.filter(entity => entity.firstSeenFloorId === source.floorId).map(entity => entityKeys.get(entity.id)) }];
+  });
+}

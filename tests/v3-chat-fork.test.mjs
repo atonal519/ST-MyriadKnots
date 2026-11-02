@@ -22,7 +22,7 @@ import { selectRecallMemories } from '../src/v3/recall-source.js';
 import { createBackendClient } from '../src/backend-client.js';
 import { createExtractorEnvelope, normalizeExtractorResponse } from '../src/v3/extractor.js';
 import { createPluginActivity } from '../src/plugin-activity.js';
-import { readTargetChatFile } from '../src/v3/message-floor-anchor.js';
+import { persistMessageFloorAnchors, readTargetChatFile } from '../src/v3/message-floor-anchor.js';
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
@@ -187,6 +187,172 @@ async function waitFor(predicate, message) {
 function chatRecords(records, chatId) {
   return JSON.stringify([...records.entries()].filter(([key]) => key.startsWith(`chat-${chatId}/`)).sort(([left], [right]) => left.localeCompare(right)));
 }
+
+async function sourceWithUnmarkedGaps({ gaps = [0], hidden = false, count = 4, hostKind = 'SillyTavern' } = {}) {
+  const backend = backendHarness(), chat = [];
+  for (let index = 0; index < count; index++) chat.push(assistant(`来源回复${index + 1}。`), user(`继续${index + 1}。`));
+  chat[0].is_system = hidden;
+  const raw = context('gap-source', SOURCE, chat);
+  const adapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => raw } } });
+  const store = createFoundationStore({ client: backend.client, contextProvider: () => identity(raw.chatId, SOURCE) });
+  const foundation = createFoundationRuntime({ store, hostAdapter: adapter, contextProvider: () => raw,
+    now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+  assert.equal((await foundation.start()).status, 'ready');
+  let source = await store.readReachable();
+  const memories = [];
+  for (const [index, floor] of source.floors.entries()) {
+    if (gaps.includes(index)) continue;
+    const envelope = await createExtractorEnvelope({ batchId: floor.id, chatId: SOURCE,
+      narrativeGeneration: source.root.narrativeGeneration, checkpointId: source.checkpoint.id, floor });
+    const compiled = await normalizeExtractorResponse({ envelope, floor, response: { summary: `已存摘要${index + 1}` },
+      existingEntities: [], now: NOW, expectedScope: envelope.scope });
+    memories.push(compiled.memory.id);
+    await backend.client.put(`chat-${SOURCE}`, `v3-floor-memory-${compiled.memory.id}`, compiled.memory, 0);
+  }
+  backend.records.get(`chat-${SOURCE}/v3-checkpoint-${source.checkpoint.id}`).data.producedRefs.floorMemories = memories;
+  backend.records.get(`chat-${SOURCE}/v3-checkpoint-${source.checkpoint.id}`).data.capabilities.memoryReady = true;
+  backend.records.get(`chat-${SOURCE}/v3-root`).data.capabilities.memoryReady = true;
+  source = await store.readReachable();
+  foundation.adoptReachable(source);
+  let modelCalls = 0;
+  const noModel = async () => { modelCalls++; throw new Error('分支准备不得调用模型'); };
+  const anchorBindings = [];
+  const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: adapter,
+    generateUtilityTask: noModel, generateAnalysisTask: noModel,
+    automationSettings: () => ({ enabled: false, batchSize: 1 }), now: () => new Date(NOW), logger: { warn() {} },
+    persistAnchors: async options => {
+      anchorBindings.push(...options.bindings);
+      return persistMessageFloorAnchors({ ...options, fetchImpl: async () => ({ ok: true,
+        async json() { return [{ chat_metadata: structuredClone(raw.chatMetadata) }, ...structuredClone(raw.chat)]; } }) });
+    },
+  });
+  await memory.start();
+  assert.equal(anchorBindings.length, count - gaps.length, '生产加载只为已有摘要来源楼挂标');
+  return { backend, raw, source, noModel, get modelCalls() { return modelCalls; } };
+}
+
+function gapBranch(h, raw, sourceChatId, targetId, hostKind = 'SillyTavern', apiOptions = {}) {
+  const adapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => raw } } }), api = targetChatApi(raw, apiOptions);
+  const initialize = createChatBranchInitializer({ client: h.backend.client, hostAdapter: adapter, fetchImpl: api.fetch, now: () => new Date(NOW) });
+  return { adapter, api, run: () => initialize({ raw,
+    host: { hostChatId: raw.chatId, characterAvatar: 'character.png', personaAvatar: 'persona.png' }, sourceChatId, targetChatId: targetId }),
+    read: () => createFoundationStore({ client: h.backend.client, contextProvider: () => identity(raw.chatId, targetId) }).readReachable() };
+}
+
+test('198正式生命周期按marker继承，首个或内部未记忆消息改文换swipe仍正常独立登记且重开只读', async () => {
+  for (const hostKind of ['SillyTavern', 'Luker']) for (const variant of [
+    { label: 'hidden-leading-30', gaps: [0], hidden: true, count: 30 },
+    { label: 'visible-leading', gaps: [0], hidden: false, count: 4 },
+    { label: 'interior', gaps: [1, 2], hidden: false, count: 4 },
+  ]) {
+    const h = await sourceWithUnmarkedGaps({ ...variant, hostKind });
+    const sourceBefore = chatRecords(h.backend.records, SOURCE);
+    const raw = context(`marker-${hostKind}-${variant.label}`, SOURCE, structuredClone(h.raw.chat));
+    if (variant.count === 30) raw.chat.pop(); // 原生截到索引58：30个AI、29个记忆标记。
+    raw.chatMetadata.qianqianjie.file = { hostChatId: h.raw.chatId, characterLocator: 'character.png' };
+    for (const index of variant.gaps) {
+      raw.chat[index * 2].mes = `目标自己的未记忆回复${index}。`;
+      raw.chat[index * 2].swipes.push(raw.chat[index * 2].mes);
+      raw.chat[index * 2].swipe_id = 1;
+      raw.chat[index * 2].swipe_info = [{ extra: {} }, { extra: {} }];
+    }
+    const id = await deterministicUuid(['qqj-chat-independent-v2', SOURCE, raw.chatId, 'character.png']);
+    const branch = gapBranch(h, raw, SOURCE, id, hostKind);
+    let copied, initializations = 0;
+    const coordinator = createChatIdentityCoordinator({ client: h.backend.client,
+      listHostChats: async () => [h.raw.chatId, raw.chatId], now: () => new Date(NOW),
+      initializeBranch: async () => { initializations++; const result = await branch.run(); copied = await branch.read(); return result; } });
+    const session = createChatSession({ contextProvider: () => raw, identityCoordinator: coordinator });
+    const store = createFoundationStore({ client: h.backend.client, contextProvider: () => identity(raw.chatId, id) });
+    const foundation = createFoundationRuntime({ store, hostAdapter: branch.adapter, contextProvider: () => raw,
+      prepareSession: () => session.prepare(), now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: branch.adapter,
+      automationSettings: () => ({ enabled: true, batchSize: 1 }), generateUtilityTask: h.noModel, generateAnalysisTask: h.noModel,
+      now: () => new Date(NOW), logger: { warn() {} } });
+    let completion;
+    const lifecycle = createPluginLifecycle({ session, onPrepared: ({ result }) => completion = memory.start({ reconcileFoundation: result.branchPrepared === true }) });
+    const prepared = await lifecycle.prepare({ refresh: false });
+    await completion;
+    assert.equal(prepared.branchPrepared, true, '只把这次分支完成事实传给后台准备');
+    assert.equal(session.getState().branchPrepared, undefined, '长期session状态不保留一次性事实');
+    assert.equal(copied.floors.length, variant.count - variant.gaps.length, '继承只取实际marker对应楼');
+    assert.equal(copied.floorMemories.length, variant.count - variant.gaps.length);
+    const target = await store.readReachable();
+    assert.equal(foundation.getState().status, 'ready');
+    assert.equal(memory.getState().memorySnapshotStatus, 'ready');
+    assert.equal(target.floors.length, variant.count, '正常Foundation登记本聊天未记忆消息');
+    assert.deepEqual(target.floorMemories.map(({ chatId, narrativeGeneration, ...record }) => record),
+      h.source.floorMemories.map(({ chatId, narrativeGeneration, ...record }) => record));
+    for (const index of variant.gaps) {
+      assert.notEqual(target.floors[index].id, h.source.floors[index].id, '无标记楼不借来源身份');
+      assert.equal(raw.chat[index * 2].extra?.qianqianjie_floor, undefined);
+      assert.equal(raw.chat[index * 2].swipe_info[1].extra?.qianqianjie_floor, undefined);
+      assert.equal(target.floorMemories.some(value => value.floorId === target.floors[index].id), false);
+    }
+    const targetBefore = chatRecords(h.backend.records, id), saves = branch.api.saves;
+    assert.equal((await lifecycle.prepare({ refresh: false })).branchPrepared, undefined, '缓存ready结果不重复发分支事实');
+    await completion;
+    assert.equal(chatRecords(h.backend.records, id), targetBefore, '普通重新准备不开写');
+    assert.equal(branch.api.saves, saves);
+    session.invalidate();
+    assert.equal((await lifecycle.prepare({ refresh: false })).branchPrepared, undefined, '已有独立文件重新打开不复用分支事实');
+    await completion;
+    assert.equal(initializations, 1);
+    assert.equal(chatRecords(h.backend.records, id), targetBefore, '已有分支重新打开只读');
+    assert.equal(branch.api.saves, saves);
+    assert.equal((await branch.run()).inheritedFloors, variant.count - variant.gaps.length, '已有目标只核已继承marker记忆，未记忆新floor不阻断');
+    const childRaw = context(`child-${raw.chatId}`, id, structuredClone(raw.chat));
+    const childId = await deterministicUuid(['marker-198-child', id]);
+    const child = gapBranch(h, childRaw, id, childId, hostKind);
+    assert.equal((await child.run()).inheritedFloors, variant.count - variant.gaps.length);
+    assert.equal((await child.run()).inheritedFloors, variant.count - variant.gaps.length);
+    assert.equal(chatRecords(h.backend.records, SOURCE), sourceBefore);
+    assert.equal(h.modelCalls, 0);
+  }
+});
+
+test('198有效marker重复异源或乱序仍拒收，未标记消息缺失不挡合法对应', async () => {
+  const h = await sourceWithUnmarkedGaps();
+  const sourceBefore = chatRecords(h.backend.records, SOURCE);
+  for (const kind of ['order', 'duplicate', 'foreign', 'missingUnrememberedHead']) {
+    const raw = context(`marker-structure-${kind}`, SOURCE, structuredClone(h.raw.chat));
+    if (kind === 'missingUnrememberedHead') raw.chat.splice(0, 2);
+    if (kind === 'order') [raw.chat[2], raw.chat[4]] = [raw.chat[4], raw.chat[2]];
+    if (kind === 'duplicate') raw.chat[4].extra.qianqianjie_floor = structuredClone(raw.chat[2].extra.qianqianjie_floor);
+    if (kind === 'foreign') raw.chat[0].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', floorId: h.source.floors[0].id } };
+    const id = await deterministicUuid(['marker-structure-198', kind]);
+    const branch = gapBranch(h, raw, SOURCE, id);
+    if (kind === 'missingUnrememberedHead') assert.equal((await branch.run()).inheritedFloors, 3);
+    else {
+      await assert.rejects(branch.run(), error => ['V3_BRANCH_NOT_PREFIX', 'V3_BRANCH_FLOOR_MATCH_INVALID'].includes(error.code));
+      assert.equal(branch.api.saves, 0, kind);
+      assert.equal(h.backend.records.has(`chat-${id}/v3-root`), false, kind);
+    }
+    assert.equal(chatRecords(h.backend.records, SOURCE), sourceBefore, kind);
+  }
+});
+
+test('198最后marker后同文新尾不借源记忆，无标记消息在保存前后改文换swipe均沿宿主结果', async () => {
+  const h = await sourceWithUnmarkedGaps({ gaps: [0, 3] });
+  const sourceBefore = chatRecords(h.backend.records, SOURCE);
+  for (const kind of ['sameTail', 'beforeSave', 'afterSave']) {
+    const raw = context(`marker-native-${kind}`, SOURCE, structuredClone(h.raw.chat));
+    const id = await deterministicUuid(['marker-native-198', kind]);
+    let reads = 0;
+    const branch = gapBranch(h, raw, SOURCE, id, 'SillyTavern', { beforeGet({ messages }) {
+      if (++reads !== (kind === 'afterSave' ? 3 : 2) || kind === 'sameTail') return;
+      messages[0].mes = '宿主改过的未记忆消息。'; messages[0].swipes.push(messages[0].mes); messages[0].swipe_id = 1;
+    } });
+    assert.equal((await branch.run()).inheritedFloors, 2);
+    assert.equal((await branch.run()).inheritedFloors, 2);
+    const target = await branch.read();
+    assert.deepEqual(target.floors.map(value => value.id), h.source.floors.slice(1, 3).map(value => value.id));
+    assert.equal(target.floorMemories.length, 2);
+    assert.equal(raw.chat[6].extra?.qianqianjie_floor, undefined);
+    assert.equal(chatRecords(h.backend.records, SOURCE), sourceBefore);
+  }
+  assert.equal(h.modelCalls, 0);
+});
 
 test('原生分支按同源楼标记继承三楼旧摘要，正文及选中回复变化不截断且无标记新AI不借用源楼', async () => {
   for (const hostKind of ['SillyTavern', 'Luker']) {

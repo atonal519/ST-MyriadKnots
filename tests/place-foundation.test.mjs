@@ -12,6 +12,46 @@ const source={sourceKey:'worldbook-1',locator:'地图:18',fingerprint:'sha256:ab
 const envelope={scope:{chatId:id(90),narrativeGeneration:id(91),batchId:id(92),floorId:id(93),placeCatalogBindings:[{entityKey:'place-1',entityId:id(1),labels:['宿舍']},{entityKey:'place-2',entityId:id(2),labels:['客房']}],parentEntityIdsByPlaceId:new Map([[id(2),new Set([id(1)])]]),placeWorldbookSources:[source]}};
 const path={path:[{name:'宿舍',sameAsPlaceKey:'place-1'},{name:'一楼'},{name:'客房',sameAsPlaceKey:'place-2'}],source:'worldbook',sourceKey:'worldbook-1',exactQuote:'宿舍一楼设有客房。客房内有独立浴室。',description:'内有独立浴室。'};
 
+test('196已有place key缺省名称沿捕获目录复用，显式空名和未知身份仍隔离',async()=>{
+ const invoke=(segments,scope=envelope.scope)=>foundation.expandPlacePaths({packet:{placePaths:[{...path,path:segments}]},envelope:{request:{task:'organizePlaces'},scope},existingEntities:[seed(1,'宿舍'),seed(2,'客房')],now:'2026-11-02T00:00:00Z'});
+ const result=await invoke([{sameAsPlaceKey:'place-1'},{name:'一楼'},{sameAsPlaceKey:'place-2'}]);
+ assert.deepEqual(result.isolated,[]);assert.equal(result.entities.length,3);assert.equal(result.foundationPatch.facts.filter(f=>f.kind==='containment').at(-1).placeEntityId,id(2));assert.equal(result.foundationPatch.facts.filter(f=>f.kind==='containment')[0].parentEntityId,id(1));
+ for(const segment of [{name:'',sameAsPlaceKey:'place-1'},{name:null,sameAsPlaceKey:'place-1'},{sameAsPlaceKey:'unknown'},{sameAsPlaceKey:'place-1',name:42}]){
+  const bad=await invoke([segment,{name:'新叶'}]);assert.equal(bad.isolated.length,1);assert.equal(bad.foundationPatch.facts.length,0);assert.equal(bad.freshEntities.length,0);
+ }
+ const ambiguous=await invoke([{sameAsPlaceKey:'place-1'},{name:'新叶'}],{...envelope.scope,placeCatalogBindings:[...envelope.scope.placeCatalogBindings,{entityKey:'place-1',entityId:id(7),labels:['异地宿舍']}]});assert.equal(ambiguous.isolated.length,1);
+});
+
+test('196整理显式null纠正自动层级并跨合并冷读保留，省略保原且人工层级优先',async()=>{
+ const run=fields=>foundation.expandPlacePaths({packet:{placePaths:[{...path,path:[{name:'宿舍',sameAsPlaceKey:'place-1',...fields}]}]},envelope:{...envelope,request:{task:'organizePlaces'}},existingEntities:[seed(1,'宿舍'),seed(2,'客房')],now:'2026-11-02T00:00:00Z'});
+ const initial=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),(await run({mapLevel:'scope',mapRole:'site'})).foundationPatch),correction=await run({mapLevel:null}),field=correction.foundationPatch.facts.find(f=>f.kind==='place');
+ assert.equal(Object.hasOwn(field,'mapLevel'),true);assert.equal(field.mapLevel,null);
+ let workspace=foundation.mergePlaceFoundation(initial,correction.foundationPatch);workspace=foundation.mergePlaceFoundation(workspace,(await run({})).foundationPatch);validatePlaceWorkspace(structuredClone(workspace),id(90));
+ assert.equal(workspace.foundation.facts.find(f=>f.kind==='place').mapLevel,null);
+ const snapshot={chatId:id(90),places:[{entityId:id(1),displayName:'宿舍',features:[],relations:[],childEntityIds:[],parentEntityId:null}],containments:[],userPosition:{status:'unknown'}};
+ assert.equal(applyPlaceSnapshot(snapshot,structuredClone(workspace)).places[0].mapLevel,null);
+ for(const level of ['scope',null]){const manual=structuredClone(workspace);manual.placesByEntityId[id(1)]={mapLevel:level,scopes:{mapLevel:{knownThroughFloorId:id(93),coveredFloorIds:[id(93)],coveredItemIds:[]}}};assert.equal(applyPlaceSnapshot(snapshot,manual).places[0].mapLevel,level);}
+ workspace=foundation.mergePlaceFoundation(workspace,(await run({mapLevel:'city'})).foundationPatch);assert.equal(applyPlaceSnapshot(snapshot,workspace).places[0].mapLevel,'city');
+ assert.deepEqual(workspace.foundation.entities.map(entity=>entity.id),initial.foundation.entities.map(entity=>entity.id));assert.deepEqual(workspace.foundation.facts.filter(f=>f.kind==='containment'),[]);
+});
+
+test('196补入的来源原文必须给短exactQuote，旧独立片段仍可只给key',async()=>{
+ const short='宿舍内有客房。',full='之前剧情。'.repeat(500)+short+'之后剧情。'.repeat(500),binding={evidenceKey:'full-1',floorId:id(93),memoryId:id(94),sourceType:'assistant',rawFingerprint:'memory-94',canonicalContent:full,requiresExactQuote:true},scoped={scope:{...envelope.scope,sourceFloorBindings:[binding]}};
+ const invoke=ref=>foundation.expandPlacePaths({packet:{placePaths:[{path:[{name:'宿舍',sameAsPlaceKey:'place-1'},{name:'客房',sameAsPlaceKey:'place-2'}],evidence:[ref]}]},envelope:scoped,existingEntities:[seed(1,'宿舍'),seed(2,'客房')],now:'2026-11-02T00:00:00Z',persistBodyPaths:true});
+ for(const ref of [{source:'storedPlaceEvidence',sourceKey:'full-1'},{source:'storedPlaceEvidence',sourceKey:'full-1',exactQuote:full},{source:'storedPlaceEvidence',sourceKey:'full-1',exactQuote:'另一楼的场所'}]){const bad=await invoke(ref);assert.equal(bad.isolated.length,1);assert.equal(bad.foundationPatch.facts.length,0);}
+ const good=await invoke({source:'storedPlaceEvidence',sourceKey:'full-1',exactQuote:short});assert.equal(good.isolated.length,0);assert.ok(good.foundationPatch.facts.every(f=>f.source.quote===short&&f.source.floorId===id(93)));
+ binding.canonicalContent='宿舍'+' '.repeat(2500)+'内有客房。';const expandedWhitespace=await invoke({source:'storedPlaceEvidence',sourceKey:'full-1',exactQuote:'宿舍 内有客房。'});assert.equal(expandedWhitespace.isolated.length,1);assert.equal(expandedWhitespace.foundationPatch.facts.length,0);
+});
+
+test('196不同来源的自动层级可统一校对，null合并后旧来源省略更新不复活scope',async()=>{
+ const entities=[seed(1,'宿舍'),seed(2,'客房')],first=await foundation.expandPlacePaths({packet:{placePaths:[{...path,path:[{name:'宿舍',sameAsPlaceKey:'place-1',mapLevel:'scope'}]}]},envelope,existingEntities:entities,now:'2026-11-02T00:00:00Z'}),old=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),first.foundationPatch),before=JSON.stringify(old);
+ const text='宿舍是首尔城内的普通住宅。',binding={evidenceKey:'evidence-1',floorId:id(93),memoryId:id(96),sourceType:'assistant',rawFingerprint:'memory-96',canonicalContent:text,requiresExactQuote:true};
+ const next=await foundation.expandPlacePaths({packet:{placePaths:[{path:[{sameAsPlaceKey:'place-1',mapLevel:null}],source:'storedPlaceEvidence',sourceKey:'evidence-1',exactQuote:text}]},envelope:{request:{task:'organizePlaces'},scope:{...envelope.scope,sourceFloorBindings:[binding]}},existingEntities:entities,now:'2026-11-02T00:00:00Z',persistBodyPaths:true});
+ assert.notEqual(first.foundationPatch.facts[0].itemId,next.foundationPatch.facts[0].itemId);let merged=foundation.mergePlaceFoundation(old,next.foundationPatch);assert.equal(JSON.stringify(old),before);assert.equal(merged.foundation.facts.find(f=>f.kind==='place').mapLevel,null);assert.equal(merged.foundation.facts.find(f=>f.kind==='place').source.quote,text);
+ const omitted=await foundation.expandPlacePaths({packet:{placePaths:[{...path,path:[{name:'宿舍',sameAsPlaceKey:'place-1'}]}]},envelope,existingEntities:entities,now:'2026-11-02T00:00:00Z'});merged=foundation.mergePlaceFoundation(merged,omitted.foundationPatch);assert.equal(merged.foundation.facts.find(f=>f.kind==='place').mapLevel,null);assert.equal(merged.foundation.facts.find(f=>f.kind==='place').source.locator,source.locator);
+ const snapshot={chatId:id(90),places:[{entityId:id(1),displayName:'宿舍',features:[],relations:[],childEntityIds:[],parentEntityId:null}],containments:[],userPosition:{status:'unknown'}};assert.equal(applyPlaceSnapshot(snapshot,validatePlaceWorkspace(JSON.parse(JSON.stringify(merged)),id(90))).places[0].mapLevel,null);
+});
+
 test('194地点路径省略引文只在显式单来源展开原短片段，不把中间剧情写入证据',async()=>{
  const text='甲楼内有客房。'+'剧情经过。'.repeat(500)+'客房内有书桌。',quote='甲楼内有客房。……客房内有书桌。';
  const entry={path:[{name:'甲楼'},{name:'客房'}],source:'worldbook',sourceKey:'worldbook-1',exactQuote:quote};

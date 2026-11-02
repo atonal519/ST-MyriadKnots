@@ -59,7 +59,7 @@ export function createChatIdentityCoordinator({ client, persist = persistChatId,
     try { return validateBindingEnvelope(await client.put(CHAT_IDENTITY_COLLECTION, key(record.chatId), record, previous?.revision ?? 0), record.chatId); }
     catch { return null; }
   }
-  async function prepareNow(raw, host, { signal, getTaskInputs, taskInputs, onProgress } = {}) {
+  async function prepareNow(raw, host, { signal, getTaskInputs, taskInputs, onProgress, onBranchPrepared } = {}) {
     const owner = ownerFrom(host);
     let initialTargetFile;
     let qqj = raw.chatMetadata?.qianqianjie;
@@ -137,6 +137,7 @@ export function createChatIdentityCoordinator({ client, persist = persistChatId,
     assertCurrent(signal);
     if (initialized?.persistedIdentity !== targetId) await persist(raw, targetId, inputs(), signal);
     await publishAuxiliary(bindingRecord({ chatId: targetId, owner, sourceChatId: sourceId, createdAt: prepared?.data.createdAt ?? nowIso() }), prepared);
+    if (initialized?.status === 'inherited') onBranchPrepared?.();
     return targetId;
   }
   function prepare(raw, host, options = {}) { return serialized(() => prepareNow(raw, host, options), options.signal); }

@@ -2988,8 +2988,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(buildExtractorSystemPrompt('自定义偏好'), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
   assertQianshiLifecycleGuidance(buildExtractorSystemPrompt('用户自定义偏好'));
   assert.doesNotMatch(buildHighFloorExtractorSystemPrompt(), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-53');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-53/schema-3/semantic-compiler-25');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-54');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-54/schema-3/semantic-compiler-26');
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.aliases.maxItems, 20);
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.maxLength, 400);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /identityBriefEvidence.*identityFacts/u);
@@ -13979,6 +13979,20 @@ test('187同一摘要与整理请求带题材和中文地貌目录，coast沿原
  let root=h.runtime.getQianchuangSnapshot().places.find(place=>place.displayName==='港镇甲');assert.equal(root.mapStyle,'old-town');assert.equal(root.mapLayout,'coast');assert.equal(root.mapAssetId,'old-town-coast');const id=root.entityId;
  const before=h.backend.calls.filter(call=>call[0]==='put'&&call[2]==='v3-place-workspace').length;
  assert.equal((await h.runtime.organizePlaces()).status,'saved');root=h.runtime.getQianchuangSnapshot().places.find(place=>place.entityId===id);assert.equal(root.mapAssetId,'old-town-coast');assert.equal(h.calls.length,2);assert.equal(requests[1].task,'organizePlaces');assert.equal(h.backend.calls.filter(call=>call[0]==='put'&&call[2]==='v3-place-workspace').length,before+1);
+});
+
+test('196显式整理统一复核自动值且同次补firstSeen原文，短引文挂回原身份并冷读null',async()=>{
+ const quote='甲城内的甲楼设有客房。',text='先前剧情。'.repeat(500)+quote+'后续剧情。'.repeat(500);let mode='scope',organizations=0;
+ const h=harness({withPlaces:true,modernAnchors:true,readOnlyLifecycle:true,initialChat:[user('继续'),assistant(text),user('稳定')],utility:options=>{
+  const r=JSON.parse(options.taskMessages[0].content),p=r.payload;
+  if(r.task!=='organizePlaces'){const ev={source:'canonicalContent',sourceFloorKey:p.sourceFloorKey,exactQuote:quote};return{jsonData:{summary:'你查看甲楼与客房。',locations:[{name:'甲楼',change:'present'},{name:'甲楼客房',change:'present'}],spatialFacts:{places:[{key:'place-mention-1',name:'甲楼',identity:'new',...ev},{key:'place-mention-2',name:'甲楼客房',identity:'new',...ev}],containments:[],positions:[]}}};}
+  organizations++;assert.match(options.systemPrompt,/统一校对整棵knownPlaces/u);assert.match(options.systemPrompt,/普通城市中的宿舍、公寓、公司楼、电视台/u);const full=p.storedPlaceEvidence.filter(s=>s.requiresExactQuote);assert.equal(full.length,1);assert.equal(full[0].content,text);assert.ok(full[0].placeKeys.length>=2);
+  const parent=p.knownPlaces.find(x=>x.displayName==='甲楼'),room=p.knownPlaces.find(x=>x.displayName==='甲楼客房');if(mode===null)assert.equal(parent.mapLevel,'scope');
+  return{jsonData:{placePaths:[{path:[{name:'甲城',mapLevel:'city'},{sameAsPlaceKey:parent.entityKey,mapLevel:mode},{sameAsPlaceKey:room.entityKey}],source:'storedPlaceEvidence',sourceKey:full[0].sourceKey,exactQuote:quote}]}};
+ }});
+ await h.foundationRuntime.reconcile('196-source');await h.runtime.start();await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId,{analyzeState:false});const before=h.runtime.getQianchuangSnapshot(),ids=new Map(before.places.map(p=>[p.displayName,p.entityId]));await h.runtime.organizePlaces();mode=null;await h.runtime.organizePlaces();const after=h.runtime.getQianchuangSnapshot();assert.equal(after.places.find(p=>p.entityId===ids.get('甲楼')).mapLevel,null);assert.equal(after.places.find(p=>p.entityId===ids.get('甲楼客房')).parentEntityId,ids.get('甲楼'));assert.equal(organizations,2);assert.equal(h.calls.length,3);
+ const workspace=await h.placeWorkspaceStore.read({chatId:CHAT},{fresh:true});assert.ok(workspace.data.foundation.facts.filter(f=>f.source.kind==='body').every(f=>f.source.quote.length<=2000&&f.source.quote===quote));
+ const cold=harness({withPlaces:true,sharedBackend:h.backend,sharedContext:h.context,modernAnchors:true,readOnlyLifecycle:true});await cold.runtime.start();assert.equal(cold.runtime.getQianchuangSnapshot().places.find(p=>p.entityId===ids.get('甲楼')).mapLevel,null);assert.equal(cold.calls.length,0);
 });
 
 test('189地点双输出复用明确同实体父引用，新旧父都不产生假多父',async()=>{

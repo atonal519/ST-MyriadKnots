@@ -111,8 +111,10 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
       try {
+        let branchPrepared = false;
         const chatId = identityCoordinator
-          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, getTaskInputs, onProgress: value => { operation.progress = value; activity.notifyActivity(); } })
+          ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, getTaskInputs,
+            onBranchPrepared: () => { branchPrepared = true; }, onProgress: value => { operation.progress = value; activity.notifyActivity(); } })
           : await ensureChatId(context.raw, context.host);
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
         if (!isUuid(chatId)) throw new ChatSessionError('聊天身份保存后无法确认。请到“记忆管理”页点击“复制状态诊断”反馈。', 'CHAT_SESSION_PERSIST_FAILED');
@@ -122,7 +124,9 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
           const refreshed = capture().host;
           if (sameHost(operation.host, refreshed) && refreshed.chatId === chatId) state = result;
         } catch { /* A completed identity belongs to its captured host target, not the newly selected page. */ }
-        return result;
+        // Only this preparation's continuation may register new native messages.
+        // Cached ready state remains an ordinary read on later opens.
+        return branchPrepared ? Object.freeze({ ...result, branchPrepared: true }) : result;
       } catch (error) {
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
         markPreparationFailure(error, 'identityDirectory', entryPoint);

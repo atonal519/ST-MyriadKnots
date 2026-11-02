@@ -11,6 +11,7 @@ import { formatRecallInjection } from '../src/v3/recall-selector.js';
 import { compileCseResponse } from '../src/v3/cse-engine.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from '../src/v3/message-floor-anchor.js';
 import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
+import { placeWorkspaceDependency } from '../src/v3/place-foundation.js';
 
 const MARKER_CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -1864,4 +1865,68 @@ test('世界书基础和人工地点块仍注入，楼内只显示原剧情与�
  const receipt=displayReceipt(),places=[{kind:'placeFoundation',placeEntityId:'room',text:'客房有浴室',source:{kind:'worldbook',locator:'地图:18'}},{kind:'manualPlace',placeEntityId:'room',text:'客房：人工确认的方位'}];
  receipt.selectedPlaces=places;receipt.injectionText=receipt.injectionText.replace('</qqj_recalled_context>','[人工校准的当前地点事实（优先于旧地点记录，未赋予人物知识）]\n- 客房：人工确认的方位\n[地点基础资料（场所条件与归属，不代表人物在场或知情）]\n- 客房有浴室（世界书设定：地图:18）\n</qqj_recalled_context>');
  const before=JSON.stringify(receipt),projection=projectInlineRecallReceipt(receipt);assert.equal(projection.protocolRecognized,true);assert.equal(projection.historyItems.length,1);assert.match(projection.historyItems[0].text,/交还钥匙/);assert.doesNotMatch(projection.historyItems.map(x=>x.text).join('\n'),/客房有浴室|人工确认的方位/);assert.equal(JSON.stringify(receipt),before);assert.match(projection.injectionText,/客房有浴室/);
+});
+
+test('199正式runtime的实时、签名历史与冻结复用回执带地点附块时四结均可展开', async t => {
+  const floorIds = [HISTORY_FLOOR, CHANGE_FLOOR, EXTRA_FLOOR, '44444444-1111-4111-8111-111111111111'];
+  const room = '55555555-1111-4111-8111-111111111111';
+  const memories = floorIds.map((floorId, index) => ({ id: `66666666-1111-4111-8111-11111111111${index}`, floorId,
+    recordStatus: 'active', summary: { effectiveSource: 'ai', aiText: `匿名旧闻${index + 1}：归还第${index + 1}把钥匙。` },
+    chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [],
+    commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] }));
+  const reachable = { status: 'ready', rootRevision: 1, root: { chatId: MARKER_CHAT, narrativeGeneration: OTHER_CHAT, headCheckpointId: '77777777-1111-4111-8111-111111111111' },
+    checkpoint: { id: '77777777-1111-4111-8111-111111111111' }, baseline: null, floors: floorIds.map((id, index) => ({ id, assistantSeq: index + 1 })),
+    floorMemories: memories, stateDeltas: [], currentStates: [], entities: [{ id: room, entityType: 'place', displayName: '钟楼', aliases: [], specialRole: 'none', recordStatus: 'active', status: 'established' }] };
+  const workspace = { schemaVersion: 1, kind: 'qqj-v3-place-workspace', chatId: MARKER_CHAT, placesByEntityId: {
+    [room]: { description: '钟楼有拱窗', scopes: { description: { knownThroughFloorId: EXTRA_FLOOR, coveredFloorIds: [], coveredItemIds: [] } } },
+  }, deletionsByEntityId: {} };
+  const userMessage = { is_user: true, is_system: false, mes: '去钟楼归还钥匙。' };
+  const chat = [{ is_user: false, is_system: false, mes: '现在的正文。' }, userMessage];
+  const context = { chatMetadata: { qianqianjie: { chatId: MARKER_CHAT } }, constants: { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } }, setExtensionPrompt() {}, async saveChat() {} };
+  let selections = 0;
+  const runtime = createV3RecallRuntime({ store: { readReachable: async () => structuredClone(reachable) }, hostAdapter: { snapshot: () => ({ context, chat }) },
+    sourceReader: ({ now, identityProjection }) => readRecallSource({ store: { readReachable: async () => structuredClone(reachable) }, now, identityProjection }),
+    identityProjectionProvider: async () => ({ placeWorkspaceRevision: 1, placeWorkspace: workspace }),
+    placeWorkspaceDependencyProvider: () => placeWorkspaceDependency(MARKER_CHAT, 1, workspace),
+    selector: input => { selections++; return selectRecall(input); }, pluginVersion: '1.0.1-test', now: () => new Date('2026-11-02T00:00:00.000Z'), logger: { warn() {} } });
+  const live = (await runtime.intercept(chat, 12000, null, 'normal')).lastRecall;
+  await new Promise(resolve => setImmediate(resolve));
+  const receipt = userMessage.extra[RECALL_RECEIPT_KEY], original = JSON.stringify(receipt);
+  assert.equal(receipt.selectedFloors.length, 4);
+  assert.equal(receipt.selectedPlaces.length, 1);
+  assert.match(receipt.injectionText, /钟楼有拱窗/);
+  const historical = await projectHistoricalRecallReceipt(userMessage, { chatId: MARKER_CHAT, userMessageIndex: 1 });
+  assert.ok(historical, '原runtime封签由正式历史reader验过');
+  const reused = (await runtime.intercept(chat, 12000, null, 'regenerate')).lastRecall;
+  assert.equal(reused.reusedReceipt, true);
+  assert.equal(selections, 1, '冻结复用不重新选材');
+  for (const [mode, value] of [['live', live], ['historical', historical], ['reused', reused]]) await t.test(mode, async () => {
+    const h = createHarness({ chat, chatId: MARKER_CHAT, memoryState: { floors: floorIds.map((floorId, index) => ({ floorId, assistantSeq: index + 1, messageIndex: index * 2 })), memoryEntities: [] },
+      ...(mode === 'historical' ? {} : { recallState: { activeRecall: null, lastRecall: value, lastRecallBinding: { chatId: MARKER_CHAT, userMessageIndex: 1 } } }) });
+    const message = messageElement(1, { user: true }); h.chatRoot.append(message); h.renderer.start();
+    let view;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await h.flushMicrotasks(); view = message.querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+      if (view?.status.textContent === '寻回 4 个结') break;
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal(view.status.textContent, '寻回 4 个结');
+    view.toggle.click(); assert.equal(view.body.hidden, false);
+    assert.equal(view.recallUi.pills.children.length, 4, '回执数量和可展开的旧事一致');
+    const seen = [];
+    for (const pill of view.recallUi.pills.children) {
+      pill.click(); assert.equal(view.recallUi.display.hidden, false);
+      const text = descendantText(view.recallUi.display); seen.push(text);
+      assert.match(text, /匿名旧闻[1-4]/);
+      assert.doesNotMatch(text, /拱窗|人工校准|qqj_recalled_context/);
+    }
+    for (let index = 1; index <= 4; index++) assert.match(seen.join('\n'), new RegExp(`匿名旧闻${index}`));
+    assert.equal(view.projection.protocolRecognized, true);
+    assert.equal(view.projection.injectionText, receipt.injectionText);
+    assert.equal(JSON.stringify(receipt), original, '显示不改封存回执及真实注入');
+    h.renderer.destroy();
+  });
+  const old = await actualCseReceipt();
+  const oldRead = await projectHistoricalRecallReceipt(old.userMessage, { chatId: MARKER_CHAT, userMessageIndex: 1 });
+  assert.deepEqual(oldRead.selectedPlaces, [], '旧回执没有地点附块时兼容空数组');
 });

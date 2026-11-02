@@ -727,6 +727,7 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     coverage: receipt.coverage,
     selectedFloors: Object.freeze(clone(receipt.selectedFloors ?? [])),
     selectedLocationReferences: Object.freeze(clone(receipt.selectedLocationReferences ?? [])),
+    selectedPlaces: Object.freeze(clone(receipt.selectedPlaces ?? [])),
     selectedStates: Object.freeze(clone(receipt.selectedStates ?? [])),
     selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? [])),
     qianshiProgress: receipt.qianshiProgress ? Object.freeze(clone(receipt.qianshiProgress)) : null,

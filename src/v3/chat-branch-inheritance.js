@@ -25,6 +25,7 @@ import { createPlaceWorkspaceStore } from './place-workspace.js';
 import { assertCapturedBranchTargetMatches, inspectMessageFloorAnchor, persistBranchedMessageMetadata, readTargetChat, sameQqjMessageMetadata } from './message-floor-anchor.js';
 import { captureTargetChatDescriptor } from './host-adapter.js';
 import { isMemoryExcludedMessage } from './memory-exclusion.js';
+import { memorySourceFloorIds } from './memory-schema.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const emptyIndexManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
@@ -81,11 +82,13 @@ function branchCandidates(source, chat, sourceChatId, targetChatId) {
 }
 
 function inheritedPrefix(source, candidates, { requireComplete = false } = {}) {
-  const sourceFloorIds = new Set(source.floors.map(floor => floor.id));
+  const sourceFloors = new Map(source.floors.map((floor, index) => [floor.id, { floor, index }]));
+  const floors = [];
+  let sourceIndex = -1;
   let count = 0;
   let difference = null;
-  const describe = reason => Object.freeze({ reason, candidateIndex: count, floorIndex: count < source.floors.length ? count : null,
-    assistantSeq: candidates[count]?.assistantSeq ?? source.floors[count]?.assistantSeq ?? null,
+  const describe = reason => Object.freeze({ reason, candidateIndex: count, floorIndex: sourceIndex + 1 < source.floors.length ? sourceIndex + 1 : null,
+    assistantSeq: candidates[count]?.assistantSeq ?? source.floors[sourceIndex + 1]?.assistantSeq ?? null,
     messageIndex: candidates[count]?.hostLocator?.messageIndex ?? null,
     markerStatus: candidates[count]?.messageAnchor?.status ?? 'none', inheritedFloors: count,
     sourceFloorCount: source.floors.length, candidateCount: candidates.length });
@@ -94,25 +97,27 @@ function inheritedPrefix(source, candidates, { requireComplete = false } = {}) {
   };
   // Only copied QQJ markers participate; unregistered native replies carry no memory.
   while (count < candidates.length) {
-    const candidate = candidates[count], floor = source.floors[count];
-    if (!floor) { difference = describe('sourceExhausted'); break; }
-    if (candidate.archiveCandidate === true) {
-      if (candidate.archiveFloorId !== floor.id) reject('archiveFloorMissing');
-    } else {
-      const marker = candidate.messageAnchor;
-      if (marker?.status !== 'valid') reject('markerRejected');
-      if (marker.status === 'valid' && marker.anchor.floorId !== floor.id) {
-        if (sourceFloorIds.has(marker.anchor.floorId)) reject('floorOrder', 'V3_BRANCH_NOT_PREFIX');
-        difference = describe('markerConflict'); break;
-      }
+    const candidate = candidates[count];
+    if (candidate.archiveCandidate !== true && candidate.messageAnchor?.status !== 'valid') reject('markerRejected');
+    const floorId = candidate.archiveCandidate === true ? candidate.archiveFloorId : candidate.messageAnchor.anchor.floorId;
+    const match = sourceFloors.get(floorId);
+    if (!match) {
+      if (candidate.archiveCandidate === true) reject('archiveFloorMissing');
+      difference = describe('markerConflict'); break;
     }
+    if (match.index <= sourceIndex) reject('floorOrder', 'V3_BRANCH_NOT_PREFIX');
+    floors.push(match.floor);
+    sourceIndex = match.index;
     count += 1;
   }
-  if (requireComplete && count !== source.floors.length) {
+  const matchedFloorIds = new Set(floors.map(floor => floor.id));
+  const missingMemorySource = requireComplete && (source.floorMemories ?? []).filter(memory => memory.recordStatus === 'active')
+    .some(memory => memorySourceFloorIds(memory).some(floorId => !matchedFloorIds.has(floorId)));
+  if (requireComplete && (count !== candidates.length || missingMemorySource)) {
     throw Object.assign(fail('V3_BRANCH_TARGET_MISMATCH', '已准备的分支记忆与当前消息不一致。请到“记忆管理”页复制状态诊断反馈。'),
       { branchMatch: difference ?? describe('candidateExhausted') });
   }
-  return Object.freeze({ count, candidates: candidates.slice(0, count), floors: source.floors.slice(0, count) });
+  return Object.freeze({ count, candidates: candidates.slice(0, count), floors });
 }
 
 function branchMigrationDescriptor({ source, targetChatId, descriptorId, retainedFloors, projected, indexKeys, timeBatchIds, peopleCopy, partitioned, createdAt }) {

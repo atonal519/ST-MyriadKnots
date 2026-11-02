@@ -3,6 +3,11 @@ import {CITY_MAPS,citySchematicLayout,createCityMapLoader} from '../src/ui/qianc
 import test from 'node:test';import assert from 'node:assert/strict';
 import {projectQianchuangSheets,snapshotForCitySheet,placeMapLevel} from '../src/ui/qianchuang-city-sheets.js';
 
+test('196城市普通建筑与明确独立舰星共存，不以城市祖先吞独立范围',()=>{
+ const s=snapshot([p('seoul','首尔特别市',null,{mapLevel:'city'}),p('home','城内宿舍','seoul',{mapLevel:null,mapRole:'site'}),p('ship','独立巨舰','seoul',{mapLevel:'scope'}),p('deck','甲板','ship',{mapRole:'area'}),p('planet','独立星球','seoul',{mapLevel:'scope'}),p('base','基地','planet',{mapRole:'site'})]),before=structuredClone(s),r=projectQianchuangSheets(s);
+ assert.deepEqual(r.sheets.map(sheet=>sheet.id),['seoul','ship','planet']);assert.equal(r.sheets[0].assetId,'seoul');assert.equal(r.placeSheets.get('home'),'seoul');assert.equal(r.placeSheets.get('deck'),'ship');assert.equal(r.placeSheets.get('base'),'planet');assert.deepEqual(s,before);
+});
+
 test('scope独立范围最近边界分页，内容叶有页无点，空范围保目录且源树不变',()=>{
  const s=snapshot([p('realm','王国',null,{mapLevel:'country'}),p('city','首府','realm',{mapLevel:'city'}),p('city-site','馆','city',{mapRole:'site'}),p('north','北地','realm',{mapLevel:'scope',mapRole:'area'}),p('fort','堡垒','north',{mapRole:'site'}),p('coast','海岸','realm',{mapLevel:'scope',features:[{text:'海岸有绵延崖壁。'}]}),p('empty','未说明范围',null,{mapLevel:'scope'}),p('empty-city','空城',null,{mapLevel:'city'}),p('ship','移动设施',null,{mapLevel:'scope'}),p('deck','甲板','ship',{mapRole:'area'}),p('nested','内部独立城','deck',{mapLevel:'city'}),p('room','内城场地','nested',{mapRole:'site'})]);s.userPosition.placeEntityId='fort';const before=structuredClone(s),projection=projectQianchuangSheets(s);
  assert.deepEqual(projection.sheets.map(sheet=>sheet.id),['city','north','coast','ship','nested']);assert.equal(projection.defaultSheetId,'north');assert.equal(projection.placeSheets.get('room'),'nested');assert.equal(projection.placeSheets.get('empty'),null);

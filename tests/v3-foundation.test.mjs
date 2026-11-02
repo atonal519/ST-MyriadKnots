@@ -3353,12 +3353,23 @@ test('部分缓存的TT图读取仅对miss批量回源，保留命中、深校�
     return { store, client, cacheReads, cacheBatches, removed, batches };
   }
   for (const [mode, bulk] of [['hit', true], ['partial', true], ['missing', true], ['deep-corrupt', true], ['io-failure', true], ['partial', false]]) {
-    await t.test(`${mode}/${bulk ? 'readRecords' : 'legacy readRecord'}`, async () => {
+    await t.test(`${mode}/${bulk ? 'readRecords' : 'legacy readRecord'}`, { timeout: 15000 }, async t => {
       const f = target(mode, { bulk }); nativeCalls.length = 0; maximum = 0;
-      const loaded = await f.store.readReachable();
-      assert.deepEqual(loaded, baseline);
       const misses = floorKeys.filter((_, index) => mode === 'missing' || mode === 'io-failure'
         || (mode === 'partial' && index % 3 === 0) || (mode === 'deep-corrupt' && index < 2));
+      // Key hashing may finish on different ticks; hold the first miss until another native read enters.
+      const entered = new Set(); let release;
+      const gate = new Promise(resolve => { release = resolve; });
+      t.signal.addEventListener('abort', release, { once: true });
+      beforeRead = async slot => {
+        if (misses.length < 2 || !misses.includes(slot?.recordId)) return;
+        entered.add(slot.recordId); if (entered.size >= 2) release();
+        await gate;
+      };
+      let loaded;
+      try { loaded = await f.store.readReachable(); }
+      finally { release(); beforeRead = null; t.signal.removeEventListener('abort', release); }
+      assert.deepEqual(loaded, baseline);
       const floorBatches = f.batches.filter(keys => keys.every(key => floorKeys.includes(key)));
       assert.deepEqual(floorBatches.flat(), misses, '只有缺失或深校验失败的floor进入正式批读');
       assert.deepEqual(nativeCalls.filter(key => floorKeys.includes(key)).sort(), [...misses].sort(), '命中floor不能重复读native');

@@ -111,7 +111,7 @@ export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),me
     const row = rows[place.entityId], result = { ...place, features: [...place.features], relations: [...place.relations], childEntityIds: [] };
     for(const fact of base.filter(fact=>fact.placeEntityId===place.entityId)){
       if(fact.kind==='place'&&['area','site','interior'].includes(fact.mapRole))result.mapRole=fact.mapRole;
-      if(fact.kind==='place'&&['city','country','scope'].includes(fact.mapLevel))result.mapLevel=fact.mapLevel;
+      if(fact.kind==='place'&&[null,'city','country','scope'].includes(fact.mapLevel))result.mapLevel=fact.mapLevel;
       if(fact.kind==='place'&&own(fact,'facilities'))result.facilities=copy(fact.facilities);
       if(fact.kind==='place')for(const key of ['mapStyle','mapLayout','mapAssetId'])if(own(fact,key))result[key]=fact[key];
       if(fact.kind==='feature')result.features.push({itemId:fact.itemId,text:fact.text,kind:'stable',source:fact.source});

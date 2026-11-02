@@ -644,7 +644,8 @@ lifecycle = createPluginLifecycle({
   getUi: () => ui,
   onPrepared: async ({ result, isCurrent, explicitEnable }) => {
     if (!isCurrent() && !explicitEnable) return;
-    await v3MemoryRuntime.start({ explicitEnable, targetIdentity: explicitEnable ? result.identity : null });
+    await v3MemoryRuntime.start({ explicitEnable, targetIdentity: explicitEnable ? result.identity : null,
+      ...(result.branchPrepared === true ? { reconcileFoundation: true } : {}) });
     if (!isCurrent()) return;
     await peopleWorkspaceRuntime.refresh({ refreshMemory: false });
   },
