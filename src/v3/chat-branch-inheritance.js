@@ -398,7 +398,7 @@ export function createChatBranchInitializer({
           report({ phase: 'committingBranch' });
           const checkpointResult = await targetStore.putRecord(checkpoint, { signal });
           if (!['saved', 'reused'].includes(checkpointResult.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
-          await placeStore.copy(sourceIdentity,targetIdentity,{floorIds:new Set(floorIds),narrativeGeneration});
+          await placeStore.copy(sourceIdentity,targetIdentity,{sourceEntities:source.entities,targetFloors:floors,narrativeGeneration});
           const committed = await targetStore.commitRoot(root, 0, { signal });
           if (!['saved'].includes(committed.status)) {
             target = await targetStore.readReachable();
@@ -416,7 +416,7 @@ export function createChatBranchInitializer({
       throw fail('V3_BRANCH_TARGET_UNAVAILABLE', '分支目标记忆暂时无法读取。');
     }
 
-    await placeStore.copy(sourceIdentity,targetIdentity,{floorIds:new Set(retainedFloorIds),narrativeGeneration:target.root?.narrativeGeneration});
+    await placeStore.copy(sourceIdentity,targetIdentity,{sourceEntities:sourceReachable?.entities??target.entities??[],targetFloors:target.floors??[],narrativeGeneration:target.root?.narrativeGeneration});
     report({ phase: 'copyingTime' });
     await timeStore.copyPrefix(sourceChatId, targetChatId, target.floors ?? [], signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');

@@ -164,7 +164,7 @@ export function placeWorkspaceDependency(chatId,revision,workspace){
 }
 
 export function mergeFoundationParents(latest,workspace,seqById,throughAssistantSeq=Infinity){
- const prefix=filterPlaceFoundationSources(workspace,{floorIds:new Set([...seqById].filter(([,seq])=>seq<=throughAssistantSeq).map(([id])=>id))});
+ const prefix=Number.isFinite(throughAssistantSeq)?filterPlaceFoundationSources(workspace,{floorIds:new Set([...seqById].filter(([,seq])=>seq<=throughAssistantSeq).map(([id])=>id))}):workspace;
  for(const fact of effectiveFoundationFacts(prefix).filter(fact=>fact.kind==='containment')){
   const seq=seqById.get(fact.knownFromFloorId)??0,prior=latest.get(fact.placeEntityId);
   if(seq<=throughAssistantSeq&&(!prior||(prior.seq??0)<=seq))latest.set(fact.placeEntityId,{seq,parents:new Set([fact.parentEntityId])});

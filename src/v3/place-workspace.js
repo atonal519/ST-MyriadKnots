@@ -18,6 +18,32 @@ export function rehomePlaceWorkspace(value,chatId,narrativeGeneration=null){
   return data;
 }
 
+function latestPlaceLibrary(workspace, sourceEntities, targetFloors) {
+  const data = copy(workspace), rows = data.placesByEntityId ?? {};
+  const seeds = new Map((data.foundation?.entities ?? []).map(entity => [entity.id, entity]));
+  const available = new Map([...sourceEntities, ...seeds.values(), ...Object.values(rows).flatMap(row => row.createdEntity ? [row.createdEntity] : [])]
+    .filter(entity => entity.entityType === 'place').map(entity => [entity.id, entity]));
+  const referenced = new Set([...Object.keys(rows), ...Object.values(rows).map(row => row.parentEntityId),
+    ...(data.foundation?.facts ?? []).flatMap(fact => [fact.placeEntityId, fact.parentEntityId, ...(fact.referencePlaceEntityIds ?? [])])].filter(Boolean));
+  for (const id of referenced) {
+    const entity = available.get(id);
+    if (!entity) continue;
+    if (!rows[id]?.createdEntity && !seeds.has(id)) seeds.set(id, copy(entity));
+    if (entity.mergedIntoEntityId) referenced.add(entity.mergedIntoEntityId);
+  }
+  if (seeds.size) data.foundation = { ...(data.foundation ?? { schemaVersion: 1, facts: [] }), entities: [...seeds.values()] };
+  // Library identities do not claim an appearance in the target's story floors.
+  for (const entity of [...seeds.values(), ...Object.values(rows).flatMap(row => row.createdEntity ? [row.createdEntity] : [])]) {
+    entity.firstSeenFloorId = null; entity.lastSeenFloorId = null;
+  }
+  const retained = new Set(targetFloors.map(floor => floor.id)), boundary = targetFloors.at(-1)?.id;
+  // Inherited corrections take effect at the target boundary; their original source and quote stay intact.
+  for (const fact of data.foundation?.facts ?? []) if (boundary && fact.knownFromFloorId && !retained.has(fact.knownFromFloorId)) {
+    fact.knownFromFloorId = boundary;
+  }
+  return data;
+}
+
 export function validatePlaceWorkspace(value, chatId) {
   if (!value || value.schemaVersion !== 1 || value.kind !== 'qqj-v3-place-workspace' || !isUuid(chatId) || value.chatId !== chatId
     || !value.placesByEntityId || typeof value.placesByEntityId !== 'object' || Array.isArray(value.placesByEntityId)
@@ -62,10 +88,11 @@ export function createPlaceWorkspaceStore({ client } = {}) {
     const saved = { data: validatePlaceWorkspace(result.data, identity.chatId), revision: result.revision };
     cache.set(identity.chatId, Promise.resolve(saved)); return saved;
   }
-  async function copyFrom(sourceIdentity,targetIdentity,{floorIds=null,narrativeGeneration=null}={}){
+  async function copyFrom(sourceIdentity,targetIdentity,{floorIds=null,narrativeGeneration=null,sourceEntities=[],targetFloors=null}={}){
     const target=await read(targetIdentity,{fresh:true});if(target.data)return target;
     const source=await read(sourceIdentity,{fresh:true});if(!source.data)return null;
-    const data=rehomePlaceWorkspace(placeWorkspaceForPrefix(source.data,floorIds),targetIdentity.chatId,narrativeGeneration);
+    const library=targetFloors?latestPlaceLibrary(source.data,sourceEntities,targetFloors):placeWorkspaceForPrefix(source.data,floorIds);
+    const data=rehomePlaceWorkspace(library,targetIdentity.chatId,narrativeGeneration);
     return put(targetIdentity,data,target.revision);
   }
   return Object.freeze({ read, put, copy:copyFrom, invalidate(chatId) { if (chatId) cache.delete(chatId); else cache.clear(); } });
@@ -151,7 +178,10 @@ export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),me
 export function withCreatedPlaces(entities = [], workspace) {
   const ids = new Set(entities.map(entity => entity.id));
   const added=[...manualPlaceFacts(workspace).flatMap(row=>row.createdEntity?[row.createdEntity]:[]),...(workspace?.foundation?.entities??[])];
-  return [...entities,...added.filter(entity=>{if(ids.has(entity.id))return false;ids.add(entity.id);return true;})];
+  const libraryIds = new Set(added.map(entity => entity.id));
+  const libraryIdentity = entity => ({ ...entity, firstSeenFloorId: null, lastSeenFloorId: null });
+  return [...entities.map(entity=>libraryIds.has(entity.id)?libraryIdentity(entity):entity),
+    ...added.filter(entity=>{if(ids.has(entity.id))return false;ids.add(entity.id);return true;}).map(libraryIdentity)];
 }
 
 export function placeDeletionIdentityIds(workspace, source) {

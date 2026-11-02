@@ -212,8 +212,8 @@ export const gouhuaDialogCss = `${scrollbarCss}${sharedDialogCss}
 .qqj-recent-items-dialog>.qqj-profile-switch-row{display:grid;gap:8px}
 .qqj-recent-items-dialog .qqj-profile-toolbar-actions,.qqj-recent-items-dialog .qqj-recent-list-actions,.qqj-recent-items-dialog .qqj-recent-batch-controls{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .qqj-recent-items-dialog .qqj-recent-batch-controls{flex-basis:100%}
-.qqj-recent-items-dialog .qqj-recent-primary-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,7em),1fr));align-items:stretch;gap:var(--qqj-space-group)}
-.qqj-recent-items-dialog .qqj-recent-primary-actions>button{min-width:0;width:100%;height:auto;white-space:normal;overflow-wrap:anywhere;text-align:center;justify-self:stretch}
+.qqj-recent-items-dialog .qqj-recent-primary-actions{display:flex;align-items:center;flex-wrap:wrap;gap:var(--qqj-space-group)}
+.qqj-recent-items-dialog .qqj-recent-primary-actions>button.secondary-action{flex:0 0 auto;min-width:0;max-width:100%;min-height:var(--qqj-compact-height);padding:var(--qqj-compact-pad-y) var(--qqj-compact-pad-x);font-size:var(--qqj-font-caption);line-height:var(--qqj-compact-line);border-radius:var(--qqj-radius-compact)}
 .qqj-recent-items-dialog>.v3-foundation{display:grid;min-width:0;gap:0}
 .qqj-recent-items-dialog .settings-field{display:grid;min-width:0;gap:5px;padding:10px 0;border-bottom:1px solid var(--sp-divider)}
 .qqj-recent-items-dialog .settings-field:last-child{border-bottom:0}

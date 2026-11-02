@@ -145,6 +145,26 @@ test('只有明确位置入口可切对应场所、展开目标并定位',async(
  const h=harness({snapshot:{...initial,userPosition:{status:'lastSeen',placeEntityId:'room',mapRootEntityId:'root',isCurrent:false}}});await h.view.activate();h.find('qqj-window-position')[0].fire('click');const entry=h.find('qqj-window-entry').find(n=>n.attributes['data-place-id']==='room');assert.equal(entry.open,true);assert.deepEqual(entry.children[0].scrollOptions,{block:'nearest'});
 });
 
+test('当前位置两入口跨页展开真实最子层，同场地换房不沿旧闭包定位',async()=>{
+ const data={...initial,places:[
+  {...place('a','范围甲',['d1','d2']),mapLevel:'scope',mapRole:'area'},
+  {...place('d1','一区',['site'],'a'),mapRole:'area'},{...place('d2','二区',['other-site'],'a'),mapRole:'area'},
+  {...place('site','场地',['floor'],'d1'),mapRole:'site'},{...place('floor','二层',['room-a','room-b'],'site'),mapRole:'interior'},
+  {...place('room-a','甲室',[],'floor'),mapRole:'interior'},{...place('room-b','乙室',['closet'],'floor'),mapRole:'interior'},{...place('closet','柜间',[],'room-b'),mapRole:'interior'},
+  {...place('other-site','普通场地',[],'d2'),mapRole:'site'},
+  {...place('b','范围乙',['b-site']),mapLevel:'scope',mapRole:'area'},{...place('b-site','乙场地',[],'b'),mapRole:'site'}
+ ],mapRootIds:['a','b'],unassignedPlaceIds:[],userPosition:{status:'confirmed',placeEntityId:'room-a',isCurrent:true}},h=harness({snapshot:data});await h.view.activate();
+ const entry=id=>h.find('qqj-window-entry').find(n=>n.attributes['data-place-id']===id),pin=id=>h.find('qqj-window-marker').find(n=>n.attributes['data-place-id']===id);
+ h.find('qqj-window-city-tab').find(n=>n.attributes['data-city-sheet-target']==='b').fire('click');
+ h.find('qqj-window-position')[0].fire('click');assert.equal(h.find('qqj-window-page')[0].attributes['data-city-sheet'],'a');
+ for(const id of ['d1','site','floor','room-a'])assert.equal(entry(id).open,true);assert.equal(entry('room-a').attributes['data-selected'],'true');assert.deepEqual(entry('room-a').children[0].scrollOptions,{block:'nearest'});
+ h.find('qqj-window-area-open').find(n=>n.attributes['data-scope-id']==='d2').fire('click');pin('site').fire('click');
+ assert.equal(entry('room-a').attributes['data-selected'],'true');assert.deepEqual(entry('room-a').children[0].scrollOptions,{block:'nearest'});
+ const currentPin=pin('site');h.emit({projectionRevision:2,userPosition:{status:'confirmed',placeEntityId:'room-b',isCurrent:true}});assert.equal(pin('site'),currentPin);
+ currentPin.fire('click');assert.equal(entry('room-b').attributes['data-selected'],'true');assert.equal(entry('room-b').open,true);assert.equal(entry('room-a').open,false);assert.equal(entry('closet').open,false);assert.deepEqual(entry('room-b').children[0].scrollOptions,{block:'nearest'});
+ pin('other-site').fire('click');assert.equal(entry('other-site').attributes['data-selected'],'true');assert.equal(entry('other-site').children[0].scrollOptions,undefined);assert.equal(h.writes.length,0);
+});
+
 test('右侧编辑不触发展开，通知与保存失败保草稿，仅保存修改字段',async()=>{
  let options,failed=true,writes=[];const context={chatId:chat,expectedRevision:0};const h=harness({dialog:{custom(value){options=value;return new Promise(()=>{});}},editingRuntime:{getPlaceEditContext:()=>context,async savePlace(id,fields,scope){writes.push({id,fields,scope});if(failed)throw Error('模拟失败');}}});await h.view.activate();h.find('qqj-window-marker')[0].fire('click');
  let stopped=0;h.find('qqj-window-edit').find(node=>node.attributes['data-edit-place']==='room').fire('click',{stopPropagation(){stopped++;},preventDefault(){stopped++;}});assert.equal(stopped,2);const form=options.content,description=flat(form).find(node=>node.attributes['data-place-field']==='description');description.value='人工卫浴';description.fire('input');

@@ -63,7 +63,7 @@ export function placeSourceLocationReference(memory, sourceFloorId = memory.floo
 }
 
 // Ownership is source-bounded identity context; locatedIn does not become a physical containment.
-export function projectPlaceOwnership(floorMemories = [], throughAssistantSeq = Infinity, floors = [], placeWorkspace = null) {
+export function projectPlaceOwnership(floorMemories = [], throughAssistantSeq = Infinity, floors = [], placeWorkspace = null, libraryThroughAssistantSeq = throughAssistantSeq) {
   const seqById = new Map(floors.map(floor => [floor.id ?? floor.floorId, floor.assistantSeq]));
   const latest = new Map();
   for (const memory of floorMemories) {
@@ -84,7 +84,7 @@ export function projectPlaceOwnership(floorMemories = [], throughAssistantSeq = 
       else if (seq === prior.seq) prior.parents.add(edge.parentEntityId);
     }
   }
-  mergeFoundationParents(latest, placeWorkspace, seqById, throughAssistantSeq);
+  mergeFoundationParents(latest, placeWorkspace, seqById, libraryThroughAssistantSeq);
   const result = new Map([...latest].map(([id, value]) => [id, value.parents]));
   for (const row of manualPlaceFacts(placeWorkspace)) if (Object.hasOwn(row, 'parentEntityId')) result.set(row.entityId, new Set(row.parentEntityId ? [row.parentEntityId] : []));
   const unresolved = new Set();

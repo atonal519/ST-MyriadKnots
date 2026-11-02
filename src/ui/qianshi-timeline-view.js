@@ -86,7 +86,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   const resetForChat = nextChatId => {
     if (chatId === nextChatId) return;
     epoch += 1; chatId = nextChatId; query = ''; feedback = ''; textEditors.clear(); statusSaves.clear(); editableEvents.clear(); openIds.clear(); nestedOpenIds.clear(); matterOpenIds.clear(); openDayStates.clear(); undatedOpenState = false; anomalyOpenFloorIds.clear();
-    if (anomalyContent) dialog?.cancelTop?.();
+    if (anomalyContent || todoDialog) dialog?.cancelTop?.();
   };
   const canEditEvent = eventId => {
     if (!editableEvents.has(eventId)) editableEvents.set(eventId, runtime.canEditQianshiEventText(eventId));
@@ -827,6 +827,22 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       onClose: () => { if (anomalyContent === content) anomalyContent = null; } });
   }
 
+  function startTodoCreate(){
+    if(!dialog?.custom||!runtime.createQianshiTodo||!active||snapshot?.status!=='ready'||otherWorkBusy()||historyBusy())return;
+    const draft={title:'',description:'',storyTime:'',scheduledTime:'',people:[]},owner=chatId,mine=epoch,form=element('div','qqj-editor-dialog qqj-profile-form'),content=element('section','qqj-editor-group');content.append(element('h3','','待办内容'));form.append(content);
+    const field=(key,label,parent,multiline=false)=>{const row=element('label','settings-field'),input=element(multiline?'textarea':'input','settings-input');input.value=draft[key];input.setAttribute('aria-label',label);input.addEventListener('input',()=>{draft[key]=input.value;});if(multiline)input.rows=4;row.append(element('span','',label),input);parent.append(row);};
+    field('title','待办名称',content);field('description','待办说明',content,true);
+    const peopleGroup=element('details','qqj-editor-group');peopleGroup.append(element('summary','qqj-editor-group-summary','涉及人物（可选）'));
+    const search=element('input','settings-input');search.type='search';search.placeholder='搜索人物';search.setAttribute('aria-label','搜索待办人物');const searchField=element('label','settings-field');searchField.append(element('span','','搜索人物'),search);peopleGroup.append(searchField);
+    const choices=element('div','qqj-qianshi-people-choices'),rows=[],selected=new Map();
+    for(const person of runtime.getQianshiEditPeople?.()??[]){const row=element('label','qqj-qianshi-person-choice'),input=element('input');input.type='checkbox';input.setAttribute('aria-label',person.name);input.addEventListener('change',()=>{if(input.checked)selected.set(person.entityId,{entityId:person.entityId,name:person.name});else selected.delete(person.entityId);});row.append(input,element('span','',person.name));choices.append(row);rows.push({row,text:[person.name,...(person.aliases??[])].join(' ').toLocaleLowerCase()});}
+    const empty=element('p','settings-hint','没有匹配的人物。');empty.hidden=rows.length>0;choices.append(empty);search.addEventListener('input',()=>{const query=search.value.trim().toLocaleLowerCase();let visible=0;for(const item of rows){item.row.hidden=!item.text.includes(query);if(!item.row.hidden)visible++;}empty.hidden=visible>0;});peopleGroup.append(choices);form.append(peopleGroup);
+    const timing=element('details','qqj-editor-group');timing.append(element('summary','qqj-editor-group-summary','时间信息'));field('storyTime','发生时间（可空）',timing);field('scheduledTime','约定 / 预计时间（可空）',timing);form.append(timing,element('p','settings-hint','保存为人工待办，时间未知可留空；不调用模型。'));
+    const ownedDialog={content:form};todoDialog=ownedDialog;
+    let saving=false;
+    void dialog.custom({title:'新增待办',content:form,confirmText:'保存待办',cancelText:'取消',submit:async()=>{if(saving)return false;if(!active||chatId!==owner||epoch!==mine)return false;if(otherWorkBusy()||historyBusy())throw new Error('请等待当前任务结束后再保存。');saving=true;try{await runtime.createQianshiTodo({...draft,people:[...selected.values()],storyTime:draft.storyTime.trim()||null,scheduledTime:draft.scheduledTime.trim()||null});return true;}finally{saving=false;}},onClose:()=>{if(todoDialog===ownedDialog)todoDialog=null;}});
+  }
+
   function renderHealth() {
     const coverage = coverageProjection(snapshot);
     const history = snapshot?.history ?? {};
@@ -862,6 +878,11 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       rejudge.disabled = otherWorkBusy(); rejudge.addEventListener('click', () => { void prepareRejudge(); }); actions.append(rejudge);
     }
     if (snapshot?.status === 'ready') {
+      if (typeof runtime.createQianshiTodo === 'function') {
+        const add = element('button', 'secondary-action compact', '新增待办'); add.type = 'button'; add.dataset.focusKey = 'qianshi-create-todo';
+        add.disabled = historyRunning || otherWorkBusy() || typeof dialog?.custom !== 'function';
+        add.addEventListener('click', startTodoCreate); actions.append(add);
+      }
       const todos = element('button', 'secondary-action', `待办事项（${todoCount}）`); todos.type = 'button'; todos.dataset.focusKey = 'qianshi-todos-action';
       todos.disabled = typeof dialog?.custom !== 'function'; todos.addEventListener('click', openTodos); actions.append(todos);
     }

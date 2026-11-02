@@ -1,6 +1,6 @@
 import { replaceCseSourceMacros } from '../cse-source-selection.js';
 import { identityBriefSourceForRecord } from './identity-brief.js';
-import { filterPlaceMemory, placeWorkspaceForPrefix, withCreatedPlaces, placeDeletionIdentityIds } from './place-workspace.js';
+import { filterPlaceMemory, withCreatedPlaces, placeDeletionIdentityIds } from './place-workspace.js';
 
 const labelKey = value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase();
 
@@ -86,7 +86,7 @@ export function normalizeIdentityProjection(value = {}, macros = null) {
 export function deriveUserIdentityProjection({ entities = [], baseline = null, floors = null, floorMemories = [], identityProjection = null } = {}) {
   const oldPlaceDeleted = new Set(identityProjection?.placeDeletedEntityIds ?? []);
   const placeDeletedEntityIds = floors ? placeDeletionIdentityIds(identityProjection?.placeWorkspace, { floors, floorMemories }) : identityProjection?.placeDeletedEntityIds ?? [];
-  const projection = normalizeIdentityProjection({ ...(identityProjection ?? {}), deletedEntityIds: (identityProjection?.deletedEntityIds ?? []).filter(id => !oldPlaceDeleted.has(id)), placeDeletedEntityIds, ...(identityProjection?.placeWorkspace ? { placeWorkspace: placeWorkspaceForPrefix(identityProjection.placeWorkspace, floors ? new Set(floors.map(floor => floor.id)) : null) } : {}) }, { user: baseline?.userPersona?.name, char: baseline?.characterCard?.name });
+  const projection = normalizeIdentityProjection({ ...(identityProjection ?? {}), deletedEntityIds: (identityProjection?.deletedEntityIds ?? []).filter(id => !oldPlaceDeleted.has(id)), placeDeletedEntityIds }, { user: baseline?.userPersona?.name, char: baseline?.characterCard?.name });
   const active = entities.filter(entity => (entity.recordStatus === undefined || entity.recordStatus === 'active') && entity.status !== 'invalidated');
   const users = active.filter(entity => entity.entityType === 'person' && entity.specialRole === 'user');
   const redirects = { ...Object.fromEntries(active.filter(entity => entity.status === 'merged' && entity.mergedIntoEntityId)

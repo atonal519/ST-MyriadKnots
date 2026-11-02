@@ -2223,3 +2223,21 @@ test('千事未完成任务短提示不要求复制诊断',()=>{
  const snapshot=fixture();snapshot.history={status:'failed',message:'读取记忆失败，请到设置复制状态诊断。'};const h=harness({initialSnapshot:snapshot});
  const health=flatten(h.container).find(n=>String(n.className).includes('qqj-page-health'));assert.doesNotMatch(health.textContent,/复制|诊断/);assert.match(health.textContent,/未完成|失败/);h.view.deactivate();
 });
+
+test('201千事工具栏新增待办沿原保存，取消零写、失败保草稿并跟随忙态', async () => {
+  const person={entityId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'沈棠',aliases:['小沈']},h=harness({editPeople:[person]}),writes=[];let fail=true;
+  h.runtime.createQianshiTodo=async fields=>{writes.push(structuredClone(fields));if(fail){fail=false;throw Error('保存失败');}return {status:'saved'};};h.emit();
+  const add=()=>byText(h.container,'新增待办');assert.ok(add());assert.equal(add().disabled,false);add().fire('click');assert.equal(activeCustomDialog.options.title,'新增待办');h.cancelEditor();assert.equal(writes.length,0);
+  add().fire('click');const content=h.editor();const input=(label,value)=>{const node=flatten(content).find(n=>n.attributes['aria-label']===label);assert.ok(node,label);node.value=value;node.fire('input');return node;};
+  input('待办名称','寄出旧信');const description=input('待办说明','带上回执');const search=input('搜索待办人物','小沈');assert.equal(search.value,'小沈');const choice=flatten(content).find(n=>n.type==='checkbox');choice.checked=true;choice.fire('change');
+  assert.equal(await h.saveEditor(),false);assert.equal(h.editor(),content);assert.equal(description.value,'带上回执');assert.equal(await h.saveEditor(),true);
+  assert.deepEqual(writes.at(-1),{title:'寄出旧信',description:'带上回执',storyTime:null,scheduledTime:null,people:[{entityId:person.entityId,name:person.name}]});
+  h.emit(fixture(),{memoryWorkBusy:true});assert.equal(add().disabled,true);h.emit(fixture(),{memoryWorkBusy:false,qianshiHistoryActive:true});assert.equal(add().disabled,true);h.emit(fixture(),{});assert.equal(add().disabled,false);h.view.deactivate();
+});
+
+test('201千事新增待办切聊离页不迟到保存，同一草稿不重复提交', async () => {
+  const h=harness();let calls=0,release;h.runtime.createQianshiTodo=async()=>{calls++;await new Promise(resolve=>{release=resolve;});return {status:'saved'};};h.emit();
+  byText(h.container,'新增待办').fire('click');const stale=activeCustomDialog.options.submit;h.emit({...fixture(),identity:{qqjChatId:'chat-b'}},{});assert.equal(await stale(),false);assert.equal(calls,0);
+  byText(h.container,'新增待办').fire('click');const leaving=activeCustomDialog.options.submit;h.view.deactivate();assert.equal(await leaving(),false);assert.equal(calls,0);await h.view.activate();
+  byText(h.container,'新增待办').fire('click');const submit=activeCustomDialog.options.submit,first=submit();assert.equal(await submit(),false);assert.equal(calls,1);release();assert.equal(await first,true);h.cancelEditor();h.view.deactivate();
+});

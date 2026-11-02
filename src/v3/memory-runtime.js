@@ -73,14 +73,16 @@ const qianshiText = (value, maximum) => String(value ?? '').normalize('NFKC').re
 const qianshiTextEventSignature = event => { const value = clone(event); delete value.important; return JSON.stringify(value); };
 const counts = memory => Object.fromEntries(['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'exactAnchors', 'openLoops', 'ambiguities', 'cseSignals'].map(field => [field, memory?.[field]?.length ?? 0]));
 const effectiveSummary = memory => memory?.summary?.effectiveSource === 'user' ? memory.summary.userText : memory?.summary?.aiText;
-function previousPlaceIdentityContext(source, beforeIndex, prefixFloorIds, memoryMap, entities, identityProjection) {
-  if (!prefixFloorIds.size) return Object.freeze({ placeNames: Object.freeze([]), placeBindings: Object.freeze([]), priorityPlaceEntityIds: Object.freeze([]), parentEntityIdsByPlaceId: new Map() });
+function previousPlaceIdentityContext(source, beforeIndex, prefixFloorIds, memoryMap, entities, identityProjection, libraryThroughAssistantSeq) {
+  const latestLibrary = libraryThroughAssistantSeq === Infinity;
+  if (!prefixFloorIds.size && !latestLibrary) return Object.freeze({ placeNames: Object.freeze([]), placeBindings: Object.freeze([]), priorityPlaceEntityIds: Object.freeze([]), parentEntityIdsByPlaceId: new Map() });
   let memory = null;
   for (let index = beforeIndex - 1; index >= 0 && !memory; index -= 1) {
     const candidate = memoryMap.get(source.floors[index].id);
     if (candidate?.recordStatus === 'active') memory = candidate;
   }
-  if (!memory) return Object.freeze({ placeNames: Object.freeze([]), placeBindings: Object.freeze([]), priorityPlaceEntityIds: Object.freeze([]), parentEntityIdsByPlaceId: new Map() });
+  if (!memory && !latestLibrary) return Object.freeze({ placeNames: Object.freeze([]), placeBindings: Object.freeze([]), priorityPlaceEntityIds: Object.freeze([]), parentEntityIdsByPlaceId: new Map() });
+  memory ??= { locations: [] };
 
   const prefixEntities = entitiesThroughFloorIds(entities, prefixFloorIds);
   const activePlaceEntities = prefixEntities.filter(entity => entity?.entityType === 'place'
@@ -89,7 +91,7 @@ function previousPlaceIdentityContext(source, beforeIndex, prefixFloorIds, memor
   const visiblePlaceIds = new Set(activePlaceEntities);
   const foundationRedirects = Object.fromEntries(prefixEntities.filter(entity => (entity?.recordStatus === undefined || entity.recordStatus === 'active')
     && entity.status === 'merged' && typeof entity.mergedIntoEntityId === 'string').map(entity => [entity.id, entity.mergedIntoEntityId]));
-  const placeIdentityProjection = { ...identityProjection, placeWorkspace: placeWorkspaceForPrefix(identityProjection?.placeWorkspace, prefixFloorIds),
+  const placeIdentityProjection = { ...identityProjection, placeWorkspace: latestLibrary ? identityProjection?.placeWorkspace : placeWorkspaceForPrefix(identityProjection?.placeWorkspace, prefixFloorIds),
     identityRedirectsByEntityId: { ...foundationRedirects, ...(identityProjection?.identityRedirectsByEntityId ?? {}) } };
   const deletedIds = new Set(placeIdentityProjection.deletedEntityIds ?? []);
   const canonicalPlaceId = value => {
@@ -99,7 +101,7 @@ function previousPlaceIdentityContext(source, beforeIndex, prefixFloorIds, memor
   };
   const projectedPlaceMemories = (source.floorMemories ?? []).filter(candidate => candidate.recordStatus === 'active')
     .map(candidate => projectFloorMemoryIdentityReferences(candidate, placeIdentityProjection));
-  const parentSets = projectPlaceOwnership(projectedPlaceMemories, source.floors[beforeIndex - 1]?.assistantSeq ?? 0, source.floors, placeIdentityProjection.placeWorkspace);
+  const parentSets = projectPlaceOwnership(projectedPlaceMemories, source.floors[beforeIndex - 1]?.assistantSeq ?? 0, source.floors, placeIdentityProjection.placeWorkspace, libraryThroughAssistantSeq);
   const placeReferencesById = new Map();
   const seqById = new Map(source.floors.map(floor => [floor.id, floor.assistantSeq]));
   for (const candidate of projectedPlaceMemories) {
@@ -199,7 +201,8 @@ function previousFloorContext(source, floorIndex, memoryMap, placeIdentity = nul
       ...(placeIdentity?.placeSourceLocationReferencesById?.size ? { placeSourceLocationReferencesById: placeIdentity.placeSourceLocationReferencesById } : {}),
       ...(placeIdentity?.parentEntityIdsByPlaceId?.size ? { parentEntityIdsByPlaceId: placeIdentity.parentEntityIdsByPlaceId, placeSourceLocationReferencesById: placeIdentity.placeSourceLocationReferencesById } : {}) });
   }
-  return placeIdentity?.placeBindings?.length || placeIdentity?.placeNames?.length
+  return placeIdentity?.placeBindings?.length || placeIdentity?.placeNames?.length || placeIdentity?.parentEntityIdsByPlaceId?.size
+    || placeIdentity?.manualPlaces?.length || placeIdentity?.placeFeatures?.length || placeIdentity?.placeRelations?.length
     ? Object.freeze({ time: null, summaryTail: null, ...(Array.isArray(locationReference) && locationReference.length ? { locationReference } : {}), placeNames: placeIdentity.placeNames, placeBindings: placeIdentity.placeBindings,
       placeRelations: placeIdentity.placeRelations, manualPlaces: placeIdentity.manualPlaces, placeFeatures: placeIdentity.placeFeatures, featurePlaceEntityIds: placeIdentity.featurePlaceEntityIds, priorityPlaceEntityIds: placeIdentity.priorityPlaceEntityIds, parentEntityIdsByPlaceId: placeIdentity.parentEntityIdsByPlaceId, placeSourceLocationReferencesById: placeIdentity.placeSourceLocationReferencesById })
     : null;
@@ -613,10 +616,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const row = data.placesByEntityId[entityId] ?? { scopes: {} };
     if (createdEntity) row.createdEntity = createdEntity;
     // Editing an automatic-only place gives its fixed identity to the manual row.
-    const fixedSeed=data.foundation?.entities.find(entity=>entity.id===entityId);if(fixedSeed&&!row.createdEntity)row.createdEntity=fixedSeed;
+    const libraryEntity=id=>data.foundation?.entities.find(entity=>entity.id===id)
+      ??(reachable?.root?.chatId===context.chatId?reachable.entities.find(entity=>entity.id===id&&entity.entityType==='place'):null);
+    const librarySeed=entity=>({...clone(entity),firstSeenFloorId:null,lastSeenFloorId:null});
+    const fixedSeed=libraryEntity(entityId);if(fixedSeed&&!row.createdEntity)row.createdEntity=librarySeed(fixedSeed);
     if(fields.parentEntityId&&!data.placesByEntityId[fields.parentEntityId]?.createdEntity){
-      const parent=data.foundation?.entities.find(entity=>entity.id===fields.parentEntityId);
-      if(parent){const pinned=data.placesByEntityId[parent.id]??{scopes:{}};pinned.createdEntity=parent;
+      const parent=libraryEntity(fields.parentEntityId);
+      if(parent){const pinned=data.placesByEntityId[parent.id]??{scopes:{}};pinned.createdEntity=librarySeed(parent);
         if(!Object.hasOwn(pinned,'name')){pinned.name=parent.displayName;pinned.scopes.name=clone(context.scope);}data.placesByEntityId[parent.id]=pinned;}
     }
     for (const [key, value] of Object.entries(fields)) {
@@ -711,7 +717,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             bodySources.push(fragment);seenQuotes.set(key,fragment);
           }
         }
-        const missingSources=await collectMissingPlaceSources({entities,entityKeys,bodySources,floors:source.floors,memoriesByFloor:coveredMemoryMap(source)});check(context.chatId);
+        // First-seen evidence belongs to Core story records, not the library's display identities.
+        const missingSources=await collectMissingPlaceSources({entities:source.entities,entityKeys,bodySources,floors:source.floors,memoriesByFloor:coveredMemoryMap(source)});check(context.chatId);
         for(const source of missingSources)bodySources.push({...source,evidenceKey:`evidence-${bodySources.length+1}`});
         const catalog=typeof placeWorldInfoProvider==='function'?await placeWorldInfoProvider({chatId:context.chatId,organize:true}):{};check(context.chatId);
         const placeWorldbookSources=selectPlaceWorldbookSources({...catalog,places,organize:true}),characterCardSources=catalog.characterCardSources??[];
@@ -2373,7 +2380,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       prepareStep = 'sourceSelection';
       const firstFloorIndex = source.floors.findIndex(item => item.id === aggregateFloors[0].id);
       const qianshiPrefixFloorIds = new Set(source.floors.slice(0, firstFloorIndex).map(item => item.id));
-      const previousPlaceIdentity = previousPlaceIdentityContext(source, firstFloorIndex, qianshiPrefixFloorIds, memoryMap, withCreatedPlaces(source.entities, extractorProjection.placeWorkspace), extractorProjection);
+      // Story context stops before this batch; ordinary extraction still sees the latest place library.
+      const libraryThroughAssistantSeq = historicalTarget ? (source.floors[firstFloorIndex - 1]?.assistantSeq ?? 0) : Infinity;
+      const previousPlaceIdentity = previousPlaceIdentityContext(source, firstFloorIndex, qianshiPrefixFloorIds, memoryMap, withCreatedPlaces(source.entities, extractorProjection.placeWorkspace), extractorProjection, libraryThroughAssistantSeq);
       const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, previousPlaceIdentity, firstFloorIndex, hostSnapshot.chat, isFrozenFloor);
       prepareStep = 'qianshiCandidates';
       const candidateSource = { ...source, calendar: storyCalendarProvider(source.root?.chatId), floors: source.floors.slice(0, firstFloorIndex),

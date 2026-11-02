@@ -1284,11 +1284,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const label = state?.status === 'disabled' ? '已关闭' : state?.active ? state.phase === 'saving' ? '保存中' : '处理中' : state?.status === 'waiting' ? '等待记忆同步' : failureNotice || (result?.status === 'completed' ? '已处理' : result?.status === 'empty' ? '已检查无适合事项' : '待初始化');
     status.textContent = [label, Array.isArray(tracked) ? `追踪中 ${tracked.length} 项` : '', state?.progress ? `本次进度 ${state.progress.completed}/${state.progress.total}` : ''].filter(Boolean).join(' · ');
     status.className = ['failed', 'partial'].includes(result?.status) ? 'settings-result error' : 'settings-result';
-    organize.textContent = result?.currentReview && ['failed', 'interrupted', 'partial'].includes(result?.status) ? '重新更新当前事项' : ['failed', 'interrupted', 'partial'].includes(result?.status) ? '继续补查历史' : '补查历史';
+    organize.textContent = '补查历史';
     organize.disabled = state?.canOrganize !== true || result?.reason === 'read' || Boolean(recentItemsUi.pendingAction);
     if (stop) { stop.hidden = !state?.active || state.phase === 'saving'; stop.disabled = !state?.active; }
     retryRead.hidden = result?.reason !== 'read'; retryRead.disabled = state?.active === true || state?.status === 'disabled' || state?.status === 'waiting';
-    stoppedToggle.textContent = showStoppedItems ? '返回追踪中事项' : `查看停止项${Array.isArray(stopped) ? `（${stopped.length}）` : ''}`;
+    stoppedToggle.textContent = showStoppedItems ? '追踪中' : '已停止';
     stoppedToggle.setAttribute('aria-pressed', String(showStoppedItems));
     stoppedToggle.disabled = recentItemDraft !== null || Boolean(recentItemsUi.pendingAction);
     batchEntry.textContent = recentBatchMode ? '取消批量' : '批量管理';
@@ -1539,14 +1539,14 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const body = element('div', 'qqj-editor-dialog qqj-recent-items-dialog'); body.id = 'qqj-recent-items'; toggle.setAttribute('aria-haspopup', 'dialog');
     const row = element('div', 'qqj-profile-switch-row'), copy = element('div');
     const status = element('p', 'settings-result'); status.setAttribute('role', 'status');
-    const organize = element('button', 'secondary-action', '补查历史'); organize.type = 'button';
+    const organize = element('button', 'secondary-action compact', '补查历史'); organize.type = 'button';
     const retryRead = element('button', 'secondary-action', '重试读取'); retryRead.type = 'button';
     const stop = element('button', 'secondary-action', '停止补查'); stop.type = 'button'; stop.hidden = true;
     stop.addEventListener('click', () => timeRuntime?.stop?.());
-    const buttons = element('div', 'qqj-recent-primary-actions'),addItem=element('button','secondary-action compact','新增事项');addItem.type='button';addItem.addEventListener('click',()=>{if(!addItem.disabled)startRecentEdit();});buttons.append(addItem,retryRead, stop, organize);
+    const buttons = element('div', 'qqj-recent-primary-actions'),addItem=element('button','secondary-action compact','新增');addItem.type='button';addItem.addEventListener('click',()=>{if(!addItem.disabled)startRecentEdit();});buttons.append(addItem,retryRead, stop, organize);
     const reason = element('p', 'settings-hint'), list = element('div', 'v3-foundation');
-    const stoppedToggle = element('button', 'secondary-action', '查看停止项'); stoppedToggle.type = 'button';
-    const batchEntry = element('button', 'secondary-action', '批量管理'); batchEntry.type = 'button';
+    const stoppedToggle = element('button', 'secondary-action compact', '已停止'); stoppedToggle.type = 'button';
+    const batchEntry = element('button', 'secondary-action compact', '批量管理'); batchEntry.type = 'button';
     buttons.append(stoppedToggle, batchEntry);
     const batchControls = element('div', 'qqj-recent-batch-controls'); batchControls.hidden = true;
     const batchAll = element('button', 'secondary-action', '选择当前列表'), batchProblems = element('button', 'secondary-action', '选择问题项'); batchAll.type = 'button'; batchProblems.type = 'button';
@@ -1587,20 +1587,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     updateRecentItems();
     if (recentItemsOpen) void timeRuntime?.refreshStatus?.();
     return section;
-  }
-  function startTodoCreate(){
-    if(!customImpl||!runtime.createQianshiTodo)return;
-    const draft={title:'',description:'',storyTime:'',scheduledTime:'',people:[]},owner=chatId,mine=epoch,form=element('div','qqj-editor-dialog qqj-profile-form'),content=element('section','qqj-editor-group');content.append(element('h3','','待办内容'));form.append(content);
-    const field=(key,label,parent,multiline=false)=>{const row=element('label','settings-field'),input=element(multiline?'textarea':'input','settings-input');input.value=draft[key];input.setAttribute('aria-label',label);input.addEventListener('input',()=>{draft[key]=input.value;});if(multiline)input.rows=4;row.append(element('span','',label),input);parent.append(row);};
-    field('title','待办名称',content);field('description','待办说明',content,true);
-    const peopleGroup=element('details','qqj-editor-group');peopleGroup.append(element('summary','qqj-editor-group-summary','涉及人物（可选）'));
-    const search=element('input','settings-input');search.type='search';search.placeholder='搜索人物';search.setAttribute('aria-label','搜索待办人物');const searchField=element('label','settings-field');searchField.append(element('span','','搜索人物'),search);peopleGroup.append(searchField);
-    const choices=element('div','qqj-qianshi-people-choices'),rows=[],selected=new Map();
-    for(const person of runtime.getQianshiEditPeople?.()??[]){const row=element('label','qqj-qianshi-person-choice'),input=element('input');input.type='checkbox';input.setAttribute('aria-label',person.name);input.addEventListener('change',()=>{if(input.checked)selected.set(person.entityId,{entityId:person.entityId,name:person.name});else selected.delete(person.entityId);});row.append(input,element('span','',person.name));choices.append(row);rows.push({row,text:[person.name,...(person.aliases??[])].join(' ').toLocaleLowerCase()});}
-    const empty=element('p','settings-hint','没有匹配的人物。');empty.hidden=rows.length>0;choices.append(empty);search.addEventListener('input',()=>{const query=search.value.trim().toLocaleLowerCase();let visible=0;for(const item of rows){item.row.hidden=!item.text.includes(query);if(!item.row.hidden)visible++;}empty.hidden=visible>0;});peopleGroup.append(choices);form.append(peopleGroup);
-    const timing=element('details','qqj-editor-group');timing.append(element('summary','qqj-editor-group-summary','时间信息'));field('storyTime','发生时间（可空）',timing);field('scheduledTime','约定 / 预计时间（可空）',timing);form.append(timing,element('p','settings-hint','保存为人工待办，时间未知可留空；不调用模型。'));
-    let saving=false;
-    void customImpl({title:'新增待办',content:form,confirmText:'保存待办',cancelText:'取消',submit:async()=>{if(saving)return false;if(!active||page!=='memories'||chatId!==owner||epoch!==mine)return false;saving=true;try{await runtime.createQianshiTodo({...draft,people:[...selected.values()],storyTime:draft.storyTime.trim()||null,scheduledTime:draft.scheduledTime.trim()||null});return true;}finally{saving=false;}}});
   }
 
   function renderMemories(state) {
@@ -1695,7 +1681,6 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const memorySearch = searchControl({ value: memorySearchQuery, placeholder: '搜索全部摘要', ariaLabel: '搜索当前聊天的全部摘要', onInput: value => { if (value !== memorySearchQuery) memoryListPage = 0; memorySearchQuery = value; fillList(); }, onClear: () => { memorySearchQuery = ''; memoryListPage = 0; fillList(); } });
     const toolbar = element('div', 'qqj-memory-toolbar'); toolbar.append(paginationSlot);
     if (timeRuntime) toolbar.append(renderRecentItems());
-    if(runtime.createQianshiTodo){const actions=element('div','qqj-profile-toolbar-actions'),add=element('button','secondary-action compact','新增待办');add.type='button';add.disabled=workBusy(state);memoryWorkControls.push({node:add,disabled:current=>workBusy(current)});add.addEventListener('click',startTodoCreate);actions.append(add);toolbar.append(actions);}
     pageNode.append(memorySearch, toolbar);
     fillList();
     pageNode.append(list); return pageNode;

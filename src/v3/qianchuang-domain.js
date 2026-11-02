@@ -4,7 +4,7 @@ import { memorySourceFloorIds } from './memory-schema.js';
 import { migrationPartition } from './migration-prefix.js';
 import { isMemoryExcludedFloor } from './memory-exclusion.js';
 import { projectPlaceFeatures } from './spatial-domain.js';
-import { applyPlaceSnapshot, filterPlaceMemory } from './place-workspace.js';
+import { applyPlaceSnapshot, filterPlaceMemory, placeWorkspaceForPrefix } from './place-workspace.js';
 
 const frozen = values => Object.freeze(values.map(value => Object.freeze(value)));
 const unknownPosition = () => Object.freeze({ status: 'unknown', placeEntityId: null, mapRootEntityId: null, isCurrent: false, sourceAssistantSeq: null });
@@ -14,9 +14,9 @@ export function projectQianchuangSnapshot(source, { identityProjection = null, t
   const empty = { status: 'unavailable', chatId: null, narrativeGeneration: null, rootRevision: null, stableThroughAssistantSeq: 0,
     summarizedThroughAssistantSeq: 0, places: Object.freeze([]), containments: Object.freeze([]), mapRootIds: Object.freeze([]), unassignedPlaceIds: Object.freeze([]), userPosition: unknownPosition() };
   if (!source?.root || source.status && source.status !== 'ready') return Object.freeze(empty);
-  if(Number.isFinite(throughAssistantSeq)&&identityProjection?.placeWorkspace?.foundation)identityProjection={...identityProjection,placeWorkspace:{...identityProjection.placeWorkspace,foundation:undefined}};
   const floors = (source.floors ?? []).filter(floor => Number.isSafeInteger(floor.assistantSeq) && floor.assistantSeq > 0 && floor.assistantSeq <= throughAssistantSeq);
   const seqById = new Map(floors.map(floor => [floor.id, floor.assistantSeq])), prefixIds = new Set(seqById.keys());
+  if(Number.isFinite(throughAssistantSeq)&&identityProjection?.placeWorkspace)identityProjection={...identityProjection,placeWorkspace:{...placeWorkspaceForPrefix(identityProjection.placeWorkspace,prefixIds),foundation:undefined}};
   const partition = migrationPartition(source);
   const eligibleIds = new Set(floors.filter(floor => !isMemoryExcludedFloor(floor, null, source.checkpoint, { frozen: partition.isFrozenFloor(floor.id) })).map(floor => floor.id));
   const refs = item => (item.evidenceRefs ?? []).filter(ref => eligibleIds.has(ref.floorId));

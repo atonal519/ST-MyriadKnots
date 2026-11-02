@@ -468,10 +468,10 @@ test('摘要近期事项默认折叠并局部更新，草稿同步恢复可点�
   timeState = { ...timeState, last: { status: 'partial', message: '第2项：来源编号未在本次请求中出现。请手动继续。' } }; publish();
   assert.match(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /部分未更新/);
   assert.doesNotMatch(flatten(activeEditorDialog?.content ?? container).map(node => node.textContent).join('|'), /第2项：来源编号/);
-  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '继续补查历史').disabled, false);
+  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '补查历史').disabled, false);
   timeState = { ...timeState, status: 'failed', trackedItems: null, last: { status: 'failed', reason: 'read', message: '读取失败' } }; publish();
   const retry = flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '重试读取'); assert.equal(retry.hidden, false);
-  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '继续补查历史').disabled, true);
+  assert.equal(flatten(activeEditorDialog?.content ?? container).find(node => node.textContent === '补查历史').disabled, true);
   await retry.click(); assert.equal(reads, 2); assert.equal(organizes, 1);
   view.deactivate(); assert.equal(timeListeners.size, 0); assert.equal(memoryListeners.size, 0);
   view.mount(container); assert.equal(timeListeners.size, 1); assert.equal(memoryListeners.size, 1); assert.equal(reads, 2);
@@ -545,7 +545,7 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
   await flatten(recentBody).find(node => node.textContent === '暂停').click();
   assert.equal(flatten(container).some(node => node.textContent === '确认保存'), false, '弹窗确认后直接保存，不再嵌套确认');
   assert.equal(item.status, 'paused'); assert.equal(flatten(container).find(node => node.className.includes('qqj-profile-more')).textContent, '近期事项（0）');
-  const beforeStopped = reads; await flatten(recentBody).find(node => node.textContent === '查看停止项（1）').click(); assert.equal(reads, beforeStopped);
+  const beforeStopped = reads; await flatten(recentBody).find(node => node.textContent === '已停止').click(); assert.equal(reads, beforeStopped);
   assert.match(flatten(recentBody).map(node => node.textContent).join('|'), /已暂停/u);
   for (const status of ['completed', 'paused', 'cancelled']) {
     timeState = { ...timeState, stoppedItems: [{ ...item, type: 'cycle', status, failureReason: '旧失败', assessmentReason: '旧依据不足', reviewStatus: 'unanswered', dueTime: { date: '2026-05-15' }, periodDays: 5 }] }; emit();
@@ -558,7 +558,7 @@ test('近期事项人工编辑保草稿焦点，失败重试与取消零写，�
   await flatten(recentBody).find(node => node.textContent === '恢复追踪').click();
   assert.match(confirmedCopy.body, /解除归并，恢复独立跟进/u);
   assert.equal(item.status, 'active'); assert.equal(flatten(container).find(node => node.className.includes('qqj-profile-more')).textContent, '近期事项（1）');
-  await flatten(recentBody).find(node => node.textContent === '返回追踪中事项').click(); assert.match(flatten(recentBody).map(node => node.textContent).join('|'), /只改名称/u);
+  await flatten(recentBody).find(node => node.textContent === '追踪中').click(); assert.match(flatten(recentBody).map(node => node.textContent).join('|'), /只改名称/u);
   assert.equal(reads, beforeStopped); view.deactivate(); assert.equal(listeners.size, 0);
 });
 
@@ -675,11 +675,11 @@ test('近期事项精简列表保留有效推测、发生/期限、停止与年�
   assert.match(deadlineText, /丙 · 归还旧书.*借书.*归还.*发生：纪1年1月4日.*约定时间：纪1年2月4日/u);
   assert.doesNotMatch(deadlineText, /不应显示约定推测|不应显示约定依据不足|推算至：/u, '约定显示发生时间和期限，不呈现自然进展估计');
   assert.equal(flatten(list.children[2]).find(node => node.textContent.includes('丙 · 归还旧书')).className.includes('error'), false, '约定事项隐藏依据不足时不保留错误标题色');
-  await flatten(body).find(node => node.textContent === '查看停止项（1）').click();
+  await flatten(body).find(node => node.textContent === '已停止').click();
   const stoppedList = body.children.at(-1), stoppedText = flatten(stoppedList).map(node => node.textContent).join('|');
   assert.match(stoppedText, /甲 · 归并项 · 已归并.*已合并到共同经历/u);
   assert.doesNotMatch(stoppedText, /重复观察内容/u, '有归并描述时不重复列出被归并成员观察');
-  await flatten(body).find(node => node.textContent === '返回追踪中事项').click();
+  await flatten(body).find(node => node.textContent === '追踪中').click();
   const currentList = body.children.at(-1), currentText = flatten(currentList).map(node => node.textContent).join('|');
   assert.match(currentText, /甲 · 纪念日 · 临近（3天后）.*重要纪念.*原日期：5月8日.*本年日期：2026-05-17.*只读事项/u);
   assert.doesNotMatch(currentText, /还有 3 天/u, '年度状态保留日期结果，不展示经过天数');
@@ -3973,7 +3973,7 @@ test('停止项复用批量控件永久删除，取消零写，失败后同入�
   const timeRuntime={getState:()=>structuredClone(timeState),subscribe:listener=>{listeners.add(listener);return()=>listeners.delete(listener);},refreshStatus:async()=>{},
     async deleteItems(items){calls.push(structuredClone(items));if(calls.length===1)throw new Error('模拟旧记录清理失败');timeState={...timeState,pendingDeletionCount:0,stoppedItems:[],last:{status:'completed'}};for(const listener of listeners)listener(timeState);}};
   const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef,confirmImpl:options=>{shown=options;return confirmed;}});view.setPage('memories');view.mount(container);
-  await flatten(container).find(node=>node.className.includes('qqj-profile-more')).click();let body=activeEditorDialog.content;await flatten(body).find(node=>node.textContent==='查看停止项（2）').click();
+  await flatten(container).find(node=>node.className.includes('qqj-profile-more')).click();let body=activeEditorDialog.content;await flatten(body).find(node=>node.textContent==='已停止').click();
   await flatten(body).find(node=>node.textContent==='批量管理').click();assert.equal(flatten(body).find(node=>node.textContent==='选择问题项').hidden,true);assert.ok(flatten(body).filter(node=>node.className==='qqj-recent-item-select').length===2);
   await flatten(body).find(node=>node.textContent==='选择当前列表').click();let remove=flatten(body).find(node=>node.textContent==='批量永久删除');assert.equal(remove.disabled,false);
   await remove.click();assert.equal(calls.length,0);assert.match(shown.body,/永久删除 2 项.*全部时间历史.*不可恢复.*不调用模型.*摘要与千事保留/u);
@@ -4495,13 +4495,13 @@ test('复制状态诊断保稳定后台网络与HTTP类型但不导出自由错�
   }
 });
 
-test('190两个新增入口各走原保存链，取消零写、失败保草稿且类型可选',async()=>{
+test('201近期事项紧凑短名沿原保存，千结不再提供新增待办',async()=>{
  const person='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',memorySnapshotStatus:'ready',memorySyncStatus:'idle',memoryWorkBusy:false,stableCount:1,rememberedCount:1,floors:[],memoryEntities:[{entityId:person,displayName:'阿岚'}]},writes=[];let fail=true;
  let runtimeListener;const runtime={subscribe(listener){runtimeListener=listener;return()=>{};},getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state,getQianshiEditPeople:()=>[{entityId:person,name:'阿岚',aliases:[]}],createQianshiTodo:async fields=>{writes.push(['todo',structuredClone(fields)]);}},timeState={status:'idle',canOrganize:true,trackedItems:[],stoppedItems:[],annualItems:[]},timeRuntime={getState:()=>timeState,refreshStatus:async()=>timeState,createItem:async fields=>{writes.push(['time',structuredClone(fields)]);if(fail){fail=false;throw Error('模拟保存失败');}}};
  const container=new Node('main'),view=createV3FoundationView({runtime,timeRuntime,documentRef});view.setPage('memories');view.mount(container);
  const choose=(label,value)=>{const trigger=flatten(editorContent()).find(n=>n.attributes['aria-label']===label);const option=flatten(trigger.parentNode).find(n=>n.attributes['data-value']===value);assert.ok(option);option.click();};
  const input=(label,value)=>{const node=flatten(editorContent()).find(n=>n.attributes['aria-label']===label);assert.ok(node,label);node.value=value;node.fire('input');return node;};
- await flatten(container).find(n=>n.textContent==='近期事项（0）').click();await flatten(editorContent()).find(n=>n.textContent==='新增事项').click();assert.equal(activeEditorDialog.options.title,'新增事项');const identity=flatten(editorContent()).find(n=>n.tag==='section'&&flatten(n).some(c=>c.textContent==='人物归属'));assert.ok(identity);cancelEditor();assert.equal(writes.length,0);
- await flatten(editorContent()).find(n=>n.textContent==='新增事项').click();choose('人物归属',person);choose('事项类型','deadline');input('事项名称','人工约定');const description=input('观察描述','人工说明');await submitEditor();assert.equal(lastEditorDialogError.message,'模拟保存失败');assert.equal(description.value,'人工说明');await submitEditor();assert.equal(writes.at(-1)[0],'time');assert.equal(writes.at(-1)[1].type,'deadline');assert.equal(writes.at(-1)[1].subjectEntityId,person);
- cancelEditor();await flatten(container).find(n=>n.textContent==='新增待办').click();assert.equal(activeEditorDialog.options.title,'新增待办');input('待办名称','新待办');input('待办说明','新的计划');const checkbox=flatten(editorContent()).find(n=>n.type==='checkbox');checkbox.checked=true;checkbox.fire('change');await submitEditor();assert.equal(writes.at(-1)[0],'todo');assert.deepEqual(writes.at(-1)[1].people,[{entityId:person,name:'阿岚'}]);assert.equal(writes.at(-1)[1].scheduledTime,null);state.memoryWorkBusy=true;runtimeListener({...state});assert.equal(flatten(container).find(n=>n.textContent==='新增待办').disabled,true);state.memoryWorkBusy=false;runtimeListener({...state});assert.equal(flatten(container).find(n=>n.textContent==='新增待办').disabled,false);view.deactivate();
+ await flatten(container).find(n=>n.textContent==='近期事项（0）').click();const primary=flatten(editorContent()).find(n=>n.className==='qqj-recent-primary-actions');assert.deepEqual(primary.children.filter(n=>!n.hidden).map(n=>n.textContent),['新增','补查历史','已停止','批量管理']);assert.ok(primary.children.filter(n=>!n.hidden).every(n=>n.className.includes('compact')));await flatten(editorContent()).find(n=>n.textContent==='新增').click();assert.equal(activeEditorDialog.options.title,'新增事项');const identity=flatten(editorContent()).find(n=>n.tag==='section'&&flatten(n).some(c=>c.textContent==='人物归属'));assert.ok(identity);cancelEditor();assert.equal(writes.length,0);
+ await flatten(editorContent()).find(n=>n.textContent==='新增').click();choose('人物归属',person);choose('事项类型','deadline');input('事项名称','人工约定');const description=input('观察描述','人工说明');await submitEditor();assert.equal(lastEditorDialogError.message,'模拟保存失败');assert.equal(description.value,'人工说明');await submitEditor();assert.equal(writes.at(-1)[0],'time');assert.equal(writes.at(-1)[1].type,'deadline');assert.equal(writes.at(-1)[1].subjectEntityId,person);
+ cancelEditor();assert.equal(flatten(container).some(n=>n.textContent==='新增待办'),false);view.deactivate();
 });

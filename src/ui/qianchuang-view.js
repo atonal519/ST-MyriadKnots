@@ -261,8 +261,8 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
           label.setAttribute('data-scope-id',region.entityId);label.style.left=`${safe.x}%`;label.style.top=`${safe.y}%`;label.style.width=`${safe.w}%`;label.style.height=`${safe.h}%`;label.style.setProperty('--qqj-window-area-font',`${fontSize}cqw`);areas.append(label);
         }
         for(const {id,x,y} of region.points){
-          const marker=button('qqj-window-marker','',()=>selectRoot(id));
-          marker.setAttribute('aria-label',byId.get(id).displayName);marker.setAttribute('data-place-id',id);marker.setAttribute('data-label-align',x<30?'start':x>70?'end':'center');marker.setAttribute('data-label-above',String(y>70));marker.style.left=`${x}%`;marker.style.top=`${y}%`;marker.append(el('span','qqj-window-dot'),el('span','qqj-window-marker-label',byId.get(id).displayName));if(user?.isCurrent&&userAnchor===id)marker.append(el('span','qqj-window-user','你'));points.append(marker);markers.set(id,marker);
+          const marker=button('qqj-window-marker','',()=>{const current=snapshot.userPosition;if(current?.isCurrent&&mapAnchor(current.placeEntityId)===id)locate(current.placeEntityId);else selectRoot(id);});
+          marker.setAttribute('aria-label',byId.get(id).displayName);marker.setAttribute('data-place-id',id);marker.setAttribute('data-label-align',x<30?'start':x>70?'end':'center');marker.setAttribute('data-label-above',String(y>70));marker.style.left=`${x}%`;marker.style.top=`${y}%`;const isCurrent=user?.isCurrent&&userAnchor===id,symbol=el('span',isCurrent?'qqj-window-current-pin':'qqj-window-dot');if(isCurrent){symbol.innerHTML=qianchuangIcon('place');symbol.setAttribute('role','img');symbol.setAttribute('aria-label','当前位置');symbol.setAttribute('title','当前位置');}marker.append(symbol,el('span','qqj-window-marker-label',byId.get(id).displayName));points.append(marker);markers.set(id,marker);
         }
       }
       map.classList?.toggle?.('empty',!mapBrowse.pinIds.length);if(!mapBrowse.pinIds.length)points.append(el('p','qqj-window-map-empty',snapshot.places.length?'暂无场地点位，可浏览下方地点资料。':'尚无已记录地点。'));
