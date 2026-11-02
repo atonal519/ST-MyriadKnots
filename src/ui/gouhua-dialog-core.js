@@ -49,10 +49,20 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
         };
         const externalClose = () => finish(null);
         activeCancel = externalClose;
-        $overlay.on('click', function (event) { if (event.target === this) externalClose(); });
+        // A drag crossing the sheet can produce a click on its overlay ancestor.
+        let backdropDown = false, backdropUp = false;
+        $overlay.on('pointerdown', function (event) { backdropDown = event.target === this; backdropUp = false; });
+        $overlay.on('pointerup', function (event) { backdropUp = event.target === this; });
+        $overlay.on('pointercancel', () => { backdropDown = false; backdropUp = false; });
+        $overlay.on('click', function (event) {
+            const outsideClick = event.target === this && backdropDown && backdropUp;
+            backdropDown = false; backdropUp = false;
+            if (outsideClick) externalClose();
+        });
         $overlay.on('keydown', event => {
             if (event.key !== 'Escape') return;
             event.preventDefault();
+            event.stopPropagation?.();
             externalClose();
         });
         $overlay.addClass(String(getRootClass() || ''));
@@ -73,8 +83,10 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
             const $overlay = $(`<div id="${OVERLAY_ID}" class="sp-dialog-overlay">
                 <div class="sp-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
                     <div id="sp-dialog-title" class="sp-dialog-head">${escapeHtml(title)}</div>
-                    <div class="sp-dialog-body">${escapeHtml(body)}</div>
-                    ${note ? `<div class="sp-dialog-note">${escapeHtml(note)}</div>` : ''}
+                    <div class="sp-dialog-content">
+                        <div class="sp-dialog-body">${escapeHtml(body)}</div>
+                        ${note ? `<div class="sp-dialog-note">${escapeHtml(note)}</div>` : ''}
+                    </div>
                     <div class="sp-dialog-actions">${buttons}</div>
                 </div>
             </div>`);
@@ -107,7 +119,7 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
             const $overlay = $(`<div id="${OVERLAY_ID}" class="sp-dialog-overlay">
                 <div class="sp-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-dialog-title">
                     <div id="sp-dialog-title" class="sp-dialog-head">${escapeHtml(title)}</div>
-                    ${body ? `<div class="sp-dialog-body">${escapeHtml(body)}</div>` : ''}
+                    ${body ? `<div class="sp-dialog-content"><div class="sp-dialog-body">${escapeHtml(body)}</div></div>` : ''}
                     <input type="text" class="sp-dialog-input" value="${escapeHtml(initialValue)}" placeholder="${escapeHtml(placeholder)}" maxlength="${limit}" autocomplete="off">
                     <div class="sp-dialog-input-error" aria-live="polite"></div>
                     <div class="sp-dialog-actions">
@@ -132,7 +144,7 @@ export function createGouhuaDialogCore({ $, mount, getRootClass = () => '', subs
             $overlay.find('.sp-dialog-cancel').on('click', session.close);
             $overlay.find('.sp-dialog-input').on('input', () => $overlay.find('.sp-dialog-input-error').empty()).on('keydown', event => {
                 if (event.key === 'Enter') { event.preventDefault(); submit(); }
-                else if (event.key === 'Escape') { event.preventDefault(); session.close(); }
+                else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation?.(); session.close(); }
             });
             schedule(() => $overlay.find('.sp-dialog-input').trigger('focus').trigger('select'), 0);
         });

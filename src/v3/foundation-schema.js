@@ -328,7 +328,8 @@ export async function validateFoundationGraph({ root = null, checkpoint, run = n
   for (let index = 0; index < safeIndexes.length; index += 1) {
     const record = safeIndexes[index];
     const recordKey = indexKeys[index];
-    if (record.sourceCheckpointId !== safeCheckpoint.id || record.narrativeGeneration !== safeCheckpoint.narrativeGeneration) fail('V3_GRAPH_INDEX_CHECKPOINT_INVALID');
+    if ((record.sourceCheckpointId !== safeCheckpoint.id && !(floorOrderOnly && record.kind === 'floorOrder'))
+      || record.narrativeGeneration !== safeCheckpoint.narrativeGeneration) fail('V3_GRAPH_INDEX_CHECKPOINT_INVALID');
     if (recordKey !== indexRecordKey(record)) fail('V3_GRAPH_INDEX_ROUTE_INVALID');
     if (record.id !== await deterministicUuid(['index', record.sourceCheckpointId, record.kind, record.shard, record.entries])) fail('V3_GRAPH_INDEX_ROUTE_INVALID');
     if (record.contentFingerprint !== await indexContentFingerprint(record)) fail('V3_GRAPH_INDEX_FINGERPRINT_INVALID');

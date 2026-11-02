@@ -981,7 +981,7 @@ test('每日期仅有一个轴点；独立事件卡按需构建，搜索只显�
   assert.equal(summary.tag, 'summary', '日期仍使用原生 details/summary 鼠标和键盘交互');
   assert.equal(flatten(summary).some(node => node.className === 'qqj-qianshi-day-chevron' || node.textContent === '›'), false, '日期边没有展开箭头');
   assert.match(summary.attributes['aria-label'], /收起/u, '日期 summary 保留可操作状态提示');
-  assert.match(readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8'), /\.qqj-qianshi-day-summary:focus-visible\{outline:2px solid var\(--knot\)/u, '键盘焦点仍有可见轮廓');
+  assert.match(readFileSync(new URL('../src/ui/panel.css', import.meta.url), 'utf8'), /\.panel :is\([^}]*summary[^}]*\):focus-visible\{outline:var\(--qqj-focus-ring\) solid var\(--knot\)/u, '键盘焦点仍有可见轮廓');
 
   assert.equal(byText(h.container, '由晚到早'), undefined, '固定最近在前，不显示方向切换');
   assert.equal(dateDots().length, 1, '最近在前仍只保留一个日期轴点');
@@ -1094,7 +1094,7 @@ test('历史补齐界面区分已保存完整楼和部分楼并展示编译原�
   const h = harness({ initialSnapshot: snapshot });
   const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
   assert.equal(health.className, 'qqj-page-health error');
-  assert.match(health.textContent, /有任务未完成，请到设置复制状态诊断/u);
+  assert.match(health.textContent, /上次事项任务未完成，可重试。/u);
   assert.doesNotMatch(copy(h.container), /第 4 楼|事件对应的整件事/u);
 });
 
@@ -1846,7 +1846,7 @@ test('重判进度和保存结果接管启动提示，不同时显示未来暂�
   assert.doesNotMatch(copy(h.container), /正在启动|结果将先暂存/u);
   snapshot.history = { ...snapshot.history, status: 'partial', committing: false, message: '千事重判完成；整组已一次提交。', commitStatus: 'saved', savedFloors: 1, savedCompleteFloors: 0, savedPartialFloors: 1, totalFloors: 1, processedFloors: 1, outcomes: [{ status: 'saved-partial', reasonCode: 'QIANSHI_REJUDGE_PARTIAL', messageIndex: 0, assistantSeq: 9, message: '本楼部分记录已保存。' }] };
   h.emit(snapshot);
-  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /有任务未完成，请到设置复制状态诊断/u);
+  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /上次事项任务未完成，可重试。/u);
   assert.doesNotMatch(copy(h.container), /整组正在提交|正在启动|结果将先暂存|第 0 楼/u);
 });
 
@@ -1939,7 +1939,7 @@ test('聚合楼从模型计划中跳过并说明原因，空计划与执行失�
   const confirmed = harness({ confirm: true, plan, startResult: { status: 'partial', message: '其中 1 楼未补齐。' } });
   byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
   assert.match(confirmed.confirms[0].body, /1 楼进入模型补齐.*跳过聚合记忆 1 楼/u);
-  assert.match(copy(confirmed.container), /有任务未完成，请到设置复制状态诊断/u, '执行失败时 UI 指向可复制诊断');
+  assert.match(copy(confirmed.container), /上次事项任务未完成，可重试。/u, '执行失败时 UI 指向可复制诊断');
 
   const emptySnapshot = fixture();
   const empty = harness({ initialSnapshot: emptySnapshot, plan: { status: 'empty', totalFloors: 0, batchCount: 0,
@@ -1965,7 +1965,7 @@ test('千事页面只呈现简短失败状态，逐楼信息留给设置状态�
   const h = harness({ initialSnapshot: snapshot });
   const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
   assert.equal(health.className, 'qqj-page-health error');
-  assert.match(health.textContent, /有任务未完成，请到设置复制状态诊断/u);
+  assert.match(health.textContent, /上次事项任务未完成，可重试。/u);
   assert.doesNotMatch(copy(h.container), /PRIVATE NARRATIVE|PRIVATE EVENT|74|QIANSHI_/u);
   assert.equal(flatten(h.container).some(node => node.className.includes('qqj-qianshi-diagnostics')), false);
 });
@@ -1987,7 +1987,7 @@ test('失败状态不把逐楼错误正文或内部错误码展示在千事页',
     outcomes: [{ assistantSeq: 144, status: 'failed', reasonCode: 'QIANSHI_HISTORY_INPUT_BUDGET',
       message: 'PRIVATE DETAILS WITH TOKENS' }] };
   const h = harness({ initialSnapshot: snapshot });
-  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /有任务未完成，请到设置复制状态诊断/u);
+  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /上次事项任务未完成，可重试。/u);
   assert.doesNotMatch(copy(h.container), /PRIVATE DETAILS|144|QIANSHI_|tokens/u);
 });
 test('恢复的历史错误不会把逐楼正文带入页面状态', () => {
@@ -1995,7 +1995,7 @@ test('恢复的历史错误不会把逐楼正文带入页面状态', () => {
   snapshot.history = { status: 'partial', message: '', outcomes: [{ floorId: 'private-floor', status: 'failed', reasonCode: 'QIANSHI_HISTORY_FLOOR_MISSING',
     message: 'PRIVATE NARRATIVE' }] };
   const h = harness({ initialSnapshot: snapshot });
-  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /有任务未完成，请到设置复制状态诊断/u);
+  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /上次事项任务未完成，可重试。/u);
   assert.doesNotMatch(copy(h.container), /PRIVATE NARRATIVE|private-floor|QIANSHI_/u);
 });
 test('千事快照 memo 在历史通知时复用全图，reachable 或身份投影变化才失效', () => {
@@ -2217,4 +2217,9 @@ test('古法时间五格改日期保存仍保完整起止，取消不写入', as
   const day=flatten(form).find(node=>node.attributes['aria-label']==='发生时间日'); day.value='23';day.fire('input');await h.saveEditor();
   assert.equal(submitted[0].storyTime,'大陆历1686年9月23日 卯时~酉时');
   assert.equal(submitted[0].expected.storyTime,snapshot.events[0].storyTime);
+});
+
+test('千事未完成任务短提示不要求复制诊断',()=>{
+ const snapshot=fixture();snapshot.history={status:'failed',message:'读取记忆失败，请到设置复制状态诊断。'};const h=harness({initialSnapshot:snapshot});
+ const health=flatten(h.container).find(n=>String(n.className).includes('qqj-page-health'));assert.doesNotMatch(health.textContent,/复制|诊断/);assert.match(health.textContent,/未完成|失败/);h.view.deactivate();
 });

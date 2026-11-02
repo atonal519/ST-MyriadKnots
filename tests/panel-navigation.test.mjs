@@ -34,7 +34,7 @@ const waitFor = async (condition, message, timeoutMs = 2000) => {
   assert.fail(message);
 };
 
-test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，并恢复各页滚动位置', async () => {
+test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视图，并恢复各页滚动位置', async () => {
   const [source, panelHtml, panelCss] = await Promise.all([
     readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/ui/panel.html', import.meta.url), 'utf8'),
@@ -46,9 +46,9 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const panelNode = new Node('section'), body = new Node('main'), view = new Node('div');
   const topbar = new Node('header'), resize = new Node('button'), close = new Node('button'), themeButton = new Node('button'), fabButton = new Node('button');
   const themeSvg = new Node('svg'); themeButton.querySelector = selector => selector === 'svg' ? themeSvg : null;
-  const profileTab = new Node('button'), eventTab = new Node('button'), qianshiTab = new Node('button'), peopleTab = new Node('button'), settingsTab = new Node('button'); profileTab.dataset.tab = 'profiles'; eventTab.dataset.tab = 'events'; qianshiTab.dataset.tab = 'qianshi'; peopleTab.dataset.tab = 'people'; settingsTab.dataset.tab = 'settings';
+  const profileTab = new Node('button'), eventTab = new Node('button'), qianshiTab = new Node('button'), qianchuangTab = new Node('button'), peopleTab = new Node('button'), settingsTab = new Node('button'); profileTab.dataset.tab = 'profiles'; eventTab.dataset.tab = 'events'; qianshiTab.dataset.tab = 'qianshi'; qianchuangTab.dataset.tab = 'qianchuang'; peopleTab.dataset.tab = 'people'; settingsTab.dataset.tab = 'settings';
   const nodeMap = new Map([['.panel', panelNode], ['.body', body], ['.view', view], ['.topbar', topbar], ['.panel-resize-handle', resize], ['.close', close], ['.theme-btn', themeButton], ['.fab-toggle-btn', fabButton]]);
-  const root = { innerHTML: '', querySelector: selector => nodeMap.get(selector) ?? null, querySelectorAll: selector => selector === '.tab' ? [profileTab, eventTab, qianshiTab, peopleTab, settingsTab] : [] };
+  const root = { innerHTML: '', querySelector: selector => nodeMap.get(selector) ?? null, querySelectorAll: selector => selector === '.tab' ? [profileTab, eventTab, qianshiTab, qianchuangTab, peopleTab, settingsTab] : [] };
   const host = new Node('host'); host.attachShadow = () => root;
   let firstElement = true;
   const documentEvents = {}, documentListeners = new Map();
@@ -74,12 +74,11 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     node.append(summary);
     return { drawer: node, body: drawerBody, summary };
   };
-  const diagnostics = { starts: 0, stops: 0, marks: 0, records: [{ page: 'settings', defaultPrevented: false }] };
   const dialogAppearances = [];
   let rejectSaveSchedule = false;
   let tauriTavern = false;
   const saveScheduleError = new Error('private settings scheduler detail');
-  let apiSettingsMounts = 0, apiSettingsDisposals = 0;
+  let apiSettingsMounts = 0, apiSettingsDisposals = 0, vectorSettingsMounts = 0, vectorSettingsDisposals = 0;
   let wrapperMounts = 0, wrapperDisposals = 0;
   const modules = {
     './plugin-updates-view.js': { createPluginUpdatesView: () => ({ controls: new Node(), noticeRow: new Node(), feedback: new Node(), dispose() {} }) },
@@ -88,19 +87,22 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
     './shared-ui-style.js': { sharedUiCss: '', sharedDialogCss: '', QQJ_GEOMETRY_TOKENS: {}, QQJ_MOTION_TOKENS: {} },
     './layout.js': { createPanelGeometryController: () => ({ restore() {}, cancelGesture() {} }) },
     './appearance.js': { createAppearanceController: ({ onChange }) => { const state = { mode: 'auto', effectiveTheme: 'day', palette: {}, fontReady: Promise.resolve() }; onChange?.(state); return { apply() { onChange?.(state); return state; }, getState: () => state, destroy() {} }; } },
-    './font-scale.js': { scaleCssFontSizes: css => css },
+    './font-scale.js': { scaleCssFontSizes: css => css, scaleCssSpacing: css => css },
     './settings-drawer.js': { createSettingsDrawer: drawer, createSettingsDrawerState: () => ({ open(key) { drawerState.set(key, true); }, set(key, value) { drawerState.set(key, value); }, isOpen: (key, fallback) => drawerState.has(key) ? drawerState.get(key) : fallback }) },
-    './settings/api-settings.js': { createApiSettings: ({ open, vectorOpen, onToggle, onVectorToggle }) => {
+    './settings/api-settings.js': { createApiSettings: ({ open, onToggle }) => {
       apiSettingsMounts++;
       const api = drawer({ title: 'API 配置', id: 'qqj-settings-api', open, onToggle, level: 'sub' });
-      const vector = drawer({ title: '向量召回', id: 'qqj-settings-vector-api', open: vectorOpen, onToggle: onVectorToggle, level: 'sub' });
       const apiDraft = new Node('input'); apiDraft.value = '未保存的 API 草稿';
-      api.body.append(apiDraft, vector.drawer);
+      api.body.append(apiDraft);
       return { node: api.drawer, apiDraft, dispose() { apiSettingsDisposals++; } };
+    } },
+    './settings/vector-api-settings.js': { createVectorApiSettings: ({ open, onToggle }) => {
+      vectorSettingsMounts++;
+      const vector = drawer({ title: '向量配置', id: 'qqj-settings-vector-api', open, onToggle, level: 'sub' });
+      return { node: vector.drawer, dispose() { vectorSettingsDisposals++; } };
     } },
     './settings/prompts-settings.js': { createPromptsSettings: () => { wrapperMounts++; return { node: new Node(), dispose() { wrapperDisposals++; } }; } },
     './settings/appearance-settings.js': { createAppearanceSettings: () => ({ node: new Node() }) },
-    './scroll-diagnostics.js': { createScrollDiagnostics: () => ({ start() { diagnostics.starts += 1; }, stop() { diagnostics.stops += 1; }, markQqjSwipeIntercepted() { diagnostics.marks += 1; }, snapshot: () => ({ schemaVersion: 1, records: diagnostics.records }) }) },
     './help-guide.js': { openHelpGuide },
     '../settings.js': { applyPluginEnabledImmediately },
     '../tauri-backend.js': { isTauriTavern: () => tauriTavern },
@@ -182,15 +184,14 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   let autoHideApplyStatus = null;
   let calendarChatId = foundationState.chatId, savedCalendar = null; const calendarChanges = [];
   const calendarContextProvider = () => ({ chatId: calendarChatId, calendar: savedCalendar });
-  panel = entry.namespace.createPanel({ pluginUpdates, calendarContextProvider, onCalendarChange: async value => { calendarChanges.push(value); savedCalendar = value.calendar; }, settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, storageManagementView, memoryTransferViewFactory, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onPluginEnabledChange: async value => { if (rejectPluginDisable && value === false) throw pluginDisableError; }, onPluginEnableFailure: (error, phase) => pluginFailures.push({ error, phase, settingsEnabled: settings.isEnabled() }), onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance(value) { dialogAppearances.push(value); }, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
+  panel = entry.namespace.createPanel({ pluginUpdates, calendarContextProvider, onCalendarChange: async value => { calendarChanges.push(value); savedCalendar = value.calendar; }, settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, qianchuangView: { mount(target) { calls.push(['window-mount',target]); }, activate() { calls.push(['window-activate']); return Promise.resolve({status:'ready'}); }, deactivate() { calls.push(['window-deactivate']); } }, storageManagementView, memoryTransferViewFactory, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onPluginEnabledChange: async value => { if (rejectPluginDisable && value === false) throw pluginDisableError; }, onPluginEnableFailure: (error, phase) => pluginFailures.push({ error, phase, settingsEnabled: settings.isEnabled() }), onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance(value) { dialogAppearances.push(value); }, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
 
   await panel.show();
   await Promise.resolve();
   assert.equal(updateChecks, 1, '首次打开面板非阻塞触发版本检查');
   assert.equal(dialogAppearances.at(-1)?.family, '测试字体', '独立编辑窗接收外观控制器解析出的字体');
   assert.equal(dialogAppearances.at(-1)?.fontCssUrl, 'https://example.invalid/font.css');
-  assert.equal(diagnostics.starts, 1); assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
-  assert.deepEqual(JSON.parse(panel.getUiDiagnostic()).records, diagnostics.records);
+  assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
   body.scrollTop = 31;
   settingsTab.fire('click');
@@ -211,12 +212,16 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   const generalDrawer = flatten(settingsPage).find(node => node.id === 'qqj-settings-group-general');
   const apiDrawer = flatten(settingsPage).find(node => node.id === 'qqj-settings-api');
   const vectorDrawer = flatten(settingsPage).find(node => node.id === 'qqj-settings-vector-api');
-  assert.equal(generalDrawer?.open, true); assert.equal(apiDrawer?.open, true); assert.equal(vectorDrawer?.open, true);
+  assert.equal(generalDrawer?.open, true); assert.equal(apiDrawer?.open, false, '向量深链保持API原开合'); assert.equal(vectorDrawer?.open, true);
+  assert.equal(vectorDrawer.drawerTitle, '向量配置');
+  assert.ok(generalDrawer.children[0].children.includes(apiDrawer));
+  assert.ok(generalDrawer.children[0].children.includes(vectorDrawer), 'API与向量直接属于同一个通用设置body');
   assert.equal(vectorDrawer?.scrollOptions?.block, 'center'); assert.equal(vectorDrawer?.children.find(node => node.tag === 'summary')?.focused, true);
   assert.equal(flatten(settingsPage).find(node => node.value === '未保存的 API 草稿'), apiDraft, '导航不重绘设置或丢未保存API草稿');
   assert.equal(apiSettingsMounts, apiMountsBeforeNavigation); assert.equal(apiSettingsDisposals, apiDisposalsBeforeNavigation);
   assert.equal(indexManifestReads, 1); assert.equal(indexShardReads, 0); assert.equal(identityReads, 0, '纯导航不重新读取manifest或identity');
   eventTab.fire('click');
+  assert.equal(vectorSettingsDisposals, vectorSettingsMounts, '离开设置独立释放向量订阅');
   await waitFor(() => foundationRefreshes === 2, '千结页状态刷新未完成');
   assert.equal(foundationRefreshes, 2, '随后打开千结页只读取当前状态');
   assert.equal(indexManifestReads, 1, '零索引检查属于设置记忆管理入口');
@@ -401,7 +406,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(values.timeEvolutionEnabled, false); assert.equal(timeChanges, 4, '重绘后旧确认不写入开启');
   assert.match(panelCss, /\.settings-group-body\{[^}]*padding:0 12px 8px 26px/);
   assert.match(panelCss, /\.settings-sub-body\.settings-drawer-list\{gap:0;padding:0 2px\}/);
-  assert.match(panelCss, /\.settings-sub>\.settings-sub-summary\{[^}]*min-height:36px;padding:8px 2px/);
+  assert.match(panelCss, /\.settings-sub>\.settings-sub-summary\{[^}]*padding:8px 2px[^}]*min-height:var\(--qqj-control-height\)/);
   assert.match(panelCss, /\.qqj-storage-management\{display:grid;gap:9px\}/);
   assert.doesNotMatch(panelCss, /\.qqj-storage-management\{[^}]*(?:padding|border-top)/);
   autoHideInput.checked = true; autoHideInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
@@ -421,6 +426,9 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.equal(view.children[0]?.className, 'qqj-page qqj-people-page', '返回内容页应移除设置 DOM 并呈现真实内容视图');
   eventTab.fire('click');
   assert.equal(body.scrollTop, 71, '回到千结时恢复千结滚动位置');
+  qianchuangTab.fire('click'); body.scrollTop=63;
+  assert.ok(calls.some(([kind])=>kind==='window-mount'));
+  eventTab.fire('click'); qianchuangTab.fire('click');assert.equal(body.scrollTop,63,'千窗恢复自己的滚动位置');
   qianshiTab.fire('click'); body.scrollTop = 57;
   assert.ok(calls.some(([kind]) => kind === 'qianshi-activate'), '千事必须挂载独立时间线视图');
   eventTab.fire('click');
@@ -440,7 +448,7 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.match(panelHtml, /class="icon-btn close"[\s\S]*?M3\.5 3\.5l17 17M20\.5 3\.5l-17 17/);
   assert.doesNotMatch(panelHtml, /status-(?:line|dot|label)/, '导航下方不应再渲染重复页名与装饰菱形');
   assert.doesNotMatch(panelCss, /\.status-(?:line|dot|label)\b/, '重复状态行的专用样式应一并删除');
-  assert.match(panelCss, /\.icon-btn svg\{width:18px;height:18px;[^}]*stroke-width:1\.8/);
+  assert.match(panelCss, /\.icon-btn svg\{[^}]*stroke-width:1\.8[^}]*width:calc\(18px \* var\(--qqj-ui-scale,1\)\)/);
   assert.match(panelCss, /\.qqj-person-summary,\.qqj-section-summary\{[^}]*flex-wrap:wrap/,
     'summary 标题、状态和回执按钮在高倍率或窄面板中应能换行');
   assert.match(panelCss, /\.qqj-person-summary strong,\.qqj-section-summary strong\{[^}]*flex:1 1 8em;min-width:min\(100%,8em\)/,
@@ -451,15 +459,15 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   assert.match(panelCss, /@media\(max-width:640px\)\{\.panel>\.panel-resize-handle\{display:none\}\}/, '手机把手隐藏规则须覆盖通用 display:grid，避免生成多余底部行');
   assert.doesNotMatch(panelCss, /\.panel:has\(\.qqj-manual-save-bar\)\{background:var\(--panel\)\}/, '编辑页底部不应再绘制整条保存栏背景');
   assert.doesNotMatch(panelCss, /linear-gradient\(to top,var\(--panel\)/, '不得重新引入底部高度拼接接缝');
-  assert.match(panelCss, /\.qqj-api-editor>\.settings-sub-body>\.sub-advanced\+\.qqj-manual-save-bar\{margin-top:-9px\}/, '高级设置和 API 按钮栏之间抵消父容器 gap，避免重复留白');
+  assert.match(panelCss, /\.qqj-api-editor>\.settings-sub-body>\.sub-advanced\+\.qqj-manual-save-bar\{margin-top:calc\(-1 \* var\(--qqj-space-group\)\)\}/, '高级设置和 API 按钮栏之间抵消父容器 gap，避免重复留白');
   assert.doesNotMatch(panelCss, /\.qqj-profile-switcher\{touch-action:pan-x\}/, '人物横条不得用pan-x-only阻断从条内起步的整页纵向滚动');
   assert.match(panelCss, /\.source-permission-list,.qqj-inline-select-options,.qqj-model-list-items\{touch-action:pan-y\}/, '内部纵向列表应保留自己的原生纵向滚动');
   for (const surface of [
-    /\.icon-btn\{[^}]*background:var\(--panel\)/,
+    /\.icon-btn\{[^}]*background:var\(--qqj-control-bg,var\(--qqj-color-surface\)\)/,
     /\.v3-memory-status\{[^}]*background:color-mix\([^}]*var\(--panel\)\)/,
     /\.v3-cse-current\{[^}]*background:color-mix\([^}]*var\(--panel\)\)/,
-    /\.qqj-model-list-item\{[^}]*background:var\(--paper\)/,
-    /button:disabled\{[^}]*background:var\(--line\)/,
+    /\.qqj-model-list-item\{[^}]*background:var\(--qqj-control-bg,var\(--paper\)\)/,
+    /button:disabled\{[^}]*background:var\(--qqj-control-bg,var\(--line\)\)/,
   ]) assert.match(panelCss, surface, '实际绘制表面应以实色 palette 为底');
 
   const touch = (x, y) => ({ clientX: x, clientY: y });
@@ -473,7 +481,6 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   if (!summaryEnd.defaultPrevented) summaryTarget.click();
   assert.equal(summaryMove.defaultPrevented, true); assert.equal(summaryEnd.defaultPrevented, true); assert.equal(summaryClicks, 0, 'summary 起始的横滑不得合成展开点击');
   assert.equal(panel.getState().activeTab, 'events', 'summary 起始横滑应进入下一个主内容页');
-  assert.ok(diagnostics.marks >= 2, 'QQJ横滑每次preventDefault都应显式标记给诊断模块');
   body.fire('touchstart', touchEvent({ touches: [touch(120, 100)], target: summaryTarget }));
   const summaryTapEnd = touchEvent({ changedTouches: [touch(122, 100)], target: summaryTarget }); body.fire('touchend', summaryTapEnd);
   if (!summaryTapEnd.defaultPrevented) summaryTarget.click();
@@ -493,7 +500,11 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
 
   body.fire('touchstart', { touches: [touch(260, 100)], target: swipeTarget });
   body.fire('touchend', { changedTouches: [touch(160, 105)], target: swipeTarget });
-  assert.equal(panel.getState().activeTab, 'people', '第三次左滑应进入双丝网');
+  assert.equal(panel.getState().activeTab, 'qianchuang', '第三次左滑应进入千窗');
+  assert.ok(calls.some(([kind])=>kind==='window-activate'),'千窗使用独立view');
+  body.fire('touchstart', { touches: [touch(260,100)], target:swipeTarget });
+  body.fire('touchend', { changedTouches:[touch(160,105)], target:swipeTarget });
+  assert.equal(panel.getState().activeTab,'people','第四次左滑应进入双丝网');
   body.fire('touchstart', { touches: [touch(260, 100)], target: swipeTarget });
   body.fire('touchend', { changedTouches: [touch(160, 105)], target: swipeTarget });
   assert.equal(panel.getState().screen, 'settings', '第四次左滑应进入设置页');
@@ -564,11 +575,10 @@ test('真实面板入口按千人/千结/千事/双丝网/设置映射视图，�
   documentEvents.keydown({ key: 'Escape', preventDefault() {} });
   assert.equal(panel.getState().open, false);
   assert.equal(calls.filter(([kind]) => kind === 'profiles-deactivate').length, profileDeactivationsBeforeClose + 1, '从千人关闭时必须停用人物视图');
-  assert.equal(diagnostics.stops, 1, '关闭面板应停止采集但由诊断模块保留既有记录');
   await panel.show();
   body.fire('touchend', touchEvent({ changedTouches: [touch(80, 100)], target: swipeTarget }));
   assert.equal(panel.getState().activeTab, 'profiles'); assert.equal(panel.getState().screen, 'content', '重新打开后千人视图仍能正常激活，且不沿用关闭前的横滑状态');
-  panel.close(); assert.equal(diagnostics.starts, 5, '含设置页重绘、身份不可用与恢复核对及关闭后的重新打开'); assert.equal(diagnostics.stops, 2);
+  panel.close();
   await panel.show(); settingsTab.fire('click');
   assert.equal(timeReads, 0); assert.equal(timeOrganizes, 0);
   assert.equal(flatten(view).some(node => node.textContent === '整理时间事项' || node.textContent === '追踪事项清单'), false);

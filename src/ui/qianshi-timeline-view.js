@@ -14,7 +14,7 @@ const searchText = event => text([event.title, event.description, event.object, 
   ...(event.people ?? []).map(person => person.name)].filter(Boolean).join(' '));
 
 function coverageProjection(snapshot) {
-  if (snapshot?.status !== 'ready') return { tone: 'error', copy: snapshot?.message || '当前聊天还没有可用的千事快照。' };
+  if (snapshot?.status !== 'ready') return { tone: 'error', copy: publicErrorMessage(snapshot, { fallback: '当前聊天还没有可用的千事快照。' }) };
   const coverage = snapshot.coverage ?? {};
   const processable = coverage.processable ?? coverage;
   const complete = Number(processable.completeFloors) || 0, eligible = Number(processable.eligibleFloors) || 0;
@@ -318,7 +318,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       try {
         const result = await runtime.editQianshiEventText({ eventId: event.id, expected: state.baseline, ...next });
         textEditors.delete(event.id); feedback = result?.status === 'unchanged' ? '内容没有变化，没有写入新版本。' : '事件修改已保存。'; render(); return true;
-      } catch (error) { state.pending = false; state.error = publicErrorMessage(error?.message, { fallback: '保存失败，请检查当前记录后重试。' }); throw new Error(state.error); }
+      } catch (error) { state.pending = false; state.error = publicErrorMessage(error, { fallback: '保存失败，请检查当前记录后重试。' }); throw new Error(state.error); }
     };
     return section;
   }
@@ -837,7 +837,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         ? '整组正在提交，提交中不能停止' : `已处理 ${history.processedFloors ?? 0}/${history.totalFloors ?? 0} 楼`}`;
       health.className = 'qqj-page-health checking';
     } else if (['failed', 'partial'].includes(history.status)) {
-      health.textContent = '有任务未完成，请到设置复制状态诊断。';
+      health.textContent = '上次事项任务未完成，可重试。';
       health.className = 'qqj-page-health error';
     }
     return health;

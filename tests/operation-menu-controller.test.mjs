@@ -67,3 +67,14 @@ test('行末菜单键盘跳过禁用项，执行动作或点击外部关闭，�
   h.controller.reset(); assert.equal(next.menu.listeners.get('toggle')?.size, 0);
   h.controller.deactivate();
 });
+
+test('共享菜单按实际裁切容器上下避让，重开重新测位且受限空间只滚菜单内部',async()=>{
+ const h=harness(),current=h.createMenu(),clip=new Node('section',h.doc);let menuTop=220,clipTop=50,clipBottom=250;
+ h.doc.defaultView={innerHeight:500,getComputedStyle:node=>({overflowY:node===clip?'auto':'visible'})};clip.getBoundingClientRect=()=>({top:clipTop,bottom:clipBottom,height:clipBottom-clipTop});Object.defineProperty(clip,'clientHeight',{get:()=>clipBottom-clipTop});clip.append(current.menu);
+ current.menu.getBoundingClientRect=()=>({top:menuTop,bottom:menuTop+20,height:20});current.body.style={};current.body.scrollTop=0;
+ current.body.getBoundingClientRect=()=>{const height=Math.min(110,parseFloat(current.body.style.maxHeight)||Infinity),top=current.body.style.top==='auto'?menuTop+20-parseFloat(current.body.style.bottom)-height:menuTop+(parseFloat(current.body.style.top)||24);return{top,bottom:top+height,height};};
+ h.controller.activate();await Promise.resolve();current.menu.open=true;current.menu.fire('toggle');let rect=current.body.getBoundingClientRect();assert.ok(rect.top>=clipTop&&rect.bottom<=menuTop,'底部菜单完整位于入口上方及裁切范围内');
+ h.doc.fire('click',{target:new Node('div',h.doc)});menuTop=60;current.menu.open=true;current.menu.fire('toggle');rect=current.body.getBoundingClientRect();assert.ok(rect.top>=menuTop+20&&rect.bottom<=clipBottom,'靠顶部重开恢复向下，不沿用上次位置');
+ h.doc.fire('click',{target:new Node('div',h.doc)});menuTop=140;clipTop=100;clipBottom=190;current.menu.open=true;current.menu.fire('toggle');rect=current.body.getBoundingClientRect();assert.ok(rect.top>=clipTop&&rect.bottom<=clipBottom);assert.ok(rect.height<110);assert.equal(current.body.style.overflowY,'auto');assert.equal(clip.scrollTop,undefined,'不滚动外层列表');
+ h.controller.deactivate();
+});

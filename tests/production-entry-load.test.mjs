@@ -1,3 +1,7 @@
+import { filterPlaceFoundationSources, placeWorkspaceDependency } from '../src/v3/place-foundation.js';
+import { captureQianchuangCharacterSources } from '../src/place-worldbook-material.js';
+import { createWorldInfoSourceCandidates } from '../src/world-info-scanner.js';
+import { filterSourcesByPermission } from '../src/source-permission.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, access } from 'node:fs/promises';
@@ -273,7 +277,8 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
     sourceReadAttempts: { reachableReads: 0, exitPoint: 'testSourceDto' },
   };
   const context = {
-    chatId: 'host-chat', chatMetadata: { qianqianjie: { chatId } },
+    // This producer exercises an existing archive, outside the fresh-chat exemption.
+    chatId: 'host-chat', chatMetadata: { qianqianjie: { chatId }, qianqianjiePrequel: '用户明确导入的过去经历。' },
     constants: { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 0 } },
     setExtensionPrompt() {}, async saveChat() { return true; },
   };
@@ -370,6 +375,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
       qianqianjie: withoutQqjIdentity ? { schemaVersion: 1 } : { schemaVersion: fileOwnedIdentity ? 2 : 1, chatId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         ...(fileOwnedIdentity ? { file: { characterLocator: 'char.png', hostChatId: 'host-chat' } } : {}) },
       ...(legacyReceiptPrequelBudget ? { qianqianjiePrequel: legacyReceiptPrequelBudget.text } : {}),
+      ...(invokeLocationReference ? { qianqianjiePrequel: '用户明确导入的过去经历，继续核对已有地点参照。' } : {}),
       ...(metadataWithUncloneableField ? { otherPlugin: { label: '保留字段', transient: () => 'not stored' } } : {}),
     } : {},
     chat: hostChat,
@@ -701,7 +707,9 @@ test('实际生产启动入口捕获首次 host event bind 异常并继续完成
   assert.equal(result.status, 'evaluated');
   assert.equal(result.startupWarnings.length, 1, 'startup catch 应记录一次原始入口失败');
   assert.equal(result.startupWarnings[0][0], '[qianqianjie] 身份或后端数据准备失败');
-  assert.match(result.startupWarnings[0][1]?.stack ?? '', /dist\/qqj-app\.js/u);
+  const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
+  const testedBundle = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));
+  assert.ok((result.startupWarnings[0][1]?.stack ?? '').includes(pathToFileURL(testedBundle).href), '原始异常栈应指向本次实际加载的bundle');
 });
 
 test('实际生产包无需打开面板或保存聊天，私有通道自动记录本轮结果', async () => {
@@ -947,7 +955,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let sessionOptions;
   let lifecycleOptions;
   let peopleWorkspaceOptions;
-  let peopleStoreOptions;
+  let peopleStoreOptions, placeStoreOptions;
+  const placeStore = { read: async () => ({ data: null, revision: 0 }), put() {}, invalidate() {} };
   let publicMemoryBridgeOptions;
   let publicQianshiBridgeOptions;
   let autoHideOptions;
@@ -1004,7 +1013,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const peerExtensionSettings = { disabledExtensions: [], 'schedule-planner': {} };
   const peerExtensionNames = ['third-party/ST-SevenDaysCal'];
   define('/scripts/extensions.js', { extension_settings: peerExtensionSettings, extensionTypes: {}, extensionNames: peerExtensionNames });
-  const scriptModule = define('/script.js', { is_send_press: false, saveSettingsDebounced() {}, getRequestHeaders: () => ({}) });
+  let liveGenerationState = false;
+  const generationGetter = () => { if (liveGenerationState instanceof Error) throw liveGenerationState; return liveGenerationState; };
+  const scriptModule = define('/script.js', { is_send_press: false, isGenerationInFlight: generationGetter, saveSettingsDebounced() {}, getRequestHeaders: () => ({}) });
   const groupModule = define('/scripts/group-chats.js', { is_group_generating: false });
   const nativeWorld = { entries: {} };
   const nativeWorldSettings = { charLore: [] };
@@ -1014,6 +1025,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const backendSnapshot = { sinceClientCreatedRequestCounts: { get: 3, put: 1, delete: 0 }, latestRead: null, latestWrite: null, lastFailure: null };
   const backendClient = { getDiagnosticSnapshot: () => backendSnapshot };
   define('./src/backend-client.js', { createBackendClient: () => backendClient });
+  define('./src/v3/place-workspace.js', { createPlaceWorkspaceStore: options => { placeStoreOptions = options; return placeStore; } });
   define('./src/plugin-activity.js', { createPluginActivity: sources => { pluginActivitySources = sources; return ({ getState: () => ({ busy: false }), subscribe: () => () => {} }); } });
   define('./src/plugin-updates.js', { createPluginUpdates: () => ({}) });
   define('./src/avatar-generation.js', { createAvatarGenerator: () => ({}) });
@@ -1066,12 +1078,15 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let scannedWorldInfoSources = null;
   define('./src/source-permission.js', { createSourcePermissionController: () => ({
     filterWorldInfoSources(sources) { return sources.filter(source => source.sourceName !== 'blocked-book'); },
+    filterCandidates({candidates}) { return filterSourcesByPermission({candidates,settings:{sourceWorldInfoExcludedBooks:['blocked-book']}}); },
   }) });
-  define('./src/world-info-scanner.js', { scanWorldInfo: async (_context, options) => {
+  let worldInfoEntries=[{key:'allowed-book::7',source:'allowed-book',uid:'7',label:'灯塔',entryLabel:'灯塔',comment:'灯塔',primaryKeys:['灯塔'],secondaryKeys:[],content:'世界书原文',constant:true}];
+  define('./src/world-info-scanner.js', { createWorldInfoSourceCandidates, scanWorldInfo: async (_context, options) => {
     scannedWorldInfoSources = options.filterBookNames(['blocked-book', 'allowed-book']);
-    return { entries: [{ key: 'allowed-book::7', comment: '灯塔', primaryKeys: ['灯塔'], secondaryKeys: [], content: '世界书原文', constant: true }] };
+    return {entries:worldInfoEntries};
   } });
   const productionHostContext = { eventSource: productionEventSource, eventTypes: productionEventTypes, uuidv4, getRequestHeaders: () => ({ 'X-CSRF-Token': 'token' }), groupId: null, characterId: 0, characters: [{ avatar: 'char.png', name: '角色' }] };
+  define('./src/place-worldbook-material.js',{captureQianchuangCharacterSources});
   define('./src/v3/host-adapter.js', {
     captureTargetChatCoordinates: (_snapshot, identity) => ({ hostChatId: identity.hostChatId, characterLocator: identity.characterLocator, characterName: '角色', avatarUrl: 'char.png', requestHeaders: {} }),
     createHostAdapter: options => { hostAdapterOptions = options; return { getContext: () => productionHostContext, getWorldInfoBindings: () => ({}), snapshot: () => ({}) }; },
@@ -1086,6 +1101,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     { id: 'awake-id', entityType: 'person', displayName: '在场人物' }, { id: 'sleep-id', entityType: 'person', displayName: '休眠人物' },
   ] };
   define('./src/v3/foundation-runtime.js', { createFoundationRuntime: options => { foundationOptions = options; return { getReachable: () => productionReachable }; } });
+  define('./src/v3/place-foundation.js', { filterPlaceFoundationSources, placeWorkspaceDependency });
   define('./src/v3/entity-identity.js', {
     normalizeIdentityProjection,
     resolveIdentityEntityId: (entityId, projection = {}) => projection.identityRedirectsByEntityId?.[entityId] ?? entityId,
@@ -1204,6 +1220,9 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.ok(lifecycleOptions.aborters.includes(vectorRuntime));
   assert.ok(lifecycleOptions.aborters.includes(vectorApi));
   assert.equal(await v3RecallOptions.semanticProvider('vector-input'), 'vector-input');
+  assert.equal(placeStoreOptions.client, backendClient);
+  assert.equal(v3MemoryOptions.placeWorkspaceStore, placeStore);
+  assert.equal(await v3RecallOptions.placeWorkspaceDependencyProvider(), 'test:0');
   const liveProjection = await v3RecallOptions.identityProjectionProvider({ chatId: 'test' });
   const storedProjection = await v3RecallOptions.identityProjectionProvider({ chatId: 'stored-chat' });
   assert.deepEqual(nativeJson(liveProjection), nativeJson(storedProjection));
@@ -1291,6 +1310,24 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   scriptModule.setExport('is_send_press', true); assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '单聊生成状态必须读取宿主实时导出');
   scriptModule.setExport('is_send_press', false); groupModule.setExport('is_group_generating', true); assert.equal(v3MemoryOptions.isMainGenerationActive(), true, '群聊生成状态必须参与同一 OR 判断');
   groupModule.setExport('is_group_generating', false); assert.equal(v3MemoryOptions.isMainGenerationActive(), false);
+  assert.equal(v3MemoryOptions.readMainGenerationState(), false);
+  scriptModule.setExport('is_send_press', true);
+  assert.equal(v3MemoryOptions.readMainGenerationState(), false, '完整空闲不能再OR旧sendpress');
+  scriptModule.setExport('is_send_press', false); liveGenerationState = true;
+  assert.equal(v3MemoryOptions.readMainGenerationState(), true, '宿主入口计数覆盖START之前的生成');
+  liveGenerationState = false; groupModule.setExport('is_group_generating', true);
+  assert.equal(v3MemoryOptions.readMainGenerationState(), true, '群聊wrapper仍参与busy事实');
+  groupModule.setExport('is_group_generating', false); transferActive = true;
+  assert.equal(v3MemoryOptions.readMainGenerationState(), true, '记忆转移busy仍保留');
+  transferActive = false;
+  for (const unknown of [null, undefined, 'false', 0, new Error('synthetic unavailable')]) {
+    liveGenerationState = unknown;
+    assert.equal(v3MemoryOptions.readMainGenerationState(), null, '宿主完整接口不可用时保持unknown');
+  }
+  scriptModule.setExport('isGenerationInFlight', undefined);
+  assert.equal(v3MemoryOptions.readMainGenerationState(), null, '旧宿主无可选函数仍可装配');
+  scriptModule.setExport('isGenerationInFlight', generationGetter); liveGenerationState = false;
+
   assert.equal(Object.hasOwn(v3MemoryOptions, 'customGuidance'), false, '退役通用附加不得继续接入运行时');
   assert.equal(v3MemoryOptions.extractorPromptGuidance(), '摘要指导');
   assert.equal(v3MemoryOptions.csePromptGuidance(), 'CSE 指导');
@@ -1381,6 +1418,24 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const worldInfo = await publicMemoryBridgeOptions.readWorldInfoProvider();
   assert.deepEqual(scannedWorldInfoSources, ['allowed-book'], '生产入口将整本排除权限映射到 scanner 的书名过滤契约');
   assert.deepEqual(worldInfo.worldbook.map(entry => [entry.uid, entry.content]), [['allowed-book::7', '世界书原文']]);
+  worldInfoEntries.push({...worldInfoEntries[0],key:'allowed-book::8',uid:'8',hostEnabled:false});
+  assert.equal(typeof bootstrapOptions.qianchuangWorldInfoProvider,'function');
+  assert.equal(typeof v3MemoryOptions.placeWorldInfoProvider, 'function');
+  const windowBook=await bootstrapOptions.qianchuangWorldInfoProvider({chatId:'test'});
+  assert.deepEqual(nativeJson(await v3MemoryOptions.placeWorldInfoProvider({ chatId: 'test' })), nativeJson(windowBook), '普通摘要与地点入口共享获准世界书provider');
+  productionHostContext.characters[0].data={description:'星舰地理设定',scenario:'边境基地',system_prompt:'角色指令不入材料'};
+  const organizedMaterials=await v3MemoryOptions.placeWorldInfoProvider({chatId:'test',organize:true});
+  assert.deepEqual(organizedMaterials.characterCardSources.map(row=>[row.kind,row.field,row.content]),[['characterCard','description','星舰地理设定'],['characterCard','scenario','边境基地']]);
+  assert.equal(organizedMaterials.candidates.length,1,'整理仍过滤disabled和排除书');assert.equal(Object.hasOwn(windowBook,'characterCardSources'),false,'普通摘要不附整理角色全文');
+  const invalidationsBeforeAuto = recallInvalidations.length;
+  v3MemoryOptions.onPlaceChanged('test', { automatic: true });
+  assert.equal(recallInvalidations.length, invalidationsBeforeAuto, '自动地点补充不清当轮召回槽');
+  v3MemoryOptions.onPlaceChanged('test');
+  assert.equal(recallInvalidations.at(-1), 'placeEdited');
+  assert.equal(windowBook.chatId,'test');assert.equal(windowBook.candidates.length,1);assert.equal(windowBook.candidates[0].uid,'7','complete扫描的disabled条目仍须后过滤');
+  assert.deepEqual(scannedWorldInfoSources,['allowed-book']);
+  await assert.rejects(bootstrapOptions.qianchuangWorldInfoProvider({chatId:'different-chat'}),{code:'CHAT_SESSION_STALE'});
+
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
   assert.equal(v3RecallOptions.generateUtilityTask, recallTask);

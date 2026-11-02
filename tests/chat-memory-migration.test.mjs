@@ -254,6 +254,19 @@ test('搬家成功读回只核QQJ身份与alias，宿主正文回复变化沿原
       const target = h.files.get(result.hostChatId);
       const copiedAi = target.find(value => value.is_user === false);
       assert.ok(copiedAi.extra[MIGRATION_ALIAS_KEY], '真实完成摘要/CSE楼获得已接受alias');
+      const sourceIndexes = h.sourceReachable.indexes.filter(index => index.kind === 'floorOrder');
+      assert.ok(sourceIndexes.length > 0 && sourceIndexes.every(index => index.sourceCheckpointId !== h.sourceReachable.checkpoint.id),
+        '来源图的首次CSE已复用摘要提交产生的楼序索引');
+      const migrated = await createFoundationStore({ client: h.client,
+        contextProvider: () => ({ ...h.sourceIdentity, hostChatId: result.hostChatId, chatId: result.chatId }) }).readReachable({ mode: 'full' });
+      const targetIndexes = migrated.indexes.filter(index => index.kind === 'floorOrder');
+      assert.equal(migrated.status, 'ready');
+      assert.ok(targetIndexes.length > 0 && targetIndexes.every(index => index.chatId === result.chatId
+        && index.narrativeGeneration === migrated.root.narrativeGeneration
+        && index.sourceCheckpointId === migrated.checkpoint.id),
+      '搬家目标必须为新chat/gen重建自己的楼序索引');
+      assert.notDeepEqual(targetIndexes.map(index => index.id), sourceIndexes.map(index => index.id),
+        '搬家目标不能沿用来源索引key');
       if (item.verifyExternalDisplay) {
         assert.deepEqual(copiedAi.extra.otherPluginDisplay, { label: '宿主更新后的标题' }, '读回的宿主显示字段被保留');
       }

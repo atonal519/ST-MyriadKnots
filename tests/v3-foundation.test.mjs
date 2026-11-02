@@ -14,6 +14,40 @@ import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_CHAT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+test('buildFoundationIndexes 复用同聊天同代且 entries 不变的 floorOrder immutable record', async () => {
+  const floors = [
+    { id: '11111111-1111-4111-8111-111111111111', hostLocator: { messageIndex: 1, swipeId: 0, selectedSwipeIndex: 0 } },
+    { id: '22222222-2222-4222-8222-222222222222', hostLocator: { messageIndex: 3, swipeId: 1, selectedSwipeIndex: 1 } },
+  ];
+  const generation = '99999999-9999-4999-8999-999999999999';
+  const first = await buildFoundationIndexes({ chatId: CHAT, narrativeGeneration: generation, checkpointId: '33333333-3333-4333-8333-333333333333', floors, candidates: [], now: '2026-09-02T00:00:00.000Z' });
+  const reused = await buildFoundationIndexes({ chatId: CHAT, narrativeGeneration: generation, checkpointId: '44444444-4444-4444-8444-444444444444', floors, candidates: [], existingIndexes: first, now: '2026-09-02T00:00:01.000Z' });
+  assert.deepEqual(reused, first, 'unchanged floorOrder records keep their immutable identity and key');
+  const changed = await buildFoundationIndexes({ chatId: CHAT, narrativeGeneration: generation, checkpointId: '55555555-5555-4555-8555-555555555555', floors, candidates: [{ hostLocator: floors[0].hostLocator }, { hostLocator: { ...floors[1].hostLocator, messageIndex: 4 } }], existingIndexes: first, now: '2026-09-02T00:00:02.000Z' });
+  assert.notEqual(changed[0].id, first[0].id, 'locator change must create a new index');
+  const wrongChat = await buildFoundationIndexes({ chatId: OTHER_CHAT, narrativeGeneration: generation, checkpointId: '66666666-6666-4666-8666-666666666666', floors, existingIndexes: first, now: '2026-09-02T00:00:03.000Z' });
+  assert.notEqual(wrongChat[0].id, first[0].id, 'index reuse must not cross chat ownership');
+});
+
+test('buildFoundationIndexes 复用128分片且generation变化时不复用', async () => {
+  const floors = Array.from({ length: 129 }, (_, index) => ({
+    id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    hostLocator: { messageIndex: index * 2 + 1, swipeId: 0, selectedSwipeIndex: 0 },
+  }));
+  const generation = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const first = await buildFoundationIndexes({ chatId: CHAT, narrativeGeneration: generation, checkpointId: '77777777-7777-4777-8777-777777777777', floors, now: '2026-09-02T00:00:00.000Z' });
+  assert.equal(first.length, 2);
+  const reused = await buildFoundationIndexes({ chatId: CHAT, narrativeGeneration: generation, checkpointId: '88888888-8888-4888-8888-888888888888', floors, existingIndexes: first, now: '2026-09-02T00:00:01.000Z' });
+  assert.deepEqual(reused.map(index => index.id), first.map(index => index.id));
+  const changedTail = floors.map((floor, index) => index === floors.length - 1 ? { ...floor, hostLocator: { ...floor.hostLocator, messageIndex: 999 } } : floor);
+  const changed = await buildFoundationIndexes({ chatId: CHAT, narrativeGeneration: generation, checkpointId: '99999999-9999-4999-8999-999999999999', floors: changedTail, existingIndexes: first, now: '2026-09-02T00:00:02.000Z' });
+  assert.equal(changed[0].id, first[0].id);
+  assert.notEqual(changed[1].id, first[1].id);
+  const changedGeneration = await buildFoundationIndexes({ chatId: CHAT, narrativeGeneration: 'bbbbbbbb-2222-4222-8222-222222222222', checkpointId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', floors, existingIndexes: first, now: '2026-09-02T00:00:03.000Z' });
+  assert.ok(changedGeneration.every((index, position) => index.id !== first[position].id));
+});
+
 test('batch foundation without capability retains four single writes and oversized content stays whole', async () => {
   const source = harness([assistant('甲'.repeat(400000)), assistant('B'), assistant('C'), assistant('D'), assistant('E'), assistant('F')]);
   await source.runtime.start(); const records = [...source.backend.records.values()].map(item => item.data).filter(item => item.recordType === 'floor').sort((left, right) => left.assistantSeq - right.assistantSeq);
@@ -1266,6 +1300,35 @@ test('无布局标识的旧 checkpoint 冷读按四类索引校验，首次新�
   assert.equal(upgraded.checkpoint.indexLayout, 'floorOrder-v1');
   assert.ok(upgraded.indexes.every(index => index.kind === 'floorOrder'));
   assert.ok(legacy.keys.every(key => h.backend.records.has(`chat-${CHAT}/${key}`)), '旧辅助索引保留为不可达历史记录');
+});
+
+test('旧索引图的首次实际 CSE 提交重建 floorOrder，后续提交复用新索引', async () => {
+  const h = harness([assistant('旧图楼'), user('确认旧图楼'), assistant('待分析楼'), user('确认待分析楼')]);
+  await h.runtime.start();
+  const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+    ? { jsonData: { summary: '旧图 CSE 回归摘要' } }
+    : { jsonData: { noMaterialChange: true } };
+  const memoryRuntime = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
+    generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'),
+    newUuid: uuidFactory(12000), logger: { warn() {} } });
+  await memoryRuntime.start();
+  const floor = h.runtime.getReachable().floors.at(-1);
+  await memoryRuntime.extractFloor(floor.id, { analyzeState: false });
+  const legacy = await installLegacyIndexFixture(h);
+  assert.equal((await h.store.readReachable({ mode: 'runtime', bypassCache: true })).stateDeltas.length, 0);
+  const indexPuts = [];
+  h.backend.setBeforePut(({ key, data }) => { if (data?.recordType === 'index') indexPuts.push(key); });
+  const first = await memoryRuntime.retryStateAnalysis(floor.id);
+  assert.equal(first.lastCseError, null);
+  assert.ok(indexPuts.length > 0, '旧布局首次实际 CSE 提交必须写入 floorOrder 索引');
+  const upgraded = await h.store.readReachable({ mode: 'runtime', bypassCache: true });
+  assert.equal(upgraded.checkpoint.indexLayout, 'floorOrder-v1');
+  assert.ok(upgraded.indexes.every(index => index.kind === 'floorOrder'));
+  assert.ok(legacy.keys.every(key => h.backend.records.has(`chat-${CHAT}/${key}`)), '旧索引仍保留');
+  indexPuts.length = 0;
+  const second = await memoryRuntime.retryStateAnalysis(floor.id);
+  assert.equal(second.lastCseError, null);
+  assert.deepEqual(indexPuts, [], '切换 floorOrder-v1 后重复提交应复用索引');
 });
 
 test('现代 active manifest 指向缺失索引时拒绝 ready，不冒充 legacy 重封口', async () => {

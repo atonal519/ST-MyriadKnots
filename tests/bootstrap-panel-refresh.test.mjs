@@ -14,6 +14,7 @@ async function loadBootstrap(overrides = {}) {
     './ui/wand-entry.js': { installWandEntry() {} },
     './ui/source-permission-view.js': { createSourcePermissionView: () => null },
     './ui/v3-foundation-view.js': { createV3FoundationView: () => null },
+    './ui/qianchuang-view.js': { createQianchuangView: () => null },
     './ui/people-profiles-view.js': { createPeopleProfilesView: () => null },
     './ui/qianshi-timeline-view.js': { createQianshiTimelineView: () => null },
     './ui/storage-management-view.js': { createStorageManagementView: () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} }) },
@@ -43,8 +44,8 @@ async function harness(result) {
   const instance = bootstrap({
     settings: { isEnabled: () => true },
     v3FoundationViewFactory: () => ({ ...stubView(), deactivate() { deactivations.foundation += 1; } }),
-    peopleProfilesViewFactory: stubView,
-    peopleWorkspaceRuntime: { getState: () => ({ status: 'ready' }) },
+    peopleProfilesViewFactory: stubView, qianchuangViewFactory: stubView,
+    qianchuangViewFactory: stubView, peopleWorkspaceRuntime: { getState: () => ({ status: 'ready' }) },
     documentRef: { activeElement: null, getElementById: () => null, createElement: () => ({}), body: { append() {} } },
     panelFactory: () => panel,
     wandInstaller() {},
@@ -65,13 +66,13 @@ test('bootstrap 保留 transient stale 时的已挂载面板，disabled 仍显�
 });
 
 test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步显隐', async () => {
-  let fabOptions, foundationOptions, peopleOptions, qianshiOptions, storageOptions, panelOptions, shows = 0, closes = 0; const appended = [], bodyAppended = [], fabAppearances = [], inlineAppearances = [];
+  let fabOptions, foundationOptions, peopleOptions, qianshiOptions, windowOptions, storageOptions, panelOptions, shows = 0, closes = 0; const appended = [], bodyAppended = [], fabAppearances = [], inlineAppearances = [];
   const fabHost = { style: {} };
   const dialogHost = { id: 'dialog-host' };
   const bootstrap = await loadBootstrap({ './ui/fab.js': { createFab: options => { fabOptions = options; return { host: fabHost, setBusy() {}, setAppearance(value) { fabAppearances.push(value); } }; } } });
   const dayAppearance = { mode: 'auto', effectiveTheme: 'day', palette: { knot: '#b63745', line: '#dce2e5' } };
   let vectorSettingsOpened = 0;
-  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, openVectorSettings() { vectorSettingsOpened += 1; }, refresh: async () => ({ status: 'ready' }), getUiDiagnostic: () => '{"schemaVersion":1}', syncAppearance: () => dayAppearance };
+  const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, openVectorSettings() { vectorSettingsOpened += 1; }, refresh: async () => ({ status: 'ready' }), syncAppearance: () => dayAppearance };
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
   const current = { fabShow: true };
   let sessionReads = 0; const sessionStateProvider = () => { sessionReads += 1; return { status: 'preparing' }; };
@@ -84,7 +85,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
     settings: { isEnabled: () => true, get: () => current }, enableFab: true,
     vectorApi, vectorIndex,
     sessionStateProvider, prepareSession, backendDiagnosticProvider, isSevenDaysLedgerInjectionEnabled, timeRuntime, v3FoundationRuntime: memoryRuntime, pluginVersion: '0.1.9-test',
-    v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, qianshiTimelineViewFactory: options => { qianshiOptions = options; return stubView(); }, peopleWorkspaceRuntime: { getState: () => ({}) },
+    v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, qianshiTimelineViewFactory: options => { qianshiOptions = options; return stubView(); }, qianchuangViewFactory: options => { windowOptions=options;return stubView(); }, qianchuangWorldInfoProvider: async()=>({chatId:'test',candidates:[]}), peopleWorkspaceRuntime: { getState: () => ({}) },
     documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
     inlineRenderer: { setAppearance(value) { inlineAppearances.push(value); } },
     storageManagement: { getState() {}, scan() {}, cleanup() {}, setAutoEnabled() {}, subscribe() {} },
@@ -110,7 +111,8 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   assert.equal(foundationOptions.sessionStateProvider, sessionStateProvider); assert.deepEqual(foundationOptions.sessionStateProvider(), { status: 'preparing' }); assert.equal(sessionReads, 1);
   assert.equal(foundationOptions.backendDiagnosticProvider, backendDiagnosticProvider); assert.equal(backendReads, 0); assert.deepEqual(foundationOptions.backendDiagnosticProvider(), { sinceClientCreatedRequestCounts: { get: 2, put: 1, delete: 0 } }); assert.equal(backendReads, 1);
   assert.equal(foundationOptions.pluginVersion, '0.1.9-test');
-  assert.equal(foundationOptions.uiDiagnosticProvider(), '{"schemaVersion":1}', '只读provider应在panel创建后导出界面诊断且不触发TDZ');
+  assert.equal(Object.hasOwn(windowOptions,'worldInfoProvider'),false,'地点界面统一消费runtime有效图，不单独读取世界书');
+  assert.equal(Object.hasOwn(foundationOptions,'uiDiagnosticProvider'),false);
   assert.deepEqual(fabAppearances, [dayAppearance]); assert.deepEqual(inlineAppearances, [dayAppearance]);
   const nightAppearance = { mode: 'auto', effectiveTheme: 'night', palette: { knot: '#d9707a', line: '#2b363b' } };
   panelOptions.onAppearanceChange(nightAppearance);
@@ -132,7 +134,7 @@ test('bootstrap 工作指示同源更新悬浮球与窗口忙态，隐藏悬浮�
     documentRef: { createElement: () => ({}), getElementById: () => null, body: { append() {} }, defaultView: {} },
     panelFactory: () => panel, enableFab: true,
     fabFactory: () => ({ host: { style: {} }, setBusy(value) { fabStates.push(value); } }),
-    v3FoundationViewFactory: () => ({ ...stubView(), setActivity(value) { viewStates.push(value); } }), peopleProfilesViewFactory: stubView,
+    v3FoundationViewFactory: () => ({ ...stubView(), setActivity(value) { viewStates.push(value); } }), peopleProfilesViewFactory: stubView, qianchuangViewFactory: stubView,
     wandInstaller() {},
   });
   assert.equal(typeof listener, 'function');

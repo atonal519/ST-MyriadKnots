@@ -39,11 +39,14 @@ function harness({ width = 1000, height = 800, saved = null } = {}) {
 test('悬浮球使用构画同款视觉 token、独立位置和真实忙灯', () => {
   const h = harness({ saved: { x: 980, y: 790 } });
   assert.equal(h.host.id, 'qqj-fab-host'); assert.equal(h.host.style.left, '964px'); assert.equal(h.host.style.top, '764px');
-  for (const token of ['width:36px', 'height:36px', 'background:transparent', '1.5px solid', 'z-index:2000000', 'right:60px', 'right:58px', 'width:24px', '1.4s ease-in-out infinite', '0 0 28px', 'prefers-reduced-motion']) assert.match(h.root.innerHTML, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  for (const token of ['width:36px', 'height:36px', 'background:transparent', '1.5px solid', 'z-index:2000000', 'right:60px', 'right:58px', 'width:24px', 'height:24px', '1.4s ease-in-out infinite', '0 0 28px', 'prefers-reduced-motion']) assert.match(h.root.innerHTML, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(h.root.innerHTML, /button\{[^}]*background:var\(--qqj-fab-surface\)/, '悬浮球在所有主题下保持透明底');
   assert.doesNotMatch(h.root.innerHTML, /--SmartTheme(?:Quote|Body)Color/, 'FAB 使用统一解析后的实色 palette，不绕过透明回退');
   assert.match(h.root.innerHTML, /stroke-width="1\.8"/);
-  h.fab.setAppearance({ mode: 'auto', effectiveTheme: 'night', palette: { knot: '#resolved-knot', ink: '#resolved-ink', panel: '#resolved-panel' } });
+  h.fab.setAppearance({ mode: 'auto', effectiveTheme: 'night', scale: 1.5, palette: { knot: '#resolved-knot', ink: '#resolved-ink', panel: '#resolved-panel' } });
+  assert.equal(h.host.style['--qqj-ui-scale'], '1.5');
+  assert.equal(h.host.style.left, '964px', '界面放大后悬浮球仍按固定36px约束边界');
+  assert.equal(h.host.style.top, '764px');
   assert.equal(h.host.style['--qqj-fab-primary'], '#resolved-knot'); assert.equal(h.host.style['--qqj-fab-ink'], '#resolved-ink');
   assert.equal(h.host.style['--qqj-fab-surface'], '#resolved-panel');
   assert.equal(h.button.attributes['aria-busy'], 'false');
@@ -73,6 +76,7 @@ test('手机本页面会话保留拖拽位置并约束视口，重建仍默认�
   await h.button.fire('pointerdown', { clientX: 100, clientY: 100 }); await h.button.fire('pointermove', { clientX: 120, clientY: 120 }); await h.button.fire('pointerup');
   assert.deepEqual(JSON.parse(h.stored.get('qqj-fab-pos')), { x: 12, y: 34 }); assert.deepEqual(h.writes, []);
   h.fab.restore(); assert.equal(h.host.style.left, '120px'); assert.equal(h.host.style.top, '120px'); assert.equal(h.host.style.right, 'auto');
+  h.fab.setAppearance({ scale: 1.5 });
   h.windowRef.innerWidth = 70; h.windowRef.innerHeight = 90; h.fab.onResize();
   assert.equal(h.host.style.left, '34px'); assert.equal(h.host.style.top, '54px', '短视口按悬浮球尺寸限制底边'); assert.deepEqual(h.writes, []);
   h.windowRef.innerWidth = 1000; h.windowRef.innerHeight = 800; h.fab.onResize();

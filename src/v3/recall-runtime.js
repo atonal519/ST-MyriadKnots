@@ -19,9 +19,9 @@ import { qianshiRecallPendingHeader, QIANSHI_RECALL_PENDING_HEADER } from './qia
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
 export const RECALL_RECEIPT_SCHEMA_VERSION = 18;
-export const RECALL_STRATEGY_VERSION = 'continuity-v23';
+export const RECALL_STRATEGY_VERSION = 'continuity-v26';
 const RECALL_PROMPT_DEPTH = 2;
-const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18', 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
+const IDENTIFIED_RECALL_STRATEGIES = [RECALL_STRATEGY_VERSION, 'continuity-v25', 'continuity-v24', 'continuity-v23', 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18', 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11'];
 
 const SUPPORTED_TYPES = new Set(['normal', 'regenerate', 'swipe', 'continue']);
 const MAX_STOPPED_GENERATION_CHAINS = 16;
@@ -36,7 +36,7 @@ const LEGACY_MAX_RECEIPT_STORYLINES = 4;
 const MAX_RECEIPT_STATE_PROGRESSIONS = 8;
 const MAX_RECEIPT_SKIP_REASONS = 32;
 const EXPANDED_RECALL_SELECTION_STRATEGIES = new Set([
-  RECALL_STRATEGY_VERSION, 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18',
+  RECALL_STRATEGY_VERSION, 'continuity-v25', 'continuity-v24', 'continuity-v23', 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18',
   'continuity-v17', 'continuity-v16', 'continuity-v15',
 ]);
 const EXPANDED_RECALL_RECEIPT_LIMITS = Object.freeze({ expanded: true, floors: MAX_RECEIPT_FLOORS,
@@ -294,8 +294,10 @@ const baseReceiptMaterial = receipt => receipt.schemaVersion >= 18
   ? [...legacyBaseReceiptMaterial(receipt), receipt.selectedLocationReferences, receipt.locationReferenceDependency]
   : legacyBaseReceiptMaterial(receipt);
 // 删除见证是可选的签名扩展，旧回执维持原签名；只记录选中事项的删除指纹，不复制全档删除清单。
-const receiptMaterial = receipt => receipt.qianshiDeletionWitness === undefined ? baseReceiptMaterial(receipt)
-  : [...baseReceiptMaterial(receipt), receipt.qianshiDeletionWitness];
+const receiptMaterial = receipt => {
+  const material = receipt.qianshiDeletionWitness === undefined ? baseReceiptMaterial(receipt) : [...baseReceiptMaterial(receipt), receipt.qianshiDeletionWitness];
+  return receipt.placeWorkspaceDependency === undefined ? material : [...material, receipt.placeWorkspaceDependency, receipt.selectedPlaces ?? []];
+};
 async function qianshiDeletionWitness(receipt, deletedEvents, fingerprint) {
   const matterIds = [...new Set([...(receipt.qianshiProgress?.matterIds ?? []),
     ...(receipt.timeDependencies?.reminders ?? []).map(item => item.qianshiRef?.matterId).filter(Boolean)])];
@@ -397,7 +399,7 @@ function withoutStaleTime(receipt, source, projection) {
     const active = new Set([...floors.flatMap(floor => floor.items), ...states, ...changes].map(value => value.storylineId));
     storylines = receipt.storylines.filter(line => active.has(line.storylineId));
     dependencies = { mode: 'selected', corrections: [], reminders: [] };
-    ordinaryText = formatRecallInjection({ coverage: receipt.coverage, floors, states, cseChanges: changes, storylines, locationReferences, entityById,
+    ordinaryText = formatRecallInjection({ coverage: receipt.coverage, floors, manualPlaces: receipt.selectedPlaces ?? [], states, cseChanges: changes, storylines, locationReferences, entityById,
       timeProjection: { corrections }, timeReminders: reminders, timeDependencies: dependencies });
     text = appendQianshiProgress(ordinaryText, receipt.qianshiProgress, dependencies);
   };
@@ -528,6 +530,7 @@ const stateChangeSideValid = (value, { identifiersRequired = false } = {}) => va
   && boundedString(value.reason, 4000, { empty: true }) && ['baseline', 'floor', 'reasonableProgression', 'manual'].includes(value.origin)
   && optionalBoundedString(value.towardEntityId, 500) && optionalPositiveInteger(value.sourceAssistantSeq));
 function receiptShapeValid(receipt, { historical = false } = {}) {
+  if (receipt?.placeWorkspaceDependency !== undefined && (!boundedString(receipt.placeWorkspaceDependency, 200) || !Array.isArray(receipt.selectedPlaces) || !receipt.selectedPlaces.every(value => ['manualPlace','placeFoundation'].includes(value?.kind) && boundedString(value.text, 20000) && boundedString(value.placeEntityId, 500)))) return false;
   const selectionLimits = recallReceiptSelectionLimits(receipt?.strategyVersion);
   const expandedSelection = selectionLimits.expanded;
   const receiptFloorLimit = selectionLimits.floors;
@@ -559,7 +562,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
     || (receipt.schemaVersion >= 18 && !boundedString(receipt.locationReferenceDependency, 4000, { empty: true }))
     || (receipt.schemaVersion >= 8 && !boundedString(receipt.bodyMatchFingerprint, 200))
     || (receipt.schemaVersion >= 9 && (historical
-      ? ![RECALL_STRATEGY_VERSION, 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18', 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
+      ? ![RECALL_STRATEGY_VERSION, 'continuity-v25', 'continuity-v24', 'continuity-v23', 'continuity-v22', 'continuity-v21', 'continuity-v20', 'continuity-v19', 'continuity-v18', 'continuity-v17', 'continuity-v16', 'continuity-v15', 'continuity-v14', 'continuity-v13', 'continuity-v12', 'continuity-v11', 'continuity-v10', 'continuity-v9', 'continuity-v8', 'continuity-v7', 'continuity-v6', 'continuity-v5', 'continuity-v4', 'continuity-v3', 'continuity-v2', 'continuity-v1'].includes(receipt.strategyVersion)
       : receipt.strategyVersion !== RECALL_STRATEGY_VERSION))
     || !SUPPORTED_TYPES.has(receipt.generationType)
     || !Array.isArray(receipt.selectedFloors) || receipt.selectedFloors.length > receiptFloorLimit
@@ -682,7 +685,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
   return receipt.skipReasons.every(reason => boundedString(reason, 120));
 }
 
-async function persistedReceiptValid(receipt, { chatId, userIndex, userFingerprint, pluginVersion }, fingerprint = hashText) {
+async function persistedReceiptValid(receipt, { chatId, userIndex, userFingerprint, pluginVersion, placeWorkspaceDependency = `${chatId}:0` }, fingerprint = hashText) {
   try {
     const snapshot = clone(receipt);
     if (!receiptShapeValid(snapshot)
@@ -691,6 +694,7 @@ async function persistedReceiptValid(receipt, { chatId, userIndex, userFingerpri
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
+      || (snapshot.placeWorkspaceDependency ?? `${chatId}:0`) !== placeWorkspaceDependency
       || snapshot.receiptFingerprint !== await fingerprint(JSON.stringify(receiptMaterial(snapshot)))) return null;
     return snapshot;
   } catch {
@@ -790,6 +794,59 @@ export async function projectHistoricalRecallReceipt(message, { chatId, userMess
     return snapshot ? stateFromReceipt(snapshot, { restoredReceipt: true }) : null;
   }
   return legacyStateFromReceipt(receipt, { chatId: chatId.trim(), userIndex: userMessageIndex });
+}
+
+// A short host list alone is not proof that the chat has no older stored history.
+function earlyBodyScope(snapshot, coreChat, type, userIndex, keepCount, sanitizerOptions) {
+  const limit = normalizeAutoHideKeepAiCount(keepCount), replacing = ['swipe', 'regenerate'].includes(type);
+  let targetIndex = -1;
+  if (replacing) for (let index = snapshot.chat.length - 1; index > userIndex; index -= 1) {
+    if (snapshot.chat[index]?.is_system !== true && selectAssistantMessage(snapshot.chat[index])) { targetIndex = index; break; }
+  }
+  const targetIndexes = new Set(targetIndex >= 0 ? [targetIndex] : []), messages = [];
+  for (let index = snapshot.chat.length - 1; index >= 0; index -= 1) {
+    const message = snapshot.chat[index];
+    if (targetIndexes.has(index) || !message || message.is_system === true || isMemoryExcludedMessage(message)) continue;
+    const selected = selectAssistantMessage(message);
+    if (!selected?.rawContent?.trim()) continue;
+    // Early skipping proves the actual host body, not the stored selected-swipe version.
+    const canonicalContent = sanitizeMemoryContent(String(message.mes ?? '').replace(/\r\n?/g, '\n'), sanitizerOptions);
+    if (!canonicalContent) continue;
+    if (message.is_hidden === true || message.hidden === true || messages.length >= limit) return null;
+    messages.push({ canonicalContent });
+  }
+  let core = coreChat;
+  if (targetIndex >= 0) {
+    const latestCoreUser = core.findLastIndex(message => isPlayableUser(message));
+    const targetBody = sanitizeMemoryContent(String(snapshot.chat[targetIndex].mes ?? '').replace(/\r\n?/g, '\n'), sanitizerOptions);
+    for (let index = core.length - 1; index > latestCoreUser; index -= 1) {
+      if (core[index]?.is_user !== false) continue;
+      const body = sanitizeMemoryContent(String(core[index].mes ?? '').replace(/\r\n?/g, '\n'), sanitizerOptions);
+      if (core[index] === snapshot.chat[targetIndex] || targetBody && body === targetBody) core = core.filter((_message, position) => position !== index);
+      break;
+    }
+  }
+  return { messages, core, limit, targetIndexes, maximumSourceSeq: messages.length + targetIndexes.size };
+}
+
+function sourceFitsEarlyBody(source, matchedSource, scope, witness) {
+  if (source.migrationDescriptor || source.coverage.stableThroughAssistantSeq > scope.maximumSourceSeq
+    || source.readiness?.status === 'unknown' && source.readiness.hostConfirmed !== true) return false;
+  const remaining = [...witness];
+  for (const message of scope.messages) {
+    const index = remaining.findIndex(value => value.canonicalContent === message.canonicalContent);
+    if (index < 0) return false;
+    remaining.splice(index, 1);
+  }
+  const covered = new Set(matchedSource.bodyMatch?.recentBodyFloorIds ?? []);
+  const replacedFloors = new Set((source.bodyMatchRefs ?? []).filter(ref => scope.targetIndexes.has(ref.hostLocator?.messageIndex)).map(ref => ref.floorId));
+  const sourceIds = [
+    ...(source.bodyMatchRefs ?? []).map(ref => ref.floorId),
+    ...(source.floorMemories ?? []).flatMap(memory => memory.sourceFloorIds?.length ? memory.sourceFloorIds : [memory.floorId]),
+    ...(source.currentState ?? []).flatMap(subject => ['core', 'adaptive', 'situational'].flatMap(layer => (subject[layer] ?? []).map(item => item.sourceFloorId))),
+    ...(source.cseChanges ?? []).flatMap(change => [change.floorId, change.before?.sourceFloorId, change.after?.sourceFloorId]),
+  ].filter(Boolean);
+  return sourceIds.every(id => covered.has(id) || replacedFloors.has(id));
 }
 
 export async function captureCoreBodyWitness(coreChat, sanitizerOptions, fingerprint, maximumFloors = 3) {
@@ -1018,7 +1075,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, processingPrompt = () => '', isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, processingPrompt = () => '', isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, placeWorkspaceDependencyProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -1101,6 +1158,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (rootError) throw rootError;
       }
       if (sourceToVerify && matchesSourceRoot(sourceToVerify, latestRoot)) {
+        const currentPlaceDependency = typeof placeWorkspaceDependencyProvider === 'function' ? await placeWorkspaceDependencyProvider() : `${sourceToVerify.chatId}:0`;
+        if ((sourceToVerify.placeWorkspaceDependency ?? `${sourceToVerify.chatId}:0`) !== currentPlaceDependency) return Object.freeze({ status: 'stale', reason: 'placeChanged' });
         updateSourceVerification({ sourceStatus: sourceToVerify.status, rootVerified: true, step: 'root' });
         return sourceToVerify;
       }
@@ -1183,7 +1242,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return Object.freeze({ ...source, qianshiProgress, qianshiCandidates: Object.freeze([]) });
   }
   async function preparedSource(snapshot, sanitizerSnapshot, options = {}) {
-    let source = await basePreparedSource(snapshot, sanitizerSnapshot, options);
+    let source = options.preparedSource ?? await basePreparedSource(snapshot, sanitizerSnapshot, options);
     if (source?.status !== 'ready') return source;
     let timeProjection = null;
     if (typeof timeProjectionProvider === 'function') try { if (options.operation) advanceOperation(options.operation, 'timeProjection'); timeProjection = await timeProjectionProvider(source); }
@@ -1751,13 +1810,44 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       timings.inputMs = Date.now() - inputStarted;
       let candidate = null, candidateOwner = null;
       advanceOperation(operation, 'receiptValidation');
+      const placeWorkspaceDependency = typeof placeWorkspaceDependencyProvider === 'function' ? await placeWorkspaceDependencyProvider() : `${operation.chatId}:0`;
       for (const value of receiptCandidates(user)) {
         const owner = value === sessionReceipt?.receipt ? sessionReceipt.owner : null;
-        const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint, pluginVersion }, fingerprint);
+        const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint, pluginVersion, placeWorkspaceDependency }, fingerprint);
         const locationDependencyMatches = snapshot?.schemaVersion >= 18
           ? locationReferenceDependencyMatches(snapshot.locationReferenceDependency, operation.locationReferenceSnapshot)
           : !operation.locationReferenceSnapshot?.values?.length;
         if (snapshot && locationDependencyMatches) { candidate = snapshot; candidateOwner = owner; break; }
+      }
+      // Apply the no-old-history rule before a saved early receipt can restore its CSE block.
+      const earlyScope = operation.prequelSourceText.trim() ? null
+        : earlyBodyScope(before, coreInput, type, user.index, recentBodyFloorLimit(), operation.sanitizerOptions);
+      let earlyPreparedSource = null, earlyBodyWitness = null, earlySourceMs = 0;
+      if (earlyScope && (!candidate || candidate.coverage.stableThroughAssistantSeq <= earlyScope.maximumSourceSeq)) {
+        operation.phase = diagnostic.phase = 'source';
+        advanceOperation(operation, 'source');
+        const earlySourceStarted = Date.now();
+        earlyPreparedSource = await basePreparedSource(before, operation.sanitizerOptions, { fresh: attempt > 0, operation });
+        earlySourceMs = Date.now() - earlySourceStarted; timings.sourceMs = earlySourceMs;
+        if (earlyPreparedSource?.sourceReadAttempts) timings.sourceReadAttempts = clone(earlyPreparedSource.sourceReadAttempts);
+        const earlyError = technicalSourceError(earlyPreparedSource);
+        if (earlyError) throw earlyError;
+        if (earlyPreparedSource?.status === 'ready' && !earlyPreparedSource.migrationDescriptor
+          && earlyPreparedSource.coverage.stableThroughAssistantSeq <= earlyScope.maximumSourceSeq) {
+          advanceOperation(operation, 'bodyWitness');
+          earlyBodyWitness = await captureCoreBodyWitness(earlyScope.core, operation.sanitizerOptions, fingerprint, earlyScope.limit);
+          // The replaced reply is neither prior history nor one of its N visible body slots.
+          const earlySnapshot = earlyScope.targetIndexes.size ? { ...before, chat: before.chat.map((message, index) => earlyScope.targetIndexes.has(index) ? null : message) } : before;
+          const matchedSource = { ...earlyPreparedSource, bodyMatch: await attachCoreBodyMatch(earlyPreparedSource, earlyBodyWitness, earlySnapshot,
+            operation.sanitizerOptions, fingerprint, earlyScope.limit, operation.locationReferenceSnapshot) };
+          if (sourceFitsEarlyBody(earlyPreparedSource, matchedSource, earlyScope, earlyBodyWitness)) {
+            const current = hostAdapter.snapshot(), currentUser = latestUser(current);
+            if (currentChatId(current) !== operation.chatId || currentHostChatId(current) !== operation.hostChatId) return finishStale(operation, timings, 'chatChanged');
+            if (currentUser?.message !== user.message || currentUser?.message?.mes !== operation.userText) return finishStale(operation, timings, 'userChanged');
+            if (liveRecallFrameKey(current) !== operation.liveFrameKey) return finishStale(operation, timings, 'narrativeChanged');
+            return finishSkipped(operation, 'recentBodyOnly', timings);
+          }
+        }
       }
       if (candidate?.selectedFloors.some(value => value.rawWitnesses?.length || value.summaryWitnesses?.length)) {
         // 冻结复用不查询向量；原文见证及旧摘要回执仍按各自来源重新核验。
@@ -1828,7 +1918,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const sanitizerSnapshot = operation.sanitizerOptions;
       advanceOperation(operation, 'bodyWitness');
       const [coreBodyWitness, baseQueryFingerprint] = await Promise.all([
-        captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint, recentBodyFloorLimit()),
+        earlyBodyWitness && earlyScope.core === coreInput ? earlyBodyWitness : captureCoreBodyWitness(coreInput, sanitizerSnapshot, fingerprint, recentBodyFloorLimit()),
         fingerprint(queryContext.text),
       ]);
       operation.coreBodyWitness = coreBodyWitness;
@@ -1836,14 +1926,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.phase = diagnostic.phase = 'source'; notify();
       advanceOperation(operation, 'source');
       const sourceStarted = Date.now();
-      const readSource = await preparedSource(before, sanitizerSnapshot, { fresh: attempt > 0, operation });
+      const readSource = await preparedSource(before, sanitizerSnapshot, { fresh: attempt > 0, operation, preparedSource: earlyPreparedSource });
       let source = readSource;
       if (readSource?.status === 'ready') {
         advanceOperation(operation, 'bodyWitness');
         source = Object.freeze({ ...readSource, bodyMatch: await attachCoreBodyMatch(readSource, coreBodyWitness, before, sanitizerSnapshot, fingerprint, recentBodyFloorLimit(), operation.locationReferenceSnapshot) });
       }
       if (source?.status === 'ready') { advanceOperation(operation, 'qianshiProgress'); source = await attachQianshiProgress(source, queryContext, before); }
-      timings.sourceMs = Date.now() - sourceStarted;
+      timings.sourceMs = earlySourceMs + Date.now() - sourceStarted;
       if (source?.sourceReadAttempts) timings.sourceReadAttempts = clone(source.sourceReadAttempts);
       if (source?.status === 'ready') diagnostic.coverage = clone(source.coverage);
       if (source.status !== 'ready') {
@@ -1923,6 +2013,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         userMessageIndex: user.index,
         userContentFingerprint: userFingerprint,
         queryFingerprint,
+        ...(source.identityProjection?.placeWorkspaceRevision ? { placeWorkspaceDependency: source.placeWorkspaceDependency, selectedPlaces: clone(selection.manualPlaces ?? []) } : {}),
         locationReferenceDependency: JSON.stringify(operation.locationReferenceSnapshot),
         bodyMatchFingerprint: source.bodyMatch.fingerprint,
         strategyVersion: RECALL_STRATEGY_VERSION,

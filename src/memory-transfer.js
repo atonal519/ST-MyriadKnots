@@ -1,3 +1,4 @@
+import { validatePlaceWorkspace, PLACE_WORKSPACE_RECORD_ID } from './v3/place-workspace.js';
 import { sha256, isUuid } from './identity.js';
 import { CHAT_IDENTITY_COLLECTION } from './chat-identity.js';
 import { chatFileFromHost, cloneHostJsonMetadata } from './host-context.js';
@@ -24,7 +25,7 @@ const check = (condition, message) => { if (!condition) throw fail(message); };
 const same = (a, b) => stableJson(a) === stableJson(b);
 const bytes = value => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value)).byteLength;
 const coreTypes = new Set(['root', 'floor', 'run', 'checkpoint', 'floorMemory', 'entity', 'baseline', 'stateDelta', 'currentState', 'migrationDescriptor', 'index']);
-const isAux = id => id === 'v3-people-workspace' || /^v3-people-snapshot-[\da-f-]{36}$/i.test(id)
+const isAux = id => id === PLACE_WORKSPACE_RECORD_ID || id === 'v3-people-workspace' || /^v3-people-snapshot-[\da-f-]{36}$/i.test(id)
   || id === 'v3-time-head' || /^v3-time-batch-[\da-f]{32}$/.test(id)
   || (id.startsWith('v3-time-batch-') && isUuid(id.slice('v3-time-batch-'.length)))
   || id === 'qqj-vector-index' || /^qqj-vector-shard-[\da-f]{40}$/.test(id);
@@ -98,7 +99,8 @@ async function validateRecords(records, chatId) {
       await store.readRecord(item.data.recordType, item.id);
     } else {
       check(isAux(item.id), '记忆包包含不支持的记录类型。');
-      if (item.id === 'v3-people-workspace') validatePeopleWorkspace(item.data, chatId);
+      if (item.id === PLACE_WORKSPACE_RECORD_ID) validatePlaceWorkspace(item.data, chatId);
+      else if (item.id === 'v3-people-workspace') validatePeopleWorkspace(item.data, chatId);
       else if (item.id.startsWith('v3-people-snapshot-')) {
         check(item.data.kind === 'qqj-v3-frozen-people-snapshot' && isUuid(item.data.sourceChatId), '人物历史副本无效。');
         validatePeopleWorkspace(item.data.workspace, chatId);
@@ -171,6 +173,10 @@ function exportMarkers(chat, graph, bindings) {
 function rehomeRecord(item, chatId) {
   const data = { ...clone(item.data), chatId };
   if (data.workspace) data.workspace.chatId = chatId;
+  if (item.id === PLACE_WORKSPACE_RECORD_ID) {
+    for (const row of Object.values(data.placesByEntityId)) if (row.createdEntity) row.createdEntity.chatId = chatId;
+    for (const entity of data.foundation?.entities ?? []) entity.chatId = chatId;
+  }
   return { id: item.id, data };
 }
 

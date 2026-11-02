@@ -77,3 +77,12 @@ test('目标差异诊断固定枚举与数量上限，任意文本和旧记录�
   assert.doesNotMatch(JSON.stringify(diagnostic), /SECRET|projection/u);
   assert.equal(storedPreparationDiagnostic({ code: 'V3_BRANCH_TARGET_CHANGED' }).branchTargetDifference, undefined, '旧错误缺差异字段照常兼容');
 });
+
+
+test('后台网络和HTTP稳定代码进入准备诊断且仍排除任意后台代码', () => {
+  for (const code of ['BACKEND_NETWORK', 'BACKEND_HTTP']) {
+    assert.equal(preparationFailureDiagnostic({ code, message: 'PRIVATE_BODY' }).code, code);
+    assert.equal(storedPreparationDiagnostic({ code }).code, code);
+  }
+  assert.equal(preparationFailureDiagnostic({ code: 'BACKEND_PRIVATE_BODY' }).code, null);
+});

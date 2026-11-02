@@ -346,3 +346,32 @@ test('实际目标归属比较失败沿原私有身份槽保留有限差异，�
   assert.deepEqual(h.writes.at(-1).data.failures.find(item => item.kind === 'identity').identity.preparationFailure.branchTargetDifference, difference);
   assert.doesNotMatch(JSON.stringify(h.writes), /SECRET|swipes/u);
 });
+
+test('无新召回时memory失败自动进入原槽，白名单/去重/清错后保失败并解除订阅', async t => {
+ const memoryListeners=new Set();let reads=0;
+ let memory={chatId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',lastExtractorError:null,extractorRequest:null};
+ const memoryRuntime={getState(){assert.fail('后台poll不能装配memory全历史');},getDiagnosticState(){reads++;return memory;},subscribeActivity(fn){memoryListeners.add(fn);return()=>memoryListeners.delete(fn);}};
+ const h=harness({memoryRuntime,backendDiagnosticProvider:()=>({latestRead:{sequence:9,method:'GET',recordType:'checkpoint',outcome:'success',elapsedMs:29,completedAt:'2026-10-29T12:35:36.018Z',url:'SECRET',backendMessage:'SECRET'},lastFailure:{method:'PUT',recordType:'root',code:'BACKEND_TIMEOUT',httpStatus:504,elapsedMs:15000,headers:'SECRET'}})});t.after(h.channel.dispose);
+ h.change({recallStatus:'idle'});await h.channel.start();await h.channel.flush();
+ memory={...memory,lastExtractorError:{runId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',floorId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',phase:'stale',code:'V3_MEMORY_PREFIX_CHANGED',attempts:1,message:'SECRET BODY https://private.invalid',prefixDifference:{categories:['identityProjection','SECRET'],assistantSeqs:[2],relatedFloorCount:0,truncated:false,raw:'SECRET'}},extractorRequest:{runId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',phase:'saving',outcome:'failed',startedAt:1000,endedAt:2000,elapsedMs:1000,attempts:1,fromAssistantSeq:2,toAssistantSeq:2,prompt:'SECRET'}};
+ for(const fn of memoryListeners)fn();await h.channel.flush();
+ const saved=h.writes.at(-1).data,event=saved.events.at(-1).data;
+ assert.equal(event.memory?.lastExtractorError?.code,'V3_MEMORY_PREFIX_CHANGED');assert.deepEqual(event.memory.lastExtractorError.prefixDifference.categories,['identityProjection']);assert.equal(event.memory.extractorRequest.phase,'saving');assert.equal(event.backend.latestRead.recordType,'checkpoint');
+ assert.equal(saved.failures.filter(item=>item.kind==='memory').length,1);assert.doesNotMatch(JSON.stringify(saved),/SECRET|private\.invalid|prompt|headers/u);
+ const events=saved.events.length;h.channel.capture();h.channel.capture();await h.channel.flush();assert.equal(h.writes.at(-1).data.events.length,events,'poll不重复登记同一失败');
+ memory={...memory,lastExtractorError:{...memory.lastExtractorError,phase:'retryableError'}};for(const fn of memoryListeners)fn();await h.channel.flush();assert.equal(h.writes.at(-1).data.events.at(-1).data.memory.lastExtractorError.phase,'retryableError','真实persistFailure阶段保留');
+ memory={...memory,extractorRequest:{runId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',phase:'responseBody',outcome:'running',startedAt:3000}};for(const fn of memoryListeners)fn();await h.channel.flush();
+ assert.equal(h.writes.at(-1).data.events.at(-1).data.memory.extractorRequest.phase,'responseBody');assert.equal(h.writes.at(-1).data.failures.filter(item=>item.kind==='memory').length,1,'新请求不能把留存旧错误登记成新失败');assert.equal(h.writes.at(-1).data.failures.find(item=>item.kind==='memory').memory.extractorRequest.startedAt,1000,'新请求不覆盖旧失败请求时长');
+ memory={...memory,lastExtractorError:null};for(const fn of memoryListeners)fn();h.change({recallStatus:'ready',lastRecall:{status:'ready'}});await h.channel.flush();assert.equal(h.writes.at(-1).data.failures.filter(item=>item.kind==='memory').length,1,'正常刷新或召回不抹旧失败');
+ memory={...memory,lastAutomationError:{code:'BACKEND_TIMEOUT',phase:'foundation',lastFailedAt:'2026-10-29T13:00:00.000Z'}};for(const fn of memoryListeners)fn();await h.channel.flush();assert.equal(h.writes.at(-1).data.failures.filter(item=>item.kind==='memory').length,2,'外层新失败与旧摘要失败各自保留');assert.equal(h.writes.at(-1).data.failures.find(item=>item.failureSource==='lastAutomationError').memory.lastAutomationError.phase,'foundation');
+ assert.ok(reads>0);h.channel.dispose();assert.equal(memoryListeners.size,0);
+});
+
+test('CSE失败独立进入原私有槽并保当次后端行与请求归因',async t=>{
+ const listeners=new Set(),run='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',floor='cccccccc-cccc-4ccc-8ccc-cccccccccccc';let memory={chatId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',lastCseError:null};
+ let backend={latestRead:{recordType:'root',method:'GET',outcome:'failure',code:'BACKEND_NETWORK',sequence:1},lastFailure:{recordType:'root',method:'GET',outcome:'failure',code:'BACKEND_NETWORK',sequence:1}};
+ const h=harness({memoryRuntime:{getDiagnosticState:()=>memory,subscribeActivity(fn){listeners.add(fn);return()=>listeners.delete(fn);}},backendDiagnosticProvider:()=>backend});t.after(h.channel.dispose);await h.channel.start();
+ memory={...memory,lastCseError:{code:'BACKEND_NETWORK',phase:'retryableError',runId:run,floorId:floor,count:1,lastFailedAt:'2026-10-29T15:32:18.142Z',message:'SECRET'},cseRequest:{runId:run,phase:'saving',startedAt:1000,endedAt:2000,attempts:1,outcome:'failed'}};for(const fn of listeners)fn();await h.channel.flush();
+ let failures=h.writes.at(-1).data.failures.filter(v=>v.failureSource==='lastCseError');assert.equal(failures.length,1);assert.equal(failures[0].memory.lastCseError.count,1);assert.equal(failures[0].memory.cseRequest.startedAt,1000);assert.equal(failures[0].backend.latestRead.recordType,'root');assert.doesNotMatch(JSON.stringify(h.writes),/SECRET/);
+ backend={latestRead:{recordType:'checkpoint',method:'GET',outcome:'success',sequence:2},lastFailure:backend.lastFailure};memory={...memory,cseRequest:{runId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',phase:'fetch',startedAt:3000,outcome:'running'}};for(const fn of listeners)fn();await h.channel.flush();failures=h.writes.at(-1).data.failures.filter(v=>v.failureSource==='lastCseError');assert.equal(failures.length,1);assert.equal(failures[0].memory.cseRequest.startedAt,1000);assert.equal(failures[0].backend.latestRead.recordType,'root');
+});

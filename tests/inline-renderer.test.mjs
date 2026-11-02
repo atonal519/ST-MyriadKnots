@@ -600,7 +600,7 @@ test('读取失败与提取失败胶囊保留状态样式，详情错误样式�
   const view = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
   const style = view.root.children[0].textContent;
   assert.equal(view.status.textContent, '记忆读取失败'); assert.equal(view.status.className, 'status error'); assert.equal(view.error.textContent, '后端暂不可用');
-  assert.match(style, /\.body > \.error\{margin:7px 0 0/); assert.doesNotMatch(style, /(?:^|})\.error\{margin:7px 0 0/);
+  assert.match(style, /\.body > \.error\{margin:calc\(7px \* var\(--qqj-ui-scale,1\)\) 0 0/); assert.doesNotMatch(style, /(?:^|})\.error\{margin:7px 0 0/);
 
   h.setMemory({ chatId: 'chat-a', memorySnapshotStatus: 'ready', floors: [{ floorId: 'floor-failed', messageIndex: 0, status: 'failed', error: '模型输出无法解析', memory: null }] });
   h.memorySubscribers.values().next().value(); await h.flushMicrotasks();
@@ -642,7 +642,7 @@ test('召回展示只解析精确自有协议，保留同楼多事实并拒绝�
     '任何 private 内容仅属于标明的主体，不代表其他人物知情。', '', '[当前人物 Core / 状态]',
     '- 裴晚生 / core / private，仅可用于该人物：独自警惕（依据：旧事）', '</qqj_recalled_context>',
   ].join('\n') });
-  assert.equal(stateOnly.protocolRecognized, true); assert.deepEqual(stateOnly.historyItems, []); assert.equal(stateOnly.summary, '已记录 1 条当前人物状态'); assert.equal(stateOnly.statusText, '寻回 0 个结');
+  assert.equal(stateOnly.protocolRecognized, true); assert.deepEqual(stateOnly.historyItems, []); assert.equal(stateOnly.summary, '已记录 1 条当前人物状态'); assert.equal(stateOnly.statusText, '人物回忆');
   const duplicateFloor = projectInlineRecallReceipt({ ...receipt, selectedFloors: [receipt.selectedFloors[0], receipt.selectedFloors[0]] });
   assert.equal(duplicateFloor.floorCount, 1, '结数按不同floorId去重，不按回执引用或材料条目计数'); assert.equal(duplicateFloor.statusText, '寻回 1 个结');
   assert.equal(projectInlineRecallReceipt({ ...receipt, status: 'error' }).statusText, '本轮召回失败');
@@ -693,8 +693,8 @@ test('renderer 为user/AI/隐藏普通楼挂透明Shadow卡，排除system，默
   assert.equal(aiView.title.textContent, '第 1 个结'); assert.equal(pendingAiView.title.textContent, '第 3 个结', '楼内标题必须使用宿主实际 messageIndex，不按 AI 序号重新编号');
   assert.equal(aiView.toggle.getAttribute('aria-label'), '展开第 1 个结'); assert.equal(pendingAiView.toggle.getAttribute('aria-label'), '展开第 3 个结');
   assert.match(aiView.root.children[0].textContent, /background:transparent/); assert.match(aiView.root.children[0].textContent, /border:1px solid var\(--qqj-inline-line\)/); assert.match(aiView.root.children[0].textContent, /border-left:2px solid var\(--qqj-inline-knot\)/); assert.match(aiView.root.children[0].textContent, /\.knot\{/);
-  assert.match(aiView.root.children[0].textContent, /\.mark\{position:absolute;left:0;top:18px/); assert.doesNotMatch(aiView.root.children[0].textContent, /border-left:1px dashed/);
-  assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:calc\(12px \* var\(--qqj-inline-fixed-scale,1\)\)/);
+  assert.match(aiView.root.children[0].textContent, /\.mark\{position:absolute;left:0;top:calc\(18px \* var\(--qqj-ui-scale,1\)\)/); assert.doesNotMatch(aiView.root.children[0].textContent, /border-left:1px dashed/);
+  assert.match(aiView.root.children[0].textContent, /grid-template-columns:minmax\(0,1fr\) auto/); assert.match(aiView.root.children[0].textContent, /\.title\{[^}]*font-size:var\(--qqj-font-body\)/);
   assert.equal(aiView.root.querySelectorAll('.chevron').length, 0); assert.equal(aiView.status.className, 'status ready'); assert.equal(userView.status.className, 'status');
   assert.match(aiView.root.children[0].textContent, /\.status\.running\{/); assert.match(aiView.root.children[0].textContent, /\.status\.review\{/); assert.match(aiView.root.children[0].textContent, /\.status\.error\{/);
   assert.equal(aiView.extract.title, '重新提取第 1 个结摘要；已人工处理的千事记录保留'); assert.equal(aiView.extract.getAttribute('aria-label'), '重新提取第 1 个结摘要；已人工处理的千事记录保留');
@@ -1413,15 +1413,23 @@ test('楼内主题变量同步主卡与召回卡字号，75/100/150%均按单一
   assert.equal(firstHost.style['--qqj-inline-knot'], '#112233'); assert.equal(firstHost.style['--qqj-inline-line'], '#445566');
   assert.equal(firstHost.style['--qqj-inline-fixed-scale'], String(0.75 / 0.85));
   const recallHost = h.chatRoot.querySelectorAll('[data-qqj-inline-host="true"]')[1], recallView = recallHost.__qqjInlineCard;
-  assert.match(recallView.recallStyle.textContent, /font-size:calc\(14px \* var\(--qqj-inline-fixed-scale,1\)\)!important/u, '召回页签重要声明也使用楼内倍率');
-  const calcBase = css => Number(/calc\((\d+(?:\.\d+)?)px \* var\(--qqj-inline-fixed-scale,1\)\)/u.exec(css)?.[1]);
-  const recallTabBase = Number(/\.recall-tab\{[^}]*font-size:calc\((\d+(?:\.\d+)?)px/u.exec(recallView.recallStyle.textContent)?.[1]);
+  assert.match(recallView.recallStyle.textContent, /\.recall-design \.recall-tab\{[^}]*font-size:var\(--qqj-font-subheading\)/u);
   for (const [scale, ratio] of [[0.75, 0.75 / 0.85], [0.85, 1], [1, 1 / 0.85], [1.5, 1.5 / 0.85]]) {
     h.renderer.setAppearance({ fixedScale: ratio, palette: { knot: '#112233', line: '#445566' } });
     assert.equal(firstHost.style['--qqj-inline-fixed-scale'], String(ratio));
     assert.equal(recallHost.style['--qqj-inline-fixed-scale'], String(ratio));
-    assert.equal(calcBase(firstView.root.children[0].textContent) * ratio, 12 * ratio, '主卡字号由85%旧版基线按比例缩放');
-    assert.equal(recallTabBase * ratio, 14 * ratio, '召回页签字号由85%旧版基线按比例缩放');
+    assert.equal(firstHost.style['--qqj-ui-scale'], String(scale));
+    assert.equal(recallHost.style['--qqj-ui-scale'], String(scale));
+  }
+  h.renderer.setAppearance({ scale: 1, fixedScale: 1 / 0.85, family: '测试字体', fontCssUrl: 'https://font.invalid/qqj.css', palette: { success: '#119944', crimson: '#aa2233', soft: '#667788' } });
+  for (const host of [firstHost, recallHost]) {
+    assert.equal(host.style['--qqj-custom-font'], '"测试字体"');
+    assert.equal(host.style['--qqj-inline-success'], '#119944');
+    assert.equal(host.style['--qqj-color-muted'], '#667788');
+    assert.equal(host.style['--qqj-color-success'], '#119944');
+    assert.equal(host.style['--qqj-color-danger'], '#aa2233');
+    assert.equal(host.style['--qqj-inline-error'], '#aa2233');
+    assert.equal(host.shadowRoot.children.filter(node => node.tagName === 'LINK').length, 1);
   }
   firstView.toggle.emit('click'); const root = firstView.root;
   h.renderer.setAppearance({ fixedScale: 1.5 / 0.85, palette: { knot: '#d9707a', line: '#2b363b' } });
@@ -1663,4 +1671,197 @@ test('混合人工原文回执保留同异楼摘要，普通与剧情线原文�
     assert.match(descendantText(ui.display), /异楼摘要/);
     h.renderer.destroy();
   }
+});
+
+test('当前新聊skip覆盖旧持久召回卡片且不删除旧回执', async () => {
+  const oldReceipt = { schemaVersion: 11, status: 'ready', injectionText: recallInjection('AI #1：旧人物状态材料'),
+    selectedFloors: [{ floorId: HISTORY_FLOOR, assistantSeq: 1, reasons: [] }], selectedStates: [] };
+  const userMessage = { is_user: true, is_system: false, mes: '继续', extra: { [RECALL_RECEIPT_KEY]: { old: true } } };
+  const h = createHarness({ chat: [userMessage], memoryState: { chatId: 'chat-a', floors: [], memoryEntities: [] },
+    projectReceipt: async () => oldReceipt });
+  h.chatRoot.append(messageElement(0, { user: true })); h.renderer.start(); await h.flushMicrotasks();
+  let card = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  card.toggle.click(); await h.flushMicrotasks();
+  card.recallUi.pills.children[0].click();
+  assert.match(descendantText(card.body), /旧人物状态材料/);
+  h.setRecall({ recallStatus: 'skipped', activeRecall: null, lastRecallBinding: { chatId: 'chat-a', userMessageIndex: 0 },
+    lastRecall: { status: 'skipped', userMessageIndex: 0, skipReasons: ['recentBodyOnly'], injectionText: '', selectedFloors: [], selectedStates: [], selectedCseChanges: [] } });
+  for (const listener of h.recallSubscribers) listener(); await h.flushMicrotasks();
+  card = h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.match(descendantText(card.status), /近期正文已覆盖，无需召回/);
+  assert.doesNotMatch(descendantText(card.root), /旧人物状态材料/);
+  assert.deepEqual(userMessage.extra[RECALL_RECEIPT_KEY], { old: true }); h.renderer.stop();
+});
+
+const displayAuxiliaryItems = [
+  { kind: 'spatialContainment', text: '来源楼当时（AI #1）地点包含：东屋 属于 公寓；原句「公寓里有东屋」' },
+  { kind: 'spatialPosition', text: '来源楼当时（AI #1）确认裴晚生当时位于东屋；这是该来源楼位置，不代表之后仍在此处；原句「他在东屋」' },
+  { kind: 'spatialPosition', text: '来源楼当时最后见到裴晚生在东屋；未确认楼末仍在此处' },
+  { kind: 'spatialPosition', text: '来源楼当时（AI #1）记录裴晚生已离开原地点东屋，去向未知；东屋不是当前位置' },
+  { kind: 'spatialPosition', text: '来源楼当时记录裴晚生已离开原处，去向未知；不能推定当前位置' },
+  { kind: 'placeFeature', text: '当前已知地点条件：东屋：房间内有独立卫生间（来源 AI #1；设施存在不代表所有人物知情）' },
+  { kind: 'placeScene', text: '东屋：当时现场：门前有代拍守候；不代表之后仍持续（来源楼当时 AI #2）' },
+  { kind: 'placeDescription', text: '东屋：历史地点描述（持续性未标）：房间内有洗烘设备；未确认为当前固定设施（来源楼当时 AI #3）' },
+  { kind: 'placeDescription', text: '有来源的历史设施（当前场地未核对）：员工通道：有固定铁门（来源 AI #1；设施存在不代表所有人物知情）' },
+  ...['场所归属', '所在楼层', '相对位置'].map((label, index) => ({ kind: 'spatialRelation', text: `东屋：${label}：位于走廊尽头（参照：走廊）（来源楼当时 AI #${index + 4}）` })),
+];
+function displayReceipt({ storyline = false, auxiliaryOnly = false, people = false, manual = false } = {}) {
+  const normal = { category: 'objective', kind: 'event', text: '她在房间内的厕所门前交还钥匙，并答应一起回去。' };
+  const values = auxiliaryOnly ? displayAuxiliaryItems : [normal, ...displayAuxiliaryItems];
+  if (manual) values.push({ category: 'objective', kind: 'manualArtifact', exactText: displayAuxiliaryItems[0].text, carrier: '信件', knownEntityIds: [] });
+  const floors = values.map((value, index) => ({ floorId: `display-floor-${index}`, floorMemoryId: `display-memory-${index}`, assistantSeq: index + 1, chronology: [], reasons: [],
+    items: [{ category: 'objective', ...value, ...(storyline ? { storylineId: 'place-story' } : {}) }] }));
+  const storylines = storyline ? [{ storylineId: 'place-story', title: '旧约', basis: '有记录的旧事' }] : [];
+  const states = people ? [{ subjectEntityId: 'p1', subject: '裴晚生', toward: null, text: '仍愿意陪你回去', layer: 'situational', ...(storyline ? { storylineId: 'place-story' } : {}) }] : [];
+  return { schemaVersion: storyline ? 18 : 11, strategyVersion: RECALL_STRATEGY_VERSION, status: 'ready', userMessageIndex: 0,
+    selectedFloors: floors.map(({ floorId, floorMemoryId, assistantSeq, reasons }) => ({ floorId, floorMemoryId, assistantSeq, reasons })),
+    selectedStates: states, selectedCseChanges: [], storylines,
+    injectionText: formatRecallInjection({ coverage: { memoryComplete: true, cseCurrent: true }, floors, states, cseChanges: [], storylines, entityById: new Map() }),
+    stages: { recentSummaryCount: 0, distantHistoryItemCount: values.length, stateCount: states.length } };
+}
+
+test('楼内展示隐藏四类空间辅助，普通与剧情线的真实剧情和人工原文保持', () => {
+  for (const storyline of [false, true]) {
+    const receipt = displayReceipt({ storyline, manual: true });
+    const before = JSON.stringify(receipt);
+    const projection = projectInlineRecallReceipt(receipt);
+    assert.equal(projection.protocolRecognized, true);
+    assert.equal(projection.historyItems.length, 2, '只保正常剧情及人工原文，不按房间/厕所等词语删除');
+    assert.match(projection.historyItems[0].text, /交还钥匙/u);
+    assert.equal(projection.historyItems[1].text.endsWith(displayAuxiliaryItems[0].text), true, '人工原文即使完整包含程序包装也照常展示');
+    assert.equal(projection.floorCount, 2, '楼内可见计数与可见来源一致');
+    assert.equal(projection.historyGroups.length, 2);
+    assert.equal(projection.injectionText, receipt.injectionText);
+    assert.equal(JSON.stringify(receipt), before, '投影不改真实计数、签名输入或回执本身');
+    assert.equal(projection.distantHistoryItemCount, receipt.stages.distantHistoryItemCount, '真实注入阶段计数保留');
+  }
+});
+
+test('楼内空间辅助只识别完整程序包装，不吞引用与相似剧情', () => {
+  const texts = [
+    '她说“当前已知地点条件：房间有厕所”，随后把钥匙交给你。',
+    '东屋：历史地点描述（持续性未标）：这是她在信上的题字。',
+    '东屋：当时现场：他转身离开。',
+    '东屋：相对位置：两个人站得很近。',
+    '她写下有来源的历史设施（当前场地未核对），随后继续说明。',
+  ];
+  const receipt = { schemaVersion: 11, status: 'ready', injectionText: recallInjection(...texts.map(text => `AI #1：${text}`)),
+    selectedFloors: [{ floorId: 'f1', assistantSeq: 1, reasons: [] }], selectedStates: [] };
+  assert.deepEqual(projectInlineRecallReceipt(receipt).historyItems.map(value => value.text), texts);
+});
+
+test('真实楼内renderer隐藏纯辅助完成卡，保留人物优先页及生成失败反馈', async () => {
+  const receipt = displayReceipt({ auxiliaryOnly: true, storyline: true });
+  const chat = [{ is_user: true, mes: '继续' }];
+  const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, recallState: { lastRecall: receipt, lastRecallBinding: { chatId: 'chat-a', userMessageIndex: 0 } } });
+  const message = messageElement(0, { user: true }); h.chatRoot.append(message); h.renderer.start(); await h.flushMicrotasks();
+  const view = message.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  assert.equal(view.host.hidden, true, '已完成且只有算法辅助时不留空卡片');
+  assert.equal(view.projection.floorCount, 0);
+  assert.equal(view.recallUi.pills.children.length, 0);
+  const peopleReceipt = displayReceipt({ auxiliaryOnly: true, storyline: true, people: true });
+  h.setRecall({ lastRecall: peopleReceipt, lastRecallBinding: { chatId: 'chat-a', userMessageIndex: 0 } }); h.recallSubscribers.values().next().value(); await h.flushMicrotasks();
+  assert.equal(view.host.hidden, false);
+  assert.equal(view.recallUi.people.hidden, false, '只有人物时默认展示有内容的人物页');
+  assert.equal(view.status.textContent, '人物回忆', '人物页不能挂零来源计数');
+  assert.match(descendantText(view.recallUi.people), /仍愿意陪你回去/u);
+  h.setRecall({ lastRecall: displayReceipt(), lastRecallBinding: { chatId: 'chat-a', userMessageIndex: 0 } }); h.recallSubscribers.values().next().value(); await h.flushMicrotasks();
+  assert.equal(view.recallUi.events.hidden, false, '旧自动人物优先不能让新剧情卡停在已经空的人页');
+  for (const status of ['running', 'error']) {
+    h.setRecall(status === 'running' ? { activeRecall: { chatId: 'chat-a', userMessageIndex: 0, phase: 'selecting' } }
+      : { lastRecall: { ...receipt, status }, lastRecallBinding: { chatId: 'chat-a', userMessageIndex: 0 } });
+    h.recallSubscribers.values().next().value(); await h.flushMicrotasks();
+    assert.equal(view.host.hidden, false, `${status}反馈不能因无可读旧事被隐藏`);
+    assert.doesNotMatch(descendantText(view.recallUi.events), /本轮没有需要展示的剧情回忆/u, '未完成/失败不是正常空结果');
+  }
+  h.renderer.destroy();
+});
+
+test('楼内过滤后清掉仅辅助的选中胶囊，历史入口同样过滤且不改封存回执', async () => {
+  const initial = displayReceipt();
+  initial.injectionText = initial.injectionText.replace(displayAuxiliaryItems[0].text, '他答应保管钥匙直到重逢。');
+  const marker = { schemaVersion: 11 };
+  const chat = [{ is_user: true, mes: '继续', extra: { [RECALL_RECEIPT_KEY]: marker } }];
+  let current = initial;
+  const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, projectReceipt: async () => current });
+  const message = messageElement(0, { user: true }); h.chatRoot.append(message); h.renderer.start(); await h.flushMicrotasks();
+  const view = message.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+  view.recallUi.pills.children.find(value => value.dataset.eventKey === 'display-floor-1').click();
+  assert.equal(view.recallUi.display.hidden, false);
+  current = displayReceipt(); const before = JSON.stringify(current);
+  chat[0].extra[RECALL_RECEIPT_KEY] = { schemaVersion: 11 }; h.emit('MESSAGE_UPDATED', 0); await h.flushMicrotasks();
+  assert.equal(view.recallUi.pills.children.length, 1);
+  assert.equal(view.recallUi.display.hidden, true, '被过滤的选中来源不会留下旧正文');
+  assert.equal(JSON.stringify(current), before);
+  h.renderer.destroy();
+});
+
+test('聚合成员空间辅助来源不同于承载楼时仍能隐藏，不放宽正常剧情来源', () => {
+  for (const storyline of [false, true]) {
+    const sourceSeq = 2;
+    const auxiliary = { category: 'objective', kind: 'placeDescription', sourceAssistantSeq: sourceSeq, sourceFloorId: 'source-member', text: displayAuxiliaryItems.find(value => value.kind === 'placeDescription').text.replace('AI #3', 'AI #2'), ...(storyline ? { storylineId: 'line' } : {}) };
+    const floors = [{ floorId: 'carrier', floorMemoryId: 'memory', assistantSeq: 3, reasons: [], chronology: [], items: [auxiliary] }];
+    const storylines = storyline ? [{ storylineId: 'line', title: '旧事', basis: '有源' }] : [];
+    const receipt = { schemaVersion: storyline ? 18 : 11, strategyVersion: RECALL_STRATEGY_VERSION, status: 'ready', selectedFloors: [{ floorId: 'carrier', assistantSeq: 3, reasons: [] }], selectedStates: [], selectedCseChanges: [], storylines,
+      injectionText: formatRecallInjection({ coverage: { memoryComplete: true, cseCurrent: true }, floors, states: [], storylines, entityById: new Map() }) };
+    const before = JSON.stringify(receipt);
+    const projection = projectInlineRecallReceipt(receipt);
+    assert.equal(projection.protocolRecognized, true, '完整辅助包装不应被成员seq与carrier差异挡在过滤之前');
+    assert.equal(projection.hideCard, true);
+    assert.deepEqual(projection.historyItems, []);
+    assert.equal(JSON.stringify(receipt), before);
+    const altered = { ...receipt, injectionText: receipt.injectionText.replace(auxiliary.text, '不属于回执引用的普通剧情') };
+    assert.equal(projectInlineRecallReceipt(altered).protocolRecognized, false, '普通剧情仍须匹配已封存的来源楼');
+  }
+});
+
+test('签名历史回执走默认reader同样过滤，原封签和注入全文不变', async () => {
+  const signed = await actualCseReceipt();
+  const display = displayReceipt({ storyline: true });
+  const receipt = { ...signed.receipt, injectionText: display.injectionText, selectedFloors: display.selectedFloors,
+    selectedStates: [], selectedCseChanges: [], storylines: display.storylines };
+  receipt.receiptFingerprint = await legacyReceiptFingerprint(receipt);
+  signed.userMessage.extra[RECALL_RECEIPT_KEY] = receipt;
+  const before = JSON.stringify(receipt);
+  const read = await projectHistoricalRecallReceipt(signed.userMessage, { chatId: MARKER_CHAT, userMessageIndex: 1 });
+  assert.ok(read, '默认reader先验原封签');
+  const h = createHarness({ chat: signed.chat, chatId: MARKER_CHAT, memoryState: { floors: [], memoryEntities: [] } });
+  const message = messageElement(1, { user: true }); h.chatRoot.append(message); h.renderer.start();
+  let view;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await h.flushMicrotasks();
+    view = message.querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+    if (view?.recallUi.pills.children.length === 1) break;
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  assert.equal(view.recallUi.pills.children.length, 1);
+  view.recallUi.pills.children[0].click();
+  assert.match(descendantText(view.recallUi.display), /交还钥匙/u);
+  assert.doesNotMatch(descendantText(view.recallUi.display), /当前已知地点条件|持续性未标|来源楼当时/u);
+  assert.equal(view.projection.injectionText, receipt.injectionText);
+  assert.equal(JSON.stringify(receipt), before);
+  assert.ok(await projectHistoricalRecallReceipt(signed.userMessage, { chatId: MARKER_CHAT, userMessageIndex: 1 }), '展示后原封签仍可验证');
+  h.renderer.destroy();
+});
+
+test('原文块即使恰好等于辅助包装也保持字面内容，关系前缀仍只过滤程序项', () => {
+  const text = displayAuxiliaryItems.find(value => value.kind === 'placeDescription').text;
+  const injectionText = recallInjection(`AI #1：[人工原文｜${text.length}字符]\n${text}`, ...['来源关联：', '邻近背景；仅因时序相邻，不表示因果：', '同人物与具体主题词关联，不表示因果：'].map(prefix => `AI #1：${prefix}${text}`));
+  const receipt = { schemaVersion: 11, status: 'ready', injectionText, selectedFloors: [{ floorId: 'f1', assistantSeq: 1, reasons: ['manualArtifact'] }], selectedStates: [] };
+  const projection = projectInlineRecallReceipt(receipt);
+  assert.equal(projection.protocolRecognized, true);
+  assert.deepEqual(projection.historyItems.map(item => item.text), [text]);
+});
+
+
+test('历史固定设施新包装只隐程序项，原样人工原文仍显示',()=>{
+  const text=displayAuxiliaryItems.find(value=>value.text.startsWith('有来源的历史设施')).text;
+  const receipt={schemaVersion:11,status:'ready',injectionText:recallInjection(`AI #1：[人工原文｜${text.length}字符]\n${text}`,`AI #1：${text}`),selectedFloors:[{floorId:'f1',assistantSeq:1,reasons:['manualArtifact']}],selectedStates:[]};
+  assert.deepEqual(projectInlineRecallReceipt(receipt).historyItems.map(item=>item.text),[text]);
+});
+
+test('世界书基础和人工地点块仍注入，楼内只显示原剧情与人物且协议健康',()=>{
+ const receipt=displayReceipt(),places=[{kind:'placeFoundation',placeEntityId:'room',text:'客房有浴室',source:{kind:'worldbook',locator:'地图:18'}},{kind:'manualPlace',placeEntityId:'room',text:'客房：人工确认的方位'}];
+ receipt.selectedPlaces=places;receipt.injectionText=receipt.injectionText.replace('</qqj_recalled_context>','[人工校准的当前地点事实（优先于旧地点记录，未赋予人物知识）]\n- 客房：人工确认的方位\n[地点基础资料（场所条件与归属，不代表人物在场或知情）]\n- 客房有浴室（世界书设定：地图:18）\n</qqj_recalled_context>');
+ const before=JSON.stringify(receipt),projection=projectInlineRecallReceipt(receipt);assert.equal(projection.protocolRecognized,true);assert.equal(projection.historyItems.length,1);assert.match(projection.historyItems[0].text,/交还钥匙/);assert.doesNotMatch(projection.historyItems.map(x=>x.text).join('\n'),/客房有浴室|人工确认的方位/);assert.equal(JSON.stringify(receipt),before);assert.match(projection.injectionText,/客房有浴室/);
 });

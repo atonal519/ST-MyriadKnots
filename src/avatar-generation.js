@@ -23,12 +23,13 @@ export function createAvatarGenerator({ apiProvider = () => globalThis.STBaiBaiI
       const { api, status } = readApi();
       if (!character?.name || typeof character.tag !== 'string' || !character.tag.trim()) throw new Error('请选择有外貌资料的柏宝绘角色。');
       const base = typeof prompt === 'string' && prompt.trim() ? prompt.trim() : DEFAULT_AVATAR_PROMPT;
-      const clothing = typeof clothingStyle === 'string' && clothingStyle.trim() ? `Clothing reference: ${clothingStyle.trim()}` : '';
-      const characters = [{ name: character.name, tag: character.tag, nl: [character.nl || '', clothing].filter(Boolean).join('. ') }];
+      const clothing = typeof clothingStyle === 'string' && clothingStyle.trim()
+        ? `Outfit for this image: prioritize the explicitly current outfit or daily wear and choose one coherent outfit. Clothing for past military service, stage performances or other occasions is background unless explicitly current. Interpret techwear as urban functional fashion; do not infer unrequested weapons, ammunition, body armor or other props. Clothing reference (verbatim): ${clothingStyle}` : '';
+      const characters = [{ name: character.name, tag: character.tag, nl: [clothing, character.nl || ''].filter(Boolean).join('. ') }];
       // 与两三事一致：不支持独立角色通道的渠道从整体提示读取同一份角色外貌。
       const separate = status.supportsCharacters === true;
-      const result = await api.generate({ prompt: [base, ...(separate ? [] : [character.tag, clothing])].filter(Boolean).join(', '),
-        nl: [base, ...(separate ? [] : [character.nl || character.tag, clothing])].filter(Boolean).join('. '), characters, size: 'portrait', save: false }, { signal });
+      const result = await api.generate({ prompt: [...(separate ? [] : [clothing]), base, ...(separate ? [] : [character.tag])].filter(Boolean).join(', '),
+        nl: [...(separate ? [] : [clothing]), base, ...(separate ? [] : [character.nl || character.tag])].filter(Boolean).join('. '), characters, size: 'portrait', save: false }, { signal });
       if (typeof result?.dataUrl !== 'string' || !result.dataUrl.startsWith('data:image/')) throw new Error('柏宝绘没有返回可用图片，请检查生图结果。');
       return { dataUrl: result.dataUrl };
     },

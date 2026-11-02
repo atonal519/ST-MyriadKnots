@@ -1,3 +1,4 @@
+import { placeWorkspaceDependency } from './place-foundation.js';
 import { deriveCseTimeline, filterReachableDeltas, replayCurrentState } from './cse-engine.js';
 import { assessMemoryCoverageFromHost } from './memory-coverage.js';
 import {
@@ -75,6 +76,8 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
     spatialFacts: memory.spatialFacts ? Object.freeze({
       containments: Object.freeze((memory.spatialFacts.containments ?? []).map(item => Object.freeze({ placeEntityId: item.placeEntityId, parentEntityId: item.parentEntityId, sourceRefs: sourceRefs(item.evidenceRefs) }))),
       positions: Object.freeze((memory.spatialFacts.positions ?? []).map(item => Object.freeze({ subjectEntityId: item.subjectEntityId, placeEntityId: item.placeEntityId, status: item.status, sourceRefs: sourceRefs(item.evidenceRefs) }))),
+      ...(memory.spatialFacts.relations ? { relations: Object.freeze(memory.spatialFacts.relations.map(item => Object.freeze({ itemId: item.itemId, kind: item.kind, placeEntityId: item.placeEntityId, referencePlaceEntityIds: Object.freeze([...item.referencePlaceEntityIds]), text: safeText(item.text, 1000), sourceRefs: sourceRefs(item.evidenceRefs) }))) } : {}),
+      ...(memory.spatialFacts.features ? { features: Object.freeze(memory.spatialFacts.features.map(item => Object.freeze({ itemId: item.itemId, placeEntityId: item.placeEntityId, ...(Object.hasOwn(item, 'kind') ? { kind: item.kind } : {}), text: safeText(item.text, 1000), replacesItemIds: Object.freeze([...item.replacesItemIds]), sourceRefs: sourceRefs(item.evidenceRefs) }))) } : {}),
     }) : null,
     commitments: Object.freeze((memory.commitments ?? []).map(item => ({ speakerEntityId: item.speakerEntityId, targetEntityIds: Object.freeze([...(item.targetEntityIds ?? [])]), kind: item.kind, content: safeText(item.content), status: item.status, exactAnchorId: item.exactAnchorId ?? null }))),
     openLoops: Object.freeze((memory.openLoops ?? []).map(item => ({ description: safeText(item.description), ownerEntityIds: Object.freeze([...(item.ownerEntityIds ?? [])]) }))),
@@ -267,6 +270,8 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds),
     cseChanges: cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds),
     identityProjection,
+    placeWorkspace: identityProjection.placeWorkspace ?? null,
+    placeWorkspaceDependency: placeWorkspaceDependency(first.root.chatId,identityProjection.placeWorkspaceRevision,identityProjection.placeWorkspace),
   });
 }
 

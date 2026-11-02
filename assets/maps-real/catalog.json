@@ -1,0 +1,815 @@
+{
+  "schemaVersion": 1,
+  "description": "City sheets: separate static real-city backgrounds; source projection metadata retained.",
+  "cities": [
+    {
+      "id": "seoul",
+      "level": "city",
+      "countryId": "south-korea",
+      "label": "首尔",
+      "country": "韩国",
+      "bounds": [
+        126.82,
+        37.43,
+        127.2,
+        37.7
+      ],
+      "coverage": "主要建成区：钟路、龙山、江南、松坡及汉江两岸；不含完整首尔市界。",
+      "center": [
+        126.9977851,
+        37.568295
+      ],
+      "width": 1000,
+      "height": 896,
+      "boundsOrder": "west,south,east,north",
+      "coordinateSystem": "WGS84 longitude,latitude degrees",
+      "projection": {
+        "type": "mercator",
+        "scale": 150714.19406112764,
+        "translate": [
+          -333594.58690291643,
+          107211.59052059698
+        ],
+        "rotate": [
+          0,
+          0,
+          0
+        ],
+        "center": [
+          0,
+          0
+        ],
+        "outputUnits": "SVG viewBox pixels"
+      },
+      "file": "seoul.svg",
+      "bytes": 769347,
+      "gzipBytes": 286343,
+      "sha256": "362d32f0f2ea029061260fe858571f4d03248d4860c798a3852bf4eb7622413f",
+      "source": {
+        "osm": {
+          "attribution": "© OpenStreetMap contributors",
+          "license": "ODbL-1.0",
+          "url": "https://www.openstreetmap.org/copyright",
+          "rawSha256": "e3d366d14cbe094cf9c114bd963fe5d64a3e0d9d8be6ac913a7432822fa8e17a",
+          "snapshot": "2026-10-31T16:29:43Z",
+          "capturedSources": [
+            {
+              "rawFile": "source.osm.json",
+              "captureFile": "capture.json",
+              "queryFile": "query.overpassql"
+            }
+          ]
+        },
+        "land": {
+          "name": "Natural Earth 1:10 million land polygons",
+          "license": "public domain",
+          "url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/",
+          "rawSha256": "e547d749445eaa0964aba76738090ec88f5e63c4585122170f98c67a7ea922dc"
+        }
+      },
+      "processing": {
+        "roads": "motorway/trunk/primary/secondary/tertiary and links; no buildings or POI",
+        "simplifyToleranceSvgPixels": 0.65,
+        "polygonToleranceSvgPixels": 0.3,
+        "minimumOuterAreaSvgPixels": 3,
+        "minimumHoleAreaSvgPixels": 1.5,
+        "pathDigits": 1,
+        "relationGeometry": "joined actual member endpoints; inner rings retained; no invented closure"
+      },
+      "stats": {
+        "sourceElements": 23081,
+        "roads": 19615,
+        "water": 159,
+        "parks": 1010,
+        "relationOuterRings": 161,
+        "relationInnerRings": 255,
+        "omittedTinyPolygons": 2345,
+        "unclosedRelations": [],
+        "unassignedHoles": [],
+        "excludedInvalidRelations": []
+      }
+    },
+    {
+      "id": "beijing",
+      "level": "city",
+      "countryId": "china",
+      "label": "北京",
+      "country": "中国",
+      "bounds": [
+        116.15,
+        39.72,
+        116.65,
+        40.15
+      ],
+      "coverage": "中心城区与主要建成区；不含远郊行政范围。",
+      "center": [
+        116.39420089260611,
+        39.901720309862675
+      ],
+      "width": 1000,
+      "height": 1122,
+      "boundsOrder": "west,south,east,north",
+      "coordinateSystem": "WGS84 longitude,latitude degrees",
+      "projection": {
+        "type": "mercator",
+        "scale": 114591.55902616587,
+        "translate": [
+          -232300.00000000247,
+          87815.26501954494
+        ],
+        "rotate": [
+          0,
+          0,
+          0
+        ],
+        "center": [
+          0,
+          0
+        ],
+        "outputUnits": "SVG viewBox pixels"
+      },
+      "file": "beijing.svg",
+      "bytes": 647907,
+      "gzipBytes": 236379,
+      "sha256": "907fff302b4bf375cd3c25eda6a50f4c8404620b81fc1d5cdade6d5cee166dc2",
+      "source": {
+        "osm": {
+          "attribution": "© OpenStreetMap contributors",
+          "license": "ODbL-1.0",
+          "url": "https://www.openstreetmap.org/copyright",
+          "rawSha256": "ca03520dbc1aa3b4f9fc15b142999bf668e373d7a7831fabb6e480ed9a8a676d",
+          "snapshot": "2026-10-31T16:37:50Z",
+          "capturedSources": [
+            {
+              "layer": "roads",
+              "rawFile": "roads/source.osm.json",
+              "rawSha256": "f0f98dacefac82050f3a6829035c6f1830f982f879a1586e153553893cd817f4",
+              "captureFile": "roads/capture.json",
+              "queryFile": "roads/query.overpassql",
+              "snapshot": "2026-10-31T16:37:50Z"
+            },
+            {
+              "layer": "water",
+              "rawFile": "water/source.osm.json",
+              "rawSha256": "e5223506ad26641423b41a5d0c1d7d51c1ed713c5beccf266c997d48388f972f",
+              "captureFile": "water/capture.json",
+              "queryFile": "water/query.overpassql",
+              "snapshot": "2026-10-31T16:38:53Z"
+            }
+          ]
+        },
+        "land": {
+          "name": "Natural Earth 1:10 million land polygons",
+          "license": "public domain",
+          "url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/",
+          "rawSha256": "e547d749445eaa0964aba76738090ec88f5e63c4585122170f98c67a7ea922dc"
+        }
+      },
+      "processing": {
+        "roads": "motorway/trunk/primary/secondary/tertiary and links; no buildings or POI",
+        "simplifyToleranceSvgPixels": 0.65,
+        "polygonToleranceSvgPixels": 0.3,
+        "minimumOuterAreaSvgPixels": 3,
+        "minimumHoleAreaSvgPixels": 1.5,
+        "pathDigits": 1,
+        "relationGeometry": "joined actual member endpoints; inner rings retained; no invented closure"
+      },
+      "stats": {
+        "sourceElements": 19350,
+        "roads": 18009,
+        "water": 590,
+        "parks": 0,
+        "relationOuterRings": 159,
+        "relationInnerRings": 270,
+        "omittedTinyPolygons": 760,
+        "unclosedRelations": [],
+        "unassignedHoles": [],
+        "excludedInvalidRelations": [
+          {
+            "id": 13372029,
+            "kind": "water",
+            "reason": "source inner ring is outside all outer rings",
+            "unownedHoles": 1
+          },
+          {
+            "id": 19229870,
+            "kind": "water",
+            "reason": "source has no closed outer ring",
+            "unownedHoles": 1
+          },
+          {
+            "id": 20072063,
+            "kind": "water",
+            "reason": "source has no closed outer ring",
+            "unownedHoles": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "shanghai",
+      "level": "city",
+      "countryId": "china",
+      "label": "上海",
+      "country": "中国",
+      "bounds": [
+        121.22,
+        30.98,
+        121.78,
+        31.42
+      ],
+      "coverage": "中心城区、浦东主要建成区及黄浦江两岸；不含完整市界与崇明。",
+      "center": [
+        121.4345588,
+        31.2183983
+      ],
+      "width": 1000,
+      "height": 919,
+      "boundsOrder": "west,south,east,north",
+      "coordinateSystem": "WGS84 longitude,latitude degrees",
+      "projection": {
+        "type": "mercator",
+        "scale": 102313.89198764444,
+        "translate": [
+          -216464.2857142803,
+          59151.30719213247
+        ],
+        "rotate": [
+          0,
+          0,
+          0
+        ],
+        "center": [
+          0,
+          0
+        ],
+        "outputUnits": "SVG viewBox pixels"
+      },
+      "file": "shanghai.svg",
+      "bytes": 1030399,
+      "gzipBytes": 376386,
+      "sha256": "5c2f9852a2c449f0edf06667bb3a45757496fb98d9b81f1d8e3f8aa5c04fc737",
+      "source": {
+        "osm": {
+          "attribution": "© OpenStreetMap contributors",
+          "license": "ODbL-1.0",
+          "url": "https://www.openstreetmap.org/copyright",
+          "rawSha256": "64b707034ff9dac22206ce22221ff36381f6842eceb50deb2dbc0e0c43677d46",
+          "snapshot": "2026-10-31T16:40:58Z",
+          "capturedSources": [
+            {
+              "layer": "roads",
+              "rawFile": "roads/source.osm.json",
+              "rawSha256": "e29697f31f5be8545d2a7b803bb0c6f7e2d1602e8048bd3a8e279ad0ce4c5b4d",
+              "captureFile": "roads/capture.json",
+              "queryFile": "roads/query.overpassql",
+              "snapshot": "2026-10-31T16:40:58Z"
+            },
+            {
+              "layer": "water",
+              "rawFile": "water/source.osm.json",
+              "rawSha256": "bdba3ef98334875d9223895787a6c253f346760d1a7171a36e471a760ebdd953",
+              "captureFile": "water/capture.json",
+              "queryFile": "water/query.overpassql",
+              "snapshot": "2026-10-31T16:42:00Z"
+            }
+          ]
+        },
+        "land": {
+          "name": "Natural Earth 1:10 million land polygons",
+          "license": "public domain",
+          "url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/",
+          "rawSha256": "e547d749445eaa0964aba76738090ec88f5e63c4585122170f98c67a7ea922dc"
+        }
+      },
+      "processing": {
+        "roads": "motorway/trunk/primary/secondary/tertiary and links; no buildings or POI",
+        "simplifyToleranceSvgPixels": 0.65,
+        "polygonToleranceSvgPixels": 0.3,
+        "minimumOuterAreaSvgPixels": 3,
+        "minimumHoleAreaSvgPixels": 1.5,
+        "pathDigits": 1,
+        "relationGeometry": "joined actual member endpoints; inner rings retained; no invented closure"
+      },
+      "stats": {
+        "sourceElements": 33283,
+        "roads": 31119,
+        "water": 807,
+        "parks": 0,
+        "relationOuterRings": 147,
+        "relationInnerRings": 274,
+        "omittedTinyPolygons": 1365,
+        "unclosedRelations": [],
+        "unassignedHoles": [],
+        "excludedInvalidRelations": []
+      }
+    },
+    {
+      "id": "guangzhou",
+      "level": "city",
+      "countryId": "china",
+      "label": "广州",
+      "country": "中国",
+      "bounds": [
+        113.09,
+        22.95,
+        113.55,
+        23.35
+      ],
+      "coverage": "中心城区、番禺北部和珠江沿岸；不含完整市界。",
+      "center": [
+        113.26178516712943,
+        23.12472343296695
+      ],
+      "width": 1000,
+      "height": 946,
+      "boundsOrder": "west,south,east,north",
+      "coordinateSystem": "WGS84 longitude,latitude degrees",
+      "projection": {
+        "type": "mercator",
+        "scale": 124556.04241974714,
+        "translate": [
+          -245847.82608696242,
+          52227.41929606643
+        ],
+        "rotate": [
+          0,
+          0,
+          0
+        ],
+        "center": [
+          0,
+          0
+        ],
+        "outputUnits": "SVG viewBox pixels"
+      },
+      "file": "guangzhou.svg",
+      "bytes": 896558,
+      "gzipBytes": 329313,
+      "sha256": "e6948f982dd884d460be6e35a5ed78969dd7783647043c6b0fe52b45d3418a87",
+      "source": {
+        "osm": {
+          "attribution": "© OpenStreetMap contributors",
+          "license": "ODbL-1.0",
+          "url": "https://www.openstreetmap.org/copyright",
+          "rawSha256": "5069ccfa49110c2bde6dd86be4a650c8ad01f3f284e53de3c9b063c2ba730aa1",
+          "snapshot": "2026-10-31T16:44:01Z",
+          "capturedSources": [
+            {
+              "layer": "roads",
+              "rawFile": "roads/source.osm.json",
+              "rawSha256": "f4540b280d06b3f9580b0160b45c1f5d9a3e9a1e04b83dd2517712195c7cbbd1",
+              "captureFile": "roads/capture.json",
+              "queryFile": "roads/query.overpassql",
+              "snapshot": "2026-10-31T16:44:01Z"
+            },
+            {
+              "layer": "water",
+              "rawFile": "water/source.osm.json",
+              "rawSha256": "a24662fce028b4d519e9a2cc167e61bb16382d814d37decfde93f39008b3acf1",
+              "captureFile": "water/capture.json",
+              "queryFile": "water/query.overpassql",
+              "snapshot": "2026-10-31T16:44:01Z"
+            }
+          ]
+        },
+        "land": {
+          "name": "Natural Earth 1:10 million land polygons",
+          "license": "public domain",
+          "url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/",
+          "rawSha256": "e547d749445eaa0964aba76738090ec88f5e63c4585122170f98c67a7ea922dc"
+        }
+      },
+      "processing": {
+        "roads": "motorway/trunk/primary/secondary/tertiary and links; no buildings or POI",
+        "simplifyToleranceSvgPixels": 0.65,
+        "polygonToleranceSvgPixels": 0.3,
+        "minimumOuterAreaSvgPixels": 3,
+        "minimumHoleAreaSvgPixels": 1.5,
+        "pathDigits": 1,
+        "relationGeometry": "joined actual member endpoints; inner rings retained; no invented closure"
+      },
+      "stats": {
+        "sourceElements": 28388,
+        "roads": 24657,
+        "water": 1125,
+        "parks": 0,
+        "relationOuterRings": 143,
+        "relationInnerRings": 211,
+        "omittedTinyPolygons": 2608,
+        "unclosedRelations": [],
+        "unassignedHoles": [],
+        "excludedInvalidRelations": [
+          {
+            "id": 21021991,
+            "kind": "water",
+            "reason": "source inner ring is outside all outer rings",
+            "unownedHoles": 1
+          },
+          {
+            "id": 21021992,
+            "kind": "water",
+            "reason": "source inner ring is outside all outer rings",
+            "unownedHoles": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "tokyo",
+      "level": "city",
+      "countryId": "japan",
+      "label": "东京",
+      "country": "日本",
+      "bounds": [
+        139.48,
+        35.48,
+        140.02,
+        35.9
+      ],
+      "coverage": "东京主要建成区、东京湾北部及相邻都市圈局部；不含完整东京都界。",
+      "center": [
+        139.7494616,
+        35.6869628
+      ],
+      "width": 1000,
+      "height": 958,
+      "boundsOrder": "west,south,east,north",
+      "coordinateSystem": "WGS84 longitude,latitude degrees",
+      "projection": {
+        "type": "mercator",
+        "scale": 106103.29539459255,
+        "translate": [
+          -258296.29629628576,
+          71314.27351614303
+        ],
+        "rotate": [
+          0,
+          0,
+          0
+        ],
+        "center": [
+          0,
+          0
+        ],
+        "outputUnits": "SVG viewBox pixels"
+      },
+      "file": "tokyo.svg",
+      "bytes": 740986,
+      "gzipBytes": 273889,
+      "sha256": "fb48dad302d01e58f4e0c58c0104050cf0009065d8796a39bb95026b3a6bb876",
+      "source": {
+        "osm": {
+          "attribution": "© OpenStreetMap contributors",
+          "license": "ODbL-1.0",
+          "url": "https://www.openstreetmap.org/copyright",
+          "rawSha256": "36549ad17240929d1cff86ece975ad55a508ae70790b09b0bb01257c85a440f9",
+          "snapshot": "2026-10-31T16:48:05Z",
+          "capturedSources": [
+            {
+              "layer": "roads-major",
+              "rawFile": "roads-major/source.osm.json",
+              "rawSha256": "cbfc1819ce23227a179eda30005cd6bf1612b5620bb7c2d0571e4ad817495c6d",
+              "captureFile": "roads-major/capture.json",
+              "queryFile": "roads-major/query.overpassql",
+              "snapshot": "2026-10-31T16:48:05Z"
+            },
+            {
+              "layer": "roads-secondary",
+              "rawFile": "roads-secondary/source.osm.json",
+              "rawSha256": "46a65445e5a13cf58c1faf9a967d09cd3588d0a247af77742e2d04a9c65df965",
+              "captureFile": "roads-secondary/capture.json",
+              "queryFile": "roads-secondary/query.overpassql",
+              "snapshot": "2026-10-31T16:50:06Z"
+            },
+            {
+              "layer": "water",
+              "rawFile": "water/source.osm.json",
+              "rawSha256": "3b4e93f7a9c706023fef146e24b10ec3f0e2b4e140797c7107edca04fd7fc2b1",
+              "captureFile": "water/capture.json",
+              "queryFile": "water/query.overpassql",
+              "snapshot": "2026-10-31T16:51:06Z"
+            }
+          ]
+        },
+        "land": {
+          "name": "Natural Earth 1:10 million land polygons",
+          "license": "public domain",
+          "url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/",
+          "rawSha256": "e547d749445eaa0964aba76738090ec88f5e63c4585122170f98c67a7ea922dc"
+        }
+      },
+      "processing": {
+        "roads": "motorway/trunk/primary/secondary/tertiary and links; no buildings or POI",
+        "simplifyToleranceSvgPixels": 0.65,
+        "polygonToleranceSvgPixels": 0.3,
+        "minimumOuterAreaSvgPixels": 3,
+        "minimumHoleAreaSvgPixels": 1.5,
+        "pathDigits": 1,
+        "relationGeometry": "joined actual member endpoints; inner rings retained; no invented closure"
+      },
+      "stats": {
+        "sourceElements": 25962,
+        "roads": 22408,
+        "water": 454,
+        "parks": 0,
+        "relationOuterRings": 267,
+        "relationInnerRings": 314,
+        "omittedTinyPolygons": 3139,
+        "unclosedRelations": [],
+        "unassignedHoles": [],
+        "excludedInvalidRelations": []
+      }
+    },
+    {
+      "id": "new-york",
+      "level": "city",
+      "countryId": "united-states",
+      "label": "纽约",
+      "country": "美国",
+      "bounds": [
+        -74.27,
+        40.49,
+        -73.68,
+        40.94
+      ],
+      "coverage": "纽约主要建成区及邻近新泽西滨岸；不含完整都市圈。",
+      "center": [
+        -73.99571754361698,
+        40.72156174972766
+      ],
+      "width": 1000,
+      "height": 1006,
+      "boundsOrder": "west,south,east,north",
+      "coordinateSystem": "WGS84 longitude,latitude degrees",
+      "projection": {
+        "type": "mercator",
+        "scale": 97085.34416718695,
+        "translate": [
+          125847.5979522683,
+          76161.12702363636
+        ],
+        "rotate": [
+          0,
+          0,
+          0
+        ],
+        "center": [
+          0,
+          0
+        ],
+        "outputUnits": "SVG viewBox pixels"
+      },
+      "file": "new-york.svg",
+      "bytes": 1469520,
+      "gzipBytes": 541257,
+      "sha256": "07c721bfabf234a7759f96fd1b57d2b0769a385b86cd66b536561560482d2a14",
+      "source": {
+        "osm": {
+          "attribution": "© OpenStreetMap contributors",
+          "license": "ODbL-1.0",
+          "url": "https://www.openstreetmap.org/copyright",
+          "rawSha256": "b24a618ffbd8385553ea806b134e06c10a9532a7fccf33c9d723c66e676e7192",
+          "snapshot": "2026-10-31T16:53:06Z",
+          "capturedSources": [
+            {
+              "layer": "roads-major",
+              "rawFile": "roads-major/source.osm.json",
+              "rawSha256": "bd4918c6e80db61410192f4e246b7dd5894b9f52ccd11f26bc951b04cf423c59",
+              "captureFile": "roads-major/capture.json",
+              "queryFile": "roads-major/query.overpassql",
+              "snapshot": "2026-10-31T16:53:06Z"
+            },
+            {
+              "layer": "roads-secondary",
+              "rawFile": "roads-secondary/source.osm.json",
+              "rawSha256": "5bb6cd5c837daf44f9d377fd0912f2c91e1532beed5920f25acc722ed24c1039",
+              "captureFile": "roads-secondary/capture.json",
+              "queryFile": "roads-secondary/query.overpassql",
+              "snapshot": "2026-10-31T16:53:06Z"
+            },
+            {
+              "layer": "water-ways",
+              "rawFile": "water-ways/source.osm.json",
+              "rawSha256": "8424fe55f50c1b46476c15f8842f66ff3b58981bc8b443ac45d963c9c8c0328d",
+              "captureFile": "water-ways/capture.json",
+              "queryFile": "water-ways/query.overpassql",
+              "snapshot": "2026-10-31T16:58:06Z"
+            },
+            {
+              "layer": "water-relations",
+              "rawFile": "water-relations/source.osm.json",
+              "rawSha256": "d7d21e55f2f86b92ce97e7d99136143e95b811e21fa2510a05cb3493c00d3988",
+              "captureFile": "water-relations/capture.json",
+              "queryFile": "water-relations/query.overpassql",
+              "snapshot": "2026-10-31T16:59:10Z"
+            }
+          ]
+        },
+        "land": {
+          "name": "Natural Earth 1:10 million land polygons",
+          "license": "public domain",
+          "url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/",
+          "rawSha256": "e547d749445eaa0964aba76738090ec88f5e63c4585122170f98c67a7ea922dc"
+        }
+      },
+      "processing": {
+        "roads": "motorway/trunk/primary/secondary/tertiary and links; no buildings or POI",
+        "simplifyToleranceSvgPixels": 0.65,
+        "polygonToleranceSvgPixels": 0.3,
+        "minimumOuterAreaSvgPixels": 3,
+        "minimumHoleAreaSvgPixels": 1.5,
+        "pathDigits": 1,
+        "relationGeometry": "joined actual member endpoints; inner rings retained; no invented closure"
+      },
+      "stats": {
+        "sourceElements": 47828,
+        "roads": 45615,
+        "water": 389,
+        "parks": 0,
+        "relationOuterRings": 136,
+        "relationInnerRings": 186,
+        "omittedTinyPolygons": 1834,
+        "unclosedRelations": [],
+        "unassignedHoles": [],
+        "excludedInvalidRelations": []
+      }
+    },
+    {
+      "id": "los-angeles",
+      "level": "city",
+      "countryId": "united-states",
+      "label": "洛杉矶",
+      "country": "美国",
+      "bounds": [
+        -118.67,
+        33.7,
+        -117.97,
+        34.26
+      ],
+      "coverage": "洛杉矶主要建成区、圣莫尼卡海岸及港区；不含完整都市圈。",
+      "center": [
+        -118.23198647223317,
+        34.049219260337075
+      ],
+      "width": 1000,
+      "height": 965,
+      "boundsOrder": "west,south,east,north",
+      "coordinateSystem": "WGS84 longitude,latitude degrees",
+      "projection": {
+        "type": "mercator",
+        "scale": 81851.11359011492,
+        "translate": [
+          169528.5714285659,
+          52150.75564184764
+        ],
+        "rotate": [
+          0,
+          0,
+          0
+        ],
+        "center": [
+          0,
+          0
+        ],
+        "outputUnits": "SVG viewBox pixels"
+      },
+      "file": "los-angeles.svg",
+      "bytes": 2622791,
+      "gzipBytes": 832413,
+      "sha256": "75901d3d5dd16ccf53c3991b1968c1f2a582b7e8c39b35d8d294fc23b4963cb0",
+      "source": {
+        "osm": {
+          "attribution": "© OpenStreetMap contributors",
+          "license": "ODbL-1.0",
+          "url": "https://www.openstreetmap.org/copyright",
+          "rawSha256": "f08f9b2cf97b884c39519ff1ff17ce7775876d7c672f49ef8f56d971623aba25",
+          "snapshot": "2026-10-31T17:00:15Z",
+          "capturedSources": [
+            {
+              "layer": "roads",
+              "rawFile": "roads/source.osm.json",
+              "rawSha256": "99b190ca062e08fe289dec4e413e50b0a73cfe8a221411caa63c9fd996af95b8",
+              "captureFile": "roads/capture.json",
+              "queryFile": "roads/query.overpassql",
+              "snapshot": "2026-10-31T17:00:15Z"
+            },
+            {
+              "layer": "water",
+              "rawFile": "water/source.osm.json",
+              "rawSha256": "4a16cd16791ef24c0c4afab75905c6d20c767d932e25690ae52d09dcce8988ee",
+              "captureFile": "water/capture.json",
+              "queryFile": "water/query.overpassql",
+              "snapshot": "2026-10-31T17:02:20Z"
+            }
+          ]
+        },
+        "land": {
+          "name": "Natural Earth 1:10 million land polygons",
+          "license": "public domain",
+          "url": "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/",
+          "rawSha256": "e547d749445eaa0964aba76738090ec88f5e63c4585122170f98c67a7ea922dc"
+        }
+      },
+      "processing": {
+        "roads": "motorway/trunk/primary/secondary/tertiary and links; no buildings or POI",
+        "simplifyToleranceSvgPixels": 0.65,
+        "polygonToleranceSvgPixels": 0.3,
+        "minimumOuterAreaSvgPixels": 3,
+        "minimumHoleAreaSvgPixels": 1.5,
+        "pathDigits": 1,
+        "relationGeometry": "joined actual member endpoints; inner rings retained; no invented closure"
+      },
+      "stats": {
+        "sourceElements": 86622,
+        "roads": 85336,
+        "water": 247,
+        "parks": 0,
+        "relationOuterRings": 78,
+        "relationInnerRings": 63,
+        "omittedTinyPolygons": 1058,
+        "unclosedRelations": [],
+        "unassignedHoles": [],
+        "excludedInvalidRelations": []
+      }
+    }
+  ],
+  "cityCenters": {
+    "guangzhou": {
+      "sourceName": "Guangzhou",
+      "coordinates": [
+        113.26178516712943,
+        23.12472343296695
+      ],
+      "featureId": 1159151331,
+      "source": "Natural Earth 1:10 million populated places simple",
+      "license": "public domain"
+    },
+    "seoul": {
+      "sourceName": "Seoul",
+      "coordinates": [
+        126.9977851,
+        37.568295
+      ],
+      "featureId": 1159151523,
+      "source": "Natural Earth 1:10 million populated places simple",
+      "license": "public domain"
+    },
+    "los-angeles": {
+      "sourceName": "Los Angeles",
+      "coordinates": [
+        -118.23198647223317,
+        34.049219260337075
+      ],
+      "featureId": 1159151569,
+      "source": "Natural Earth 1:10 million populated places simple",
+      "license": "public domain"
+    },
+    "new-york": {
+      "sourceName": "New York",
+      "coordinates": [
+        -73.99571754361698,
+        40.72156174972766
+      ],
+      "featureId": 1159151575,
+      "source": "Natural Earth 1:10 million populated places simple",
+      "license": "public domain"
+    },
+    "beijing": {
+      "sourceName": "Beijing",
+      "coordinates": [
+        116.39420089260611,
+        39.901720309862675
+      ],
+      "featureId": 1159151595,
+      "source": "Natural Earth 1:10 million populated places simple",
+      "license": "public domain"
+    },
+    "shanghai": {
+      "sourceName": "Shanghai",
+      "coordinates": [
+        121.4345588,
+        31.2183983
+      ],
+      "featureId": 1159151605,
+      "source": "Natural Earth 1:10 million populated places simple",
+      "license": "public domain"
+    },
+    "tokyo": {
+      "sourceName": "Tokyo",
+      "coordinates": [
+        139.7494616,
+        35.6869628
+      ],
+      "featureId": 1159151609,
+      "source": "Natural Earth 1:10 million populated places simple",
+      "license": "public domain"
+    }
+  },
+  "cityCenterSource": {
+    "name": "Natural Earth 1:10 million populated places simple",
+    "license": "public domain",
+    "url": "https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-populated-places/",
+    "rawSha256": "2963ee08f7743f13f37d5243acd77a2f7a510e26a36c7e04b920f1b381f2b251"
+  }
+}

@@ -123,11 +123,11 @@ test('构画同源确认、提示、输入校验与外部关闭保留 QQJ 生命
   assert.equal(await escaped, null);
 
   const outsideChoice = h.manager.choose({ title: '点遮罩关闭', choices: [{ value: false, label: '否' }, { value: true, label: '是' }] });
-  h.$(h.active()).trigger({ type: 'click', target: h.active(), preventDefault() {} });
+  h.$(h.active()).trigger('pointerdown').trigger('pointerup').trigger({ type: 'click', target: h.active(), preventDefault() {} });
   assert.equal(await outsideChoice, null);
 
   const outside = h.manager.prompt({ title: '外部关闭', initialValue: '保留草稿' });
-  h.$(h.active()).trigger({ type: 'click', target: h.active(), preventDefault() {} });
+  h.$(h.active()).trigger('pointerdown').trigger('pointerup').trigger({ type: 'click', target: h.active(), preventDefault() {} });
   assert.equal(await outside, null);
   assert.equal(h.manager.hasActive(), false);
 });
@@ -235,4 +235,26 @@ test('自定义弹窗提交立即可见忙态，重复确认不多保存，失�
   assert.match(h.find('.sp-dialog-input-error').html(), /头像保存失败/);assert.equal(h.manager.hasActive(), true);
   assert.equal(button[0].disabled, false);assert.equal(button[0].textContent, '确认头像');assert.equal(button[0].attrs['aria-busy'], 'false');
   button.trigger('click');assert.equal(attempts, 2);assert.equal(button[0].disabled, true);settle();assert.equal(await pending, true);
+});
+
+test('Escape在模态中被消费，关闭弹窗后不继续冒泡关闭父面板', async () => {
+  const h=fakeDom();
+  for(const mode of ['overlay','prompt-input']){
+    const pending=mode==='overlay'?h.manager.choose({title:'选择',choices:[{value:true,label:'确定'}]}):h.manager.prompt({title:'名称',initialValue:'草稿'});
+    let stopped=false,parentOpen=true;
+    const event={type:'keydown',key:'Escape',target:h.active(),preventDefault(){},stopPropagation(){stopped=true;}};
+    (mode==='overlay'?h.$(h.active()):h.find('.sp-dialog-input')).trigger(event);
+    if(!stopped&&!h.manager.hasActive())parentOpen=false;
+    assert.equal(await pending,null);assert.equal(stopped,true,mode);assert.equal(parentOpen,true,mode);
+  }
+});
+
+
+test('共享弹窗仅在遮罩内按下并松开时外部关闭，跨边界拖选与取消手势保留草稿',async()=>{
+ const h=fakeDom(),content=h.documentRef.createElement('section'),pending=h.manager.custom({title:'编辑地点',content,submit:()=>true}),overlay=h.active(),sheet=h.find('.sp-dialog-sheet')[0];
+ const fire=(type,target)=>h.$(overlay).trigger({type,target,preventDefault(){}});
+ fire('pointerdown',content);fire('pointerup',overlay);fire('click',overlay);assert.equal(h.manager.hasActive(),true,'从内容拖选到外面松手不能关闭');
+ fire('pointerdown',overlay);fire('pointerup',sheet);fire('click',overlay);assert.equal(h.manager.hasActive(),true,'跨入弹窗后的共同祖先click也不能关闭');
+ fire('pointerdown',overlay);fire('pointercancel',overlay);fire('click',overlay);assert.equal(h.manager.hasActive(),true,'取消的触屏手势不能成为遮罩点击');
+ assert.equal(h.find('.sp-dialog-custom')[0].children[0],content);fire('pointerdown',overlay);fire('pointerup',overlay);fire('click',overlay);assert.equal(await pending,null);assert.equal(h.manager.hasActive(),false);
 });

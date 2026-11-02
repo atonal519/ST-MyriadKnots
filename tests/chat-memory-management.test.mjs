@@ -809,3 +809,5 @@ test('重构固定材料与QQJ保存读回分开：宿主新正文可读回，�
     } else assert.equal(caught?.code, 'QQJ_REBUILD_TARGET_SAVE_FAILED');
   }
 });
+
+test('整档删除沿既有记录枚举清地点人工资料并清投影缓存',async()=>{const f=fixture();f.records.set(`chat-${CHAT_ID}/v3-place-workspace`,{recordId:'v3-place-workspace',revision:1,data:{schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:CHAT_ID,placesByEntityId:{},deletionsByEntityId:{}}});await f.manager.deleteCurrent();assert.equal([...f.records.keys()].some(key=>key.startsWith(`chat-${CHAT_ID}/`)),false);assert.ok(f.records.has(`chat-${OTHER_ID}/v3-root`));assert.deepEqual(f.memoryInvalidations,[{deletedChatId:CHAT_ID}]);});

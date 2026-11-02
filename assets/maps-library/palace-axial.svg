@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000"><g><g fill="none" stroke-linejoin="round" stroke-linecap="round"><desc>原创架空宫苑平面示意，按中轴、前朝、内廷、侧院与园林组织。</desc>
+  <g fill="var(--ql-ground)">
+    <path d="M100 50H900V950H100Z"/>
+  </g>
+  <g fill="var(--ql-paper)" stroke="var(--ql-building-line)" stroke-width="2">
+    <path d="M270 700H730V890H270Z"/>
+    <path d="M340 445H660V585H340Z"/>
+    <path d="M345 265H655V355H345Z"/>
+    <path d="M150 660H300V855H150Z"/>
+    <path d="M145 385H310V595H145Z"/>
+    <path d="M175 230H310V355H175Z"/>
+    <path d="M700 640H850V885H700Z"/>
+    <path d="M720 375H845V565H720Z"/>
+    <path d="M690 220H845V355H690Z"/>
+  </g>
+  <g stroke="var(--ql-road)" stroke-width="14">
+    <path d="M500 935V205"/>
+    <path d="M325 895V220M675 895V220"/>
+    <path d="M310 615H690M310 370H690"/>
+  </g>
+  <g fill="var(--ql-park)" stroke="var(--ql-building-line)" stroke-width="1.4">
+    <path d="M260 85H740V210H260Z"/>
+    <path d="M285 103Q338 82 373 110Q392 138 356 158Q301 174 282 143Z"/>
+    <path d="M430 105Q463 90 485 114Q495 143 471 153Q434 153 421 130Z"/>
+    <path d="M584 106Q630 80 675 109Q701 126 681 153Q649 177 602 155Z"/>
+    <path d="M349 173Q390 153 418 175L424 197H341Z"/>
+    <path d="M555 173Q590 152 628 181L630 199H545Z"/>
+  </g>
+  <g stroke="var(--ql-road)" stroke-width="10">
+    <path d="M285 183Q373 114 461 170T711 132"/>
+    <path d="M520 88Q492 130 519 203"/>
+  </g>
+  <g fill="var(--ql-ground)" stroke="var(--ql-building-line)" stroke-width="2">
+    <path d="M350 612H650V710H350Z"/>
+    <path d="M390 390H610V467H390Z"/>
+    <path d="M390 232H610V304H390Z"/>
+  </g>
+  <g fill="var(--ql-building)" stroke="var(--ql-building-line)" stroke-width="2.4">
+    <path d="M370 625H630V695H370Z"/>
+    <path d="M405 400H595V455H405Z"/>
+    <path d="M405 242H595V294H405Z"/>
+    <path d="M300 650H350V685H300ZM650 650H700V685H650Z"/>
+    <path d="M300 465H335V545H300ZM665 480H700V540H665Z"/>
+    <path d="M345 274H380V335H345ZM620 270H655V328H620Z"/>
+    <path d="M165 675H285V710H165ZM160 740H195V800H160ZM245 730H280V800H245Z"/>
+    <path d="M160 400H290V440H160ZM155 465H190V555H155ZM265 460H300V535H265ZM195 565H290V590H195Z"/>
+    <path d="M190 245H295V273H190ZM185 292H210V332H185ZM270 292H295V332H270Z"/>
+    <path d="M710 655H840V697H710ZM710 730H740V830H710ZM810 735H840V815H810ZM755 840H840V865H755Z"/>
+    <path d="M725 390H840V428H725ZM815 455H840V535H815ZM730 515H790V540H730Z"/>
+    <path d="M710 235H820V265H710ZM700 290H730V330H700ZM800 290H830V330H800Z"/>
+    <path d="M860 405H885V475H860ZM855 500H882V545H855Z"/>
+  </g>
+  <g stroke="var(--ql-building-line)" stroke-width="1.5">
+    <path d="M390 660H610M422 427H578M422 268H578"/>
+    <path d="M175 692H275M170 420H280M200 259H285"/>
+    <path d="M720 676H830M735 409H830M720 250H810"/>
+  </g>
+  <g stroke="var(--ql-building-line)" stroke-width="5">
+    <path d="M100 600H450M550 600H900"/>
+    <path d="M100 600H450M550 600H900"/>
+    <path d="M250 215H455M545 215H750"/>
+    <path d="M270 890H385M615 890H730"/>
+  </g>
+  <g fill="var(--ql-building)" stroke="var(--ql-building-line)" stroke-width="2">
+    <path d="M455 932H545V962H455Z"/>
+    <path d="M385 877H615V909H385Z"/>
+    <path d="M445 585H555V615H445Z"/>
+    <path d="M440 350H560V380H440Z"/>
+    <path d="M455 203H545V225H455Z"/>
+    <path d="M190 832H260V855H190ZM225 338H265V355H225Z"/>
+  </g>
+</g></g></svg>

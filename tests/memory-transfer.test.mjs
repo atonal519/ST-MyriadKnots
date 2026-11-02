@@ -17,6 +17,7 @@ import { stableJson } from '../src/memory-transfer-json.js';
 import { createTimeRuntime, createTimeStore } from '../src/v3/time-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 import { createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
+import { createStorageManagement } from '../src/storage-management.js';
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
 const assistant = mes => ({ is_user: false, is_system: false, mes, swipes: [mes], swipe_id: 0 });
@@ -29,7 +30,6 @@ function backendHarness() {
   const failure = status => Object.assign(new Error(`HTTP ${status}`), { status });
   const envelope = (data, revision) => ({ revision, data: structuredClone(data), createdAt: NOW, updatedAt: NOW });
   const client = {
-    async list(collection) { return [...records].filter(([key]) => key.startsWith(`${collection}/`)).map(([key, value]) => ({ recordId: key.slice(collection.length + 1), ...envelope(value.data, value.revision) })); },
     async get(collection, key) {
       calls.push(['get', collection, key]);
       const value = records.get(`${collection}/${key}`);
@@ -44,6 +44,11 @@ function backendHarness() {
           : { recordId, status: 404 };
       });
     },
+    async list(collection) {
+      return [...records].filter(([key]) => key.startsWith(`${collection}/`)).map(([key, value]) => ({
+        recordId: key.slice(collection.length + 1), revision: value.revision, data: structuredClone(value.data),
+      }));
+    },
     async put(collection, key, data, expectedRevision) {
       calls.push(['put', collection, key]);
       const mapKey = `${collection}/${key}`;
@@ -53,13 +58,23 @@ function backendHarness() {
       records.set(mapKey, { revision, data: structuredClone(data) });
       return envelope(data, revision);
     },
+    async remove(collection, key, expectedRevision) {
+      const mapKey = `${collection}/${key}`, previous = records.get(mapKey);
+      if (!previous) throw failure(404);
+      if (previous.revision !== expectedRevision) throw failure(409);
+      records.delete(mapKey);
+      return { revision: expectedRevision + 1, data: null };
+    },
+    async removePermanent(collection, key, expectedRevision) {
+      return this.remove(collection, key, expectedRevision);
+    },
   };
   return { records, calls, client };
 }
 
 const TARGET = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const IMPORTED = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-async function fixture({ excluded = false, body = '她把钥匙放进木盒。', wrappers = {}, chat = null, extractIndex = 0, transferOptions = {} } = {}) {
+async function fixture({ excluded = false, body = '她把钥匙放进木盒。', wrappers = {}, chat = null, extractIndex = 0, transferOptions = {}, extractorResponse = null } = {}) {
   const backend = backendHarness();
   let currentWrappers = wrappers;
   const sanitizerOptions = () => currentWrappers;
@@ -73,7 +88,7 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: host, sanitizerOptions,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
     generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
-    generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { summary: '钥匙在木盒里。' } : { noMaterialChange: true } }) });
+    generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? (typeof extractorResponse === 'function' ? extractorResponse(JSON.parse(options.taskMessages[0].content).payload) : extractorResponse ?? { summary: '钥匙在木盒里。' }) : { noMaterialChange: true } }) });
   await memory.start();
   await memory.extractFloor(memory.getState().floors[extractIndex].floorId, { analyzeState: false });
   await memory.analyzeNextState();
@@ -123,6 +138,97 @@ test('real memory and CSE round trip onto an updated card, without analysis call
   await f.runtime.undo();
   assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
   assert.ok(f.backend.records.has(`chat-${IMPORTED}/v3-root`), 'undo preserves imported memory too');
+});
+
+test('export→import→export preserves the complete floorOrder index closure', async () => {
+  const f = await fixture();
+  const first = await parseMemoryPackage(f.exported.text);
+  const firstIndexKeys = first.graph.checkpoint.producedRefs.indexes.filter(key => key.includes('-floorOrder-'));
+  assert.ok(firstIndexKeys.length > 0, 'fixture must contain a real floorOrder index');
+  for (const key of firstIndexKeys) {
+    const record = first.value.records.find(item => item.id === key);
+    assert.ok(record, `export contains ${key}`);
+    assert.notEqual(record.data.sourceCheckpointId, first.graph.checkpoint.id,
+      'exported new checkpoint must reference an older immutable index source');
+  }
+
+  const target = await f.target();
+  await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+  const targetStore = createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() });
+  const imported = await targetStore.readReachable({ mode: 'full' });
+  assert.equal(imported.status, 'ready');
+  assert.deepEqual(imported.checkpoint.producedRefs.indexes.filter(key => key.includes('-floorOrder-')), firstIndexKeys);
+  assert.deepEqual(imported.root.indexManifest.floor.filter(key => key.includes('-floorOrder-')), firstIndexKeys);
+  const reexported = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+  assert.deepEqual(reexported.graph.checkpoint.producedRefs.indexes.filter(key => key.includes('-floorOrder-')), firstIndexKeys);
+  assert.deepEqual(reexported.graph.root.indexManifest.floor.filter(key => key.includes('-floorOrder-')), firstIndexKeys);
+  assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+});
+
+test('同chat同代的新checkpoint可读引用旧immutable floorOrder record', async () => {
+  const f = await fixture();
+  const old = f.graph;
+  const nextCheckpointId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const nextRunId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const oldRun = f.backend.records.get(`chat-${SOURCE}/v3-run-${old.checkpoint.runId}`);
+  const oldCheckpoint = f.backend.records.get(`chat-${SOURCE}/v3-checkpoint-${old.checkpoint.id}`);
+  const oldRoot = f.backend.records.get(`chat-${SOURCE}/v3-root`);
+  const reusedIndexKey = old.checkpoint.producedRefs.indexes.find(key => key.includes('-floorOrder-'));
+  const reusedIndexSource = f.backend.records.get(`chat-${SOURCE}/${reusedIndexKey}`).data.sourceCheckpointId;
+  const nextRun = { ...oldRun.data, id: nextRunId, parentCheckpointId: old.checkpoint.id };
+  const nextCheckpoint = { ...oldCheckpoint.data, id: nextCheckpointId, runId: nextRunId,
+    parentCheckpointId: old.checkpoint.id,
+    producedRefs: { ...oldCheckpoint.data.producedRefs, indexes: [...oldCheckpoint.data.producedRefs.indexes] } };
+  const nextRoot = { ...oldRoot.data, headCheckpointId: nextCheckpointId, updatedAt: new Date(Date.now() + 1000).toISOString() };
+  await f.backend.client.put(`chat-${SOURCE}`, `v3-run-${nextRunId}`, nextRun, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, `v3-checkpoint-${nextCheckpointId}`, nextCheckpoint, 0);
+  await f.backend.client.put(`chat-${SOURCE}`, 'v3-root', nextRoot, oldRoot.revision);
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => identity(f.ctx.chatId, SOURCE) });
+  const read = await store.readReachable({ mode: 'full' });
+  assert.equal(read.status, 'ready');
+  assert.equal(read.checkpoint.id, nextCheckpointId);
+  assert.deepEqual(read.checkpoint.producedRefs.indexes, old.checkpoint.producedRefs.indexes);
+  assert.ok(read.indexes.filter(index => index.kind === 'floorOrder').every(index => index.sourceCheckpointId === reusedIndexSource),
+    `reused indexes retain immutable source checkpoint provenance: ${JSON.stringify(read.indexes.map(index => ({ kind: index.kind, source: index.sourceCheckpointId })))}`);
+});
+
+test('存储清理旧checkpoint后仍保留复用floorOrder并可由正式FoundationStore冷读', async () => {
+  const f = await fixture();
+  const identityValue = f.session.identity();
+  const store = createFoundationStore({ client: f.backend.client, contextProvider: () => identityValue });
+  const settings = { get: () => ({ storageAutoCleanupEnabled: false }), update() {} };
+  const manager = createStorageManagement({
+    client: f.backend.client,
+    store,
+    session: f.session,
+    hostAdapter: f.host,
+    settings,
+    memoryRuntime: f.memory,
+    isBusy: () => false,
+    isEnabled: () => true,
+    logger: { warn() {} },
+  });
+  const before = await store.readReachable({ mode: 'full' });
+  const floorKeys = before.checkpoint.producedRefs.indexes.filter(key => key.includes('-floorOrder-'));
+  assert.ok(floorKeys.length > 0);
+  const reusedIndexes = before.indexes.filter(index => index.kind === 'floorOrder');
+  assert.ok(reusedIndexes.every(index => index.sourceCheckpointId !== before.checkpoint.id));
+  const sourceCheckpointId = reusedIndexes[0].sourceCheckpointId;
+  const sourceCheckpointKey = `v3-checkpoint-${sourceCheckpointId}`;
+  const snapshot = await manager.scan();
+  assert.equal(snapshot.status, 'ready');
+  assert.equal(snapshot.candidates.some(item => floorKeys.includes(item.recordId)), false, '当前checkpoint仍引用的旧索引受到保护');
+  assert.ok(snapshot.candidates.some(item => item.recordId === sourceCheckpointKey), '旧索引来源checkpoint已脱离当前root闭包，进入清理候选');
+  const result = await manager.cleanup();
+  assert.equal(result.status, 'completed');
+  assert.equal(f.backend.records.has(`chat-${SOURCE}/${sourceCheckpointKey}`), false, '旧索引来源checkpoint已被真实永久清理');
+  const coldStore = createFoundationStore({ client: f.backend.client, contextProvider: () => identityValue });
+  const cold = await coldStore.readReachable({ mode: 'full' });
+  assert.equal(cold.status, 'ready');
+  assert.deepEqual(cold.checkpoint.producedRefs.indexes, before.checkpoint.producedRefs.indexes);
+  assert.deepEqual(cold.indexes.map(index => index.id), before.indexes.map(index => index.id));
+  assert.ok(floorKeys.every(key => f.backend.records.has(`chat-${SOURCE}/${key}`)), '清理后复用索引实体仍在库中');
+  manager.dispose();
 });
 
 test('tampering, missing graph records, incompatible chat and consumed previews are rejected', async () => {
@@ -1498,4 +1604,60 @@ test('undo preserves new manual people time calendar and prequel edits when the 
     if (field === 'calendar') assert.deepEqual(calendars.get(IMPORTED), { months: 4, prefix: '人工改历' });
     if (field === 'prequel') assert.equal(target.chatMetadata.qianqianjiePrequel, '导入后新写的人工前情');
   });
+});
+
+test('固定设施及同楼替换引用经导出导入再导出完整保留，撤销不写源图', async () => {
+ const body='东屋有固定木桌，后来木桌换成壁柜。';
+ const f=await fixture({body,extractorResponse:payload=>({summary:body,spatialFacts:{places:[{key:'place-mention-1',name:'东屋',identity:'new',exactQuote:'东屋有固定木桌',source:'canonicalContent',sourceFloorKey:payload.sourceFloorKey}],containments:[],positions:[],features:[{key:'feature-1',placeKey:'place-mention-1',text:'有固定木桌。',replacesKeys:[],exactQuote:'东屋有固定木桌',source:'canonicalContent',sourceFloorKey:payload.sourceFloorKey},{key:'feature-2',placeKey:'place-mention-1',text:'木桌已换成壁柜。',replacesKeys:['feature-1'],exactQuote:'后来木桌换成壁柜',source:'canonicalContent',sourceFloorKey:payload.sourceFloorKey}]}})});
+ const spatial=f.graph.floorMemories[0].spatialFacts;assert.equal(spatial.features.length,2);assert.deepEqual(spatial.features[1].replacesItemIds,[spatial.features[0].itemId]);
+ const sourceBefore=JSON.stringify([...f.backend.records].filter(([key])=>key.startsWith(`chat-${SOURCE}/`)));
+ await f.target();await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+ const store=createFoundationStore({client:f.backend.client,contextProvider:()=>f.session.identity()});const imported=await store.readReachable({mode:'full'});assert.deepEqual(imported.floorMemories[0].spatialFacts,spatial);
+ const second=await parseMemoryPackage((await f.runtime.exportCurrent()).text);assert.deepEqual(second.graph.floorMemories[0].spatialFacts,spatial);
+ await f.runtime.undo();assert.equal(JSON.stringify([...f.backend.records].filter(([key])=>key.startsWith(`chat-${SOURCE}/`))),sourceBefore);
+});
+
+test('地点人工楼层与删除范围随导出导入，seed改chat归属且可供下一正式提取发布',async()=>{
+ const {createPlaceWorkspaceStore}=await import('../src/v3/place-workspace.js');
+ const {projectQianchuangSnapshot}=await import('../src/v3/qianchuang-domain.js');
+ const f=await fixture(),id='dddddddd-dddd-4ddd-8ddd-dddddddddddd',roomId='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',scope={knownThroughFloorId:f.graph.floors[0].id,coveredFloorIds:[f.graph.floors[0].id],coveredItemIds:[]};
+ const seed=(entityId,name)=>({schemaVersion:3,recordType:'entity',id:entityId,chatId:SOURCE,narrativeGeneration:f.graph.root.narrativeGeneration,entityType:'place',displayName:name,aliases:[],specialRole:'none',firstSeenFloorId:null,lastSeenFloorId:null,status:'provisional',mergedIntoEntityId:null,mergeEvidenceRefs:[],baselineClaimIds:[],createdAt:NOW,updatedAt:NOW,recordStatus:'active',supersedes:null});
+ const store=createPlaceWorkspaceStore({client:f.backend.client});
+ await store.put({chatId:SOURCE},{schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:SOURCE,deletionsByEntityId:{'ffffffff-ffff-4fff-8fff-ffffffffffff':{coveredFloorIds:scope.coveredFloorIds}},placesByEntityId:{
+  [id]:{createdEntity:seed(id,'一楼'),name:'一楼',description:'一楼设有书桌',relations:'',parentEntityId:null,scopes:Object.fromEntries(['name','description','relations','parentEntityId'].map(key=>[key,scope]))},
+  [roomId]:{createdEntity:seed(roomId,'书房'),name:'书房',parentEntityId:id,scopes:{name:scope,parentEntityId:scope}},
+ }},0);
+ const exported=await f.runtime.exportCurrent(),parsed=await parseMemoryPackage(exported.text);assert.ok(parsed.value.records.some(item=>item.id==='v3-place-workspace'));
+ const target=await f.target();await f.runtime.importPreview(await f.runtime.preview(exported.text));
+ const importedPlaces=await createPlaceWorkspaceStore({client:f.backend.client}).read({chatId:IMPORTED});assert.equal(importedPlaces.data.placesByEntityId[id].createdEntity.chatId,IMPORTED);assert.equal(importedPlaces.data.placesByEntityId[roomId].createdEntity.chatId,IMPORTED);assert.equal(importedPlaces.data.deletionsByEntityId['ffffffff-ffff-4fff-8fff-ffffffffffff'].coveredFloorIds[0],scope.knownThroughFloorId);
+ const core=createFoundationStore({client:f.backend.client,contextProvider:()=>f.session.identity()}),source=await core.readReachable({mode:'runtime'}),projection={placeWorkspace:importedPlaces.data,placeWorkspaceRevision:importedPlaces.revision};
+ const snapshot=projectQianchuangSnapshot(source,{identityProjection:projection});assert.equal(snapshot.places.find(place=>place.entityId===roomId).parentEntityId,id);assert.equal(snapshot.places.find(place=>place.entityId===id).features[0].text,'一楼设有书桌');
+ const foundation=createFoundationRuntime({hostAdapter:f.host,store:core,contextProvider:()=>target,logger:{warn(){}}});await foundation.start();
+ let calls=0;const memory=createV3MemoryRuntime({foundationRuntime:foundation,store:core,hostAdapter:f.host,placeWorkspaceStore:createPlaceWorkspaceStore({client:f.backend.client}),identityProjectionProvider:async()=>projection,automationSettings:()=>({enabled:false,batchSize:1}),generateAnalysisTask:async()=>assert.fail('不得分析'),generateUtilityTask:async options=>{calls++;const p=JSON.parse(options.taskMessages[0].content).payload,level=p.knownPlaces.find(place=>place.displayName==='一楼');assert.ok(level);return{jsonData:{summary:p.canonicalContent,spatialFacts:{places:[{key:'place-mention-1',name:'一楼',identity:'existing',sameAsPlaceKey:level.entityKey,exactQuote:p.canonicalContent,source:'canonicalContent',sourceFloorKey:p.sourceFloorKey}],containments:[],positions:[],features:[{key:'feature-1',placeKey:'place-mention-1',kind:'stable',text:'一楼',replacesKeys:[],exactQuote:p.canonicalContent,source:'canonicalContent',sourceFloorKey:p.sourceFloorKey}]}}};},logger:{warn(){}}});
+ await memory.start();await memory.extractFloor(memory.getState().floors[1].floorId,{analyzeState:false});assert.equal(calls,1);assert.ok((await core.readReachable({mode:'runtime'})).entities.some(entity=>entity.id===id));
+});
+
+test('世界书当前地点索引随导出导入冷读，来源保留且seed可正式发布',async()=>{
+ const {createPlaceWorkspaceStore}=await import('../src/v3/place-workspace.js');
+ const {projectQianchuangSnapshot}=await import('../src/v3/qianchuang-domain.js');
+ const f=await fixture(),id='dddddddd-dddd-4ddd-8ddd-dddddddddddd',roomId='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',scope={knownThroughFloorId:f.graph.floors[0].id,coveredFloorIds:[f.graph.floors[0].id],coveredItemIds:[]};
+ const seed=(entityId,name)=>({schemaVersion:3,recordType:'entity',id:entityId,chatId:SOURCE,narrativeGeneration:f.graph.root.narrativeGeneration,entityType:'place',displayName:name,aliases:[],specialRole:'none',firstSeenFloorId:null,lastSeenFloorId:null,status:'provisional',mergedIntoEntityId:null,mergeEvidenceRefs:[],baselineClaimIds:[],createdAt:NOW,updatedAt:NOW,recordStatus:'active',supersedes:null});
+ const store=createPlaceWorkspaceStore({client:f.backend.client});
+ await store.put({chatId:SOURCE},{schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:SOURCE,deletionsByEntityId:{'ffffffff-ffff-4fff-8fff-ffffffffffff':{coveredFloorIds:scope.coveredFloorIds}},placesByEntityId:{
+  
+  [roomId]:{createdEntity:seed(roomId,'书房'),name:'书房',parentEntityId:id,scopes:{name:scope,parentEntityId:scope}},
+ },foundation:{schemaVersion:1,entities:[seed(id,'一楼')],facts:[
+ {itemId:'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb',kind:'place',mapRole:'site',placeEntityId:id,knownFromFloorId:scope.knownThroughFloorId,source:{kind:'worldbook',sourceName:'地图',locator:'地图:18',fingerprint:'sha256:fixture',quote:'一楼设有书桌'}},
+ {itemId:'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb',kind:'feature',placeEntityId:id,text:'一楼设有书桌',knownFromFloorId:scope.knownThroughFloorId,source:{kind:'worldbook',sourceName:'地图',locator:'地图:18',fingerprint:'sha256:fixture',quote:'一楼设有书桌'}}
+ ]}},0);
+ const current=await store.read({chatId:SOURCE});const withRefs=structuredClone(current.data);withRefs.foundation.facts[1].source.references=[{...withRefs.foundation.facts[1].source},{kind:'body',floorId:f.graph.floors[0].id,memoryId:f.graph.floorMemories[0].id,quote:f.graph.floors[0].content.canonicalContent}];await store.put({chatId:SOURCE},withRefs,current.revision);
+ const exported=await f.runtime.exportCurrent(),parsed=await parseMemoryPackage(exported.text);assert.ok(parsed.value.records.some(item=>item.id==='v3-place-workspace'));
+ const target=await f.target();await f.runtime.importPreview(await f.runtime.preview(exported.text));
+ const importedPlaces=await createPlaceWorkspaceStore({client:f.backend.client}).read({chatId:IMPORTED});assert.equal(importedPlaces.data.foundation.entities.find(entity=>entity.id===id).chatId,IMPORTED);assert.equal(importedPlaces.data.placesByEntityId[roomId].createdEntity.chatId,IMPORTED);assert.equal(importedPlaces.data.deletionsByEntityId['ffffffff-ffff-4fff-8fff-ffffffffffff'].coveredFloorIds[0],scope.knownThroughFloorId);
+ const core=createFoundationStore({client:f.backend.client,contextProvider:()=>f.session.identity()}),source=await core.readReachable({mode:'runtime'}),projection={placeWorkspace:importedPlaces.data,placeWorkspaceRevision:importedPlaces.revision};
+ const snapshot=projectQianchuangSnapshot(source,{identityProjection:projection});assert.equal(snapshot.places.find(place=>place.entityId===roomId).parentEntityId,id);assert.equal(snapshot.places.find(place=>place.entityId===id).features[0].text,'一楼设有书桌');
+ assert.equal(importedPlaces.data.foundation.facts[0].source.locator,'地图:18');assert.equal(snapshot.places.find(place=>place.entityId===id).mapRole,'site');const bodyRef=importedPlaces.data.foundation.facts[1].source.references.find(ref=>ref.kind==='body');assert.ok(source.floors.some(floor=>floor.id===bodyRef.floorId));assert.ok(source.floorMemories.some(memory=>memory.id===bodyRef.memoryId));
+ const foundation=createFoundationRuntime({hostAdapter:f.host,store:core,contextProvider:()=>target,logger:{warn(){}}});await foundation.start();
+ let calls=0;const memory=createV3MemoryRuntime({foundationRuntime:foundation,store:core,hostAdapter:f.host,placeWorkspaceStore:createPlaceWorkspaceStore({client:f.backend.client}),identityProjectionProvider:async()=>projection,automationSettings:()=>({enabled:false,batchSize:1}),generateAnalysisTask:async()=>assert.fail('不得分析'),generateUtilityTask:async options=>{calls++;const p=JSON.parse(options.taskMessages[0].content).payload,level=p.knownPlaces.find(place=>place.displayName==='一楼');assert.ok(level);return{jsonData:{summary:p.canonicalContent,spatialFacts:{places:[{key:'place-mention-1',name:'一楼',identity:'existing',sameAsPlaceKey:level.entityKey,exactQuote:p.canonicalContent,source:'canonicalContent',sourceFloorKey:p.sourceFloorKey}],containments:[],positions:[],features:[{key:'feature-1',placeKey:'place-mention-1',kind:'stable',text:'一楼',replacesKeys:[],exactQuote:p.canonicalContent,source:'canonicalContent',sourceFloorKey:p.sourceFloorKey}]}}};},logger:{warn(){}}});
+ await memory.start();await memory.extractFloor(memory.getState().floors[1].floorId,{analyzeState:false});assert.equal(calls,1);assert.ok((await core.readReachable({mode:'runtime'})).entities.some(entity=>entity.id===id));
 });

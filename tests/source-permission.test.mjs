@@ -109,7 +109,7 @@ test('世界书列表只显示当前书名目录，规范化去重并保留已�
   assert.deepEqual(afterRestore.excludedBooks, ['现存乙', '已删除丙']);
 });
 
-test('生产书名枚举合并各作用域、内置书与冷目录，绝不读取世界书正文', async () => {
+test('生产书名枚举合并作用域与冷目录，主绑定不额外展示卡内旧书且绝不读正文', async () => {
   let warm = false, updates = 0, batchReads = 0, singleReads = 0;
   const context = {
     characterId: 0,
@@ -123,7 +123,7 @@ test('生产书名枚举合并各作用域、内置书与冷目录，绝不读�
     loadWorldInfoBatch: async () => { batchReads += 1; return new Map(); },
     loadWorldInfo: async () => { singleReads += 1; return null; },
   };
-  assert.deepEqual(await listWorldInfoBookNames(context), ['角色书', '附加书', '聊天书', '人格书', '全局书', '内置书', '目录书']);
+  assert.deepEqual(await listWorldInfoBookNames(context), ['角色书', '附加书', '聊天书', '人格书', '全局书', '目录书']);
   assert.equal(updates, 1);
   assert.equal(batchReads, 0);
   assert.equal(singleReads, 0);
@@ -153,4 +153,17 @@ test('世界书扫描保留数字 uid、宿主开关和冷缓存中的完整书�
     ['挂载书::7', '正文', true, 'enabled'],
     ['挂载书::8', '禁用', false, 'disabled'],
   ]);
+});
+
+
+test('书名枚举区分主绑定与辅助书，纯内嵌继续列出且不读正文', async () => {
+  let reads = 0;
+  const character = { avatar: '角色.png', data: { character_book: { name: '未导入内嵌', entries: [{ id: 1, content: '资料' }] } } };
+  const context = { characterId: 0, characters: [character], getCharaAuxWorlds: () => ['辅助书'], loadWorldInfo: async () => { reads += 1; throw new Error('不得读取'); } };
+  assert.deepEqual(await listWorldInfoBookNames(context), ['辅助书', '未导入内嵌']);
+  character.data.extensions = { world: '主外置' };
+  assert.deepEqual(await listWorldInfoBookNames(context), ['主外置', '辅助书']);
+  delete character.data.extensions;
+  assert.deepEqual(await listWorldInfoBookNames(context, { bindings: { getCharLorebooks: () => ({ primary: '助手主书', additional: [] }) } }), ['助手主书', '辅助书']);
+  assert.equal(reads, 0);
 });

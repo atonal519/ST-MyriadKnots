@@ -1493,6 +1493,9 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
 
   const sourceReachable = await sourceStore.readReachable();
   assert.equal(sourceReachable.currentStates[0].subjects.find(subject => subject.subjectEntityId === sourceReachable.baseline.characterCard.entityId).situational[0].text, '源状态-3');
+  const sourceFloorIndexes = sourceReachable.indexes.filter(index => index.kind === 'floorOrder');
+  assert.ok(sourceFloorIndexes.length > 0 && sourceFloorIndexes.every(index => index.sourceCheckpointId !== sourceReachable.checkpoint.id),
+    '源聊天的连续CSE提交复用了既有楼序索引');
   const firstMemory = sourceReachable.floorMemories[0];
   const firstMemoryKey = `chat-${SOURCE}/v3-floor-memory-${firstMemory.id}`;
   backend.records.get(firstMemoryKey).data.summary = { ...backend.records.get(firstMemoryKey).data.summary, userText: '人工确认的公共 A', effectiveSource: 'user', revisionNote: '分支前修订' };
@@ -1672,6 +1675,13 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   const targetStore = createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', targetChatId) });
   const inherited = await targetStore.readReachable();
   assert.equal(inherited.status, 'ready');
+  const targetFloorIndexes = inherited.indexes.filter(index => index.kind === 'floorOrder');
+  assert.ok(targetFloorIndexes.length > 0 && targetFloorIndexes.every(index => index.chatId === targetChatId
+    && index.narrativeGeneration === inherited.root.narrativeGeneration
+    && index.sourceCheckpointId === inherited.checkpoint.id),
+  '分支目标必须为新chat/gen建立自己的楼序索引');
+  assert.notDeepEqual(targetFloorIndexes.map(index => index.id), sourceFloorIndexes.map(index => index.id),
+    '分支目标不能沿用来源楼序索引key');
   assert.deepEqual(inherited.floorMemories.map(item => item.summary.effectiveSource === 'user' ? item.summary.userText : item.summary.aiText), ['人工确认的公共 A', '摘要-公共 B']);
   assert.equal(inherited.floors.length, 2);
   assert.equal(inherited.floorMemories.some(item => item.summary.aiText === '摘要-旧线 C'), false, '源后缀摘要不得进入目标');

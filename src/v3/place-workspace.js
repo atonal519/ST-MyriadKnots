@@ -1,0 +1,150 @@
+import { validateEntityRecord } from './memory-schema.js';
+import { isUuid } from '../identity.js';
+import { validatePlaceFoundation, effectiveFoundationFacts } from './place-foundation.js';
+import { validQianchuangMapStyle } from '../qianchuang-display-hints.js';
+
+export const PLACE_WORKSPACE_RECORD_ID = 'v3-place-workspace';
+const fields = ['name', 'description', 'relations', 'parentEntityId', 'mapLevel'];
+const copy = value => structuredClone(value);
+const fail = text => Object.assign(new Error(text), { code: 'QQJ_PLACE_WORKSPACE_INVALID' });
+const own = (value, key) => Object.hasOwn(value ?? {}, key);
+export const emptyPlaceWorkspace = chatId => ({ schemaVersion: 1, kind: 'qqj-v3-place-workspace', chatId, placesByEntityId: {}, deletionsByEntityId: {} });
+
+export function validatePlaceWorkspace(value, chatId) {
+  if (!value || value.schemaVersion !== 1 || value.kind !== 'qqj-v3-place-workspace' || !isUuid(chatId) || value.chatId !== chatId
+    || !value.placesByEntityId || typeof value.placesByEntityId !== 'object' || Array.isArray(value.placesByEntityId)
+    || !value.deletionsByEntityId || typeof value.deletionsByEntityId !== 'object' || Object.entries(value.deletionsByEntityId).some(([id, scope]) => !isUuid(id) || !Array.isArray(scope?.coveredFloorIds) || scope.coveredFloorIds.some(id => !isUuid(id)))) throw fail('地点资料归属或格式无效。');
+  if(value.foundation)validatePlaceFoundation(value.foundation,chatId);
+  if(own(value,'mapStyle')&&!validQianchuangMapStyle(value.mapStyle))throw fail('地点底图提示无效。');
+  for (const [id, row] of Object.entries(value.placesByEntityId)) {
+    if (row?.createdEntity) validateEntityRecord(row.createdEntity, { expectedChatId: chatId });
+    if (row?.createdEntity && (row.createdEntity.id !== id || row.createdEntity.chatId !== chatId || row.createdEntity.entityType !== 'place')) throw fail('新增地点身份无效。');
+    if (!isUuid(id) || !row || !row.scopes || typeof row.scopes !== 'object'
+      || fields.filter(key => own(row, key)).some(key => {
+        const scope = row.scopes[key];
+        return (key === 'parentEntityId' ? row[key] !== null && !isUuid(row[key]) : key==='mapLevel'?row[key]!==null&&!['city','country','scope'].includes(row[key]):typeof row[key] !== 'string')
+          || !scope || !isUuid(scope.knownThroughFloorId) || !Array.isArray(scope.coveredFloorIds) || scope.coveredFloorIds.some(id => !isUuid(id))
+          || !Array.isArray(scope.coveredItemIds) || scope.coveredItemIds.some(id => typeof id !== 'string' || !id);
+      })) throw fail('地点人工修订格式无效。');
+  }
+  return Object.freeze(copy(value));
+}
+
+export function createPlaceWorkspaceStore({ client } = {}) {
+  const cache = new Map();
+  async function read(identity, { fresh = false } = {}) {
+    const chatId = identity?.chatId;
+    if (!isUuid(chatId)) throw fail('当前聊天身份不可用。');
+    if (!fresh && cache.has(chatId)) return cache.get(chatId);
+    const pending = (async () => {
+      try {
+        const envelope = await client.get(`chat-${chatId}`, PLACE_WORKSPACE_RECORD_ID);
+        if (!Number.isSafeInteger(envelope.revision) || envelope.revision < 1) throw fail('地点资料版本无效。');
+        return { data: validatePlaceWorkspace(envelope.data, chatId), revision: envelope.revision };
+      } catch (error) { if (error?.status === 404) return { data: null, revision: 0 }; throw error; }
+    })();
+    cache.set(chatId, pending);
+    try { return await pending; } catch (error) { if (cache.get(chatId) === pending) cache.delete(chatId); throw error; }
+  }
+  async function put(identity, data, expectedRevision) {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw fail('地点资料版本无效。');
+    const safe = validatePlaceWorkspace(data, identity?.chatId);
+    const result = await client.put(`chat-${identity.chatId}`, PLACE_WORKSPACE_RECORD_ID, safe, expectedRevision);
+    if (result.revision !== expectedRevision + 1) throw fail('地点资料保存版本无效。');
+    const saved = { data: validatePlaceWorkspace(result.data, identity.chatId), revision: result.revision };
+    cache.set(identity.chatId, Promise.resolve(saved)); return saved;
+  }
+  return Object.freeze({ read, put, invalidate(chatId) { if (chatId) cache.delete(chatId); else cache.clear(); } });
+}
+
+// The boundary records which knowledge the user edited, not a story evidence source.
+export function placeWorkspaceForPrefix(workspace, floorIds = null) {
+  if (!workspace || !floorIds) return workspace;
+  return { ...workspace, placesByEntityId: Object.fromEntries(Object.entries(workspace.placesByEntityId ?? {})
+    .map(([id, row]) => { const scoped = { scopes: {}, ...(row.createdEntity ? { createdEntity: row.createdEntity } : {}) }; for (const key of fields) if (own(row, key) && floorIds.has(row.scopes[key].knownThroughFloorId)) { scoped[key] = row[key]; scoped.scopes[key] = row.scopes[key]; } if (row.createdEntity && !Object.keys(scoped.scopes).length) delete scoped.createdEntity; return [id, scoped]; })) };
+}
+
+export function filterPlaceMemory(memory, workspace) {
+  if (!workspace) return memory;
+  const rows = workspace.placesByEntityId ?? {};
+  const projectItem = (item, field) => {
+    const row = rows[item.placeEntityId], scope = own(row, field) ? row.scopes[field] : null;
+    if (scope && (field === 'parentEntityId' || scope.coveredItemIds.includes(item.itemId) || (item.replacesItemIds ?? []).some(id => scope.coveredItemIds.includes(id)))) return [];
+    const refKey = Array.isArray(item.evidenceRefs) ? 'evidenceRefs' : Array.isArray(item.sourceRefs) ? 'sourceRefs' : null;
+    const refs = refKey ? item[refKey] : [{ floorId: memory.floorId }];
+    const endpoints = [item.entityId, item.placeEntityId, item.parentEntityId, ...(item.referencePlaceEntityIds ?? [])];
+    const kept = refs.filter(ref => !endpoints.some(id => workspace.deletionsByEntityId?.[id]?.coveredFloorIds.includes(ref.floorId)) && !scope?.coveredFloorIds.includes(ref.floorId));
+    if (!kept.length) return [];
+    return [{ ...item, ...(refKey ? { [refKey]: kept } : {}) }];
+  };
+  const spatialFacts = memory.spatialFacts ? Object.fromEntries(['containments', 'positions', 'features', 'relations'].map(field => [field,
+    (memory.spatialFacts[field] ?? []).flatMap(item => projectItem(item, field === 'features' ? 'description' : field === 'relations' ? 'relations' : field === 'containments' ? 'parentEntityId' : 'positions'))])) : null;
+  return { ...memory, locations: (memory.locations ?? []).flatMap(item => projectItem(item, 'locations')).map(item => ({ ...item,
+    ...(own(rows[item.entityId], 'name') ? { name: rows[item.entityId].name || '未命名地点' } : {}) })), ...(spatialFacts ? { spatialFacts } : {}) };
+}
+
+export function manualPlaceFacts(workspace) {
+  return Object.entries(workspace?.placesByEntityId ?? {}).map(([entityId, row]) => ({ entityId, ...row }));
+}
+
+export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),memories=[]}={}) {
+  if (!workspace || workspace.chatId !== snapshot.chatId) return snapshot;
+  const rows = workspace.placesByEntityId ?? {};
+  const base=effectiveFoundationFacts(workspace,memories);
+  const places = snapshot.places.map(place => {
+    const row = rows[place.entityId], result = { ...place, features: [...place.features], relations: [...place.relations], childEntityIds: [] };
+    for(const fact of base.filter(fact=>fact.placeEntityId===place.entityId)){
+      if(fact.kind==='place'&&['area','site','interior'].includes(fact.mapRole))result.mapRole=fact.mapRole;
+      if(fact.kind==='place'&&['city','country','scope'].includes(fact.mapLevel))result.mapLevel=fact.mapLevel;
+      if(fact.kind==='place'&&own(fact,'facilities'))result.facilities=copy(fact.facilities);
+      if(fact.kind==='place')for(const key of ['mapStyle','mapLayout','mapAssetId'])if(own(fact,key))result[key]=fact[key];
+      if(fact.kind==='feature')result.features.push({itemId:fact.itemId,text:fact.text,kind:'stable',source:fact.source});
+      if(fact.kind==='relation')result.relations.push({itemId:fact.itemId,text:fact.text,kind:'relative',referencePlaceEntityIds:[],source:fact.source});
+      if(fact.kind==='containment'){
+        const prior=snapshot.containments?.find(edge=>edge.placeEntityId===place.entityId);
+        if(!prior||(prior.sourceAssistantSeq??0)<=(floorOrder.get(fact.knownFromFloorId)??0))result.parentEntityId=fact.parentEntityId;
+      }
+    }
+    if (own(row, 'name')) result.displayName = row.name || '未命名地点';
+    if (own(row, 'parentEntityId')) result.parentEntityId = row.parentEntityId;
+    if (own(row,'mapLevel'))result.mapLevel=row.mapLevel;
+    if (own(row, 'description')) {
+      result.manualDescription = true;
+      if (row.description.trim()) result.features.unshift({ itemId: `manual-description-${place.entityId}`, text: row.description, kind: 'stable', manual: true });
+    }
+    if (own(row, 'relations')) result.relations.unshift(...row.relations.split(/\r?\n/u).map(text => text.trim()).filter(Boolean).map((text, index) => ({ itemId: `manual-relation-${place.entityId}-${index}`, text, kind: 'relative', referencePlaceEntityIds: [], manual: true })));
+    return result;
+  });
+  const byId = new Map(places.map(place => [place.entityId, place]));
+  for (const place of places) {
+    if (!byId.has(place.parentEntityId) || place.parentEntityId === place.entityId) place.parentEntityId = null;
+    const seen = new Set([place.entityId]); let parent = byId.get(place.parentEntityId);
+    while (parent) { if (seen.has(parent.entityId)) { place.parentEntityId = null; break; } seen.add(parent.entityId); parent = byId.get(parent.parentEntityId); }
+  }
+  for (const place of places) if (place.parentEntityId) byId.get(place.parentEntityId).childEntityIds.push(place.entityId);
+  for (const place of places) { let root = place; while (root.parentEntityId) root = byId.get(root.parentEntityId); place.mapRootEntityId = root.childEntityIds.length || own(rows[root.entityId], 'parentEntityId') && rows[root.entityId].parentEntityId === null ? root.entityId : null; }
+  const user = byId.get(snapshot.userPosition?.placeEntityId);
+  return Object.freeze({ ...snapshot, ...(validQianchuangMapStyle(workspace.mapStyle)?{mapStyle:workspace.mapStyle}:{}), places, mapRootIds: places.filter(place => !place.parentEntityId && place.mapRootEntityId === place.entityId).map(place => place.entityId),
+    unassignedPlaceIds: places.filter(place => !place.mapRootEntityId).map(place => place.entityId),
+    containments: places.filter(place => place.parentEntityId).map(place => ({ placeEntityId: place.entityId, parentEntityId: place.parentEntityId, manual: own(rows[place.entityId], 'parentEntityId') })),
+    userPosition: snapshot.userPosition ? { ...snapshot.userPosition, placeEntityId: user?.entityId ?? null, mapRootEntityId: user?.mapRootEntityId ?? null, isCurrent: Boolean(user?.mapRootEntityId && snapshot.userPosition.isCurrent) } : snapshot.userPosition });
+}
+
+export function withCreatedPlaces(entities = [], workspace) {
+  const ids = new Set(entities.map(entity => entity.id));
+  const added=[...manualPlaceFacts(workspace).flatMap(row=>row.createdEntity?[row.createdEntity]:[]),...(workspace?.foundation?.entities??[])];
+  return [...entities,...added.filter(entity=>{if(ids.has(entity.id))return false;ids.add(entity.id);return true;})];
+}
+
+export function placeDeletionIdentityIds(workspace, source) {
+  if (!workspace) return [];
+  const visible = new Set((source.floors ?? []).map(floor => floor.id));
+  return Object.entries(workspace.deletionsByEntityId ?? {}).filter(([entityId, scope]) => {
+    for (const memory of (source.floorMemories ?? []).filter(memory => !memory.recordStatus || memory.recordStatus === 'active')) for (const item of [...(memory.locations ?? []), ...Object.values(memory.spatialFacts ?? {}).flatMap(value => Array.isArray(value) ? value : [])]) {
+      if (![item.entityId, item.placeEntityId, item.parentEntityId, ...(item.referencePlaceEntityIds ?? [])].includes(entityId)) continue;
+      const refs = item.evidenceRefs ?? [{ floorId: memory.floorId }];
+      if (refs.some(ref => visible.has(ref.floorId) && !scope.coveredFloorIds.includes(ref.floorId))) return false;
+    }
+    return true;
+  }).map(([id]) => id);
+}

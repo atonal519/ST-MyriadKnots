@@ -1,0 +1,322 @@
+[
+  {
+    "id": "modern-inland",
+    "family": "modern",
+    "layout": "inland",
+    "label": "现代城市·内陆",
+    "file": "modern-inland.svg",
+    "width": 1000,
+    "height": 1000,
+    "sha256": "5f86a9338351b3b8d393c3aa877da9120bee21038807f8524a9cf27367b5f78e",
+    "origin": "沿用千窗既有底图几何；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "现代",
+      "城市",
+      "内陆",
+      "街网"
+    ]
+  },
+  {
+    "id": "modern-town-plain",
+    "family": "modern-town",
+    "layout": "plain",
+    "label": "现代小城·平原",
+    "file": "modern-town-plain.svg",
+    "width": 1000,
+    "height": 1000,
+    "sha256": "4d0093e529b54666db9e96934e24fdac519677bb53bd3698d394ab9c301940d1",
+    "origin": "沿用千窗既有底图几何；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "现代",
+      "小城",
+      "内陆",
+      "公共中心"
+    ]
+  },
+  {
+    "id": "old-town-inland",
+    "family": "old-town",
+    "layout": "inland",
+    "label": "城镇·古城街巷",
+    "file": "old-town-inland.svg",
+    "width": 590,
+    "height": 540,
+    "sha256": "26c829dcb97d2859e61f4e284c65f193430885e2c2590f21a5c02c0b7f9e7efb",
+    "origin": "Watabou MFCG Redfall seed222816148；原输出SHA79b3ba9329e5456d4af11e8a4aff01bab586198745b2ba115ab4fcc30598e88b；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "城镇",
+      "内陆",
+      "街巷"
+    ]
+  },
+  {
+    "id": "palace-axial",
+    "family": "palace",
+    "layout": "axial",
+    "label": "宫苑·中轴",
+    "file": "palace-axial.svg",
+    "width": 1000,
+    "height": 1000,
+    "sha256": "f674218b06622fb4f17239bc91f16321061d7146ab00b665ba1b2776c3464e3c",
+    "origin": "沿用千窗既有底图几何；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "宫廷",
+      "宫苑",
+      "中轴",
+      "院落"
+    ]
+  },
+  {
+    "id": "sci-fi-linear",
+    "family": "sci-fi",
+    "layout": "linear",
+    "label": "科幻设施·生态生活甲板",
+    "file": "sci-fi-linear.svg",
+    "width": 1120,
+    "height": 1280,
+    "sha256": "719b54a3d7c360665e632b7bcc315be86b70da426e50269817374a5ae776ebf5",
+    "origin": "Robert Pearce / Eric B. Smith · Luxury Liner Deck 1；CC BY-NC 4.0；裁取/去题签/主题化，来源见docs/qianchuang-assets.md",
+    "shortTags": [
+      "科幻",
+      "舰内",
+      "设施",
+      "生活舱",
+      "甲板"
+    ]
+  },
+  {
+    "id": "modern-coast",
+    "family": "modern",
+    "layout": "coast",
+    "label": "现代城市·水岸街区",
+    "file": "modern-coast.svg",
+    "width": 600,
+    "height": 600,
+    "sha256": "7f500369c4f1894f6cd94474943b24f56c5b917cb027a41782c67ad71faf272d",
+    "origin": "ProbableTrain City Generator；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "现代",
+      "城市",
+      "水岸",
+      "海湾"
+    ]
+  },
+  {
+    "id": "terrain-forest",
+    "family": "terrain",
+    "layout": "forest",
+    "label": "自然地形·森林与山地",
+    "file": "terrain-forest.svg",
+    "width": 1450,
+    "height": 1450,
+    "sha256": "53a20db089de6b710a58885e7918b989ee3a6d3ff36a77a4e4af019d237b2eeb",
+    "origin": "Watabou Perilous Shores；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "自然",
+      "地表",
+      "森林",
+      "山地"
+    ]
+  },
+  {
+    "id": "terrain-coast",
+    "family": "terrain",
+    "layout": "coast",
+    "label": "自然地形·海岸原野",
+    "file": "terrain-coast.svg",
+    "width": 1450,
+    "height": 1450,
+    "sha256": "ea67a9697a3a3a43e2919dd5b5d7688a34271fa7661e1f4c1868d6d273d117c6",
+    "origin": "Watabou Perilous Shores；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "自然",
+      "地表",
+      "海岸",
+      "原野",
+      "森林"
+    ]
+  },
+  {
+    "id": "terrain-mountain",
+    "family": "terrain",
+    "layout": "mountain",
+    "label": "自然地形·山谷河流",
+    "file": "terrain-mountain.svg",
+    "width": 750,
+    "height": 750,
+    "sha256": "9ad1d422c49c6cc18a84df530291ce2aca49e02a77cae99c33fcb432dfbac45c",
+    "origin": "USGS National Map contours and NHD hydrography；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "自然",
+      "地表",
+      "山谷",
+      "河流",
+      "等高线"
+    ]
+  },
+  {
+    "id": "terrain-coast-relief",
+    "family": "terrain",
+    "layout": "coast",
+    "label": "自然地形·海岸水系",
+    "file": "terrain-coast-relief.svg",
+    "width": 750,
+    "height": 750,
+    "sha256": "d247346ae7adc60daea7135139b93820aca9dcfe4392e84b7d571222f8779e91",
+    "origin": "USGS National Map contours and NHD hydrography；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "自然",
+      "地表",
+      "湾岸",
+      "海岸",
+      "等高线"
+    ]
+  },
+  {
+    "id": "terrain-desert",
+    "family": "terrain",
+    "layout": "desert",
+    "label": "自然地形·荒漠地形",
+    "file": "terrain-desert.svg",
+    "width": 750,
+    "height": 750,
+    "sha256": "54bc9765a382dce4b94bd1e5aa0da303f7a251151559176b081bfe443d57a0fd",
+    "origin": "USGS National Map contours and NHD hydrography；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "自然",
+      "地表",
+      "荒漠",
+      "沟壑",
+      "等高线"
+    ]
+  },
+  {
+    "id": "terrain-snow",
+    "family": "terrain",
+    "layout": "snow",
+    "label": "自然地形·北地湖群",
+    "file": "terrain-snow.svg",
+    "width": 750,
+    "height": 750,
+    "sha256": "b068664131e25f56ccf433dba5e795b0571107592aee1933d156dc2724dbd8a9",
+    "origin": "USGS National Map contours and NHD hydrography；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "自然",
+      "地表",
+      "北地",
+      "湖群",
+      "山地"
+    ]
+  },
+  {
+    "id": "old-town-river",
+    "family": "old-town",
+    "layout": "river",
+    "label": "古风城镇·河谷聚落",
+    "file": "old-town-river.svg",
+    "width": 520,
+    "height": 390,
+    "sha256": "162c438d3381c3629cffd415a8843302e609130620f29fc38d858708a78f51c6",
+    "origin": "Watabou Village；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "河谷",
+      "聚落",
+      "桥",
+      "田野"
+    ]
+  },
+  {
+    "id": "old-town-coast",
+    "family": "old-town",
+    "layout": "coast",
+    "label": "古风城镇·河口港镇",
+    "file": "old-town-coast.svg",
+    "width": 650,
+    "height": 650,
+    "sha256": "e2e9fb93703ac3078cedf7136d80c27158af0934cbb54d6bb99f385b2c7625be",
+    "origin": "Watabou MFCG；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "河口",
+      "港镇",
+      "码头"
+    ]
+  },
+  {
+    "id": "old-town-plain",
+    "family": "old-town",
+    "layout": "inland",
+    "label": "古风城镇·平原田镇",
+    "file": "old-town-plain.svg",
+    "width": 800,
+    "height": 500,
+    "sha256": "9b4278a56b7119a34351b4406832bd75d65ec768d3296cf353c11818864fe549",
+    "origin": "Watabou Village；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "平原",
+      "田镇",
+      "农田",
+      "广场"
+    ]
+  },
+  {
+    "id": "modern-radial",
+    "family": "modern",
+    "layout": "inland",
+    "label": "现代城市·环向城区",
+    "file": "modern-radial.svg",
+    "width": 1100,
+    "height": 1000,
+    "sha256": "35fad584c2f5f48067d041906274887973e6862e59c107436d5ee70d9fef9a37",
+    "origin": "ProbableTrain City Generator；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "现代",
+      "城市",
+      "环向",
+      "街网",
+      "水岸"
+    ]
+  },
+  {
+    "id": "modern-town-river",
+    "family": "modern-town",
+    "layout": "river",
+    "label": "现代小城·临水街区",
+    "file": "modern-town-river.svg",
+    "width": 1100,
+    "height": 1000,
+    "sha256": "62fcc50b409e1010c08a8c2002793c14d0432f373f4987cda8df920d45a4a98a",
+    "origin": "ProbableTrain City Generator；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "现代",
+      "小城",
+      "水岸",
+      "规整街区",
+      "绿地"
+    ]
+  },
+  {
+    "id": "modern-town-coast",
+    "family": "modern-town",
+    "layout": "coast",
+    "label": "现代小城·滨湾街区",
+    "file": "modern-town-coast.svg",
+    "width": 1000,
+    "height": 1000,
+    "sha256": "a1d14f8742930d1bb2fee9849f0e8ac04316040816e97c5681589425591084b8",
+    "origin": "ProbableTrain City Generator；原几何裁窗；许可见docs/qianchuang-assets.md",
+    "shortTags": [
+      "现代",
+      "小城",
+      "滨湾",
+      "斜向街区"
+    ]
+  }
+]

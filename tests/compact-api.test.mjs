@@ -5,6 +5,7 @@ import { parseJsonWithSafeTrailingCommas, parseJsonWithSymbolRepair, repairJsonW
 import { createApiTools, createTaskRouter } from '../src/api-routing.js';
 import { buildExtractorSystemPrompt } from '../src/v3/extractor.js';
 import { BASE_PROCESSING_PROMPT, resolveProcessingPrompt, withBaseProcessingPrompt } from '../src/internal-processing-prompt.js';
+import { publicErrorMessage } from '../src/public-error.js';
 
 const config = overrides => ({ url: 'https://api.example.test', key: 'TEST_KEY', model: 'compact-model', excludeParams: [], timeoutSec: 5, stream: false, ...overrides });
 
@@ -68,6 +69,102 @@ const sseResponse = (chunks, contentType = 'text/event-stream') => {
   const encoder = new TextEncoder(); let index = 0;
   return { ok: true, status: 200, headers: { get: () => contentType }, body: { getReader: () => ({ read: async () => index < chunks.length ? { done: false, value: encoder.encode(chunks[index++]) } : { done: true } }) } };
 };
+
+test('HTTP200原生错误包按明确失败原因分类，不记录推断状态或新增请求', async t => {
+  const cases = [
+    [{ message: 'Unauthorized' }, 'QQJ_AUTH'],
+    [{ message: 'Forbidden' }, 'QQJ_AUTH'],
+    [{ message: 'Too Many Requests' }, 'QQJ_RATE_LIMIT'],
+    [{ message: 'Bad Request' }, 'QQJ_REQUEST_FORMAT'],
+    [{ message: 'Not Found' }, 'QQJ_NOT_FOUND'],
+    [{ message: 'Service Unavailable' }, 'QQJ_SERVER'],
+    [{ code: 'invalid_api_key', message: 'upstream rejected credential' }, 'QQJ_AUTH'],
+    [{ status: 'RESOURCE_EXHAUSTED' }, 'QQJ_RATE_LIMIT'],
+    [{ status: 'INVALID_ARGUMENT' }, 'QQJ_REQUEST_FORMAT'],
+    [{ code: 'model_not_found' }, 'QQJ_NOT_FOUND'],
+    [{ message: 'unrecognized upstream failure' }, 'QQJ_UPSTREAM'],
+    ['unrecognized upstream failure', 'QQJ_UPSTREAM'],
+  ];
+  for (const stream of [false, true]) for (const [error, code] of cases) await t.test(`${stream ? 'stream JSON' : 'JSON'} ${JSON.stringify(error)}`, async () => {
+    let calls = 0, waits = 0;
+    const budget = { remaining: 3, used: 0, diagnostic: {} };
+    const client = createCompactApiClient({ retryWait: async () => { waits++; }, fetchImpl: async () => { calls++; return { ...jsonResponse({ error, quota_error: false }), headers: { get: () => 'application/json; charset=utf-8' } }; } });
+    await assert.rejects(client.generateTask({ config: config({ stream }), taskMessages: [], transportBudget: budget }), failure => {
+      assert.equal(failure.code, code);
+      assert.equal(Object.hasOwn(failure, 'status'), false);
+      assert.equal(Object.hasOwn(failure, 'httpStatus'), false);
+      assert.equal(budget.diagnostic.error.httpStatus, null);
+      assert.notEqual(publicErrorMessage(failure), '模型没有返回可用结果，请重试。');
+      if (code === 'QQJ_UPSTREAM') assert.equal(publicErrorMessage(failure), 'API 请求失败，上游返回了错误。');
+      return true;
+    });
+    assert.equal(calls, 1); assert.equal(waits, 0); assert.equal(budget.used, 1);
+  });
+});
+
+test('HTTP200原生错误包保留明确数字状态，真实HTTP非2xx映射和重试不变', async () => {
+  for (const [error, status, code] of [[{ status: 401 }, 401, 'QQJ_AUTH'], [{ code: 422 }, 422, 'QQJ_REQUEST_FORMAT'], [{ status: '503' }, 503, 'QQJ_SERVER']]) {
+    let calls = 0;
+    const client = createCompactApiClient({ retryWait: async () => assert.fail('200错误包不重试'), fetchImpl: async () => { calls++; return jsonResponse({ error }); } });
+    await assert.rejects(client.generateTask({ config: config(), taskMessages: [] }), failure => failure.code === code && failure.httpStatus === status && failure.status === status);
+    assert.equal(calls, 1);
+  }
+  for (const [status, code, expectedCalls] of [[401, 'QQJ_AUTH', 1], [400, 'QQJ_REQUEST_FORMAT', 1], [429, 'QQJ_RATE_LIMIT', 3], [503, 'QQJ_SERVER', 3]]) {
+    let calls = 0;
+    const client = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return jsonResponse({ error: { message: 'upstream failure' } }, status); } });
+    await assert.rejects(client.generateTask({ config: config(), taskMessages: [] }), failure => failure.code === code && failure.httpStatus === status);
+    assert.equal(calls, expectedCalls);
+  }
+});
+
+test('HTTP200原生错误包优先于伪成功choices，错误详情经路由后仍不回显原始材料', async () => {
+  const body = { error: { code: 'https://private.test/secret', status: 'TEST_KEY', message: 'Unauthorized; TEST_KEY; private story body; https://private.test', raw_response: 'RAW_RESPONSE_TOKEN', tokens: 'TOKEN_DUMP' }, choices: [{ message: { content: '{"ok":true}' } }] };
+  for (const mode of ['json', 'stream-json', 'sse']) {
+    const budget = { remaining: 3, used: 0, diagnostic: {} };
+    const client = createCompactApiClient({ fetchImpl: async () => mode === 'sse' ? sseResponse(['data: '+JSON.stringify(body)+'\n\n']) : { ...jsonResponse(body), headers: { get: () => 'application/json' } } });
+    const route = () => ({ kind: 'independent', source: 'test', sourceLabel: '主配置', config: config({ stream: mode !== 'json' }) });
+    const router = createTaskRouter({ resolver: { resolve: route }, compactClient: client });
+    await assert.rejects(router.generateAnalysisTask({ taskMessages: [{ role: 'user', content: 'PRIVATE_REQUEST' }], transportBudget: budget }), error => {
+      assert.equal(error.code, 'QQJ_AUTH');
+      assert.deepEqual(error.providerError, { code: '[REDACTED]', status: '[REDACTED]', message: '上游认证或权限检查失败' });
+      assert.equal(publicErrorMessage(error), 'API 认证失败，请检查 Key 和模型权限。');
+      assert.equal(Object.hasOwn(error.taskMetadata, 'httpStatus'), false);
+      assert.doesNotMatch(JSON.stringify({ error, diagnostic: budget.diagnostic, message: error.message }), /TEST_KEY|private\.test|private story|PRIVATE_REQUEST|RAW_RESPONSE_TOKEN|TOKEN_DUMP/u);
+      return true;
+    });
+  }
+});
+
+test('HTTP200原生错误包从测试连接和模型列表入口保留认证失败', async () => {
+  for (const method of ['testConnection', 'fetchModels']) {
+    let calls = 0;
+    const client = createCompactApiClient({ fetchImpl: async () => { calls++; return jsonResponse({ error: { message: 'Unauthorized' }, quota_error: false }); } });
+    await assert.rejects(client[method]({ config: config() }), error => error.code === 'QQJ_AUTH');
+    assert.equal(calls, 1);
+  }
+});
+
+test('HTTP200成功正文中的error属于任务内容，false/null不阻断；真实空答仍报EMPTY', async () => {
+  for (const stream of [false, true]) {
+    for (const error of [undefined, false, null, '']) {
+      const client = createCompactApiClient({ fetchImpl: async () => ({ ...jsonResponse({ error, choices: [{ message: { content: '{"error":"story field","ok":true}' } }] }), headers: { get: () => 'application/json' } }) });
+      assert.deepEqual((await client.generateTask({ config: config({ stream }), taskMessages: [] })).jsonData, { error: 'story field', ok: true });
+    }
+    for (const message of [{ content: ' ' }, { content: '', reasoning_content: 'private reasoning tokens' }]) {
+      const client = createCompactApiClient({ fetchImpl: async () => ({ ...jsonResponse({ choices: [{ message }] }), headers: { get: () => 'application/json' } }) });
+      await assert.rejects(client.generateTask({ config: config({ stream }), taskMessages: [] }), error => error.code === 'QQJ_EMPTY' && !JSON.stringify(error).includes('private reasoning'));
+    }
+  }
+});
+
+test('原生错误包在SSE事件中沿同一失败分类，部分正文也不能掩盖错误', async () => {
+  for (const [error, code] of [[{ message: 'Unauthorized' }, 'QQJ_AUTH'], [{ message: 'Too Many Requests' }, 'QQJ_RATE_LIMIT'], [{ message: 'opaque failure' }, 'QQJ_UPSTREAM']]) {
+    let calls = 0;
+    const client = createCompactApiClient({ retryWait: async () => assert.fail('SSE错误不重试'), fetchImpl: async () => { calls++; return sseResponse(['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', 'data: '+JSON.stringify({ error })+'\n\n']); } });
+    await assert.rejects(client.generateTask({ config: config({ stream: true }), taskMessages: [], parseMode: 'semantic' }), failure => failure.code === code && failure.httpStatus === undefined);
+    assert.equal(calls, 1);
+  }
+});
 async function settlesSoon(promise) {
   let timer;
   try { return await Promise.race([promise.then(() => 'success', error => typeof error.code === 'string' ? error.code : error.name), new Promise(resolve => { timer = setTimeout(() => resolve('still-pending'), 150); })]); }
@@ -213,6 +310,26 @@ test('completion JSON 兼容纯对象、完整围栏、单个说明围栏与唯�
     '以下是结果：\n```json\n{"schemaVersion":1,"patches":[]}\n```\n请查收。',
     '以下是唯一结果： {"schemaVersion":1,"patches":[]} 请查收。',
   ]) assert.deepEqual(parseJsonOutput(value), expected);
+});
+
+test('完整前置思考包装与嵌套引文唯一缺结束引号：恢复原字符串且不重发', async () => {
+  const broken = String.raw`{"placePaths":[{"path":[{"name":"地下车库"}],"evidence":[{"source":"worldbook","sourceKey":"worldbook-2","exactQuote":"\"地址\": \"首尔特别市龙山区汉南洞\"}]}]}`;
+  const expected = { placePaths: [{ path: [{ name: '地下车库' }], evidence: [{ source: 'worldbook', sourceKey: 'worldbook-2', exactQuote: '"地址": "首尔特别市龙山区汉南洞"' }] }] };
+  const repaired = parseJsonWithSymbolRepair(broken, { finishReason: 'stop' });
+  assert.deepEqual(repaired?.value, expected);
+  assert.deepEqual(repaired.operations.map(operation => operation.type), ['insert-string-closing-quote']);
+  assert.equal(repaired.text.length, broken.length + 1);
+  for (const raw of [broken, '<think>比较示例 {"placePaths":[]} 和 {"example":true}。</think>\n' + broken, '<reasoning>示例 {"ok":false}</reasoning>\n<THINK>另一示例 {"ok":true}</THINK>\n' + '```json\n' + broken + '\n```']) {
+    let calls = 0;
+    const client = createCompactApiClient({ fetchImpl: async () => { calls++; return jsonResponse({ choices: [{ finish_reason: 'stop', message: { content: raw } }] }); } });
+    assert.deepEqual((await client.generateTask({ config: config(), taskMessages: [] })).jsonData, expected);
+    assert.equal(calls, 1);
+  }
+  const literal = { text: '保留<think>{"示例":true}</think>与</reasoning>字样' };
+  assert.deepEqual(parseJsonOutput(JSON.stringify(literal)), literal);
+  assert.throws(() => parseJsonOutput('<think>前置</think>{"a":1}{"b":2}', { finishReason: 'stop' }), error => error.code === 'QQJ_COMPLETION_JSON');
+  for (const finishReason of [undefined, 'length', 'max_tokens', 'other']) assert.equal(parseJsonWithSymbolRepair(broken, { finishReason }), null);
+  assert.equal(parseJsonWithSymbolRepair(String.raw`{"a":"甲\","b":"乙\"}`, { finishReason: 'stop' }), null, '两处缺结束引号不猜');
 });
 
 test('正常结束别名：共享解析逐字恢复句中、句末及英文逗号旁的成对台词引号', () => {

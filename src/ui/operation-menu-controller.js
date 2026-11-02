@@ -1,5 +1,5 @@
 export function createOperationMenuController(documentRef) {
-  const menus = new Map();
+  const menus = new Map(), positioned = new WeakSet();
   let listening = false;
   const tag = node => String(node?.tagName ?? node?.tag ?? '').toLowerCase();
   const children = node => Array.from(node?.children ?? []);
@@ -18,11 +18,33 @@ export function createOperationMenuController(documentRef) {
     body?.setAttribute?.('role', 'menu');
     for (const item of items) { item.setAttribute?.('role', 'menuitem'); item.setAttribute?.('tabindex', '-1'); }
   };
-  const close = menu => { menu.open = false; sync(menu); };
+  const position = menu => {
+    const { body } = parts(menu), view = documentRef?.defaultView;
+    if (!body?.style || !menu.getBoundingClientRect || !view?.getComputedStyle) return;
+    for (const key of ['top','bottom','maxHeight','overflowY','boxSizing']) body.style[key] = '';
+    const anchor = menu.getBoundingClientRect(), natural = body.getBoundingClientRect();
+    const gap = Math.max(0, natural.top - anchor.bottom);
+    const viewport = view.visualViewport;
+    let top = viewport?.offsetTop ?? 0, bottom = top + (viewport?.height ?? view.innerHeight);
+    const parent = node => node.parentElement ?? node.parentNode?.host ?? node.parentNode;
+    for (let node = parent(menu); node; node = parent(node)) {
+      if (!node.getBoundingClientRect || !/auto|scroll|hidden|clip/u.test(view.getComputedStyle(node).overflowY)) continue;
+      const rect = node.getBoundingClientRect(), edge = rect.top + (node.clientTop ?? 0);
+      top = Math.max(top, edge); bottom = Math.min(bottom, edge + (node.clientHeight ?? rect.height));
+    }
+    const above = Math.max(0, anchor.top - top - gap), below = Math.max(0, bottom - anchor.bottom - gap);
+    const up = natural.height > below && above > below;
+    body.style.top = up ? 'auto' : `${anchor.height + gap}px`;
+    body.style.bottom = up ? `${anchor.height + gap}px` : 'auto';
+    body.style.maxHeight = `${up ? above : below}px`;
+    body.style.boxSizing = 'border-box'; body.style.overflowY = 'auto';
+  };
+  const close = menu => { menu.open = false; positioned.delete(menu); sync(menu); };
   const inside = (menu, event, path) => path.includes(menu) || (!path.length && menu.contains?.(event?.target));
   const open = menu => {
     for (const other of menus.keys()) if (other !== menu && other.open) close(other);
     menu.open = true; sync(menu);
+    if (!positioned.has(menu)) { position(menu); positioned.add(menu); }
   };
   const unregister = menu => {
     const onToggle = menus.get(menu);
@@ -56,6 +78,12 @@ export function createOperationMenuController(documentRef) {
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? available.length - 1
         : index < 0 ? offset < 0 ? available.length - 1 : 0 : (index + offset + available.length) % available.length;
       open(menu); available[next]?.focus?.({ preventScroll: true });
+      const area = parts(menu).body, item = available[next];
+      if (area?.getBoundingClientRect && item?.getBoundingClientRect) {
+        const bounds = area.getBoundingClientRect(), rect = item.getBoundingClientRect();
+        if (rect.top < bounds.top) area.scrollTop -= bounds.top - rect.top;
+        else if (rect.bottom > bounds.bottom) area.scrollTop += rect.bottom - bounds.bottom;
+      }
     }
     event.preventDefault?.(); event.stopPropagation?.();
   };
@@ -64,7 +92,7 @@ export function createOperationMenuController(documentRef) {
     reset,
     register(menu) {
       if (menus.has(menu)) return menu;
-      const onToggle = () => { if (menu.open) open(menu); else sync(menu); };
+      const onToggle = () => { if (menu.open) open(menu); else close(menu); };
       menus.set(menu, onToggle); menu.addEventListener?.('toggle', onToggle);
       // Most callers register before appending the summary and action buttons.
       queueMicrotask(() => { if (menus.has(menu)) sync(menu); });

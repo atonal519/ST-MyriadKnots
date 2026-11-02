@@ -1,5 +1,6 @@
 import { createGouhuaDialogCore } from './gouhua-dialog-core.js';
 import { gouhuaDialogCss } from './gouhua-dialog-style.js';
+import { scaleCssSpacing } from './font-scale.js';
 
 const deepestActiveElement = documentRef => { let current = documentRef?.activeElement ?? null; while (current?.shadowRoot?.activeElement) current = current.shadowRoot.activeElement; return current; };
 const restoreFocus = element => { try { element?.focus?.({ preventScroll: true }); } catch { element?.focus?.(); } };
@@ -12,7 +13,7 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
   const host = documentRef.createElement('div'); host.id = 'qqj-dialog-host';
   Object.assign(host.style ?? (host.style = {}), { position: 'fixed', top: '0', left: '0', width: '100dvw', height: '100dvh', zIndex: '2000003', pointerEvents: 'none' });
   const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `<style>${gouhuaDialogCss}</style>`;
+  root.innerHTML = `<style>${scaleCssSpacing(gouhuaDialogCss)}</style>`;
   let effectiveTheme = 'day';
   let dialogFontUrl = '', dialogFontLink = null;
   const core = createGouhuaDialogCore({
@@ -36,11 +37,12 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
     hasActive: core.hasActive,
     cancelTop: core.cancelActive,
     closeAll: core.cancelActive,
-    setAppearance({ mode = 'auto', effectiveTheme: nextTheme = 'day', palette = {}, fixedScale = 1, family = '', fontCssUrl = '' } = {}) {
+    setAppearance({ mode = 'auto', effectiveTheme: nextTheme = 'day', palette = {}, scale, fixedScale = 1, family = '', fontCssUrl = '' } = {}) {
       effectiveTheme = nextTheme === 'night' ? 'night' : 'day';
       host.setAttribute('data-theme-mode', mode); host.setAttribute('data-effective-theme', effectiveTheme);
+      host.style?.setProperty?.('--qqj-ui-scale', String(Number.isFinite(Number(scale)) ? Number(scale) : Number.isFinite(Number(fixedScale)) ? Number(fixedScale) * 0.85 : 1));
       host.style?.setProperty?.('--qqj-dialog-scale', String(Number.isFinite(Number(fixedScale)) ? Number(fixedScale) : 1));
-      for (const [name, value] of Object.entries({ sheet: palette.panel, surface: palette.paper, ink: palette.ink, soft: palette.soft, divider: palette.line, primary: palette.knot, 'on-primary': palette.onPrimary })) if (value) host.style?.setProperty?.(`--qqj-dialog-${name}`, value);
+      for (const [name, value] of Object.entries({ sheet: palette.panel, surface: palette.paper, ink: palette.ink, soft: palette.soft, divider: palette.line, primary: palette.knot, danger: palette.crimson, success: palette.success, blue: palette.blue, 'on-primary': palette.onPrimary })) if (value) host.style?.setProperty?.(`--qqj-dialog-${name}`, value);
       const safeFamily = fontCssUrl && typeof family === 'string' ? family.replace(/["\\\r\n]/g, ' ').replace(/\s+/g, ' ').trim() : '';
       host.style?.setProperty?.('--qqj-dialog-font', safeFamily ? `"${safeFamily}"` : 'system-ui');
       if (fontCssUrl !== dialogFontUrl) {

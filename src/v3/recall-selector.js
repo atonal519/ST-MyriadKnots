@@ -1,3 +1,6 @@
+import { effectiveFoundationFacts } from './place-foundation.js';
+import { manualPlaceFacts } from './place-workspace.js';
+import { projectPlaceFeatures, currentPlaceEntityIds, expandPlaceParents, isGenericPlaceAlias, placeSourceLocationReference } from './spatial-domain.js';
 const MAX_QUERY_CHARACTERS = 8000;
 const MAX_RECALL_TOKENS = 8000;
 const MAX_RECALL_CHARACTERS = 32000;
@@ -102,8 +105,12 @@ export function buildRecallQueryContext({ coreChat = [], assistantTurns = 1 } = 
   const beforeLatest = frame.messages.filter(message => message.index !== frame.latestUserCoreIndex);
   const previousUser = [...beforeLatest].reverse().find(message => message.role === 'user');
   const recentAssistant = [...beforeLatest].reverse().find(message => message.role === 'assistant');
+  const fullText = clean(parts.join('\n'), Number.MAX_SAFE_INTEGER);
+  const latestPart = frame.latestUserText ? clean(`用户：${frame.latestUserText}`, MAX_QUERY_CHARACTERS) : '';
+  const text = fullText.length <= MAX_QUERY_CHARACTERS || !latestPart ? fullText.slice(0, MAX_QUERY_CHARACTERS)
+    : [clean(beforeLatest.map(message => `${message.role === 'user' ? '用户' : 'AI'}：${message.text}`).join('\n'), Math.max(0, MAX_QUERY_CHARACTERS - latestPart.length - 1)), latestPart].filter(Boolean).join(' ');
   return Object.freeze({
-    text: clean(parts.join('\n'), MAX_QUERY_CHARACTERS),
+    text,
     latestUserText: frame.latestUserText,
     recentAssistantText: clean(recentAssistant?.text, 4000),
     previousUserText: clean(previousUser?.text, 4000),
@@ -324,6 +331,8 @@ export const CSE_RECALL_KNOWLEDGE_BOUNDARY = '以下都是作者侧资料，不�
 const materialScopeLine = coverage => Number.isSafeInteger(coverage?.stableThroughAssistantSeq) && coverage.stableThroughAssistantSeq > 0
   ? `本轮资料范围：已稳定到 AI #${coverage.stableThroughAssistantSeq}。` : '';
 
+const historicalPlaceSourceSeq = value => ['placeScene', 'placeDescription', 'spatialRelation'].includes(value.kind) && Number.isSafeInteger(value.sourceAssistantSeq) ? value.sourceAssistantSeq : null;
+
 function formatStorylineInjection({ coverage, floors, states, cseChanges, entityById, storylines, timeDependencies }) {
   const hasNarrative = floors.some(floor => floor.items.some(value => value.category === 'narrative'));
   const scopeLine = materialScopeLine(coverage);
@@ -339,8 +348,9 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
   for (const floor of floors) for (const value of floor.items) {
     if (!value.storylineId) continue;
     const lineFloors = floorsByLine.get(value.storylineId) ?? new Map();
-    const lineFloor = lineFloors.get(floor.floorId) ?? { ...floor, items: [] };
-    lineFloor.items.push(value); lineFloors.set(floor.floorId, lineFloor); floorsByLine.set(value.storylineId, lineFloors);
+    const sourceSeq = historicalPlaceSourceSeq(value), key = sourceSeq === null ? floor.floorId : `${floor.floorId}|${sourceSeq}`;
+    const lineFloor = lineFloors.get(key) ?? { ...floor, ...(sourceSeq !== null ? { assistantSeq: sourceSeq, chronology: [] } : {}), items: [] };
+    lineFloor.items.push(value); lineFloors.set(key, lineFloor); floorsByLine.set(value.storylineId, lineFloors);
   }
   const historyText = value => {
     const relation = value.relationEvidence === 'nearby' ? '邻近背景；仅因时序相邻，不表示因果：'
@@ -382,7 +392,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
   for (const storyline of storylines) {
     lines.push('', `[剧情线 ${storyline.storylineId}｜${storyline.title}]`);
     const lineFloors = [...(floorsByLine.get(storyline.storylineId)?.values() ?? [])]
-      .sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId));
+      .sort((a, b) => a.assistantSeq - b.assistantSeq || String(a.floorId ?? '').localeCompare(String(b.floorId ?? '')));
     const lineStates = states.filter(value => value.storylineId === storyline.storylineId);
     const lineChanges = cseChanges.filter(value => value.storylineId === storyline.storylineId)
       .sort((a, b) => a.assistantSeq - b.assistantSeq || String(a.deltaId ?? '').localeCompare(String(b.deltaId ?? '')));
@@ -430,6 +440,14 @@ function formatManualArtifact(value, entityById) {
   return `[人工原文｜${text.length}字符]\n${text}`;
 }
 
+export function placeRecallBlocks(places = []) {
+ const blocks=[],manual=places.filter(value=>value.kind!=='placeFoundation').map(value=>`- ${value.text}`).join('\n');
+ if(manual)blocks.push(`[人工校准的当前地点事实（优先于旧地点记录，未赋予人物知识）]\n${manual}`);
+ const base=places.filter(value=>value.kind==='placeFoundation').map(value=>`- ${value.text}（${value.source?.kind==='worldbook'?`世界书设定：${value.source.locator}`:'已存正文地点资料'}）`).join('\n');
+ if(base)blocks.push(`[地点基础资料（场所条件与归属，不代表人物在场或知情）]\n${base}`);
+ return blocks;
+}
+
 export function formatRecallInjection(input) {
   const corrections = input.timeProjection?.corrections ?? {};
   const states = input.states.map(state => {
@@ -437,7 +455,8 @@ export function formatRecallInjection(input) {
     return correction ? { ...state, text: correction.text, _timeCorrection: true, _timeDependency: { key: `${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`, itemId: correction.itemId, text: correction.text, sourceSignature: correction.sourceSignature ?? null } } : state;
   });
   const timeDependencies = input.timeDependencies ?? { corrections: [], reminders: [] };
-  const base = formatBaseRecallInjection({ ...input, states, timeDependencies });
+  let base = formatBaseRecallInjection({ ...input, states, timeDependencies });
+  for (const block of placeRecallBlocks(input.manualPlaces ?? [])) base = base ? base.replace('</qqj_recalled_context>', `${block}\n</qqj_recalled_context>`) : `<qqj_recalled_context>\n${block}\n</qqj_recalled_context>`;
   const correctedIds = new Set(timeDependencies.corrections.map(value => value.itemId));
   const reminders = (input.timeReminders ?? []).filter(value => !correctedIds.has(value.itemId));
   const references = Array.isArray(input.locationReferences) ? input.locationReferences : [];
@@ -470,8 +489,9 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
     lines.push('', heading);
     const narrative = [], objective = [], shared = [], privateByOwner = new Map();
     for (const floor of selectedFloors) for (const value of floor.items) {
-      const time = value.rawWitness ? '' : formatChronologyAnchor(floor.chronology);
-      const prefix = `AI #${floor.assistantSeq}${time ? `（${time}）` : ''}`;
+      const sourceSeq = historicalPlaceSourceSeq(value);
+      const time = value.rawWitness || sourceSeq !== null ? '' : formatChronologyAnchor(floor.chronology);
+      const prefix = `AI #${sourceSeq ?? floor.assistantSeq}${time ? `（${time}）` : ''}`;
       const relation = value.relationEvidence === 'nearby' ? '邻近背景；仅因时序相邻，不表示因果：'
         : value.relationEvidence === 'topic' ? '同人物与具体主题词关联，不表示因果：'
           : value.relationEvidence === 'source' ? '来源关联：' : '';
@@ -649,19 +669,17 @@ export function cseSelectionContext(source, queryContext) {
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
   if (source?.status !== 'ready' || !query) return null;
   const queries = recallQueries(queryContext, query);
-  const queryCompact = compact(query);
+  const queryParts = [queryContext?.latestUserText, queryContext?.recentAssistantText, queryContext?.previousUserText, query].map(value => compact(value));
   const mentioned = new Set();
   for (const entity of source.entities ?? []) {
-    if (entityLabels(entity).some(label => !genericAlias(label) && compact(label).length >= 2 && queryCompact.includes(compact(label)))) mentioned.add(entity.entityId);
+    if (entityLabels(entity).some(label => !genericAlias(label) && compact(label).length >= 2 && queryParts.some(part => part.includes(compact(label))))) mentioned.add(entity.entityId);
   }
-  const involvedIds = new Set((source.entities ?? []).filter(entity => ['user', 'char'].includes(entity.specialRole)).map(entity => entity.entityId));
-  mentioned.forEach(id => involvedIds.add(id));
+  const involvedIds = new Set((source.entities ?? []).map(entity => entity.entityId));
   const entityById = new Map((source.entities ?? []).map(entity => [entity.entityId, entity]));
   const entityOrder = [...involvedIds]
     .sort((a, b) => Number(mentioned.has(b)) - Number(mentioned.has(a))
-      || Number(entityById.get(b)?.specialRole === 'char') - Number(entityById.get(a)?.specialRole === 'char')
-      || Number(entityById.get(b)?.specialRole === 'user') - Number(entityById.get(a)?.specialRole === 'user')
-      || (entityById.get(a)?.displayName ?? '').localeCompare(entityById.get(b)?.displayName ?? '', 'zh-CN'));
+      || (entityById.get(a)?.displayName ?? '').localeCompare(entityById.get(b)?.displayName ?? '', 'zh-CN')
+      || a.localeCompare(b));
   const states = (source.coverage?.cseCurrent ? scoreCandidates(stateCandidates(source, involvedIds), queries, { keepUnmatched: true }) : [])
     .sort((a, b) => ((b.layer === 'core' && (b.branchScores.latestUser ?? 0) > 0) ? 1 : 0) - ((a.layer === 'core' && (a.branchScores.latestUser ?? 0) > 0) ? 1 : 0)
       || (b.branchScores.latestUser ?? 0) - (a.branchScores.latestUser ?? 0) || b.score - a.score || b.priority - a.priority
@@ -688,9 +706,71 @@ const cseStableKey = value => value._recallCseKind === 'change'
   ? ['change', value.deltaId, value.floorId, value.assistantSeq, value.subjectEntityId, value.layer, value.action, stateSourceKey(value.before), stateSourceKey(value.after)].join('|')
   : ['current', value.subjectEntityId, value.layer, stateSourceKey(value), duplicateKey(value)].join('|');
 const publicItem = value => {
-  const { _rankText, _entityText, _coreText, _summary, _summaryScore, _subjectKey, _visibilityKey, _statusKey, _sourceOrder, _chronology, _poolGroup, _adjacentSummary, _recallCseKind, _relationEvidence, _relationAnchorFloorId, _relationAnchorStableKey, _relationAnchorCseKey, _relationTerms, _storylineId, floorId, floorMemoryId, assistantSeq, branchScores, entityBranchScores, summaryScores, score, ...rest } = value;
+  const { _contextScore, _rankText, _entityText, _coreText, _summary, _summaryScore, _subjectKey, _visibilityKey, _statusKey, _sourceOrder, _chronology, _poolGroup, _adjacentSummary, _recallCseKind, _relationEvidence, _relationAnchorFloorId, _relationAnchorStableKey, _relationAnchorCseKey, _relationTerms, _storylineId, floorId, floorMemoryId, assistantSeq, branchScores, entityBranchScores, summaryScores, score, ...rest } = value;
   return { ...rest, ...(_relationEvidence ? { relationEvidence: _relationEvidence } : {}), ...(_storylineId ? { storylineId: _storylineId } : {}), rankScore: Number(score.toFixed(6)), rankBranches: branchScores, rankEntityBranches: entityBranchScores };
 };
+
+function placeHistoryFacts(memory, entityById, coveredFloorIds, throughAssistantSeq) {
+  const result = [];
+  const add = (value, ref, text, kind, index) => {
+    const sourceSeq = ref.assistantSeq ?? (ref.floorId === memory.floorId ? memory.assistantSeq : null);
+    if (coveredFloorIds.has(ref.floorId) || !Number.isSafeInteger(sourceSeq) || sourceSeq > throughAssistantSeq) return;
+    const place = entityName(value.placeEntityId, entityById);
+    result.push({ category: 'objective', kind, text: `${place}：${text}（来源楼当时 AI #${sourceSeq}）`,
+      itemId: value.itemId, placeEntityId: value.placeEntityId, ...(value.referencePlaceEntityIds ? { referencePlaceEntityIds: value.referencePlaceEntityIds } : {}),
+      sourceFloorId: ref.floorId, sourceAssistantSeq: sourceSeq, floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq,
+      sourceAssistantSeqs: [sourceSeq], priority: 100,
+      _rankText: `${place} ${value.text}`, _coreText: value.text, _entityText: entityNameText([value.placeEntityId, ...(value.referencePlaceEntityIds ?? [])], entityById), _summary: '',
+      _subjectKey: value.placeEntityId, _visibilityKey: kind, _statusKey: value.itemId, _sourceOrder: 300000 + index, _chronology: [], _poolGroup: 'fact' });
+  };
+  for (const [index, value] of (memory.spatialFacts?.features ?? []).entries()) {
+    if (value.kind === 'stable' || value.kind !== undefined && value.kind !== 'temporary') continue;
+    for (const ref of value.sourceRefs ?? []) add(value, ref, value.kind === 'temporary'
+      ? `当时现场：${value.text}；不代表之后仍持续` : `历史地点描述（持续性未标）：${value.text}；未确认为当前固定设施`, value.kind === 'temporary' ? 'placeScene' : 'placeDescription', index);
+  }
+  const labels = { locatedIn: '场所归属', onFloor: '所在楼层', relative: '相对位置' };
+  for (const [index, value] of (memory.spatialFacts?.relations ?? []).entries()) for (const ref of value.sourceRefs ?? []) {
+    const references = (value.referencePlaceEntityIds ?? []).map(id => entityName(id, entityById)).join('、');
+    add(value, ref, `${labels[value.kind]}：${value.text}${references ? `（参照：${references}）` : ''}`, 'spatialRelation', 1000 + index);
+  }
+  return result;
+}
+
+function placeFeatureCandidates(source, queryContext, entityById, queries, memories) {
+  const placeFloors = (source.bodyMatchRefs ?? []).map(floor => ({ id: floor.floorId, assistantSeq: floor.assistantSeq }));
+  const scenePlaces = currentPlaceEntityIds(memories, source.coverage.stableThroughAssistantSeq, placeFloors, source.placeWorkspace);
+  let places = new Set(scenePlaces);
+  const explicit = compact(queryContext?.latestUserText ?? queryContext?.text), placesByLabel = new Map();
+  for (const entity of source.entities ?? []) if (entity.entityType === 'place') for (const label of entityLabels(entity)) {
+    const key = compact(label);
+    if (isGenericPlaceAlias(label) || key.length < 2) continue;
+    const ids = placesByLabel.get(key) ?? new Set(); ids.add(entity.entityId); placesByLabel.set(key, ids);
+  }
+  for (const [label, ids] of placesByLabel) if (explicit.includes(label) && ids.size === 1) places.add(ids.values().next().value);
+  places = expandPlaceParents(places, memories, source.coverage.stableThroughAssistantSeq, placeFloors, source.placeWorkspace);
+  const current = projectPlaceFeatures({ floorMemories: memories, throughAssistantSeq: source.coverage.stableThroughAssistantSeq });
+  const currentReferences = (source.bodyMatch?.locationReferences ?? []).map(ref => ref.text);
+  const candidates = current.filter(feature => places.has(feature.placeEntityId)).map((feature, index) => {
+    const carrier = memories.find(memory => (memory.floorMemoryId ?? memory.id) === feature.floorMemoryId);
+    const priorReferences = carrier ? placeSourceLocationReference(carrier, feature.floorId) : [];
+    const currentPlaceConfirmed = (!scenePlaces.size || scenePlaces.has(feature.placeEntityId))
+      && (!currentReferences.length || !priorReferences.length || currentReferences.some(reference => priorReferences.includes(reference)));
+    const place = entityName(feature.placeEntityId, entityById);
+    return { category: 'objective', kind: currentPlaceConfirmed ? 'placeFeature' : 'placeDescription', text: `${currentPlaceConfirmed ? '当前已知地点条件' : '有来源的历史设施（当前场地未核对）'}：${place}：${feature.text}（来源 AI #${feature.assistantSeq}；设施存在不代表所有人物知情）`,
+      itemId: feature.itemId, placeEntityId: feature.placeEntityId, sourceFloorId: feature.floorId, sourceAssistantSeq: feature.assistantSeq,
+      floorId: feature.carrierFloorId, floorMemoryId: feature.floorMemoryId, assistantSeq: feature.carrierAssistantSeq, sourceAssistantSeqs: [feature.assistantSeq],
+      priority: 125, _rankText: `${place} ${feature.text}`, _coreText: feature.text, _entityText: place, _summary: '',
+      _subjectKey: feature.placeEntityId, _visibilityKey: currentPlaceConfirmed ? 'placeFeature' : 'placeDescription', _statusKey: feature.itemId, _sourceOrder: 200000 + index, _chronology: [], _poolGroup: 'fact', _contextScore: .5 };
+  });
+  for (const [index, fact] of effectiveFoundationFacts(source.placeWorkspace,memories).filter(fact => fact.kind !== 'place' && places.has(fact.placeEntityId)).entries()) {
+    const place = entityName(fact.placeEntityId, entityById), text = fact.kind === 'containment' ? `所属地点：${entityName(fact.parentEntityId, entityById)}` : fact.text;
+    candidates.push({ category: 'objective', kind: 'placeFoundation', placeEntityId: fact.placeEntityId, itemId: fact.itemId,
+      text: `${place}：${text}`, source: fact.source, floorId: null, floorMemoryId: null, assistantSeq: 0, priority: 120,
+      _rankText: `${place} ${text}`, _coreText: text, _entityText: place, _summary: '', _subjectKey: fact.placeEntityId,
+      _visibilityKey: 'placeFoundation', _statusKey: fact.itemId, _sourceOrder: 250000 + index, _chronology: [], _poolGroup: 'fact', _contextScore: .5 });
+  }
+  return scoreCandidates(candidates, queries, { keepUnmatched: true }).map(value => ({ ...value, score: Math.max(value.score, value._contextScore) }));
+}
 
 export function historySelectionContext(source, queryContext) {
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
@@ -708,15 +788,28 @@ export function historySelectionContext(source, queryContext) {
   const entityById = new Map(source.entities.map(entity => [entity.entityId, entity]));
   const recentWindow = [...floorMemories]
     .filter(memory => memory.assistantSeq <= source.coverage.stableThroughAssistantSeq && bodyCoverage(memory) !== 'all' && clean(memory.summary, 12000))
-    .sort((a, b) => b.assistantSeq - a.assistantSeq || b.floorId.localeCompare(a.floorId))
+    .sort((a, b) => b.assistantSeq - a.assistantSeq || String(b.floorId ?? '').localeCompare(String(a.floorId ?? '')))
     .slice(0, RECENT_CONTINUITY_FLOORS)
-    .sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId));
+    .sort((a, b) => a.assistantSeq - b.assistantSeq || String(a.floorId ?? '').localeCompare(String(b.floorId ?? '')));
   const recentWindowFloorIds = new Set(recentWindow.map(memory => memory.floorId));
   const recentSummaries = recentWindow
     .map(memory => historySummary(memory)).filter(Boolean)
     .map(value => ({ ...value, score: 1, branchScores: Object.freeze({}), entityBranchScores: Object.freeze({}), summaryScores: Object.freeze({}), recallSection: 'recent' }));
   const oldMemories = floorMemories.filter(memory => bodyCoverage(memory) !== 'all' && !recentWindowFloorIds.has(memory.floorId));
-  const facts = scoreCandidates(oldMemories.flatMap(memory => historyFacts(memory, entityById)), queries, { keepUnmatched: true });
+  const facts = [...scoreCandidates(oldMemories.flatMap(memory => historyFacts(memory, entityById)), queries, { keepUnmatched: true }),
+    ...scoreCandidates(floorMemories.filter(memory => bodyCoverage(memory) !== 'all').flatMap(memory => placeHistoryFacts(memory, entityById, bodyCoveredFloorIds, source.coverage.stableThroughAssistantSeq)), queries, { keepUnmatched: true }),
+    ...placeFeatureCandidates(source, queryContext, entityById, queries, floorMemories),
+    ...scoreCandidates(manualPlaceFacts(source.placeWorkspace).flatMap(row => {
+      if (!entityById.has(row.entityId)) return [];
+      const texts = [Object.hasOwn(row, 'description') && row.description.trim() ? `地点描述：${row.description}` : '',
+        ...String(row.relations ?? '').split(/\r?\n/u).filter(text => text.trim()).map(text => `方位说明：${text}`),
+        row.parentEntityId ? `所属地点：${entityName(row.parentEntityId, entityById)}` : ''].filter(Boolean);
+      return texts.map((text, index) => ({ category: 'objective', kind: 'manualPlace', manual: true, placeEntityId: row.entityId,
+        itemId: `manual-place-${row.entityId}-${index}`, text: `${entityName(row.entityId, entityById)}：${text}`,
+        floorId: `manual-place-${row.entityId}`, floorMemoryId: null, assistantSeq: 0, priority: 110,
+        _rankText: `${entityName(row.entityId, entityById)} ${text}`, _coreText: text, _entityText: entityName(row.entityId, entityById), _summary: '',
+        _subjectKey: row.entityId, _visibilityKey: 'manualPlace', _statusKey: String(index), _sourceOrder: 400000 + index, _chronology: [], _poolGroup: 'fact' }));
+    }), queries, { keepUnmatched: true })];
   const artifactMemories = floorMemories.filter(memory => memory.assistantSeq <= source.coverage.stableThroughAssistantSeq);
   const manualArtifacts = scoreCandidates(artifactMemories.flatMap(memory => (memory.exactAnchors ?? [])
     .filter(anchor => anchor.manual === true && typeof anchor.carrier === 'string' && anchor.carrier.trim())
@@ -741,7 +834,7 @@ export function historySelectionContext(source, queryContext) {
   const summaries = scoreCandidates(oldMemories.map(memory => historySummary(memory)).filter(Boolean)
     .filter(summary => !compactFactTextsByFloor.get(summary.floorId)?.has(compact(summary._coreText))), queries, { keepUnmatched: true });
   const direct = [...facts, ...summaries].filter(value => value.score > 0)
-    .sort((a, b) => b.score - a.score || b.priority - a.priority || b.assistantSeq - a.assistantSeq || a.floorId.localeCompare(b.floorId) || a._sourceOrder - b._sourceOrder);
+    .sort((a, b) => b.score - a.score || b.priority - a.priority || b.assistantSeq - a.assistantSeq || String(a.floorId ?? '').localeCompare(String(b.floorId ?? '')) || a._sourceOrder - b._sourceOrder);
   const summaryByFloor = new Map(summaries.map(value => [value.floorId, value]));
   const adjacent = [];
   for (const anchor of summaries.filter(value => value.score > 0).sort((a, b) => b.score - a.score).slice(0, 2)) {
@@ -772,7 +865,7 @@ function relationTokens(value, entityTokenSet) {
   return new Set(tokenizeRecallText(withoutNarrativeGlue).filter(token => !entityTokenSet.has(token) && !RELATION_STOP_TOKENS.has(token)));
 }
 
-const relationAnchorOrder = (left, right) => (Number(right.branchScores?.latestUser) || 0) - (Number(left.branchScores?.latestUser) || 0)
+const relationAnchorOrder = (left, right) => Math.max(Number(right.branchScores?.latestUser) || 0, right._contextScore ?? 0) - Math.max(Number(left.branchScores?.latestUser) || 0, left._contextScore ?? 0)
   || (Number(right.score) || 0) - (Number(left.score) || 0)
   || (Number(right.priority) || 0) - (Number(left.priority) || 0)
   || (Number(right.assistantSeq ?? right.sourceAssistantSeq) || 0) - (Number(left.assistantSeq ?? left.sourceAssistantSeq) || 0)
@@ -884,7 +977,7 @@ function expandLinkedHistory({ context, selectedHistory, selectedCse, excludedHi
     if (!alreadySelected && !add(latest, anchor)) continue;
     ancestorQueue.push({ placeId: latest.parentEntityId, anchor, anchorSeq, path: new Set([...path, latest.parentEntityId]) });
   }
-  return result.sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId) || a._sourceOrder - b._sourceOrder);
+  return result.sort((a, b) => a.assistantSeq - b.assistantSeq || String(a.floorId ?? '').localeCompare(String(b.floorId ?? '')) || a._sourceOrder - b._sourceOrder);
 }
 
 function expandLinkedCse({ source, historyContext, selectedHistory, linkedHistory, selectedCse, excludedCse = [] }) {
@@ -1172,6 +1265,8 @@ function manualKnowledgeBoundary(value, entityById) {
 }
 
 function historyCandidateText(value, entityById, originByFloor = new Map()) {
+  if (value.kind === 'placeFoundation') return `地点基础资料（${value.source?.kind === 'worldbook' ? '世界书设定' : '已存正文'}，未赋予人物知识）：${value.text}`;
+  if (value.kind === 'manualPlace') return `人工校准的当前地点事实：${value.text}；此版本优先于旧地点记录，未赋予人物知识。`;
   if (value.kind === 'manualArtifact') {
     const speaker = value.speakerEntityId ? `；已知说话人：${entityName(value.speakerEntityId, entityById)}` : '';
     const knowledge = manualKnowledgeBoundary(value, entityById).candidate;
@@ -1181,8 +1276,8 @@ function historyCandidateText(value, entityById, originByFloor = new Map()) {
   }
   const chronology = formatChronologyAnchor(value._chronology ?? []);
   const seqs = value.sourceAssistantSeqs ?? [];
-  const floorLabel = seqs.length > 1 ? `AI #${seqs[0]}–#${seqs.at(-1)}` : `AI #${value.assistantSeq}`;
-  const sourceFloors = value.sourceFloorIds ?? (value.floorId ? [value.floorId] : []);
+  const floorLabel = seqs.length > 1 ? `AI #${seqs[0]}–#${seqs.at(-1)}` : `AI #${historicalPlaceSourceSeq(value) ?? value.assistantSeq}`;
+  const sourceFloors = historicalPlaceSourceSeq(value) !== null && value.sourceFloorId ? [value.sourceFloorId] : value.sourceFloorIds ?? (value.floorId ? [value.floorId] : []);
   const origin = sourceFloors.map(id => originByFloor.get(id)).find(Boolean);
   const originCopy = origin ? `来源聊天第 ${origin.sourceMessageIndex} 楼 · ` : '';
   const source = `${originCopy}${floorLabel}${chronology ? `（${chronology}）` : ''}`;
@@ -1192,6 +1287,10 @@ function historyCandidateText(value, entityById, originByFloor = new Map()) {
   else if (value.category === 'private') boundary = `私有内容；仅 ${entityName(value.ownerEntityId, entityById)} 可用`;
   else if (value.category === 'transfer') boundary = `信息传递；${value.fromEntityId ? entityName(value.fromEntityId, entityById) : '来源不明'} → ${names(value.toEntityIds)}；仅列明接收者知情`;
   else if (value.category === 'shared') boundary = `已表达/已共享；${entityName(value.speakerEntityId, entityById)} → ${names(value.targetEntityIds) || '未列明对象'}`;
+  else if (value.kind === 'placeFeature') boundary = '当前有效固定设施/主要陈设，按明确纠正累计；不是仅来源楼瞬时位置，也不赋予人物知识';
+  else if (value.kind === 'placeScene') boundary = '来源楼当时的临时现场；不能当长期固定条件，不赋予人物知识';
+  else if (value.kind === 'placeDescription') boundary = '旧地点描述，持续性未分类；仅保历史来源，不自证当前固定设施';
+  else if (value.kind === 'spatialRelation') boundary = '来源楼明确空间关系；场所归属、楼层或相对位置不是物理包含，也不代表当前在场';
   else if (value.kind === 'action') boundary = `行动；主体 ${entityName(value.actorEntityId, entityById)}${names(value.targetEntityIds) ? `；对象 ${names(value.targetEntityIds)}` : ''}`;
   else if (value._entityText) boundary += `；相关人物 ${value._entityText}`;
   return `${source}｜${boundary}｜类型 ${value.kind}｜${value.text}`;
@@ -1430,7 +1529,8 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   const excludedLocationReferenceKeys = new Set();
   const render = (states = chosenStates, changes = chosenChanges, history = chosenHistory) => {
     const floorMap = new Map();
-    for (const value of history) {
+    const manualPlaces = history.filter(value => ['manualPlace','placeFoundation'].includes(value.kind)).map(publicItem);
+    for (const value of history.filter(value => !['manualPlace','placeFoundation'].includes(value.kind))) {
       const floor = floorMap.get(value.floorId) ?? { floorId: value.floorId, floorMemoryId: value.floorMemoryId, assistantSeq: value.assistantSeq, chronology: value._chronology ?? [], score: 0, reasons: new Set(), items: [] };
       if (!value.rawWitness && value._chronology?.length) floor.chronology = value._chronology;
       floor.score = Math.max(floor.score, value.score);
@@ -1445,7 +1545,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
       floor.items.push(publicItem(value));
       floorMap.set(value.floorId, floor);
     }
-    const floors = [...floorMap.values()].map(floor => ({ ...floor, reasons: [...floor.reasons] })).sort((a, b) => a.assistantSeq - b.assistantSeq || a.floorId.localeCompare(b.floorId));
+    const floors = [...floorMap.values()].map(floor => ({ ...floor, reasons: [...floor.reasons] })).sort((a, b) => a.assistantSeq - b.assistantSeq || String(a.floorId ?? '').localeCompare(String(b.floorId ?? '')));
     const subjectOrder = new Map((source.entities ?? []).map((entity, index) => [entity.entityId, index]));
     const publicStates = [...states]
       .sort((a, b) => (subjectOrder.get(a.subjectEntityId) ?? Number.MAX_SAFE_INTEGER) - (subjectOrder.get(b.subjectEntityId) ?? Number.MAX_SAFE_INTEGER)
@@ -1462,9 +1562,10 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     ].filter(Boolean));
     const storylines = storylineDefinitions.filter(value => activeIds.has(value.storylineId));
     const selectedSourceFloorIds = new Set([...floors.map(floor => floor.floorId), ...floors.flatMap(floor => floor.items.flatMap(item => item.sourceFloorIds ?? []))]);
-    const locationCandidates = [];
-    for (const floorId of selectedSourceFloorIds) locationCandidates.push(...(locationReferencesByFloorId.get(floorId) ?? []));
-    locationCandidates.push(...(source.bodyMatch?.locationReferences ?? []));
+    const locationCandidates = [...(source.bodyMatch?.locationReferences ?? [])];
+    const locationSequence = floorId => Math.max(0, ...(locationReferencesByFloorId.get(floorId) ?? []).map(value => value.assistantSeq ?? 0));
+    for (const floorId of [...selectedSourceFloorIds].sort((left, right) => locationSequence(right) - locationSequence(left)))
+      locationCandidates.push(...(locationReferencesByFloorId.get(floorId) ?? []));
     const seenLocationReferences = new Set();
     const locationReferences = locationCandidates.filter((value, index) => {
       const key = locationReferenceKey(value, index);
@@ -1474,8 +1575,8 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     })
       .slice(0, Math.max(0, Math.min(8, allowedItems - chosenHistory.length - states.length - changes.length - chosenTimeReminders.length)));
     const timeDependencies = { mode: 'selected', corrections: [], reminders: [] };
-    const text = formatRecallInjection({ coverage: source.coverage, floors, states: publicStates, cseChanges: publicChanges, entityById, storylines, locationReferences, timeProjection: source.timeProjection, timeReminders: chosenTimeReminders, timeDependencies });
-    return { floors, states: publicStates, cseChanges: publicChanges, storylines, locationReferences, timeDependencies, text };
+    const text = formatRecallInjection({ coverage: source.coverage, floors, manualPlaces, states: publicStates, cseChanges: publicChanges, entityById, storylines, locationReferences, timeProjection: source.timeProjection, timeReminders: chosenTimeReminders, timeDependencies });
+    return { floors, manualPlaces, states: publicStates, cseChanges: publicChanges, storylines, locationReferences, timeDependencies, text };
   };
   let dropSemanticDuplicate = 0, budgetDropped = 0, evidenceFiltered = 0;
   const fitsBudget = text => text.length <= charLimit && estimateRecallTokens(text) <= tokenLimit;
@@ -1668,6 +1769,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     timeDependencies: Object.freeze({ mode: 'selected', corrections: Object.freeze(rendered.timeDependencies.corrections.map(value => Object.freeze(value))), reminders: Object.freeze(rendered.timeDependencies.reminders.map(value => Object.freeze(value))) }),
     coverage: source.coverage,
     query: Object.freeze({ text: query, latestUserText: clean(queryContext?.latestUserText, 4000) }),
+    manualPlaces: Object.freeze(rendered.manualPlaces),
     floors: Object.freeze(floors.map(floor => Object.freeze({ ...floor, reasons: Object.freeze(floor.reasons), items: Object.freeze(floor.items.map(value => Object.freeze(value))) }))),
     states: Object.freeze(states.map(value => Object.freeze(value))),
     cseChanges: Object.freeze(cseChanges.map(value => Object.freeze(value))),

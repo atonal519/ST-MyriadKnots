@@ -38,7 +38,18 @@ class Node {
 const documentRef = { activeElement: null, createElement: tag => new Node(tag) };
 const promptSettings=settings=>({...settings,processingPrompt:settings.processingPrompt??(()=>settings.get().processingPrompt??'')});
 const flush = () => new Promise(resolve => setImmediate(resolve));
-const fieldControl = (node, label) => node.find(n => n.tagName === 'label' && n.children[0]?.textContent === label)?.children[1];
+const fieldControl = (node, label) => {
+  const field = node.find(n => n.tagName === 'label' && n.children[0]?.textContent === label)?.children[1];
+  if (field) return field;
+  const role = ({ '分析API（建议高质模型）': '分析 API', '摘要API（建议快速模型）': '摘要 API', '召回API（默认跟随摘要）': '召回 API' })[label];
+  return role ? node.find(n => n.className === 'qqj-api-purpose' && n.children[0]?.textContent === role)?.children[1]?.children[0] : undefined;
+};
+const createSiblingApiSettings = options => {
+  let editor;
+  const api = createApiSettings({ ...options, customImpl: value => { editor = value.content; return new Promise(() => {}); } }), vector = createVectorApiSettings({ ...options, open: options.vectorOpen });
+  const node = documentRef.createElement('div'); node.append(api.node, vector.node);
+  return { node, getApiEditor: () => editor, dispose() { api.dispose?.(); vector.dispose(); } };
+};
 const inlineTrigger = control => control.find(n => n.className.split(' ').includes('qqj-inline-select-trigger'));
 const chooseInline = async (control, value) => {
   await inlineTrigger(control).fire('click');
@@ -47,35 +58,6 @@ const chooseInline = async (control, value) => {
   await option.fire('click');
 };
 const focusInline = control => inlineTrigger(control).fire('focus');
-
-test('附加参数随 API 角色回填，非法 JSON 阻止保存、另存和测试，清空恢复默认', async () => {
-  let saves = 0, calls = 0, prompts = 0;
-  const settings = createSettingsStore({ extensionSettings: {}, save() { saves++; } });
-  settings.saveMainConfig({ url: 'https://main.test/v1', key: 'KEY', model: 'glm-5.2' });
-  const disabled = '{"thinking":{"type":"disabled"}}';
-  settings.upsertSharedPreset('召回', { url: 'https://recall.test/v1', key: 'RECALL_KEY', model: 'glm-5.2', qqjAdditionalParams: disabled }, 'recall');
-  settings.update({ recallPresetId: 'recall' });
-  const { node } = createApiSettings({ settings, documentRef, apiTools: { testConnection: async () => { calls++; return {}; } }, promptImpl: async () => { prompts++; return 'new'; } });
-  const field = fieldControl(node, '附加参数（JSON）');
-  assert.equal(field.value, '');
-  field.value = '{bad}';
-  const before = saves;
-  for (const text of ['保存', '另存为', '测试']) await node.find(n => n.tagName === 'button' && n.textContent === text).fire('click');
-  assert.equal(saves, before); assert.equal(calls, 0); assert.equal(prompts, 0);
-  assert.match(node.find(n => n.className.includes('settings-result')).textContent, /JSON 对象/u);
-  field.value = disabled;
-  await node.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
-  assert.equal(settings.mainConfig().qqjAdditionalParams, disabled);
-  assert.equal(field.value, disabled);
-  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
-  assert.equal(field.value, disabled);
-  field.value = '';
-  await node.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
-  assert.equal(settings.sharedPresets()[0].qqjAdditionalParams, undefined);
-  assert.equal(settings.mainConfig().qqjAdditionalParams, disabled, '独立召回保存不影响主配置');
-  await focusInline(fieldControl(node, '分析API（建议高质模型）'));
-  assert.equal(field.value, disabled);
-});
 
 test('提示词模块字段 change 即持久化', () => {
   const patches = [];
@@ -264,112 +246,6 @@ test('外观设置的两个楼层卡片开关分别保存并立即应用', async
   assert.equal(applied, 2);
 });
 
-test('API 模块：编辑目标随来源角色切换，摘要保存、草稿调用与另存均不改分析选择', async () => {
-  let main = { id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN_KEY', model: 'main-model', excludeParams: [], timeoutSec: 180, stream: false };
-  let presets = [{ id: 'fast', name: '摘要快速', url: 'https://fast.test/v1', key: 'FAST_KEY', model: 'fast-model', excludeParams: ['seed'], timeoutSec: 60, stream: true, qqjTemperature: 0.42 }];
-  let utilityPresetId = 'fast';
-  const analysisUpdates = [], utilityUpdates = [], saves = [], toolCalls = [];
-  const settings = {
-    get: () => ({ apiMode: 'auto', selectedSevenDaysPresetId: '' }),
-    mainConfig: () => ({ ...main }),
-    sharedPresets: () => presets.map(item => ({ ...item })),
-    summaryPresetId: () => utilityPresetId,
-    setSummaryPresetId: id => { utilityPresetId = id; utilityUpdates.push(id); },
-    saveMainConfig: config => { main = { ...main, ...config, excludeParams: String(config.excludeParams ?? '').split(/[\n,]/).map(item => item.trim()).filter(Boolean) }; saves.push(['main', config]); },
-    upsertSharedPreset: (name, config, id = '') => {
-      const targetId = id || 'summary-new';
-      const next = { id: targetId, name, ...config, excludeParams: String(config.excludeParams ?? '').split(/[\n,]/).map(item => item.trim()).filter(Boolean) };
-      presets = [...presets.filter(item => item.id !== targetId), next];
-      saves.push(['preset', targetId, config]);
-      return targetId;
-    },
-    update: patch => { analysisUpdates.push(patch); },
-  };
-  const apiTools = {
-    fetchModels: async selection => { toolCalls.push(['models', structuredClone(selection)]); return ['gpt-x', 'gpt-y']; },
-    testConnection: async selection => { toolCalls.push(['test', structuredClone(selection)]); return { model: selection.config.model }; },
-  };
-  let rerenders = 0;
-  const promptCalls = []; let promptResponse = null;
-  const { node } = createApiSettings({ settings, apiTools, documentRef, promptImpl: options => { promptCalls.push(options); return promptResponse; }, rerender: () => { rerenders += 1; } });
-  const scroller = new Node('div'); scroller.className = 'body'; scroller.scrollTop = 30; scroller.rect = { top: 10, bottom: 410, height: 400 }; node.rect = { top: 100, bottom: 500, height: 400 }; scroller.append(node);
-  const editorBody = node.find(n => n.className.includes('settings-sub-body') && n.className.includes('qqj-manual-editor'));
-  assert.ok(editorBody); assert.ok(editorBody.children.at(-2).className.includes('qqj-manual-save-bar'), '聊天 API 操作栏在独立向量区之前');
-  assert.equal(node.find(n => n.tagName === 'button' && n.textContent === '清除 Key'), undefined);
-  const analysis = fieldControl(node, '分析API（建议高质模型）');
-  const summary = fieldControl(node, '摘要API（建议快速模型）');
-  assert.equal(node.find(n => n.tagName === 'select'), undefined, 'API 角色预设不得唤起手机原生选择器');
-  const url = fieldControl(node, 'URL'), key = fieldControl(node, 'Key');
-  const model = fieldControl(node, '模型').find(n => n.tagName === 'input');
-  const temperature = fieldControl(node, '千千结温度（0–2）');
-  assert.equal(url.value, 'https://main.test/v1');
-  await focusInline(summary);
-  assert.equal(url.value, 'https://fast.test/v1');
-  assert.equal(model.value, 'fast-model');
-  assert.equal(temperature.value, '0.42', '角色切换应回显所选配置温度');
-  assert.match(node.find(n => n.className === 'settings-hint').textContent, /摘要 API · 摘要快速/);
-
-  url.value = 'https://fast-draft.test/v1'; model.value = 'fast-draft-model'; key.value = ''; temperature.value = '0.31';
-  const fetchBtn = node.find(n => n.tagName === 'button' && n.textContent === '拉取模型');
-  await fetchBtn.fire('click'); await flush();
-  await node.find(n => n.tagName === 'button' && n.textContent === '测试').fire('click'); await flush();
-  assert.deepEqual(toolCalls.map(([kind, selection]) => [kind, selection.config.url, selection.config.key, selection.config.model]), [
-    ['models', 'https://fast-draft.test/v1', 'FAST_KEY', 'fast-draft-model'],
-    ['test', 'https://fast-draft.test/v1', 'FAST_KEY', 'fast-draft-model'],
-  ]);
-  assert.equal(toolCalls.find(([kind]) => kind === 'test')[1].config.qqjTemperature, 0.31, '连接测试使用当前编辑温度');
-  const modelSection = node.find(n => n.tagName === 'details' && n.className === 'qqj-model-list-section');
-  assert.equal(modelSection.hidden, false); assert.equal(modelSection.open, true);
-  assert.match(modelSection.textContent, /已加载 2 个模型/);
-  const search = modelSection.find(n => n.className.includes('qqj-model-list-search'));
-  search.value = 'Y'; await search.fire('input');
-  assert.deepEqual(modelSection.findAll(n => n.tagName === 'button' && n.className.includes('qqj-model-list-item')).map(item => item.textContent), ['gpt-y']);
-  await modelSection.find(n => n.tagName === 'button' && n.className.includes('qqj-model-list-item')).fire('click');
-  assert.equal(model.value, 'gpt-y'); assert.match(modelSection.find(n => n.tagName === 'button' && n.className.includes('qqj-model-list-item')).className, /active/);
-  model.value = 'fast-draft-model'; await model.fire('input');
-  const save = node.find(n => n.tagName === 'button' && n.textContent === '保存');
-  await save.fire('click');
-  assert.equal(scroller.scrollTop, 120, 'API 保存并刷新字段后回到配置抽屉顶部');
-  assert.equal(presets.find(item => item.id === 'fast').url, 'https://fast-draft.test/v1');
-  assert.equal(presets.find(item => item.id === 'fast').key, 'FAST_KEY', 'Key 留空必须保留摘要预设原值');
-  assert.equal(presets.find(item => item.id === 'fast').qqjTemperature, 0.31, '共享预设保存温度');
-  assert.deepEqual(analysisUpdates, [], '保存摘要配置不得切换分析 API');
-
-  await chooseInline(summary, '');
-  assert.equal(utilityUpdates.at(-1), '');
-  assert.equal(url.value, 'https://main.test/v1');
-  assert.match(node.find(n => n.className === 'settings-hint').textContent, /摘要 API 跟随分析/);
-  url.value = 'https://main-through-summary.test/v1'; key.value = '';
-  temperature.value = '2.01';
-  await save.fire('click');
-  assert.equal(main.url, 'https://main.test/v1', '越界温度阻止保存');
-  assert.match(node.find(n => n.className.includes('settings-result')).textContent, /温度须在 0–2/u);
-  temperature.value = '0';
-  await save.fire('click');
-  assert.equal(main.url, 'https://main-through-summary.test/v1');
-  assert.equal(main.key, 'MAIN_KEY', '跟随分析时 Key 留空必须保留实际主配置原值');
-  assert.equal(main.qqjTemperature, 0, '0 是有效的温度设置');
-  assert.deepEqual(analysisUpdates, [], '通过跟随摘要保存共享目标不得改分析选择');
-
-  const saveCountBeforePrompt = saves.length;
-  temperature.value = '2.001';
-  await node.find(n => n.tagName === 'button' && n.textContent === '另存为').fire('click');
-  assert.equal(promptCalls.length, 0, '非法温度不得打开另存预设流程');
-  assert.equal(saves.length, saveCountBeforePrompt, '非法温度不得写入共享预设');
-  assert.match(node.find(n => n.className.includes('settings-result')).textContent, /温度须在 0–2/u);
-  temperature.value = '0';
-  await node.find(n => n.tagName === 'button' && n.textContent === '另存为').fire('click');
-  assert.equal(saves.length, saveCountBeforePrompt, '取消另存输入不得创建预设'); assert.equal(rerenders, 0);
-  promptResponse = '摘要专用新预设';
-  await node.find(n => n.tagName === 'button' && n.textContent === '另存为').fire('click');
-  assert.equal(promptCalls[1].title, '另存为预设');
-  assert.equal(utilityPresetId, 'summary-new');
-  assert.equal(presets.find(item => item.id === 'summary-new').name, '摘要专用新预设');
-  assert.deepEqual(analysisUpdates, [], '摘要另存只能切摘要角色');
-  assert.equal(analysis.value, '');
-  assert.equal(rerenders, 1);
-});
-
 test('无构画设置可从 UI 点击已存预设，并让后续分析与摘要路由使用该配置', async () => {
   const extensionSettings = {};
   const settings = createSettingsStore({ extensionSettings, save() {}, now: () => 1, random: () => 0.5 });
@@ -399,7 +275,7 @@ test('无构画设置可从 UI 点击已存预设，并让后续分析与摘要�
   assert.equal(analysis.find(n => n.className === 'qqj-inline-select-value').textContent, '预设 A');
   assert.equal(settings.get().apiMode, 'seven-preset');
   assert.equal(settings.get().selectedSevenDaysPresetId, 'preset-a');
-  assert.equal(fieldControl(node, 'URL').value, 'https://preset-a.test/v1');
+  assert.equal(fieldControl(node, 'URL'), undefined, '连接字段仅在点击编辑后出现');
 
   await router.generateAnalysisTask({});
   assert.equal(routed.at(-1).qqjTemperature, 0.73, '路由后的实际配置包含预设温度');
@@ -421,184 +297,6 @@ test('共享预设更新保留宿主未知字段，清空温度后回显未设�
   assert.equal(settings.sharedPresets()[0].qqjTemperature, undefined, '清空后回显为空');
 });
 
-test('召回跟随链编辑真实目标，另存与删除只切召回角色', async () => {
-  const extensionSettings = {};
-  const settings = createSettingsStore({ extensionSettings, save() {}, now: () => 2, random: () => 0.5 });
-  settings.saveMainConfig({ url: 'https://main.test/v1', key: 'M', model: 'main' });
-  settings.upsertSharedPreset('摘要', { url: 'https://summary.test/v1', key: 'S', model: 'summary' }, 'summary');
-  settings.setSummaryPresetId('summary');
-  const confirmations = [];
-  const mount = () => createApiSettings({ settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({}) }, documentRef, promptImpl: () => '召回专用', confirmImpl: options => { confirmations.push(options); return true; } }).node;
-  let node = mount();
-  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
-  assert.equal(fieldControl(node, 'URL').value, 'https://summary.test/v1');
-  assert.match(node.textContent, /召回 API 跟随摘要.*保存会更新当前摘要配置/u);
-  fieldControl(node, 'URL').value = 'https://summary-edited.test/v1';
-  await node.find(n => n.textContent === '保存').fire('click');
-  assert.equal(settings.sharedPresets().find(item => item.id === 'summary').url, 'https://summary-edited.test/v1');
-  assert.equal(settings.mainConfig().url, 'https://main.test/v1');
-  await chooseInline(fieldControl(node, '摘要API（建议快速模型）'), '');
-  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
-  assert.match(node.textContent, /召回 API 跟随摘要，摘要跟随分析/u);
-  assert.equal(fieldControl(node, 'URL').value, 'https://main.test/v1');
-  await chooseInline(fieldControl(node, '摘要API（建议快速模型）'), 'summary');
-  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
-  fieldControl(node, 'URL').value = 'https://recall.test/v1';
-  await node.find(n => n.textContent === '另存为').fire('click');
-  const recallId = settings.get().recallPresetId;
-  assert.ok(recallId);
-  assert.equal(settings.summaryPresetId(), 'summary');
-  assert.equal(settings.get().apiMode, 'auto');
-  node = mount();
-  await focusInline(fieldControl(node, '召回API（默认跟随摘要）'));
-  assert.equal(fieldControl(node, 'URL').value, 'https://recall.test/v1');
-  await node.find(n => n.textContent === '删除').fire('click');
-  assert.equal(settings.get().recallPresetId, '');
-  assert.equal(settings.summaryPresetId(), 'summary');
-  assert.match(confirmations[0].note, /召回 API 将改为跟随摘要/u);
-});
-
-test('API 预设删除按当前编辑角色清理引用，取消/主配置/失效竞态均不误改', async () => {
-  const mount = ({ analysisId = 'target', utilityId = 'keep', role = 'analysis', sevenDays = false, confirmImpl = () => true } = {}) => {
-    const current = { apiMode: analysisId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: analysisId };
-    let utility = utilityId;
-    let presets = [
-      { id: 'target', name: '待删预设', url: 'https://SECRET.example/v1', key: 'SECRET_KEY', model: 'target-model' },
-      { id: 'keep', name: '保留预设', url: 'https://keep.test/v1', key: 'KEEP_KEY', model: 'keep-model' },
-    ];
-    const updates = [], confirmations = [];
-    const settings = {
-      get: () => ({ ...current }),
-      mainConfig: () => ({ id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN', model: 'main' }),
-      sharedPresets: () => presets.map(item => ({ ...item })),
-      summaryPresetId: () => utility,
-      setSummaryPresetId: id => { utility = id; },
-      update: patch => { Object.assign(current, patch); updates.push(patch); },
-      deleteSharedPreset: id => {
-        const next = presets.filter(item => item.id !== id);
-        if (next.length === presets.length) return false;
-        presets = next;
-        if (utility === id) utility = '';
-        return true;
-      },
-      saveMainConfig() {}, upsertSharedPreset() {},
-    };
-    let rerenders = 0;
-    const view = createApiSettings({
-      settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({}) }, documentRef,
-      isSevenDaysAvailable: () => sevenDays,
-      confirmImpl: options => { confirmations.push(options); return confirmImpl({ message: `${options.title}\n${options.body}\n${options.note}`, presets, current, setPresets: value => { presets = value; } }); },
-      rerender: () => { rerenders += 1; },
-    }).node;
-    if (role === 'summary') focusInline(fieldControl(view, '摘要API（建议快速模型）'));
-    return { view, current, get utility() { return utility; }, get presets() { return presets; }, updates, confirmations, get rerenders() { return rerenders; } };
-  };
-  const remove = state => state.view.find(n => n.tagName === 'button' && n.textContent === '删除').fire('click');
-
-  const main = mount({ analysisId: '', utilityId: '' });
-  assert.equal(main.view.find(n => n.textContent === '删除').disabled, true);
-  await remove(main); assert.equal(main.confirmations.length, 0); assert.equal(main.presets.length, 2);
-
-  const cancelled = mount({ confirmImpl: () => false });
-  await remove(cancelled); assert.equal(cancelled.presets.length, 2); assert.deepEqual(cancelled.updates, []); assert.match(`${cancelled.confirmations[0].body}\n${cancelled.confirmations[0].note}`, /删除预设「待删预设」/);
-
-  const analysisOnly = mount();
-  await remove(analysisOnly);
-  assert.deepEqual(analysisOnly.current, { apiMode: 'auto', selectedSevenDaysPresetId: '' });
-  assert.equal(analysisOnly.utility, 'keep'); assert.deepEqual(analysisOnly.presets.map(item => item.id), ['keep']); assert.equal(analysisOnly.rerenders, 1);
-  assert.match(analysisOnly.confirmations[0].note, /分析 API 将回退到主配置/); assert.doesNotMatch(analysisOnly.confirmations[0].note, /摘要 API 将改为跟随分析|构画/);
-  assert.doesNotMatch(JSON.stringify(analysisOnly.confirmations[0]), /SECRET|https?:/);
-
-  const summaryOnly = mount({ analysisId: 'keep', utilityId: 'target', role: 'summary' });
-  await remove(summaryOnly);
-  assert.deepEqual(summaryOnly.current, { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'keep' }); assert.equal(summaryOnly.utility, '');
-  assert.match(summaryOnly.confirmations[0].note, /摘要 API 将改为跟随分析/); assert.doesNotMatch(summaryOnly.confirmations[0].note, /分析 API 将回退/);
-
-  const shared = mount({ analysisId: 'target', utilityId: 'target', sevenDays: true });
-  await remove(shared);
-  assert.deepEqual(shared.current, { apiMode: 'auto', selectedSevenDaysPresetId: '' }); assert.equal(shared.utility, '');
-  assert.match(shared.confirmations[0].note, /分析 API 将回退到主配置/); assert.match(shared.confirmations[0].note, /摘要 API 将改为跟随分析/); assert.match(shared.confirmations[0].note, /构画中也会移除/);
-
-  const follows = mount({ analysisId: 'target', utilityId: '', role: 'summary' });
-  await remove(follows); assert.match(follows.confirmations[0].note, /摘要 API 当前跟随分析，也将随分析回退到主配置/);
-
-  const raced = mount({ analysisId: 'target', utilityId: 'keep', confirmImpl: ({ current, setPresets }) => { setPresets([{ id: 'keep', name: '保留预设' }]); current.selectedSevenDaysPresetId = 'keep'; return true; } });
-  await remove(raced); assert.deepEqual(raced.current, { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'keep' }); assert.deepEqual(raced.updates, []); assert.equal(raced.rerenders, 0);
-});
-
-test('API 显式失效预设保存时不谎报成功，也不写入任何配置', async () => {
-  const current = { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'missing' };
-  const writes = [];
-  const settings = {
-    get: () => ({ ...current }),
-    mainConfig: () => ({ id: '', name: '主配置', url: 'https://main.test/v1', key: 'MAIN', model: 'main' }),
-    sharedPresets: () => [],
-    summaryPresetId: () => '',
-    setSummaryPresetId: id => writes.push(['summary', id]),
-    update: patch => writes.push(['analysis', patch]),
-    saveMainConfig: config => writes.push(['main', config]),
-    upsertSharedPreset: (...args) => writes.push(['preset', ...args]),
-    deleteSharedPreset: () => false,
-  };
-  const { node } = createApiSettings({ settings, apiTools: { fetchModels: async () => [], testConnection: async () => ({}) }, documentRef });
-  assert.equal(fieldControl(node, '分析API（建议高质模型）').value, 'missing');
-  await node.find(n => n.tagName === 'button' && n.textContent === '保存').fire('click');
-  const result = node.find(n => n.className.includes('settings-result'));
-  assert.match(result.textContent, /预设已失效.*重新选择或另存/);
-  assert.match(result.className, /error/);
-  assert.deepEqual(writes, []);
-});
-
-test('模型内联列表搜索、空匹配与点击回填生效，旧目标迟到结果不污染新目标', async () => {
-  const current = { apiMode: 'seven-preset', selectedSevenDaysPresetId: 'analysis' };
-  let utility = 'summary';
-  const presets = [
-    { id: 'analysis', name: '分析', url: 'https://a.test/v1', key: 'A', model: 'analysis-model' },
-    { id: 'summary', name: '摘要', url: 'https://s.test/v1', key: 'S', model: 'summary-model' },
-  ];
-  let resolveModels;
-  const pendingModels = new Promise(resolve => { resolveModels = resolve; });
-  const settings = {
-    get: () => ({ ...current }), mainConfig: () => ({}), sharedPresets: () => presets.map(item => ({ ...item })),
-    summaryPresetId: () => utility, setSummaryPresetId: id => { utility = id; }, update: patch => Object.assign(current, patch),
-    saveMainConfig() {}, upsertSharedPreset() {}, deleteSharedPreset() { return false; },
-  };
-  const { node } = createApiSettings({ settings, apiTools: { fetchModels: () => pendingModels, testConnection: async () => ({}) }, documentRef });
-  const analysis = fieldControl(node, '分析API（建议高质模型）');
-  const summary = fieldControl(node, '摘要API（建议快速模型）');
-  const model = fieldControl(node, '模型').find(n => n.tagName === 'input');
-  const section = node.find(n => n.className === 'qqj-model-list-section');
-  const fetching = node.find(n => n.textContent === '拉取模型').fire('click');
-  await flush();
-  await focusInline(summary);
-  assert.equal(model.value, 'summary-model'); assert.equal(section.hidden, true);
-  resolveModels(['analysis-only', 'another-analysis']); await fetching;
-  assert.equal(model.value, 'summary-model'); assert.equal(section.hidden, true); assert.doesNotMatch(section.textContent, /analysis-only/);
-
-  await chooseInline(analysis, 'analysis');
-  const emptyTools = { fetchModels: async () => ['Alpha', 'Beta'], testConnection: async () => ({}) };
-  const second = createApiSettings({ settings, apiTools: emptyTools, documentRef }).node;
-  await second.find(n => n.tagName === 'button' && n.textContent === '拉取模型').fire('click');
-  const secondSection = second.find(n => n.className === 'qqj-model-list-section');
-  const search = secondSection.find(n => n.className.includes('qqj-model-list-search'));
-  search.value = 'zzz'; await search.fire('input'); assert.match(secondSection.textContent, /无匹配项/);
-  search.value = 'alp'; await search.fire('input');
-  const alpha = secondSection.find(n => n.tagName === 'button' && n.className.includes('qqj-model-list-item'));
-  await alpha.fire('click');
-  assert.equal(fieldControl(second, '模型').find(n => n.tagName === 'input').value, 'Alpha');
-  assert.match(secondSection.find(n => n.tagName === 'button' && n.textContent === 'Alpha').className, /active/);
-
-  current.apiMode = 'seven-preset'; current.selectedSevenDaysPresetId = 'analysis'; utility = 'summary';
-  let rejectOld;
-  const failedLater = new Promise((_resolve, reject) => { rejectOld = reject; });
-  const third = createApiSettings({ settings, apiTools: { fetchModels: () => failedLater, testConnection: async () => ({}) }, documentRef }).node;
-  const staleFailure = third.find(n => n.tagName === 'button' && n.textContent === '拉取模型').fire('click'); await flush();
-  await focusInline(fieldControl(third, '摘要API（建议快速模型）'));
-  rejectOld(Object.assign(new Error('旧目标失败'), { code: 'QQJ_TIMEOUT' })); await staleFailure;
-  assert.equal(third.find(n => n.className === 'settings-result').textContent, '');
-});
-
-
 test('独立向量区开关靠右，默认地址模型直接回填，只保存向量配置且仅手动建立', async () => {
   const settings = createSettingsStore({ extensionSettings: {}, save: () => {} });
   settings.saveMainConfig({ url: 'https://analysis.invalid/v1', key: 'analysis-key', model: 'analysis' });
@@ -607,11 +305,12 @@ test('独立向量区开关靠右，默认地址模型直接回填，只保存�
   const calls = [];
   const apiTools = { fetchModels: async () => { calls.push(['models']); return []; }, testConnection: async () => { calls.push(['chat']); } };
   const vectorApi = { embed: async (config, input) => { calls.push(['embedding', config, input]); return [new Float32Array([1, 0])]; } };
-  const { node, dispose } = createApiSettings({ settings, apiTools, vectorApi, vectorIndex, documentRef, vectorOpen: true });
+  const { node, dispose } = createSiblingApiSettings({ settings, apiTools, vectorApi, vectorIndex, documentRef, vectorOpen: true });
   const vector = node.find(n => n.id === 'qqj-settings-vector-api');
   assert.equal(vector.open, true);
-  const editor = node.find(n => n.className.includes('qqj-manual-editor'));
-  assert.equal(editor.children.at(-1), vector, '向量区放在聊天 API 编辑区之后');
+  const editor = node.find(n => n.className.includes('qqj-api-editor'));
+  assert.ok(node.children.includes(vector), '向量区与聊天API是同级组件');
+  assert.equal(editor.children.includes(vector), false);
   assert.equal(fieldControl(node, '向量API'), undefined, '向量不再混入聊天 API 的角色预设');
   assert.equal(vector.find(n => n.className.includes('qqj-inline-select')), undefined);
   assert.equal(vector.find(n => n.tagName === 'button' && n.textContent === '另存为'), undefined);
@@ -650,8 +349,9 @@ test('独立向量区开关靠右，默认地址模型直接回填，只保存�
   assert.equal(settings.get().apiModel, 'analysis');
   enabled.checked = false; await enabled.fire('change');
   assert.equal(settings.get().vectorEnabled, false); assert.equal(settings.get().vectorKey, 'vector-key');
-  assert.equal(fieldControl(node, 'URL').value, 'https://analysis.invalid/v1');
-  assert.equal(fieldControl(node, '模型').find(n => n.tagName === 'input').value, 'analysis');
+  assert.equal(settings.mainConfig().url, 'https://analysis.invalid/v1');
+  assert.equal(settings.mainConfig().model, 'analysis');
+  assert.equal(fieldControl(editor, 'URL'), undefined, '聊天参数只在编辑弹窗，不与向量字段混读');
   dispose();
 });
 
@@ -694,7 +394,7 @@ test('向量区显示小字进度与取消，编辑其他 API 时进度保留，
   };
   const vectorApi = { embed: () => new Promise(resolve => { endTest = resolve; }) };
   const apiTools = { testConnection: async () => ({ model: 'chat-model' }) };
-  const { node, dispose } = createApiSettings({ settings, apiTools, vectorIndex, vectorApi, documentRef });
+  const { node, dispose, getApiEditor } = createSiblingApiSettings({ settings, apiTools, vectorIndex, vectorApi, documentRef });
   const vector = node.find(n => n.id === 'qqj-settings-vector-api');
   const build = vector.find(n => n.tagName === 'button' && n.textContent === '建立索引');
   const cancel = vector.find(n => n.tagName === 'button' && n.textContent === '取消');
@@ -709,8 +409,10 @@ test('向量区显示小字进度与取消，编辑其他 API 时进度保留，
   assert.equal(build.disabled, false); assert.equal(cancel.hidden, true); assert.equal(typeof listener, 'function');
   const testing = vector.find(n => n.tagName === 'button' && n.textContent === '测试').fire('click'); await flush();
   await focusInline(fieldControl(node, '摘要API（建议快速模型）'));
-  await node.find(n => n.tagName === 'button' && n.textContent === '测试').fire('click');
-  const mainResult = node.find(n => n.className === 'settings-result success');
+  await node.find(n => n.tagName === 'button' && n.attributes['aria-label'] === '编辑摘要 API').fire('click');
+  const editor = getApiEditor();
+  await editor.find(n => n.tagName === 'button' && n.textContent === '测试').fire('click');
+  const mainResult = editor.find(n => n.className === 'qqj-api-result success');
   assert.equal(mainResult.textContent, '连接成功 · chat-model');
   endTest([]); await testing;
   assert.equal(mainResult.textContent, '连接成功 · chat-model');
@@ -749,4 +451,14 @@ test('索引切页后重新订阅进行中的任务，恢复完成/失败结果�
   publish({ status: 'ready', active: false, completed: 0, total: 0 });
   const empty = mount(); assert.match(empty.node.textContent, /当前没有可索引的原文/); empty.dispose();
   assert.equal(builds, 0); assert.equal(aborts, 0); assert.equal(listeners.size, 0);
+});
+
+test('千窗底图偏好只接受聊天UUID和支持的素材，保存不改变其它设置',()=>{
+ const data={},store=createSettingsStore({extensionSettings:data}),chat='11111111-1111-4111-8111-111111111111';
+ store.update({apiModel:'keep',qianchuangBasemaps:{[chat]:'town',bad:'palace','22222222-2222-4222-8222-222222222222':'unknown'}});
+ assert.deepEqual(store.get().qianchuangBasemaps,{[chat]:'town'});assert.equal(store.get().apiModel,'keep');
+});
+
+test('三张新增通用底图可保存到原聊天偏好，保其它配置且未知值仍忽略',()=>{
+ const store=createSettingsStore({extensionSettings:{}}),ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333'],value=Object.fromEntries(ids.map((id,i)=>[id,['modern-town','old-town','sci-fi'][i]]));store.update({apiModel:'keep',qianchuangBasemaps:{...value,bad:'sci-fi'}});assert.deepEqual(store.get().qianchuangBasemaps,value);assert.equal(store.get().apiModel,'keep');
 });

@@ -138,7 +138,7 @@ test('千人首次打开等待既有身份认领，成功后清除读取中且�
   assert.match(visible(container), /正在读取当前聊天/); assert.doesNotMatch(visible(container), /读取失败/);
   release(); await activation;
   assert.equal(refreshes, 1); assert.equal(claims, 1);
-  assert.match(visible(container), /人物资料读取完成/); assert.doesNotMatch(visible(container), /正在读取|读取失败/);
+  assert.doesNotMatch(visible(container), /人物资料读取完成|正在读取|读取失败/);
 });
 
 test('千人身份准备失败保留真实错误，已有错误不自动重试', async () => {
@@ -169,14 +169,14 @@ test('千人首次打开时idle只显示待记录，不读取未建立身份的�
   assert.doesNotMatch(visible(container), /读取失败/u);
 });
 
-test('千人身份准备错误缺少具体说明时指向状态诊断', async () => {
+test('千人身份准备错误缺少具体说明时给简短重试提示', async () => {
   const h = runtimeHarness();
   const container = new Node('main');
   const view = createPeopleProfilesView({ runtime: h.runtime, documentRef, sessionStateProvider: () => ({ status: 'idle' }),
     prepareSession: async () => { throw new Error(''); } });
   view.mount(container);
   assert.equal((await view.activate()).status, 'error');
-  assert.match(visible(container), /聊天身份准备失败：请到“记忆管理”页点击“复制状态诊断”反馈/u);
+  assert.match(visible(container), /聊天身份准备失败：当前聊天身份准备失败，请稍后重试。/u);
 });
 
 test('千人等待身份时离开页面或身份已过期，不迟到读取人物', async () => {
@@ -199,7 +199,7 @@ test('千人复用后台读取时不提前报成功，完成或失败后更新�
     view.mount(container); await view.activate();
     assert.match(visible(container), /正在读取当前聊天/); assert.doesNotMatch(visible(container), /人物资料读取完成/);
     h.emitState({ ...h.state, active: null, status: failed ? 'error' : 'ready', lastError: failed ? new Error('后端读取失败') : null });
-    assert.match(visible(container), failed ? /读取失败：后端读取失败/ : /人物资料读取完成/);
+    if(failed)assert.match(visible(container),/需要处理.*后端读取失败/);else assert.doesNotMatch(visible(container),/人物资料读取完成/);
     assert.doesNotMatch(visible(container), /正在读取当前聊天/);
   }
 });
@@ -242,18 +242,35 @@ function trueRuntimeHarness() {
   };
 }
 
-test('真实 activate 完成后不回画旧 loading，更多人物选择仍可用', async () => {
+test('真实 activate 完成后不回画旧 loading或被动成功提示，更多人物选择仍可用', async () => {
   const h = trueRuntimeHarness(); await h.runtime.refresh();
   const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container); await view.activate();
   assert.equal(h.runtime.getState().status, 'ready');
   assert.equal(flatten(container).filter(node => node.className === 'qqj-page-status').length, 1);
-  assert.match(visible(container), /人物资料读取完成/);
+  assert.doesNotMatch(visible(container), /人物资料读取完成/);
   assert.equal(flatten(container).some(node => node.textContent === '整理'), false, '工具栏不显示群体整档入口');
   flatten(container).find(node => node.textContent === '更多人物（2）').click();
-  assert.match(visible(container), /人物资料读取完成/, '切换人物选择视图后保留最近一次真实反馈');
+  assert.doesNotMatch(visible(container), /人物资料读取完成/, '切换人物选择视图不恢复被动读取成功提示');
   const choose = flatten(container).filter(node => node.textContent === '设为重要'); assert.equal(choose.length, 2); assert.equal(choose.every(node => node.disabled === false), true);
   choose[0].click(); await waitFor(() => h.runtime.getState().selectedEntityIds.includes(A));
   assert.equal(flatten(container).find(node => node.textContent === '设为重要')?.disabled, false, '再次绘制更多人物仍保持可选择');
+});
+
+test('千人被动打开与订阅读取只用健康条，健康反馈hidden且无空白文字',async()=>{
+  const h=runtimeHarness(),container=new Node('main'),view=createPeopleProfilesView({runtime:h.runtime,documentRef});
+  const feedback=()=>flatten(container).find(node=>node.className.split(' ').includes('v3-foundation-feedback'));
+  const quiet=()=>{assert.equal(feedback().hidden,true);assert.equal(feedback().textContent,'');const status=flatten(container).find(node=>node.className==='qqj-page-status');assert.equal(status.children[0].className.includes('qqj-page-health'),true);assert.equal(status.children[1],feedback());};
+  view.mount(container);quiet();await view.activate();quiet();view.deactivate();await view.activate();quiet();
+  h.emitState({...h.state,active:{kind:'loading'},status:'loading'});quiet();assert.match(flatten(container).find(node=>node.className.includes('qqj-page-health')).textContent,/正在读取/);
+  h.emitState({...h.state,active:null,status:'ready'});quiet();
+  h.emitState({...h.state,chatId:CHAT_B});quiet();await view.activate();quiet();view.deactivate();
+});
+
+test('千人独立读取失败不因健康状态被隐藏',async()=>{
+  const h=runtimeHarness(),container=new Node('main');h.runtime.refresh=async()=>{throw new Error('独立人物原图读取失败');};
+  const view=createPeopleProfilesView({runtime:h.runtime,documentRef});view.mount(container);await view.activate();
+  const feedback=flatten(container).find(node=>node.className.split(' ').includes('v3-foundation-feedback'));
+  assert.equal(feedback.hidden,false);assert.match(feedback.textContent,/读取失败：独立人物原图读取失败/);view.deactivate();
 });
 
 test('千人页横向切换只显示一份常显资料，资料编辑使用独立弹窗且取消丢弃草稿', async () => {
@@ -438,7 +455,7 @@ test('已有资料无改动在 view 层零保存，失败则保留用户草稿�
   const h = runtimeHarness({ profile }), container = new Node('main'); const view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
   flatten(container).find(node => node.textContent === '编辑资料').click();
   await saveEditor(view);
-  assert.equal(h.calls.save.length, 0); assert.match(visible(container), /人物资料已保存。|资料状态已显示/u); assert.match(visible(container), /编辑资料/); assert.equal(editorContent(view), null);
+  assert.equal(h.calls.save.length, 0); assert.equal(flatten(container).find(node=>node.className.split(' ').includes('v3-foundation-feedback')).hidden,true); assert.match(visible(container), /编辑资料/); assert.equal(editorContent(view), null);
   const failing = runtimeHarness({ profile, failSave: true }), failedContainer = new Node('main'); const failedView = createPeopleProfilesView({ runtime: failing.runtime, documentRef }); failedView.mount(failedContainer);
   flatten(failedContainer).find(node => node.textContent === '编辑资料').click();
   const notes = editorField(failedView, '补充资料'); notes.value = '失败也要保留'; notes.fire('input');
@@ -534,7 +551,7 @@ test('人物资料弹窗保存失败保留内容，成功后回到当前人物�
   const failure = await runCase(true); assert.equal(failure.scroller.scrollTop, 40); assert.equal(editorField(failure.view, '姓名').value, '新甲');
 });
 
-test('基础资料四项按紧凑行分组且空字段隐藏；头像完整预览与主动裁剪独立保存', async () => {
+test('基础资料按紧凑行分组且空值与纯人类隐藏；头像完整预览与主动裁剪独立保存', async () => {
   const profile = { entityId: A, name: '无别名人物', aliases: '', manualFields: ['aliases'], gender: '女', age: '28', birthday: '3月8日', species: '人类', background: '旧背景', appearance: '', personality: '', notes: '旧补充', source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
   const h = runtimeHarness({ profile }), canvasDraws = [], avatarOptions=[];
   const saveAvatar=h.runtime.saveAvatar;h.runtime.saveAvatar=async(...args)=>{avatarOptions.push(args[2]);return saveAvatar(...args);};
@@ -554,7 +571,7 @@ test('基础资料四项按紧凑行分组且空字段隐藏；头像完整预�
   assert.equal(flatten(container).some(node => node.className === 'qqj-profile-alias'), false, '无别名不保留空行');
   assert.deepEqual(flatten(container).filter(node => String(node.className).includes('qqj-profile-section')).map(node => node.children[0].textContent), ['基础信息', '身份']);
   const basic = flatten(container).find(node => node.className.includes('qqj-profile-section-basic'));
-  assert.deepEqual(basic.children.slice(1).map(node => node.className), ['qqj-profile-read-row qqj-profile-read-gender', 'qqj-profile-read-row qqj-profile-read-age', 'qqj-profile-read-row qqj-profile-read-birthday', 'qqj-profile-read-row qqj-profile-read-species', 'qqj-profile-read-row qqj-profile-read-notes']);
+  assert.deepEqual(basic.children.slice(1).map(node => node.className), ['qqj-profile-read-row qqj-profile-read-gender', 'qqj-profile-read-row qqj-profile-read-age', 'qqj-profile-read-row qqj-profile-read-birthday', 'qqj-profile-read-row qqj-profile-read-notes']);
   assert.doesNotMatch(visible(container), /NSFW/);
   const longName='一位姓名很长的合成人物', longAliases='别名一、别名二、别名三、别名四、别名五';
   h.emitState({...h.state,people:h.state.people.map(person=>person.entityId===A?{...person,displayName:longName,aliases:longAliases.split('、'),profile:{...person.profile,name:longName,aliases:longAliases}}:person)});
@@ -691,7 +708,7 @@ test('生成头像走现有裁剪确认，库项不唯一需显式选择且取�
   const characters=[{name:'甲',tag:'appearance-a',nl:'外貌甲'},{name:'同名甲',tag:'appearance-b',nl:'外貌乙'}];
   h.emitState({...h.state,people:h.state.people.map(person=>({...person,avatar:person.entityId===A?'data:image/webp;base64,T0xE':null}))});
   h.runtime.prepareAvatarGeneration=()=>({characters,selectedIndex});
-  h.runtime.generateAvatar=async(entityId,{character})=>{generated.push([entityId,character]);if(fail)throw new Error('生图通道未配置');return {dataUrl:'data:image/png;base64,AAAA'};};
+  h.runtime.generateAvatar=async(entityId,{character})=>{generated.push([entityId,character]);if(fail)throw new Error('生图通道未配置');return {dataUrl:'data:image/png;base64,AAAA',galleryCharacterName:'发起卡A'};};
   let revoked=0;
   const imageFactory=()=>({naturalWidth:800,naturalHeight:600,set src(value){if(value)queueMicrotask(()=>this.onload?.());},onload:null,onerror:null});
   const doc={createElement:tag=>tag==='canvas'?{getContext:()=>({clearRect(){},drawImage(){}}),toDataURL:()=> 'data:image/webp;base64,Q1JPUA=='}:new Node(tag)};
@@ -706,7 +723,7 @@ test('生成头像走现有裁剪确认，库项不唯一需显式选择且取�
   const select=flatten(dialogs.active.content).find(node=>node.className==='qqj-inline-select');select.value='1';await dialogs.submit();
   await waitFor(()=>dialogs.active?.title==='头像预览');assert.equal(generated.length,2);assert.deepEqual(generated[1],[A,characters[1]]);
   flatten(dialogs.active.content).find(node=>node.tag==='button'&&node.textContent==='裁剪').click();
-  await dialogs.submit();assert.equal(saves[0][2].generated,true);assert.equal(saves[0][2].crop.aspectRatio,1);assert.deepEqual(h.calls.avatar,[[A,'data:image/webp;base64,Q1JPUA==']]);assert.equal(revoked,2);assert.equal(h.runtime.getState().people.find(person=>person.entityId===B).avatar,null);
+  await dialogs.submit();assert.equal(saves[0][2].generated,true);assert.equal(saves[0][2].galleryCharacterName,'发起卡A');assert.equal(saves[0][2].crop.aspectRatio,1);assert.deepEqual(h.calls.avatar,[[A,'data:image/webp;base64,Q1JPUA==']]);assert.equal(revoked,2);assert.equal(h.runtime.getState().people.find(person=>person.entityId===B).avatar,null);
   selectedIndex=0;fail=true;generate();await waitFor(()=>visible(container).includes('生图通道未配置'));assert.equal(h.calls.avatar.length,1);assert.equal(dialogs.active,null);
   let finish;h.runtime.generateAvatar=()=>new Promise(resolve=>{finish=resolve;});generate();view.deactivate();finish({dataUrl:'data:image/png;base64,AAAA'});await new Promise(resolve=>setImmediate(resolve));
   assert.equal(dialogs.active,null,'正常关闭千人页后不再打开新裁剪窗');assert.equal(h.calls.avatar.length,1);
@@ -814,4 +831,93 @@ test('人物activate的A读取迟到成功或失败都不回画已展示的B', a
     release(); await pending;
     assert.match(visible(container), /B正常人物/u); assert.doesNotMatch(visible(container), /A迟到读取失败|读取失败/u); view.deactivate();
   });
+});
+
+
+test('纯人类只在当前及归档阅读隐藏，编辑仍保原值且可改为非人种族', async () => {
+  for (const species of [' 人类 ', 'HuMaN']) {
+    const profile = { name: '甲', species, bloodType: 'AB型', mbti: 'INFJ' };
+    const archived = { name: '旧甲', species, zodiac: '天秤座', skills: '钟表修理' };
+    const h = runtimeHarness({ profile, archivedProfileHistory: [{ entityId: A, sourceChatId: 'old-chat', sourceRevision: 2, profile: archived }] });
+    const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef });
+    view.mount(container); await view.activate();
+    assert.equal(flatten(container).some(node => node.className.includes('qqj-profile-read-species')), false, '纯人类不占当前阅读行');
+    assert.match(visible(container), /血型\|AB型/);
+    assert.match(visible(container), /MBTI\|INFJ/);
+    flatten(container).find(node => node.textContent === '查看搬家前资料（只读）').click();
+    await waitFor(() => visible(container).includes('旧甲'));
+    const archive = flatten(container).find(node => node.className === 'qqj-profile-archive-entry');
+    assert.equal(flatten(archive).some(node => node.className.includes('qqj-profile-read-species')), false, '归档与当前阅读同样隐藏');
+    assert.match(visible(archive), /星座\|天秤座/);
+    assert.match(visible(archive), /技能与能力\|钟表修理/);
+    assert.equal(profile.species, species); assert.equal(archived.species, species);
+    flatten(container).find(node => node.textContent === '编辑资料').click();
+    assert.equal(editorField(view, '种族').value, species, '阅读过滤不改编辑值');
+    assert.equal(editorField(view, '血型').value, 'AB型');
+    assert.equal(editorField(view, 'MBTI').value, 'INFJ');
+    const speciesInput = editorField(view, '种族'), bloodInput = editorField(view, '血型');
+    speciesInput.value = '精灵'; speciesInput.fire('input');
+    bloodInput.value = 'O型'; bloodInput.fire('input');
+    await saveEditor(view);
+    assert.equal(h.calls.save[0][1].species, '精灵');
+    assert.equal(h.calls.save[0][1].bloodType, 'O型');
+    assert.ok(h.calls.save[0][2].manualFields.includes('bloodType'));
+    const current = flatten(container).find(node => node.className === 'qqj-profile-reading');
+    assert.match(visible(current), /种族\|精灵/);
+    assert.match(visible(current), /血型\|O型/);
+    view.deactivate();
+  }
+});
+
+test('种族有非人或混血改造细节时，当前与归档阅读均保留完整值', async () => {
+  for (const species of ['精灵', '半人类', '人类（改造者）', 'human hybrid']) {
+    const h = runtimeHarness({ profile: { name: '甲', species }, archivedProfileHistory: [{ entityId: A, profile: { name: '旧甲', species } }] });
+    const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef });
+    view.mount(container); await view.activate();
+    const row = flatten(container).find(node => node.className.includes('qqj-profile-read-species'));
+    assert.ok(row); assert.equal(row.children[1].textContent, species);
+    flatten(container).find(node => node.textContent === '查看搬家前资料（只读）').click();
+    await waitFor(() => visible(container).includes('旧甲'));
+    const archive = flatten(container).find(node => node.className === 'qqj-profile-archive-entry');
+    assert.equal(flatten(archive).find(node => node.className.includes('qqj-profile-read-species')).children[1].textContent, species);
+    view.deactivate();
+  }
+});
+
+test('各分类阅读先短标签再短结果，长值整行；当前与归档一致且编辑和原文不变',async()=>{
+ const profile={name:'合成人物',gender:'女',age:'25岁',birthday:'2000年11月05日',bloodType:'AB型',zodiac:'天蝎座',species:'人类',notes:'稳定事实',
+  height:'170cm',weight:'55kg',build:'纤瘦',face:'清秀',hair:'黑色短发',eyes:'深棕色',distinctiveFeatures:'右肩有一片形状独特且已有多年的纹身印记。',
+  occupation:'跨国集团的高级研究负责人兼任项目管理顾问',organization:'夜航',nationality:'中国',birthplace:'上海',residence:'长期居住在上海西郊一处有旧花园的独栋住宅',background:'少年时期曾多次迁居，后来长期在本地求学并从事研究。',identityRelations:'兄长：甲\n妹妹：乙',languages:'中、英',skills:'绘画',
+  personality:'做决定前会反复比较已有信息，熟悉的人面前更加放松。',conduct:'温柔；谨慎',expression:'简短',likes:'音乐',dislikes:'强光',principles:'守信',mbti:'INFJ-A',enneagram:'5w6',alignment:'中立善良'};
+ const original=structuredClone(profile),h=runtimeHarness({profile,archivedProfileHistory:[{entityId:A,profile:structuredClone(profile)}]}),container=new Node('main'),view=createPeopleProfilesView({runtime:h.runtime,documentRef});view.mount(container);await view.activate();
+ const rows=(root,key)=>flatten(root).find(n=>n.className.split(' ').includes(`qqj-profile-section-${key}`)).children.filter(n=>n.className.split(' ').includes('qqj-profile-read-row'));
+ const keys=(root,key)=>rows(root,key).map(n=>n.className.match(/qqj-profile-read-([^ ]+)$/)[1]);
+ const reading=flatten(container).find(n=>n.className==='qqj-profile-reading');
+ const expected={basic:['gender','age','bloodType','zodiac','notes','birthday'],appearance:['height','weight','build','face','hair','eyes','distinctiveFeatures'],identity:['organization','nationality','birthplace','languages','skills','occupation','background','identityRelations','residence'],personality:['mbti','enneagram','alignment','expression','likes','dislikes','principles','personality','conduct']};
+ for(const [key,order] of Object.entries(expected))assert.deepEqual(keys(reading,key),order,key);
+ const row=field=>flatten(reading).find(n=>n.className===`qqj-profile-read-row qqj-profile-read-${field}`);
+ for(const field of ['gender','age','bloodType','zodiac','notes','face','eyes','languages','mbti','enneagram','alignment'])assert.equal(row(field).attributes['data-qqj-profile-layout'],'compact',field);
+ for(const field of ['birthday','occupation','residence','identityRelations','personality','conduct','skills','principles'])assert.equal(row(field).attributes['data-qqj-profile-layout'],'wide',field);
+ assert.match(row('identityRelations').children[1].textContent,/兄长：甲\n妹妹：乙/);assert.match(row('personality').children[1].textContent,/做决定前会反复比较已有信息/);assert.equal(row('conduct').children[1].textContent,'温柔；\n谨慎');
+ flatten(container).find(n=>n.textContent==='查看搬家前资料（只读）').click();await waitFor(()=>flatten(container).some(n=>n.className==='qqj-profile-archive-entry'));const archive=flatten(container).find(n=>n.className==='qqj-profile-archive-entry');
+ for(const [key,order] of Object.entries(expected)){assert.deepEqual(keys(archive,key),order,`archive ${key}`);assert.deepEqual(rows(archive,key).map(n=>n.attributes['data-qqj-profile-layout']),rows(reading,key).map(n=>n.attributes['data-qqj-profile-layout']));}
+ flatten(container).find(n=>n.textContent==='编辑资料').click();assert.equal(editorField(view,'生日').value,original.birthday);assert.equal(editorField(view,'重要身份关系').value,original.identityRelations);assert.equal(editorField(view,'核心性格').value,original.personality);assert.equal(editorField(view,'处事方式').value,'温柔；谨慎');assert.equal(editorField(view,'种族').value,'人类');
+ const personalityGroup=flatten(editorContent(view)).find(n=>n.className.includes('qqj-profile-form-group')&&n.children[0]?.textContent==='性格');assert.deepEqual(personalityGroup.children.filter(n=>n.tag==='label').map(n=>n.children[0].textContent),['核心性格','处事方式','表达习惯','喜好','厌恶','原则与底线','MBTI','九型人格','道德阵营']);cancelEditor(view);
+ assert.deepEqual(profile,original);assert.equal(h.calls.save.length,0);assert.equal(h.calls.generate,0);assert.equal(h.calls.regenerate.length,0);view.deactivate();
+});
+
+test('千人读取失败由健康条单槽呈现，订阅快路不重复技术长文',()=>{
+ const h=runtimeHarness(),container=new Node('main'),view=createPeopleProfilesView({runtime:h.runtime,documentRef});view.mount(container);
+ h.emitState({...h.state,active:{kind:'loading'}});
+ h.emitState({...h.state,active:null,lastError:{code:'BACKEND_TIMEOUT',message:'读取记忆超时；请到记忆管理复制状态诊断反馈。'}});
+ const nodes=flatten(container).filter(n=>!n.hidden);assert.doesNotMatch(nodes.map(n=>n.textContent).join('|'),/复制状态诊断.*反馈/);assert.equal(nodes.filter(n=>String(n.textContent).includes('记忆存储请求超时')).length,1);view.deactivate();
+});
+
+test('千人整理按钮同次失败单槽但保操作回执，不与独立旧错合并',async()=>{
+ for(const same of [true,false]){
+ const h=runtimeHarness(),container=new Node('main'),view=createPeopleProfilesView({runtime:h.runtime,documentRef});const failure=Object.assign(new Error('本次后端读取失败'),{code:'BACKEND_TIMEOUT'});
+ h.runtime.regenerateProfile=async()=>{h.emitState({...h.state,lastError:{code:'BACKEND_TIMEOUT',message:same?failure.message:'另一项旧任务失败'}});throw failure;};view.mount(container);
+ await flatten(container).find(n=>n.tag==='button'&&n.textContent==='整理当前资料').click();await waitFor(()=>visible(container).includes('失败')||visible(container).includes('未完成'));
+ await new Promise(resolve=>setImmediate(resolve));const count=flatten(container).filter(n=>!n.hidden&&String(n.textContent).includes('记忆存储请求超时')).length;assert.equal(count,same?1:2,'相同短句的两次不同原始错误不可互吞');if(same)assert.match(visible(container),/整理.*未完成/);view.deactivate();
+ }
 });

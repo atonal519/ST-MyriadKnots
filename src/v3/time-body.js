@@ -163,6 +163,32 @@ export function resolveTimeStart(start, source) {
   return relocated.length === 1 ? relocated[0] : null;
 }
 
+// Only advances an unbound scheduling boundary; stored bodyReads still use exact version matching.
+export async function resolveReplacedTimeStart(start, source, host, { sanitizerOptions = {} } = {}) {
+  if (!start || start.floorId || start.awaitingFirst || !start.rawFingerprint || !start.canonicalFingerprint) return null;
+  const index = start.hostLocator?.messageIndex, savedIndex = start.hostLocator?.selectedSwipeIndex;
+  if (!Number.isSafeInteger(index) || index < 0 || savedIndex !== null && (!Number.isSafeInteger(savedIndex) || savedIndex < 0)) return null;
+  if (source.root?.chatId && host.context?.chatMetadata?.qianqianjie?.chatId
+    && source.root.chatId !== host.context.chatMetadata.qianqianjie.chatId) return null;
+  const bodies = source.bodyFloors ?? [];
+  if (bodies.some(body => body.rawFingerprint === start.rawFingerprint && body.canonicalFingerprint === start.canonicalFingerprint)) return null;
+  const matches = bodies.filter(body => body.hostLocator?.messageIndex === index);
+  if (matches.length !== 1 || !matches[0].floorId || (source.floors ?? []).filter(floor => floor.id === matches[0].floorId).length !== 1) return null;
+  const body = matches[0], message = host.chat?.[index], selected = selectAssistantMessage(message), oldIndex = savedIndex === null ? 0 : savedIndex;
+  if (!Array.isArray(message?.swipes) || typeof message.swipes[oldIndex] !== 'string'
+    || !Number.isSafeInteger(selected?.selectedSwipeIndex) || selected.selectedSwipeIndex === oldIndex
+    || selected.selectedSwipeIndex !== body.hostLocator.selectedSwipeIndex || selected.swipeId !== body.hostLocator.swipeId) return null;
+  const witness = { ...message, swipes: [...message.swipes] };
+  const options = { sanitizerOptions, chatId: source.root?.chatId ?? '' };
+  const [currentCandidates, oldCandidates] = await Promise.all([
+    scanAssistantCandidates([witness], options),
+    scanAssistantCandidates([{ ...witness, swipe_id: oldIndex }], options),
+  ]);
+  const current = currentCandidates[0], old = oldCandidates[0];
+  return current && old && current.rawFingerprint === body.rawFingerprint && current.canonicalFingerprint === body.canonicalFingerprint
+    && old.rawFingerprint === start.rawFingerprint && old.canonicalFingerprint === start.canonicalFingerprint ? body : null;
+}
+
 export function planTimeBody(source, batches, { start = null, history = false, inputTokens = TIME_INPUT_TOKENS } = {}) {
   const reads = timeBodyReads(batches, source), startBody = resolveTimeStart(start, source);
   const eligible = source.bodyFloors.filter(body => body.floorId && (history || startBody && body.assistantSeq >= startBody.assistantSeq));

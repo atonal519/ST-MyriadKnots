@@ -12,8 +12,8 @@ import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-42';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-19';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-44';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-20';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
@@ -23,6 +23,7 @@ export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解�
 按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时，推荐用简短 reason 说明本次材料中支持判断的事实，不要为了补 reason 编造依据。`;
 
 export const CSE_FIXED_CONTRACT = `【固定事实与隐私边界】
+trackedSubjects 中每个人都获得同等检查机会，按本楼证据分别检查各人的目标、顾虑、承诺、自身状态及对不同对象的有向关系，不以用户、角色卡主角或历史出场频次决定先后。检查机会不表示人物在场、知情或存在可推断的内心；没有新依据时可不输出该人的更新，不要求人物或关系填满。
 正文 canonicalContent 是本楼事实的最高来源；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时以正文为准。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
 
 auxiliaryStateSnapshot 若存在，是目标楼当前分支当时已保存的只读变量快照，只用于辅助理解状态。它可能同时包含多个人物、不完整或过时信息，不能整体归给某一人物，也不能当作用户手动 Core 纠正或可引用的权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
@@ -55,7 +56,7 @@ Situational 记录本楼结束时仍在进行或仍限制人物的当前情境�
 
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
 
-单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式；唯一例外是用户自身的独立历史检查任务，可按该任务用所附历史事件判断独立模式，新增时仍须引用本楼确认其当前适用的原句。其他新增 Adaptive 仍遵守正文证据合同。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
+单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式；两项有限历史例外是用户自身的独立历史检查任务，以及本次提供 relationHistory 的有效人物对：前者沿原用户任务，后者只用于带toward的关系Adaptive；均可用所附事件判断独立模式，新增时仍须引用本楼确认其当前适用的原句。没有这些限定历史材料的新增 Adaptive 仍遵守正文证据合同。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
 
 【Adaptive 更新步骤】
 人物自身的长期应对模式与针对每个明确对象（toward）的模式，分别按同一证据标准判断；各方向独立，不自动镜像。先依据上面的条件判断是否可改变长期状态；同一连续事件的多次动作、程度变化或多条 quote 不构成彼此独立的经历，楼数本身也不能证明独立。证据不足或模式未变时省略旧项，由现有状态沿用；明确作者设定和纠正仍按原合同处理。
@@ -73,7 +74,7 @@ Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以
 currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。evidence.source 必须逐字使用 evidenceSourceCatalog 中的 source；世界书使用其中的具体键，例如 worldbook:1，不填写书名或泛称 worldbook。quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人；characterCard 和 worldbook 是可能包含多个人物设定的作者材料，按来源原文明确描述的人物判断归属；不因卡名或来源名称推断归属，也不把一个人物的设定套给他人。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
 authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑造方向不等于已经发生的事实、所有人物已经知情或人物的永久性格。它不能单独作为新增或改写 Core 的证据。
 
-Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
+本轮合作、分歧、协调和约定若仍影响楼末关系，分别判断每人的有向Situational及自身目标。relationHistory 只为当楼有效人物对补充作者侧旧动作、沟通和承诺，不代表双方已知；仅可支持带明确toward的Adaptive新增、refine/remove，且同项必须有canonicalContent或currentUserInput的原句确认模式现在仍适用或应结束。新增长期模式仍须多个独立经历；一次持续事件、多个quote或楼数不自动算独立经历。历史不能用于Core、身份简介、第三人或无toward泛人格，不自动镜像，也不强迫产出长期项。Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
 省略人物或分类表示保留已有状态。situational 使用自身与关系两个完整分区；两区都为 [] 表示有依据清空整类，没有足够依据更新时省略分类。review 或 additions 中某类的空数组只表示没有相应操作，不清空旧项；清除旧 Core/Adaptive 须逐项 remove 并给证据。
 
@@ -191,20 +192,17 @@ export function cseReferencedEntityIds(memory) {
   return result;
 }
 
-export function selectTrackedSubjects({ baseline, entities = [], floorMemories = [], floorMemory }) {
-  const active = entities.filter(entity => entity.recordStatus === 'active' && entity.status !== 'merged' && entity.status !== 'invalidated' && entity.entityType === 'person');
-  const byId = new Map(active.map(entity => [entity.id, entity]));
-  const repeated = new Map();
-  for (const memory of floorMemories) for (const id of cseReferencedEntityIds(memory)) repeated.set(id, (repeated.get(id) ?? 0) + 1);
-  const strong = new Set();
-  floorMemory.privateCognition?.forEach(item => strong.add(item.ownerEntityId));
-  floorMemory.commitments?.forEach(item => { strong.add(item.speakerEntityId); item.targetEntityIds?.forEach(id => strong.add(id)); });
-  floorMemory.cseSignals?.forEach(item => { strong.add(item.subjectEntityId); if (item.objectEntityId) strong.add(item.objectEntityId); });
-  const selected = new Map();
-  const user = byId.get(baseline.userPersona.entityId) ?? active.find(entity => entity.specialRole === 'user');
-  if (user) selected.set(user.id, user);
-  for (const entity of active) if (entity.specialRole === 'user' || (repeated.get(entity.id) ?? 0) >= 2 || strong.has(entity.id)) selected.set(entity.id, entity);
-  return [...selected.values()];
+export function selectTrackedSubjects({ entities = [], floorMemory }) {
+  const referenced = cseReferencedEntityIds(floorMemory);
+  for (const item of floorMemory.participants ?? []) referenced.add(item.entityId);
+  for (const item of floorMemory.observations ?? []) referenced.add(item.subjectEntityId);
+  for (const item of floorMemory.locations ?? []) for (const id of item.participantEntityIds ?? []) referenced.add(id);
+  for (const item of floorMemory.openLoops ?? []) for (const id of item.ownerEntityIds ?? []) referenced.add(id);
+  for (const item of floorMemory.exactAnchors ?? []) referenced.add(item.speakerEntityId);
+  for (const item of floorMemory.qianshiDelta?.events ?? []) for (const person of item.people ?? []) referenced.add(person.entityId);
+  const active = new Map(entities.filter(entity => entity.recordStatus === 'active' && entity.status !== 'merged'
+    && entity.status !== 'invalidated' && entity.entityType === 'person').map(entity => [entity.id, entity]));
+  return [...referenced].flatMap(id => active.has(id) ? [active.get(id)] : []);
 }
 
 function semanticMemory(memory, entities) {
@@ -315,7 +313,7 @@ function authorialOtherStateContext(currentState, entities, previousSubjectIds) 
 }
 
 
-export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, floorOrder = null, identityDirectory = null, identityBriefTargets = [], requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null, userAdaptiveHistory = [] }) {
+export function createCseEnvelope({ floor, floorMemory, baseline, currentState, trackedSubjects, entities, floorOrder = null, identityDirectory = null, identityBriefTargets = [], requestSources = null, worldInfoSources = null, currentUserInput = null, coreUserEditedSubjectEntityIds = [], identityMemberEntityIdsBySubject = {}, relevantPriorContext = '', userCoreExtraction = null, userAdaptiveHistory = [], relationHistory = [], reviewUserAdaptive = true }) {
   const directory = identityDirectory ?? buildEntityIdentityDirectory({ entities, floorOrder });
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
@@ -344,7 +342,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
   const userBindings = trackedSubjects.filter(entity => entity.id === userEntityId || identityMemberEntityIdsBySubject?.[entity.id]?.includes(userEntityId));
   const userBinding = userBindings.length === 1 ? userBindings[0] : null;
   const previousUser = userBinding && previousSubjects.find(subject => subject.subjectEntityId === userBinding.id);
-  const userAdaptiveReview = userBinding && !(previousUser?.adaptive?.length)
+  const userAdaptiveReview = reviewUserAdaptive && userBinding && !(previousUser?.adaptive?.length)
     ? {
       subject: nameForSubjectId(userBinding.id) ?? effectiveUserPersona.name,
       task: '独立检查用户自己的长期 Adaptive；自身与明确对象分开判断，不镜像。只用请求材料，符合既有证据合同才更新，否则留空。历史最多含3个完整楼、合计6000字符；从历史归纳新增时，须判断至少两个彼此独立的事件，并在同一新增项引用 canonicalContent 或 currentUserInput 中能确认该模式当前仍适用的原句。不同楼号或多个 quote 不代表独立事件，同一连续事件链只算一个；不得补猜未提供的历史。明确作者设定或纠正仍按原合同处理。历史只供该用户 Adaptive，不用于 Core、Situational、他人状态或角色知识；不复制 Core，不强迫填满。此独立任务只检查该用户 Adaptive；本楼对所有 trackedSubjects 的常规分析照常进行。',
@@ -355,6 +353,9 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
     subjectEntityId: baseline.userPersona.entityId, contents: [entry.content],
   })) : [];
   evidenceSources.push(...userAdaptiveSources);
+  const relationHistorySources = relationHistory.map(entry => ({ source: entry.source, kind: 'relationHistory',
+    pairEntityIds: entry.pairEntityIds, contents: [JSON.stringify(entry.record), ...(entry.quotes ?? [])] }));
+  evidenceSources.push(...relationHistorySources);
   const baselineEntityIds = new Set([baseline.userPersona?.entityId, baseline.characterCard?.entityId].filter(Boolean));
   const briefTargets = identityBriefTargets.flatMap((target, index) => {
     const entry = directoryById.get(target?.entityId);
@@ -390,6 +391,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
         source: `userAdaptiveHistory:${entry.floorId}`, floorId: entry.floorId,
         assistantSeq: entry.assistantSeq, content: entry.content,
       })) } : {}),
+      ...(relationHistory.length ? { relationHistory: relationHistory.map(({ pairEntityIds, ...entry }) => entry) } : {}),
       ...(briefTargets.length ? { identityBriefTargets: briefTargets.map(({ key, name, aliases, identityBrief, identityBriefSource }) => ({ key, name, aliases,
         ...(identityBrief && !identityBriefSource?.facts?.length ? { identityBrief } : {}), ...(identityBriefSource?.facts?.length ? { identityFacts: identityFactsForPrompt(identityBriefSource, key) } : {}) })) } : {}),
       evidenceSourceCatalog: evidenceSources.map(source => ({ source: source.source, kind: source.kind,
@@ -612,6 +614,7 @@ const storedProjection = subject => ({ core: subject.core.map(stateMeaning), ada
 async function compileItems({ raw, category, binding, knownBindings, deltaId, floorId, isolated, acceptedIntents }) {
   const output = [];
   for (const [index, item] of list(raw).slice(0, 120).entries()) {
+    if (usesRelationHistory(item)) { isolated.push({ field: category, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); acceptedIntents.count += 1; continue; }
     const value = itemSemantic(item);
     if (!value) { isolated.push({ field: category, index, code: 'V3_CSE_OPTIONAL_ITEM_INVALID' }); continue; }
     let towardEntityId = null;
@@ -683,6 +686,42 @@ function locateEvidenceQuote(contents, quote) {
   return null;
 }
 
+const relationHistoryNamespace = value => typeof value === 'string' && /^\s*relation[\s_-]*history/iu.test(value.normalize('NFKC'));
+const formalEntries = (value, names) => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.entries(value).filter(([key]) => names.some(name => normalized(key) === normalized(name))) : [];
+function usesRelationHistory(raw, names = ['evidence', '证据']) {
+  return formalEntries(raw, names).some(([, refs]) => (Array.isArray(refs) ? refs : refs ? [refs] : [])
+    .some(ref => formalEntries(ref, ['source', '来源']).some(([, source]) => relationHistoryNamespace(source))));
+}
+
+// Only the new namespace has this all-reference, whole-mutation gate. Old protocols retain their contract.
+function relationHistoryEvidence(raw, { envelope, binding, category, original = null, index, isolated }) {
+  if (!usesRelationHistory(raw)) return undefined;
+  const reject = () => { isolated.push({ field: category, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); return null; };
+  const groups = formalEntries(raw, ['evidence', '证据']);
+  if (groups.length !== 1) return reject();
+  const refs = groups[0][1];
+  if (category !== 'adaptive' || !Array.isArray(refs) || !refs.length || refs.length > 20) return reject();
+  const towardRaw = field(raw, ['toward', 'target', 'object', '对谁', '对象']);
+  const towardMatches = towardRaw === undefined || towardRaw === null || !String(towardRaw).trim() ? [] : matchingBindings(towardRaw, envelope.scope.knownBindings);
+  const towardEntityId = towardRaw === undefined || towardRaw === null || !String(towardRaw).trim() ? original?.towardEntityId : towardMatches.length === 1 ? towardMatches[0].entityId : null;
+  if (!towardEntityId || towardEntityId === binding.entityId) return reject();
+  const evidence = [];
+  for (const ref of refs) {
+    if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return reject();
+    if (formalEntries(ref, ['source', '来源']).length !== 1 || formalEntries(ref, ['quote', '引用']).length !== 1) return reject();
+    const sourceName = field(ref, ['source', '来源']), quote = field(ref, ['quote', '引用']);
+    if (typeof sourceName !== 'string' || sourceName.length > 160 || typeof quote !== 'string' || !quote.trim() || quote.length > 2000) return reject();
+    const source = envelope.scope.evidenceSources.find(candidate => candidate.source === sourceName);
+    const located = source && locateEvidenceQuote(source.contents, quote);
+    if (!source || !located || source.subjectEntityId && source.subjectEntityId !== binding.entityId) return reject();
+    if (source.kind === 'relationHistory' && !source.pairEntityIds?.some(pair => pair.length === 2 && pair.includes(binding.entityId) && pair.includes(towardEntityId))) return reject();
+    evidence.push({ source: source.source, kind: source.kind, quote: located });
+  }
+  if (!evidence.some(ref => ref.kind === 'relationHistory') || !evidence.some(ref => ref.source === 'canonicalContent' || ref.source === 'currentUserInput')) return reject();
+  return Object.freeze(evidence);
+}
+
 function calibratedEvidence(raw, { envelope, binding, category, index, isolated }) {
   const evidence = [];
   const allSubmitted = list(field(raw, ['evidence', '证据']));
@@ -737,10 +776,12 @@ function compileIdentityBriefUpdates(packet, envelope, isolated, deltaId) {
     let invalid = false;
     for (const { raw, index } of items) {
       try {
+        if (usesRelationHistory(raw, ['evidence', '依据', '证据']) || Array.isArray(raw.identityFacts) && raw.identityFacts.some(fact => usesRelationHistory(fact))) throw new TypeError('identityFacts.evidence');
         const brief = field(raw, ['identityBrief', 'brief', '简介']);
         if (!Object.hasOwn(raw, 'identityFacts') && (typeof brief !== 'string' || !brief.trim() || brief.length > 400)) throw new TypeError('identityBrief');
         const facts = compileIdentityFacts({ raw: { ...raw, identityBrief: brief }, existingFacts: binding.existingFacts,
           legacyEvidence: field(raw, ['evidence', '依据']), compileEvidence(refs) {
+            if (usesRelationHistory({ evidence: refs })) throw new TypeError('identityFacts.evidence');
             if (!Array.isArray(refs) || !refs.length || refs.length > 20) throw new TypeError('identityFacts.evidence');
             if (refs.some(ref => typeof field(ref, ['quote', '引用']) !== 'string' || field(ref, ['quote', '引用']).length > 2000)) throw new TypeError('identityFacts.quote');
             const evidence = calibratedEvidence({ evidence: refs }, { envelope, binding, category: 'identityBriefUpdates', index, isolated });
@@ -844,8 +885,10 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
     if (matches.length !== 1 || reviewedIds.has(matches[0]?.id)) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_REVIEW_TARGET_AMBIGUOUS' }); continue; }
     const matched = matches[0];
     reviewedIds.add(matched.id);
+    const historyEvidence = relationHistoryEvidence(review, { envelope, binding, category, original: matched, index, isolated });
+    if (historyEvidence === null) { acceptedIntents.count += 1; continue; }
     if (action === 'keep') { acceptedIntents.count += 1; continue; }
-    const evidence = calibratedEvidence(review, { envelope, binding, category, index, isolated });
+    const evidence = historyEvidence ?? calibratedEvidence(review, { envelope, binding, category, index, isolated });
     if (!calibratedMutationAllowed({ category, evidence, manualCore })) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); continue; }
     const currentIndex = output.findIndex(item => item.id === matched.id);
     if (currentIndex < 0) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_REVIEW_TARGET_AMBIGUOUS' }); continue; }
@@ -865,7 +908,9 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
 
   for (const [index, addition] of list(additionsRaw).slice(0, 120).entries()) {
     if (!addition || typeof addition !== 'object' || Array.isArray(addition)) { isolated.push({ field: `${category}.additions`, index, code: 'V3_CSE_OPTIONAL_ITEM_INVALID' }); continue; }
-    const evidence = calibratedEvidence(addition, { envelope, binding, category, index, isolated });
+    const historyEvidence = relationHistoryEvidence(addition, { envelope, binding, category, index, isolated });
+    if (historyEvidence === null) { acceptedIntents.count += 1; continue; }
+    const evidence = historyEvidence ?? calibratedEvidence(addition, { envelope, binding, category, index, isolated });
     if (category === 'adaptive' && envelope.scope.userAdaptiveReview
       && evidence.some(item => item.kind === 'userAdaptiveHistory')
       && !evidence.some(item => ['story', 'userInput'].includes(item.kind))) {

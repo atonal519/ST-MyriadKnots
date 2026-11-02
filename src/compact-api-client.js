@@ -4,6 +4,7 @@ import { getSharedProcessingPrompt, prependProcessingPrompt, resolveSharedProces
 import { sha256 } from './identity.js';
 import { normalizeFinishReason, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
 import { parseAdditionalParams } from './settings.js';
+import { stripMemoryTagBlocks } from './memory-content-sanitizer.js';
 
 const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages', 'json_schema']);
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -44,6 +45,7 @@ const safeError = (code, status = 0, details = {}) => {
     format: '模型返回的 JSON 格式无效',
     models: '接口没有返回可用模型',
     unsupported: '当前响应格式不受支持',
+    upstream: 'API 请求失败，上游返回了错误。',
     'request-format': 'API 请求参数或响应格式与当前网关不兼容',
     'http-response-json': 'API 响应不是合法 JSON',
     'stream-event-json': '流式响应事件不是合法 JSON',
@@ -100,6 +102,35 @@ const providerMessageTemplate = value => {
   return '上游错误详情已隐藏';
 };
 
+function providerErrorDetails(candidate, secrets = []) {
+  const object = candidate && typeof candidate === 'object' && !Array.isArray(candidate) ? candidate : null;
+  const fields = {
+    code: safeProviderIdentifier(object?.code, secrets),
+    status: safeProviderIdentifier(object?.status, secrets),
+    message: providerMessageTemplate(object ? object.message : candidate),
+  };
+  const compact = Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== null));
+  return Object.keys(compact).length ? Object.freeze(compact) : null;
+}
+
+function throwResponseError(data, secrets = []) {
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !Object.hasOwn(data, 'error') || !data.error) return;
+  const candidate = typeof data.error === 'object' && !Array.isArray(data.error) ? data.error : {};
+  const providerError = providerErrorDetails(data.error, secrets);
+  const status = [candidate.status, candidate.code, data.status].find(value => (typeof value === 'number' || typeof value === 'string') && /^[45]\d\d$/u.test(String(value)));
+  if (status !== undefined) throw mapHttpError(Number(status), providerError);
+  // 原生宿主可能只保留 statusText；分类不将其推断成真实 HTTP 状态。
+  const identifiers = [candidate.code, candidate.status, candidate.type].filter(value => typeof value === 'string').map(value => value.trim().toLowerCase().replace(/[ -]/gu, '_'));
+  const message = String(typeof data.error === 'string' ? data.error : candidate.message ?? '').trim();
+  const matches = (identifier, text) => identifiers.some(value => identifier.test(value)) || text.test(message);
+  const code = matches(/^(?:unauthorized|unauthenticated|forbidden|authentication_error|invalid_api_key|incorrect_api_key|permission_denied)$/u, /^(?:unauthori[sz]ed|forbidden)\b|(?:invalid|incorrect)\s+(?:api[ _-]*)?key\b|authentication (?:failed|error)\b/iu) ? 'auth'
+    : matches(/^(?:rate_limit_exceeded|rate_limit_error|too_many_requests|resource_exhausted|insufficient_quota)$/u, /^too many requests\b|\brate[ _-]?limit(?:ed| exceeded)?\b/iu) ? 'rate-limit'
+      : matches(/^(?:bad_request|invalid_argument|invalid_request_error|unprocessable_entity)$/u, /^bad request\b|\binvalid (?:argument|request|parameter|field)\b|\bjson[_ -]?schema\b|\bresponse[_ -]?format\b/iu) ? 'request-format'
+        : matches(/^(?:not_found|model_not_found|resource_not_found)$/u, /^not found\b|\bmodel\b.{0,80}\bnot found\b/iu) ? 'not-found'
+          : matches(/^(?:internal|internal_server_error|server_error|service_unavailable|overloaded_error)$/u, /^(?:internal server error|bad gateway|service unavailable|gateway timeout)\b/iu) ? 'server' : 'upstream';
+  throw safeError(code, 0, providerError ? { providerError } : {});
+}
+
 async function readLimitedErrorText(response, maximum = HTTP_ERROR_BODY_LIMIT) {
   // 错误正文仅用于诊断；正文读取和取消异常尽量忽略。
   const reader = response?.body?.getReader?.();
@@ -137,13 +168,7 @@ async function readProviderError(response, secrets = []) {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) candidate = parsed.error && typeof parsed.error === 'object' && !Array.isArray(parsed.error) ? parsed.error : parsed;
   } catch { malformedJson = /^[{[]/u.test(text); }
   if (malformedJson) return Object.freeze({ message: '上游返回了无法安全解析的错误 JSON' });
-  const providerError = candidate ? {
-    code: safeProviderIdentifier(candidate.code, secrets),
-    status: safeProviderIdentifier(candidate.status, secrets),
-    message: providerMessageTemplate(candidate.message),
-  } : { code: null, status: null, message: providerMessageTemplate(text) };
-  const compact = Object.fromEntries(Object.entries(providerError).filter(([, value]) => value !== null));
-  return Object.keys(compact).length ? Object.freeze(compact) : null;
+  return providerErrorDetails(candidate ?? text, secrets);
 }
 
 function completionDetails(data) {
@@ -192,7 +217,11 @@ export function parseJsonOutput(value, { finishReason } = {}) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   const normalizedFinishReason = normalizeFinishReason(finishReason);
   if (truncatedFinishReason(normalizedFinishReason)) throw safeError('output-truncated', 0, { finishReason: normalizedFinishReason });
-  const text = String(value ?? '').trim();
+  let text = String(value ?? '').trim();
+  const leadingThought = /^<(think|reasoning)(?:\s[^>]*)?>[\s\S]*?<\/\1\s*>/iu;
+  for (let prefix; (prefix = text.match(leadingThought));) {
+    text = (stripMemoryTagBlocks(prefix[0], [prefix[1]]) + text.slice(prefix[0].length)).trim();
+  }
   const failCompletion = () => { throw safeError('completion-json', 0, { finishReason: normalizedFinishReason }); };
   const parseObject = (candidate, { repair = false } = {}) => {
     if (!repair) {
@@ -253,11 +282,12 @@ function abortable(task, signal) {
   });
 }
 
-async function readSseResponse(response, { requireSse = false, signal } = {}) {
+async function readSseResponse(response, { requireSse = false, signal, secrets = [] } = {}) {
   const reader = response.body?.getReader?.();
   if (!reader) {
     if (requireSse) throw safeError('stream-protocol');
     let data; try { data = await abortable(() => response.json(), signal); } catch (error) { if (signal?.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
+    throwResponseError(data, secrets);
     return completionDetails(data);
   }
   const decoder = new TextDecoder(); let buffer = '', output = '', event = [], finishReason = '', sawDataLine = false, complete = false, eof = false;
@@ -267,7 +297,7 @@ async function readSseResponse(response, { requireSse = false, signal } = {}) {
     if (!payload) return;
     if (payload === '[DONE]') { complete = true; return; }
     let value; try { value = JSON.parse(payload); } catch { throw safeError('stream-event-json'); }
-    if (value?.error) throw safeError('unsupported');
+    throwResponseError(value, secrets);
     const currentFinishReason = normalizeFinishReason(value?.choices?.[0]?.finish_reason);
     if (currentFinishReason) finishReason = currentFinishReason;
     const delta = value?.choices?.[0]?.delta?.content ?? value?.choices?.[0]?.message?.content ?? value?.choices?.[0]?.text;
@@ -378,19 +408,23 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
             requestProgress(transportBudget, 'responseBody');
             throw mapHttpError(response.status, await abortable(() => readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]), linked.controller.signal));
           }
+          const secrets = [config.key, config.url, normalizeApiUrl(config.url)];
           if (stream) {
             const contentType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase();
             // Streaming stays on SSE unless the server explicitly labels its response as JSON.
             if (contentType === 'application/json' || contentType.endsWith('+json')) {
               requestProgress(transportBudget, 'responseBody');
               let data; try { data = await abortable(() => response.json(), linked.controller.signal); } catch (error) { if (linked.controller.signal.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
+              throwResponseError(data, secrets);
               return completionDetails(data);
             }
             requestProgress(transportBudget, 'sseBody');
-            return await abortable(() => readSseResponse(response, { requireSse: contentType === 'text/event-stream', signal: linked.controller.signal }), linked.controller.signal);
+            return await abortable(() => readSseResponse(response, { requireSse: contentType === 'text/event-stream', signal: linked.controller.signal, secrets }), linked.controller.signal);
           }
           requestProgress(transportBudget, 'responseBody');
-          try { return await abortable(() => response.json(), linked.controller.signal); } catch (error) { if (linked.controller.signal.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
+          let data; try { data = await abortable(() => response.json(), linked.controller.signal); } catch (error) { if (linked.controller.signal.aborted || error?.name === 'AbortError') throw abortError(); throw safeError('http-response-json'); }
+          throwResponseError(data, secrets);
+          return data;
         } catch (error) {
           if (linked.timedOut()) { const timeout = safeError('timeout'); requestFailure(transportBudget, timeout); throw timeout; }
           if (signal?.aborted || error?.name === 'AbortError') { requestFailure(transportBudget, abortError(), true); throw abortError(); }

@@ -1,5 +1,5 @@
 // Recall-only presentation; source indices and UI state are scoped to the owning chat.
-import { scaleCssFontSizes } from './font-scale.js';
+import { scaleCssFontSizes, scaleCssSpacing } from './font-scale.js';
 import { sharedUiCss } from './shared-ui-style.js';
 
 export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
@@ -24,56 +24,56 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
   };
   const button = (className, text) => { const value = node('button', className, text); value.type = 'button'; return value; };
   const style = card.recallStyle ?? node('style');
-  style.textContent = scaleCssFontSizes(`${sharedUiCss}
+  style.textContent = scaleCssSpacing(scaleCssFontSizes(`${sharedUiCss}
     .recall-design [hidden]{display:none!important}
-    .recall-design{font-size:12px;line-height:1.7;padding:0 2px 3px;--soft:color-mix(in srgb,currentColor 5%,transparent);--muted:color-mix(in srgb,currentColor 57%,transparent)}
+    .recall-design{font-size:var(--qqj-font-body);line-height:1.7;padding:0 2px 3px;--qqj-recall-tint:color-mix(in srgb,currentColor 5%,transparent);--muted:var(--qqj-inline-soft,currentColor)}
     .recall-design button{font:inherit;color:inherit;cursor:pointer;box-shadow:none;text-shadow:none}
     .recall-design button:focus-visible,.recall-design summary:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:3px}
     .recall-tabs{display:grid;grid-template-columns:1fr 1fr;gap:20px;border-bottom:1px solid var(--qqj-inline-line);margin-bottom:15px}
-    .recall-tab{position:relative;border:0;background:none;padding:5px 10px 11px;font-size:14px!important;letter-spacing:.24em;opacity:.5}
-    .recall-tab[aria-selected=true]{opacity:1;font-weight:650}
+    .recall-design .recall-tab{position:relative;border:0;background:none;padding:5px 10px 11px;font-size:var(--qqj-font-subheading);letter-spacing:.24em;color:var(--qqj-control-fg,var(--qqj-action-color));opacity:var(--qqj-control-opacity,1)}
+    .recall-tab[aria-selected=true]{opacity:var(--qqj-control-opacity,1);font-weight:650}
     .recall-tab[aria-selected=true]::after{content:'';position:absolute;bottom:-1px;left:22%;right:22%;height:2px;background:var(--qqj-inline-knot);border-radius:2px}
-    .event-pills{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-    .event-pill{min-width:0;border:1px solid var(--qqj-inline-line);border-radius:999px;background:none;padding:5px 6px;font-size:11px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .event-pill[aria-expanded=true]{border-color:var(--qqj-inline-knot);background:color-mix(in srgb,var(--qqj-inline-knot) 10%,transparent)}
-    .event-display{margin-top:13px;padding:12px 13px;border-radius:var(--qqj-radius-card);background:var(--soft)}
-    .recall-empty{color:var(--muted);font-size:11px;margin:0}
-    .event-caption{font-size:10px;color:var(--muted);margin:0 0 8px}
+    .event-pills{display:flex;flex-wrap:wrap;gap:var(--qqj-space-group)}
+    .recall-design .event-pill{width:auto;min-width:0;max-width:100%;min-height:var(--qqj-compact-height);border:1px solid var(--qqj-control-border,var(--qqj-inline-line));border-radius:var(--qqj-radius-pill);padding:var(--qqj-compact-pad-y) var(--qqj-compact-pad-x);font-size:var(--qqj-font-caption);line-height:var(--qqj-compact-line);white-space:normal;overflow-wrap:anywhere;font-weight:500;color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,var(--qqj-chip-background))}
+    .recall-design .event-pill[aria-expanded=true]{border-color:var(--qqj-control-border,var(--qqj-inline-line));font-weight:700;color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,var(--qqj-chip-background))}
+    .event-display{margin-top:13px;padding:12px 13px;border-radius:var(--qqj-radius-card);background:var(--qqj-recall-tint)}
+    .recall-empty{color:var(--muted);font-size:var(--qqj-font-body);margin:0}
+    .event-caption{font-size:var(--qqj-font-caption);color:var(--muted);margin:0 0 8px}
     .event-copy{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}
     .event-copy+.event-copy{margin-top:10px}
     .people-current>summary,.people-history>summary{cursor:pointer;list-style:none}
     .people-current>summary::-webkit-details-marker,.people-history>summary::-webkit-details-marker{display:none}
     .people-current:not([open])>.section-heading,.people-history:not([open])>.section-heading{margin-bottom:0}
-    .section-heading{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:600;margin:0 0 9px}
+    .section-heading{display:flex;align-items:center;gap:7px;font-size:var(--qqj-font-body);font-weight:600;margin:0 0 9px}
     .section-heading::before{content:'';height:10px;width:2px;background:var(--qqj-inline-knot);border-radius:1px}
     .current-person{padding:8px 0;border-top:1px solid var(--qqj-inline-line)}
-    .current-name{display:block;font-size:11px;font-weight:650;margin:0 0 3px}
-    .current-copy{margin:0;font-size:11px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
+    .current-name{display:block;font-size:var(--qqj-font-body);font-weight:650;margin:0 0 3px}
+    .current-copy{margin:0;font-size:var(--qqj-font-body);line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
     .current-copy+.current-copy{margin-top:4px}
     .people-history{margin-top:19px}
     .person-picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
-    .person-pill{display:flex;gap:6px;align-items:center;max-width:100%;border:1px solid transparent;border-radius:var(--qqj-radius-control);background:none;padding:4px 9px;font-size:11px!important}
-    .person-pill[aria-pressed=true]{background:var(--soft);border-color:var(--qqj-inline-line);font-weight:600}
-    .person-count{color:var(--muted);font-size:10px;font-weight:400}
+    .recall-design .person-pill{display:flex;gap:6px;align-items:center;max-width:100%;border:1px solid transparent;min-height:var(--qqj-compact-height);border-radius:var(--qqj-radius-pill);padding:var(--qqj-compact-pad-y) var(--qqj-compact-pad-x);font-size:var(--qqj-font-caption);line-height:var(--qqj-compact-line);white-space:normal;overflow-wrap:anywhere;font-weight:500;color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,var(--qqj-chip-background));border-color:var(--qqj-control-border,var(--qqj-inline-line))}
+    .recall-design .person-pill[aria-pressed=true]{font-weight:700;color:var(--qqj-inline-knot);border-color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,var(--qqj-chip-background))}
+    .person-count{color:var(--muted);font-size:var(--qqj-font-caption);font-weight:400}
     .change-timeline{padding-left:7px}
     .change-floor{position:relative;border-left:1px solid var(--qqj-inline-line);padding:0 0 16px 15px}
     .change-floor:last-child{padding-bottom:3px}
     .change-floor::before{content:'';position:absolute;left:-3px;top:9px;width:5px;height:5px;border-radius:50%;background:var(--qqj-inline-knot)}
-    .change-floor>summary{list-style:none;cursor:pointer;font-size:10.5px;color:var(--muted);padding:0 0 7px;display:flex;align-items:center;gap:7px}
+    .change-floor>summary{list-style:none;cursor:pointer;font-size:var(--qqj-font-caption);color:var(--muted);padding:0 0 7px;display:flex;align-items:center;gap:7px}
     .change-floor>summary::-webkit-details-marker{display:none}
-    .change-floor>summary::after{content:'＋';margin-left:auto;font-size:11px}
+    .change-floor>summary::after{content:'＋';margin-left:auto;font-size:var(--qqj-font-body)}
     .change-floor[open]>summary::after{content:'−'}
-    .change-count{opacity:.65;font-size:10px}
+    .change-count{opacity:.65;font-size:var(--qqj-font-caption)}
     .change-entry+.change-entry{margin-top:10px}
-    .change-layer{font-size:9px;color:var(--muted);margin-bottom:2px}
-    .change-row{display:grid;grid-template-columns:12px minmax(0,1fr);gap:5px;padding:2px 0;font-size:11px;line-height:1.8}
-    .change-sign{font-size:14px;line-height:1.4;font-weight:600;user-select:none}
-    .change-added .change-sign{color:light-dark(#277a4b,#79bd94)}
+    .change-layer{font-size:var(--qqj-font-meta);color:var(--muted);margin-bottom:2px}
+    .change-row{display:grid;grid-template-columns:12px minmax(0,1fr);gap:5px;padding:2px 0;font-size:var(--qqj-font-body);line-height:1.8}
+    .change-sign{font-size:var(--qqj-font-subheading);line-height:1.4;font-weight:600;user-select:none}
+    .change-added .change-sign{color:var(--qqj-inline-success)}
     .change-removed{color:var(--muted)}
     .change-removed .change-copy{text-decoration:line-through;text-decoration-thickness:1px}
     .change-copy{white-space:pre-wrap;overflow-wrap:anywhere}
-    .change-visibility{font-size:9px;color:var(--muted);margin-left:6px;white-space:nowrap}
-  `, '--qqj-inline-fixed-scale');
+    .change-visibility{font-size:var(--qqj-font-meta);color:var(--muted);margin-left:6px;white-space:nowrap}
+  `, '--qqj-inline-fixed-scale'));
   if (!card.recallStyle) { card.root.append(style); card.recallStyle = style; }
   const root = node('div', 'recall-design');
   const tabs = node('div', 'recall-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', '召回内容');
@@ -101,7 +101,8 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
       selectTab(target); target.focus();
     });
   }
-  tabs.append(eventTab, peopleTab); root.append(tabs, events, people); selectTab(state.tab === 'people' ? peopleTab : eventTab);
+  const hasPeople = (projection.stateItems?.length ?? 0) + (projection.cseChangeItems?.length ?? 0) > 0;
+  tabs.append(eventTab, peopleTab); root.append(tabs, events, people); selectTab(hasPeople && (state.tab === 'people' || !projection.historyItems?.length) ? peopleTab : eventTab);
   const floorLabel = floorId => {
     const source = sources.get(floorId);
     if (source?.source?.frozen === true && Number.isSafeInteger(source.source.sourceOrigin?.sourceMessageIndex)) return `旧第 ${source.source.sourceOrigin.sourceMessageIndex} 个结`;
@@ -142,6 +143,7 @@ export function patchRecallTabs(card, projection, doc, sourceIndex, uiStates) {
     pills.append(pill);
   }
   showEvent(); events.append(pills, display);
+  if (!eventGroups.size && !['running', 'error'].includes(projection.status)) events.append(node('p', 'recall-empty', '本轮没有需要展示的剧情回忆。'));
   const identity = value => value.subjectEntityId || `name:${value.subject}`;
   const statesByPerson = new Map();
   for (const state of projection.stateItems ?? []) {

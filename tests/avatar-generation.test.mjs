@@ -37,8 +37,22 @@ test('头像衣着风格原文同次送达两种渠道，空值严格保旧paylo
     const h=harness({separate}),character=h.generator.prepare({displayName:'库中甲'}).characters[0];
     await h.generator.generate({character,prompt:'composition'});await h.generator.generate({character,prompt:'composition',clothingStyle:''});assert.deepEqual(h.calls[1][0],h.calls[0][0]);
     await h.generator.generate({character,prompt:'composition',clothingStyle:'青色长衫'});const request=h.calls[2][0];assert.equal(h.calls.length,3);
-    assert.equal(request.characters[0].tag,'appearance-a');assert.equal(request.characters[0].nl,'外貌甲. Clothing reference: 青色长衫');
-    assert.equal(request.prompt,separate?'composition':'composition, appearance-a, Clothing reference: 青色长衫');assert.equal(request.nl,separate?'composition':'composition. 外貌甲. Clothing reference: 青色长衫');
+    assert.equal(request.characters[0].tag,'appearance-a');assert.ok(request.characters[0].nl.startsWith('Outfit for this image:'));assert.ok(request.characters[0].nl.endsWith('Clothing reference (verbatim): 青色长衫. 外貌甲'));
+    const clothing=request.characters[0].nl.slice(0,-'. 外貌甲'.length);
+    assert.equal(request.prompt,separate?'composition':clothing+', composition, appearance-a');assert.equal(request.nl,separate?'composition':clothing+'. composition. 外貌甲');
   }
-  const h=harness({separate:false,characters:[{name:'甲',tag:'appearance-only',nl:''}]});await h.generator.generate({character:h.generator.prepare({displayName:'甲'}).characters[0],clothingStyle:'白色长袍'});assert.equal(h.calls[0][0].nl,DEFAULT_AVATAR_PROMPT+'. appearance-only. Clothing reference: 白色长袍');
+  const h=harness({separate:false,characters:[{name:'甲',tag:'appearance-only',nl:''}]});await h.generator.generate({character:h.generator.prepare({displayName:'甲'}).characters[0],clothingStyle:'白色长袍'});assert.ok(h.calls[0][0].nl.startsWith('Outfit for this image:'));assert.ok(h.calls[0][0].nl.endsWith('Clothing reference (verbatim): 白色长袍. '+DEFAULT_AVATAR_PROMPT+'. appearance-only'));
+});
+
+test('本张衣着要求先于库NL，保完整多场景原文和构图；两种渠道各只发一次图片请求',async()=>{
+ const clothing='  日常：蓝色风衣与便装。\n舞台：白色燕尾礼服；过去远征队时期穿防护制服。  ';
+ for(const separate of [true,false]){
+  const h=harness({separate}),character={name:'合成人物',tag:'silver hair, blue eyes',nl:'Stable library appearance'},before=structuredClone(character),controller=new AbortController();
+  await h.generator.generate({character,prompt:'unchanged custom framing',clothingStyle:clothing,signal:controller.signal});assert.equal(h.calls.length,1);const [request,options]=h.calls[0];
+  assert.ok(request.characters[0].nl.startsWith('Outfit for this image:'));assert.ok(request.characters[0].nl.includes(clothing));assert.ok(request.characters[0].nl.endsWith(character.nl));assert.equal(request.characters[0].tag,character.tag);
+  assert.match(request.characters[0].nl,/current outfit|daily wear/u);assert.match(request.characters[0].nl,/past military service.*background/iu);assert.match(request.characters[0].nl,/one coherent outfit/u);assert.match(request.characters[0].nl,/techwear.*urban functional fashion/iu);assert.match(request.characters[0].nl,/unrequested.*weapons|weapons.*unrequested/iu);
+  if(separate){assert.equal(request.prompt,'unchanged custom framing');assert.equal(request.nl,'unchanged custom framing');}
+  else{assert.ok(request.prompt.startsWith('Outfit for this image:'));assert.ok(request.nl.startsWith('Outfit for this image:'));assert.ok(request.prompt.includes('unchanged custom framing'));assert.ok(request.nl.includes(clothing));assert.ok(request.prompt.endsWith(character.tag));assert.ok(request.nl.endsWith(character.nl));}
+  assert.equal(request.save,false);assert.equal(request.size,'portrait');assert.deepEqual(Object.keys(request).sort(),['characters','nl','prompt','save','size']);assert.equal(options.signal,controller.signal);assert.deepEqual(character,before);
+ }
 });

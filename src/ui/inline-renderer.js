@@ -6,20 +6,20 @@ import { classifyInlineMessage, projectInlineMemoryFloor, projectInlineRecallRec
 import { publicErrorMessage } from '../public-error.js';
 
 import { patchRecallTabs } from './recall-tabs.js';
-import { scaleCssFontSizes } from './font-scale.js';
+import { scaleCssFontSizes, scaleCssSpacing } from './font-scale.js';
 import { sharedUiCss } from './shared-ui-style.js';
 
 const RETRY_DELAYS = Object.freeze([0, 80, 180, 320, 500, 850, 1300, 2000, 3000, 4200]);
 const HOST_SELECTOR = '[data-qqj-inline-host="true"]';
 const OBSERVED_ATTRIBUTES = Object.freeze(['mesid', 'data-mesid', 'data-message-id', 'class', 'is_user']);
 const INLINE_STYLE = `${sharedUiCss}
-:host{display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;background:transparent;text-shadow:none;--qqj-inline-knot:#a8322f;--qqj-inline-line:color-mix(in srgb,currentColor 18%,transparent)}
-*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid var(--qqj-inline-line);border-left:2px solid var(--qqj-inline-knot);border-radius:var(--qqj-radius-card)}
-.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:35px}.mark{position:absolute;left:0;top:18px;width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:9px;height:9px;border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
-.toggle,.extract,.exclude{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:var(--qqj-radius-control);min-height:32px;cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);align-items:center;gap:6px}.actions{display:flex;align-items:center;gap:1px}.title{min-width:0;font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{justify-self:start;min-width:0;max-width:100%;padding:1px 6px;border-radius:999px;font-size:10.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{background:color-mix(in srgb,#56a875 18%,transparent)}.status.running{background:color-mix(in srgb,#4c9bd1 18%,transparent)}.status.review{background:color-mix(in srgb,#d79a35 19%,transparent)}.status.error{background:color-mix(in srgb,#c84a46 17%,transparent)}
-.extract,.exclude{width:32px;height:32px;padding:0;display:grid;place-items:center}.extract[hidden],.exclude[hidden]{display:none}.extract:disabled,.exclude:disabled{cursor:default;opacity:.42}.exclude[aria-pressed="true"]{background:color-mix(in srgb,var(--qqj-inline-knot) 14%,transparent);color:var(--qqj-inline-knot)}.icon{display:block;width:16px;height:16px;flex:none}.toggle:focus-visible,.extract:focus-visible,.exclude:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
-.body{padding:4px 6px 9px 3px;font-size:13px;line-height:1.75;overflow-wrap:anywhere}.body[hidden],.facts[hidden],.summary[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:11px;line-height:1.5;opacity:.68}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:13px;line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.body > .error{margin:7px 0 0;color:#a8322f;font-size:11px;line-height:1.55;white-space:pre-wrap}
-@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.actions{gap:0}.extract,.exclude{width:28px;height:30px}.body{padding-left:2px}.title{font-size:11.5px}.status{font-size:10px}}
+:host{--qqj-color-text:currentColor;--qqj-color-muted:var(--qqj-inline-soft,currentColor);--qqj-color-accent:var(--qqj-inline-knot);--qqj-color-danger:var(--qqj-inline-error);--qqj-color-success:var(--qqj-inline-success);--qqj-color-surface:var(--panel,transparent);--qqj-color-line:var(--qqj-inline-line);display:block;max-width:100%;box-sizing:border-box;color:inherit;font:inherit;font-family:var(--qqj-custom-font,inherit);background:transparent;text-shadow:none;--qqj-inline-knot:#a8322f;--qqj-inline-line:color-mix(in srgb,currentColor 18%,transparent)}
+:host([hidden]){display:none}\n*,*::before,*::after{box-sizing:border-box}.card{position:relative;margin:8px 0 2px;padding:1px 5px 2px 10px;max-width:100%;color:inherit;background:transparent;border:1px solid var(--qqj-inline-line);border-left:2px solid var(--qqj-inline-knot);border-radius:var(--qqj-radius-card)}
+.head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px;min-height:var(--qqj-control-height)}.mark{position:absolute;left:0;top:calc(18px * var(--qqj-ui-scale,1));width:0;height:0;z-index:1;color:var(--qqj-inline-knot);pointer-events:none}.knot{position:absolute;left:-5px;top:-5px;width:calc(9px * var(--qqj-ui-scale,1));height:calc(9px * var(--qqj-ui-scale,1));border:1.5px solid currentColor;transform:rotate(45deg);border-radius:1px;background:transparent}.knot::after{content:"";position:absolute;inset:2px;background:currentColor;border-radius:1px}
+.toggle,.extract,.exclude{font:inherit;color:inherit;background:none;border:0;box-shadow:none;border-radius:var(--qqj-radius-control);min-height:var(--qqj-icon-size);cursor:pointer}.toggle{min-width:0;text-align:left;padding:2px 3px;display:flex;flex-wrap:wrap;align-items:center;gap:var(--qqj-space-small)}.actions{display:flex;align-items:center;gap:1px}.title{min-width:0;font-size:var(--qqj-font-body);font-weight:600;line-height:1.5;white-space:normal;overflow-wrap:anywhere}.status{justify-self:start;min-width:0;max-width:100%;display:inline-flex;align-items:center;min-height:var(--qqj-badge-height);padding:var(--qqj-badge-pad-y) var(--qqj-badge-pad-x);border:1px solid transparent;border-radius:var(--qqj-radius-pill);font-size:var(--qqj-font-meta);line-height:var(--qqj-badge-line);white-space:normal;overflow-wrap:anywhere;background:color-mix(in srgb,currentColor 9%,transparent);color:inherit}.status.ready{color:var(--qqj-color-success);background:color-mix(in srgb,var(--qqj-inline-success) 10%,transparent)}.status.running{color:var(--qqj-color-accent);background:color-mix(in srgb,var(--qqj-inline-knot) 10%,transparent)}.status.review{color:var(--qqj-color-danger);background:color-mix(in srgb,var(--qqj-inline-error) 10%,transparent)}.status.error{color:var(--qqj-color-danger);background:color-mix(in srgb,var(--qqj-inline-error) 10%,transparent)}
+.extract,.exclude{color:var(--qqj-control-fg,var(--qqj-action-color));background:var(--qqj-control-bg,transparent);width:var(--qqj-icon-size);height:var(--qqj-icon-size);padding:0;display:grid;place-items:center}.extract[hidden],.exclude[hidden]{display:none}.extract:disabled,.exclude:disabled{cursor:default;opacity:var(--qqj-disabled-opacity)}.exclude[aria-pressed="true"]{background:var(--qqj-control-bg,var(--qqj-selected-background));color:var(--qqj-control-fg,var(--qqj-action-color))}.icon{display:block;width:calc(16px * var(--qqj-ui-scale,1));height:calc(16px * var(--qqj-ui-scale,1));flex:none}.toggle:focus-visible,.extract:focus-visible,.exclude:focus-visible{outline:2px solid var(--qqj-inline-knot);outline-offset:1px}
+.body{padding:4px 6px 9px 3px;font-size:var(--qqj-font-body);line-height:1.75;overflow-wrap:anywhere}.body[hidden],.facts[hidden],.summary[hidden]{display:none}.facts{display:grid;gap:0;margin:0;font-size:var(--qqj-font-meta);line-height:1.5;color:var(--qqj-inline-soft)}.meta-row{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}.summary{margin:10px 0 0;font-size:var(--qqj-font-body);line-height:1.75;white-space:pre-wrap}.assistant .summary{padding-top:10px;border-top:1px solid var(--qqj-inline-line)}.body > .error{margin:7px 0 0;color:var(--qqj-inline-error);font-size:var(--qqj-font-caption);line-height:1.55;white-space:pre-wrap}
+@media(max-width:360px){.card{padding-left:8px}.head{grid-template-columns:minmax(0,1fr) auto;gap:2px}.toggle{gap:4px;padding-inline:2px}.actions{gap:0}.body{padding-left:2px}}
 @media(prefers-reduced-motion:reduce){.toggle,.extract,.exclude{transition-duration:0s!important;scroll-behavior:auto}}
 `;
 
@@ -80,7 +80,7 @@ function createIcon(documentRef, kind) {
 
 function createCard(documentRef, host, kind, expanded, onToggle, onExtract, onExclude) {
   const root = host.attachShadow({ mode: 'open' });
-  const style = documentRef.createElement('style'); style.textContent = scaleCssFontSizes(INLINE_STYLE, '--qqj-inline-fixed-scale');
+  const style = documentRef.createElement('style'); style.textContent = scaleCssSpacing(scaleCssFontSizes(INLINE_STYLE, '--qqj-inline-fixed-scale'));
   const card = documentRef.createElement('article'); card.className = `card ${kind}`;
   const head = documentRef.createElement('div'); head.className = 'head';
   const mark = documentRef.createElement('span'); mark.className = 'mark'; mark.setAttribute?.('aria-hidden', 'true');
@@ -168,6 +168,7 @@ function statusTone(projection) {
 }
 
 function patchView(view, projection, documentRef, sourceIndex, groupExpanded) {
+  view.host.hidden = projection.hideCard === true;
   if (projection.kind === 'user') {
     view.projection = projection;
     view.labelTitle = '千千结 · 本轮召回'; setText(view.title, view.labelTitle); view.title.title = view.labelTitle;
@@ -223,8 +224,8 @@ export function createInlineRenderer({
   let unsubscribeMemory = null, unsubscribeRecall = null;
   let showRecall = true, showMemory = true;
   const visibleRole = role => role === 'user' ? showRecall : role === 'assistant' && showMemory;
-  let palette = Object.freeze({ knot: '#a8322f', line: 'color-mix(in srgb,currentColor 18%,transparent)' });
-  let fontScale = 1;
+  let palette = Object.freeze({ soft: 'currentColor', panel: 'transparent', success: '#3d6f55', error: '#b63745', knot: '#a8322f', line: 'color-mix(in srgb,currentColor 18%,transparent)' });
+  let fontScale = 1, uiScale = 1, fontFamily = '', fontCssUrl = '';
   const receiptCache = new WeakMap();
   const owner = {};
   let historicalBatch = null;
@@ -236,6 +237,23 @@ export function createInlineRenderer({
     setStyleProperty(host?.style, '--qqj-inline-knot', palette.knot);
     setStyleProperty(host?.style, '--qqj-inline-line', palette.line);
     setStyleProperty(host?.style, '--qqj-inline-fixed-scale', String(fontScale));
+    setStyleProperty(host?.style, '--qqj-ui-scale', String(uiScale));
+    setStyleProperty(host?.style, '--qqj-inline-soft', palette.soft);
+    setStyleProperty(host?.style, '--panel', palette.panel);
+    setStyleProperty(host?.style, '--qqj-inline-success', palette.success);
+    setStyleProperty(host?.style, '--qqj-inline-error', palette.error);
+    for (const [role, color] of Object.entries({ text: 'currentColor', muted: palette.soft, accent: palette.knot, danger: palette.error, success: palette.success, surface: palette.panel, line: palette.line })) setStyleProperty(host?.style, `--qqj-color-${role}`, color);
+    setStyleProperty(host?.style, '--qqj-custom-font', fontFamily ? `"${fontFamily}"` : 'inherit');
+    const root = host?.shadowRoot;
+    if (root) {
+      const old = root.querySelector?.('link[data-qqj-inline-font]');
+      if (!fontCssUrl) old?.remove?.();
+      else if (old?.href !== fontCssUrl) {
+        old?.remove?.();
+        const link = documentRef.createElement('link'); link.rel = 'stylesheet'; link.href = fontCssUrl;
+        link.setAttribute?.('data-qqj-inline-font', 'true'); root.append(link);
+      }
+    }
   };
 
   const clearRetry = () => { if (timer !== null) { windowRef?.clearTimeout?.(timer); timer = null; } observer?.disconnect?.(); observer = null; attempt += 1; };
@@ -294,9 +312,9 @@ export function createInlineRenderer({
         anchor.append(host);
       }
       host.__qqjInlineOwner = owner;
-      applyPalette(host);
       const stateKey = cardKey(chatKey, messageIndex, kind);
       view = host.__qqjInlineCard ?? createCard(documentRef, host, kind, expanded.get(stateKey) === true, onToggle, onExtract, onExclude);
+      applyPalette(host);
       view.stateKey = stateKey; view.kind = kind; cards.set(messageIndex, view);
     }
     view.messageIndex = messageIndex;
@@ -529,9 +547,16 @@ export function createInlineRenderer({
     schedule();
   }
   function setAppearance(value) {
+    fontCssUrl = typeof value?.fontCssUrl === 'string' ? value.fontCssUrl : '';
+    fontFamily = fontCssUrl && typeof value?.family === 'string' ? value.family.replace(/["\\\r\n]/gu, ' ').replace(/\s+/gu, ' ').trim() : '';
     fontScale = Number.isFinite(Number(value?.fixedScale)) ? Number(value.fixedScale) : 1;
+    uiScale = Number.isFinite(Number(value?.scale)) ? Number(value.scale) : Number.isFinite(Number(value?.fixedScale)) ? Number(value.fixedScale) * 0.85 : 1;
     palette = Object.freeze({
       knot: paletteColor(value?.palette?.knot, '#a8322f'),
+      soft: paletteColor(value?.palette?.soft, 'currentColor'),
+      panel: paletteColor(value?.palette?.panel, 'transparent'),
+      success: paletteColor(value?.palette?.success, '#3d6f55'),
+      error: paletteColor(value?.palette?.crimson, '#b63745'),
       line: paletteColor(value?.palette?.line, 'color-mix(in srgb,currentColor 18%,transparent)'),
     });
     for (const view of cards.values()) applyPalette(view.host);

@@ -11,6 +11,7 @@ import { createCompactApiClient } from '../src/compact-api-client.js';
 import { buildEntityIdentityDirectory, deriveUserIdentityProjection, normalizeIdentityProjection, reuseIdentityProjection } from '../src/v3/entity-identity.js';
 import { projectMemoryPersonEntities } from '../src/v3/memory-runtime.js';
 import { createAvatarGenerator, DEFAULT_AVATAR_PROMPT } from '../src/avatar-generation.js';
+import { createAvatarImageStore } from '../src/avatar-image-store.js';
 import { createSettingsStore } from '../src/settings.js';
 import { createPluginActivity } from '../src/plugin-activity.js';
 import { scanWorldInfo } from '../src/world-info-scanner.js';
@@ -42,7 +43,7 @@ function backend() {
 function entity(id, name, extra = {}) {
   return { id, entityType: 'person', displayName: name, aliases: [{ name: `${name}别名` }], specialRole: 'none', firstSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', lastSeenFloorId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'established', recordStatus: 'active', ...extra };
 }
-function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, scanner = null, profilePromptGuidance = () => '', processingPrompt = () => '', avatarGenerator = null, avatarPrompt = () => '', avatarImageStore = null, prequel = '', foundationState = null } = {}) {
+function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many = false, permissionSettings = null, sourceCandidates = null, scanner = null, profilePromptGuidance = () => '', processingPrompt = () => '', avatarGenerator = null, avatarPrompt = () => '', avatarImageStore = null, prequel = '', foundationState = null, contextProvider = null } = {}) {
   const db = backend(), foundationRecords = new Map(); let hostChat = [], foundationReadHook = null, mainGenerationActive = true, identity = { chatId: CHAT_A, hostChatId: 'host-a', characterLocator: 'char.png', personaLocator: 'persona.png' }, currentPrequel = prequel;
   const peopleEntities = ids.slice(0, many ? 12 : 4).map((id, index) => entity(id, `人物${index + 1}`));
   let reachable = {
@@ -67,7 +68,7 @@ function harness({ generate = async () => ({ jsonData: { profiles: [] } }), many
       filterCandidates({ chatId, candidates }) { sourceTrace.push(['filter', chatId, candidates.map(item => item.id)]); return permissionSettings ? filterSourcesByPermission({ chatId, candidates, settings: permissionSettings }) : candidates.filter(item => item.id !== 'worldbook:excluded'); },
       filterWorldInfoSources(sources) { return filterWorldInfoSourcesByPermission({ sources, settings: permissionSettings ?? {} }); },
     },
-    contextProvider: () => ({ chat: [], marker: identity.chatId, chatMetadata: currentPrequel ? { qianqianjiePrequel: currentPrequel } : {} }),
+    contextProvider: contextProvider ?? (() => ({ chat: [], marker: identity.chatId, chatMetadata: currentPrequel ? { qianqianjiePrequel: currentPrequel } : {} })),
     isMainGenerationActive: () => mainGenerationActive,
     scanner: scanner ?? (async (context, options) => { sourceTrace.push(['scan', context.marker, options]); return { entries: [{ content: '<secret>DROP</secret><content>ALLOWED</content>' }, { content: 'EXCLUDED' }] }; }),
     sourceCandidateFactory: async catalog => { sourceTrace.push(['candidates', catalog.entries.length]); return sourceCandidates ?? [{ id: 'worldbook:allowed', kind: 'worldbook', world: '允许书', label: '允许条目', content: catalog.entries[0].content }, { id: 'worldbook:excluded', kind: 'worldbook', world: '排除书', label: '排除条目', content: catalog.entries[1].content }]; },
@@ -383,7 +384,7 @@ test('人物资料业务指导可替换且准备期仅保留固定任务合同',
   assert.match(custom, /build（体型）：身体骨架、体态、比例/);
   assert.match(custom, /occupation（职业）：人物从事的职业/);
   assert.match(custom, /personality（核心性格）：跨情境较稳定/);
-  assert.equal(PEOPLE_PROFILE_FIELDS.length, 27);
+  assert.equal(new Set(PEOPLE_PROFILE_FIELDS).size, PEOPLE_PROFILE_FIELDS.length);
   assert.deepEqual(Object.keys(PEOPLE_PROFILE_DEFINITIONS), PEOPLE_PROFILE_FIELDS);
   assert.ok(PEOPLE_PROFILE_FIELDS.every(field => PEOPLE_PROFILE_LABELS[field] && PEOPLE_PROFILE_DEFINITIONS[field]));
   assert.equal(custom.split(BASE_PROCESSING_PROMPT).length - 1, 0);
@@ -2283,7 +2284,7 @@ test('真实人物runtime生成头像使用最新保存提示词且不写头像�
   await h.runtime.saveProfile(ids[0],{notes:'生成中仍可手动编辑'});assert.equal(activity.getState().busy,true);
   release();assert.equal((await first).dataUrl,'data:image/png;base64,AAAA');assert.equal(activity.getState().busy,false);
   await h.runtime.saveProfile(ids[0],{clothingStyle:'青色长衫'},{manualFields:['clothingStyle']});
-  settings.update({avatarPrompt:'new composition'});const second=h.runtime.generateAvatar(ids[0],{character:choice.characters[0]});assert.equal(requests[1].prompt,'new composition');assert.equal(requests[1].characters[0].nl,'外貌. Clothing reference: 青色长衫');release();await second;
+  settings.update({avatarPrompt:'new composition'});const second=h.runtime.generateAvatar(ids[0],{character:choice.characters[0]});assert.equal(requests[1].prompt,'new composition');assert.ok(requests[1].characters[0].nl.startsWith('Outfit for this image:'));assert.ok(requests[1].characters[0].nl.endsWith('Clothing reference (verbatim): 青色长衫. 外貌'));release();await second;
   await h.runtime.saveProfile(ids[0],{clothingStyle:''},{manualFields:['clothingStyle']});
   settings.update({avatarPrompt:''});const third=h.runtime.generateAvatar(ids[0],{character:choice.characters[0]});assert.equal(requests[2].prompt,DEFAULT_AVATAR_PROMPT);assert.equal(requests[2].characters[0].nl,'外貌');release();await third;
   let saved;h.db.hooks.beforePut=async()=>{await new Promise(resolve=>{saved=resolve;});};
@@ -2291,6 +2292,23 @@ test('真实人物runtime生成头像使用最新保存提示词且不写头像�
   api.generate=async()=>{throw new Error('渠道拒绝');};await assert.rejects(h.runtime.generateAvatar(ids[0],{character:choice.characters[0]}),/渠道拒绝/);assert.equal(activity.getState().busy,false);
   assert.equal(h.runtime.getPeopleAvatars([ids[0],ids[1]]).avatarsByEntityId[ids[0]],'data:image/webp;base64,Q1JPUA==');assert.equal(textRequests,0);assert.ok(phases.some(state=>!state.busy));
   activity.dispose();h.runtime.destroy();
+});
+
+test('生成头像按发起卡名保存，生成期间改卡名不按NPC或新卡名归组',async()=>{
+  let cardName='卡A',release;
+  const uploads=[],imageStore=createAvatarImageStore({uuid:()=> 'card-snapshot',fetchImpl:async(_url,options)=>{
+    const body=JSON.parse(options.body);uploads.push(body);return {ok:true,json:async()=>({path:`/user/images/${body.ch_name}/${body.filename}`})};
+  }});
+  const h=harness({contextProvider:()=>({name2:cardName}),avatarImageStore:imageStore,
+    avatarGenerator:{prepare:()=>({}),generate:async()=>{await new Promise(resolve=>{release=resolve;});return {dataUrl:'data:image/png;base64,AAAA'};}}});
+  await h.seedSelectedWithoutProgress([]);
+  const resultPromise=h.runtime.generateAvatar(ids[0],{character:{name:'NPC B',tag:'appearance'}});
+  cardName='卡C';release();const result=await resultPromise;
+  assert.equal(result.galleryCharacterName,'卡A');assert.equal(uploads.length,0,'预览前生成不上传');
+  await h.runtime.saveAvatar(ids[0],'data:image/webp;base64,AAAA',{generated:true,galleryCharacterName:result.galleryCharacterName,originalFile:new Blob(['original'],{type:'image/png'})});
+  assert.equal(uploads.length,1);assert.equal(uploads[0].ch_name,'柏宝绘_卡A');
+  assert.equal(h.runtime.getState().people.find(p=>p.entityId===ids[0]).avatarSource.path,'/user/images/'+encodeURIComponent('柏宝绘_卡A')+'/qqj-avatar-card-snapshot.png');
+  h.runtime.destroy();
 });
 
 test('完整头像原图上传贯穿savingAvatar并随小图取景保存，公开头像仍为同步小图',async()=>{
@@ -2323,7 +2341,7 @@ test('完整原图上传成功但工作区失败时保旧头像，同预览重�
 });
 
 test('原图小描述随真实people复制与冻结快照保留，不读取或删除图片资产',async()=>{
-  const h=harness();await h.seedSelectedWithoutProgress([]);const source={path:'/user/images/柏宝绘_千千结头像/qqj-avatar-shared.png',mimeType:'image/png'};
+  const h=harness();await h.seedSelectedWithoutProgress([]);const source={path:'/user/images/'+encodeURIComponent('柏宝绘_卡名 # %20')+'/qqj-avatar-shared.png',mimeType:'image/png'};
   const crop={aspectRatio:0.8,zoom:1.5,offsetX:12,offsetY:-3};await h.runtime.saveAvatar(ids[0],'data:image/webp;base64,QUFB',{originalRef:source,crop});
   const store=createPeopleWorkspaceStore({client:h.db.client}),sourceIdentity={chatId:CHAT_A},targetIdentity={chatId:CHAT_B},current=await store.read(sourceIdentity);
   const archived=await store.putSnapshot(sourceIdentity,{sourceChatId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',sourceRevision:current.revision,workspace:current.data});
@@ -2613,4 +2631,67 @@ test('人物同QQJ聊天改native坐标仍互斥，只有不同chatId可并行',
     assert.equal(result.profilesByEntityId[ids[0]].notes, '原任务完成'); assert.equal(h.runtime.getActivityState().busy, false);
     h.runtime.destroy();
   });
+});
+
+const expandedProfileValues = {
+  bloodType: 'AB型', zodiac: '天秤座', weight: '61公斤', nationality: '架空国籍：北境联邦', birthplace: '临川', residence: '常住松风镇',
+  languages: '通用语；北境语（日常交流）', skills: '修理钟表；熟悉9毫米口径武器的保养', mbti: 'INFJ', enneagram: '5w4', alignment: '中立善良',
+};
+
+test('扩展资料字段在同次原请求接收保存读回，手工新字段及空值继续优先', async () => {
+  let calls = 0, request;
+  const h = harness({ profilePromptGuidance: () => '使用简短人物档案文风', generate: async options => {
+    calls++; request = JSON.parse(options.taskMessages[0].content);
+    for (const field of Object.keys(expandedProfileValues)) assert.match(options.systemPrompt, new RegExp(`${field}（`, 'u'), `${field}定义应进入自定义指导之后的固定合同`);
+    return { jsonData: { profiles: [{ personKey: 'person-1', ...expandedProfileValues, bloodType: 'O型', mbti: 'ENTP', birthday: '10月25日', personality: '回避冲突，偏好协商', notes: '模型试改人工备注' }] } };
+  } });
+  const id = h.peopleEntities[0].id; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]);
+  await h.runtime.saveProfile(id, { name: '人物1', bloodType: 'A型', mbti: 'INFJ', notes: '手工保留的独立事实' }, { manualFields: [] });
+  await h.runtime.saveProfile(id, { bloodType: '', mbti: 'INTJ', notes: '人工备注含空字段保护' }, { manualFields: ['bloodType', 'mbti', 'notes'] });
+  await h.runtime.regenerateProfile(id);
+  let profile = h.runtime.getState().profilesByEntityId[id];
+  for (const [field, value] of Object.entries(expandedProfileValues)) if (!['bloodType', 'mbti'].includes(field)) assert.equal(profile[field], value, field);
+  assert.equal(profile.bloodType, ''); assert.equal(profile.mbti, 'INTJ'); assert.equal(profile.notes, '人工备注含空字段保护');
+  assert.equal(profile.personality, '回避冲突，偏好协商'); assert.match(profile.skills, /9毫米口径/);
+  assert.equal(request.people[0].manualProfile.bloodType, ''); assert.equal(request.people[0].manualProfile.mbti, 'INTJ');
+  h.runtime.invalidate(); await h.runtime.refresh(); profile = h.runtime.getState().profilesByEntityId[id];
+  assert.equal(profile.nationality, expandedProfileValues.nationality); assert.equal(profile.bloodType, ''); assert.equal(calls, 1);
+});
+
+test('资料事实合同在默认及自定义指导中生效，旧混排资料在原一次重整中拆项并保独立事实', async () => {
+  let calls = 0, request;
+  const h = harness({ profilePromptGuidance: () => '沿用我的排版习惯', generate: async options => {
+    calls++; request = JSON.parse(options.taskMessages[0].content);
+    assert.ok(/所有字段只写人物事实/u.test(options.systemPrompt), '自定义指导后仍缺全字段事实合同');
+    assert.ok(/不能仅用年份相减/u.test(options.systemPrompt), '缺故事时点与生日边界合同');
+    assert.ok(/同一次整理/u.test(options.systemPrompt), '缺原同次整理拆分旧字段合同');
+    return { jsonData: { profiles: [{ personKey: 'person-1', birthday: '2011年10月25日', age: '24岁（2036年3月）',
+      bloodType: 'AB型', zodiac: '天秤座', mbti: 'INFJ', notes: '随身保管家传铜哨', personality: '回避冲突，遇分歧先协商', hair: '现在留及肩卷发；服役时剃平头' }] } };
+  } });
+  h.setReachable({ ...h.reachable, baseline: { ...h.reachable.baseline, characterCard: { ...h.reachable.baseline.characterCard,
+    description: '人物1出生于2011年10月25日，2036年3月为24岁。明确设定血型AB型、星座天秤座、MBTI INFJ。随身保管家传铜哨。现在留及肩卷发，服役时剃平头。' } } });
+  const id = h.peopleEntities[0].id; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]);
+  const notes = '人物卡记载2011-10-25出生；2036年节点记为24岁，年龄推算存在来源差异。血型AB型；星座天秤座。随身保管家传铜哨';
+  await h.runtime.saveProfile(id, { name: '人物1', notes, personality: 'MBTI INFJ；回避冲突，遇分歧先协商', hair: '人物卡记载及肩卷发；另一条目记载服役时剃平头' }, { manualFields: [] });
+  await h.runtime.regenerateProfile(id);
+  const profile = h.runtime.getState().profilesByEntityId[id];
+  assert.equal(request.people[0].existingProfile.notes, notes); assert.match(request.people[0].existingProfile.personality, /INFJ/);
+  assert.equal(profile.bloodType, 'AB型'); assert.equal(profile.mbti, 'INFJ'); assert.equal(profile.notes, '随身保管家传铜哨');
+  assert.equal(profile.hair, '现在留及肩卷发；服役时剃平头'); assert.equal(profile.personality, '回避冲突，遇分歧先协商'); assert.equal(calls, 1);
+});
+
+test('旧1/2/3资料读取将新字段补为空且不写盘，旧人工六字段不扩锁', async () => {
+  for (const schemaVersion of [1, 2, 3]) {
+    const h = harness(); const id = h.peopleEntities[0].id; await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([id]);
+    const record = h.db.records.get(`chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`);
+    record.data.schemaVersion = schemaVersion;
+    record.data.profilesByEntityId[id] = { entityId: id, name: '旧名', aliases: '', background: '旧背景', appearance: '', personality: '旧性格', notes: '独立旧事实',
+      ...(schemaVersion === 1 ? {} : { manualFields: ['notes'] }), source: 'manual', createdAt: '2026-09-06T00:00:00.000Z', updatedAt: '2026-09-06T00:00:00.000Z' };
+    const before = JSON.stringify(record), puts = h.db.calls.filter(call => call[0] === 'put').length;
+    h.runtime.invalidate(); await h.runtime.refresh();
+    const profile = h.runtime.getState().profilesByEntityId[id];
+    for (const field of Object.keys(expandedProfileValues)) assert.equal(profile[field], '', `${schemaVersion}/${field}`);
+    assert.equal(profile.notes, '独立旧事实'); assert.equal(JSON.stringify(record), before); assert.equal(h.db.calls.filter(call => call[0] === 'put').length, puts);
+    assert.deepEqual(profile.manualFields, schemaVersion === 1 ? ['name', 'aliases', 'background', 'appearance', 'personality', 'notes'] : ['notes']);
+  }
 });

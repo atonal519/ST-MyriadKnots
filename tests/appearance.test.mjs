@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { applyAppearance, createAppearanceController, resolveAppearance } from '../src/ui/appearance.js';
-import { fixedFontScale, scaleCssFontSizes } from '../src/ui/font-scale.js';
+import { fixedFontScale, scaleCssFontSizes, scaleCssSpacing } from '../src/ui/font-scale.js';
 
 test('面板标题与人物名沿用用户字体，不再由固定宋体覆盖', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.doesNotMatch(css, /宋体,"Songti SC",serif/u);
   assert.equal(css.match(/var\(--qqj-custom-font,inherit\),-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif/gu)?.length, 23);
-  assert.match(css, /\.primary-action\{[^}]*color:var\(--on-primary,#fff\)/u);
+  assert.match(css, /\.primary-action\{[^}]*color:var\(--qqj-control-fg,var\(--qqj-color-on-accent\)\)/u);
 });
 
 test('外观仅写千千结 host 与其 Shadow Root 字体链接', () => {
@@ -29,19 +29,18 @@ test('外观仅写千千结 host 与其 Shadow Root 字体链接', () => {
   assert.deepEqual(unrelated, {});
 });
 
-test('固定字号以85%为旧版基线，面板根字号仍按滑杆值缩放', async () => {
+test('共享字号不重复乘旧倍率，旧调用的固定字号缩放保持兼容', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   const scaled = scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true);
-  assert.match(scaled, /font:700 calc\(19px \* var\(--qqj-ui-fixed-scale,1\)\)\/1/u);
-  assert.match(scaled, /font-size:calc\(8px \* var\(--qqj-ui-fixed-scale,1\)\)/u);
+  assert.match(scaled, /font:700 calc\(22px \* var\(--qqj-ui-scale,1\)\)\/1/u);
+  assert.match(scaled, /font-size:var\(--qqj-font-meta\)/u);
   assert.match(scaled, /:host\{[^}]*font:calc\(13px \* var\(--qqj-ui-scale,1\)\)/u);
-  const summaryHeading = /\.settings-sub-summary h4\{[^}]*font:600 calc\((\d+(?:\.\d+)?)px \* var\(--qqj-ui-fixed-scale,1\)\)\/calc\((\d+(?:\.\d+)?)px \* var\(--qqj-ui-fixed-scale,1\)\)/u.exec(scaled);
-  assert.deepEqual(summaryHeading?.slice(1).map(Number), [13, 20]);
+  assert.match(scaled, /font:600 var\(--qqj-font-subheading\)\/var\(--qqj-control-line\)/);
   assert.doesNotMatch(scaled, /font-size:\d+(?:\.\d+)?px/u);
   const important = scaleCssFontSizes('.tab{font-size:14px!important}.label{font-size:11px !important}');
   assert.match(important, /font-size:calc\(14px \* var\(--qqj-ui-fixed-scale,1\)\)!important/u);
   assert.match(important, /font-size:calc\(11px \* var\(--qqj-ui-fixed-scale,1\)\) !important/u);
-  assert.match(await readFile(new URL('../src/ui/gouhua-dialog-style.js', import.meta.url), 'utf8'), /--sp-scale:var\(--qqj-dialog-scale,1\)/u);
+  assert.match(await readFile(new URL('../src/ui/gouhua-dialog-style.js', import.meta.url), 'utf8'), /--sp-scale:var\(--qqj-ui-scale,1\)/u);
   for (const [slider, expectedRatio] of [[0.75, 0.75 / 0.85], [0.85, 1], [1, 1 / 0.85], [1.5, 1.5 / 0.85]]) {
     assert.equal(fixedFontScale(slider), expectedRatio);
     assert.equal(19 * fixedFontScale(slider) / (slider / 0.85), 19, '固定字号相对旧版85%基线保持单调比例');
@@ -213,5 +212,36 @@ test('auto palette 合成 HEX alpha，手动主题仍用固定按钮前景', () 
   assert.equal(opaque.palette.thread, '#121314', '不透明用户颜色仍直接使用');
   assert.equal(opaque.palette.onPrimary, '#fff', '深色强调底色使用白色按钮文字');
   assert.equal(resolveAppearance({ value: { appearanceTheme: 'day' }, documentRef, windowRef }).palette.onPrimary, '#fff');
-  assert.equal(resolveAppearance({ value: { appearanceTheme: 'night' }, documentRef, windowRef }).palette.onPrimary, '#fff');
+  assert.equal(resolveAppearance({ value: { appearanceTheme: 'night' }, documentRef, windowRef }).palette.onPrimary, '#22282b');
+});
+
+test('几何缩放只处理内容间距，保视口断点、细边框和已计算token，且不重复放大', () => {
+  const source = '@media(max-width:390px){.row{padding:4px 8px;gap:6px;margin-top:-2px;border:1px solid red;min-height:var(--qqj-control-height);border-radius:var(--qqj-radius-control)}}';
+  const scaled = scaleCssSpacing(source);
+  assert.match(scaled, /@media\(max-width:390px\)/);
+  assert.match(scaled, /padding:calc\(4px \* var\(--qqj-ui-scale,1\)\) calc\(8px \* var\(--qqj-ui-scale,1\)\)/);
+  assert.match(scaled, /gap:calc\(6px \* var\(--qqj-ui-scale,1\)\)/);
+  assert.match(scaled, /margin-top:calc\(-2px \* var\(--qqj-ui-scale,1\)\)/);
+  assert.match(scaled, /border:1px solid red/);
+  assert.match(scaled, /min-height:var\(--qqj-control-height\)/);
+  assert.equal(scaleCssSpacing(scaled), scaled);
+});
+
+test('固定夜间主按钮沿同一强调色计算可读前景', () => {
+  assert.equal(resolveAppearance({ value: { appearanceTheme: 'night' } }).palette.onPrimary, '#22282b');
+});
+
+test('固定日间及auto回落的状态文字在本身浅色背景上可读', () => {
+  const rgb = hex => [1, 3, 5].map(index => Number.parseInt(hex.slice(index, index + 2), 16));
+  const luminance = channels => channels.reduce((sum, channel, index) => { const value = channel / 255; return sum + (value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4) * [.2126, .7152, .0722][index]; }, 0);
+  const windowRef = { matchMedia: () => ({ matches: true }) };
+  for (const mode of ['day', 'auto']) {
+    const { palette } = resolveAppearance({ value: { appearanceTheme: mode }, windowRef });
+    for (const name of ['blue', 'success']) {
+      const ink = rgb(palette[name]), paper = rgb(palette.panel);
+      const background = ink.map((value, index) => .1 * value + .9 * paper[index]);
+      const levels = [luminance(ink), luminance(background)].sort((left, right) => left - right);
+      assert.ok((levels[1] + .05) / (levels[0] + .05) >= 4.5, `${mode} ${name}需满足正文小字对比度`);
+    }
+  }
 });

@@ -174,10 +174,18 @@ export async function projectFoundationPrefix({ source, floors, excludedFloorIds
   return Object.freeze({ floorMemories, stateDeltas, entities, baseline, currentState, capabilities });
 }
 
-export async function buildFoundationIndexes({ chatId, narrativeGeneration, checkpointId, floors, candidates, now }) {
+export async function buildFoundationIndexes({ chatId, narrativeGeneration, checkpointId, floors, candidates = [], existingIndexes = [], now }) {
   const records = [];
   const add = async (kind, shard, entries) => {
     if (!entries.length) return;
+    const existing = existingIndexes.find(index => index?.chatId === chatId
+      && index?.narrativeGeneration === narrativeGeneration
+      && index?.kind === kind && index?.shard === shard
+      && JSON.stringify(index.entries) === JSON.stringify(entries));
+    if (existing) {
+      records.push(existing);
+      return;
+    }
     records.push(validateFoundationIndex({
       ...commonRecord({ recordType: 'index', id: await deterministicUuid(['index', checkpointId, kind, shard, entries]), chatId, narrativeGeneration, now }),
       kind, shard, sourceCheckpointId: checkpointId, entries, entryCount: entries.length,
@@ -1318,7 +1326,7 @@ export function createFoundationRuntime({
     return publishOperation(operation, 'ready');
   }
 
-  async function reconcile(reason = 'manualRefresh', { confirmLatest = false, stableThrough = null, tailDeletion = null, manualConfirmation = null, verifyRoot = false } = {}) {
+  async function reconcile(reason = 'manualRefresh', { confirmLatest = false, stableThrough = null, tailDeletion = null, manualConfirmation = null, verifyRoot = false, allowEmptyInitialize = false } = {}) {
     if (!enabled()) return publish('disabled');
     if (activeOperation) {
       dirtyReason = reason;
@@ -1391,7 +1399,7 @@ export function createFoundationRuntime({
         }
         const stableCount = stableCountFor(candidates, loaded.floors, stableThrough, operation.manualConfirmation);
     const sourceSnapshot = await inputSnapshotForCandidates(candidates, stableCount);
-        if (!loaded.root && stableCount === 0) {
+        if (!loaded.root && stableCount === 0 && !allowEmptyInitialize) {
           emptyRealtimeObservation = Object.freeze({ chatId: operation.chatId });
           updateCandidateProjection(candidates, [], 0);
           lastRun = null;

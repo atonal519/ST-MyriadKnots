@@ -24,3 +24,11 @@ export function scaleCssFontSizes(css, variable = '--qqj-ui-fixed-scale', preser
     .replace(fontSize, (match, prefix, pixels, important = '') => `${prefix}calc(${pixels}px * var(${variable},1))${important}`);
   return hostBlocks.reduce((result, block, index) => result.replace(`__QQJ_HOST_FONT_BLOCK_${index}__`, block), scaled);
 }
+
+// Viewport constraints and physical borders stay fixed; content spacing follows the same scale as type and shapes.
+export function scaleCssSpacing(css) {
+  return String(css ?? '').replace(/([;{]\s*(?:padding|margin)(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?\s*:|[;{]\s*(?:gap|row-gap|column-gap)\s*:)([^;{}]+)/gu, (match, property, value) => {
+    if (value.includes('--qqj-ui-scale')) return match;
+    return property + value.replace(/(-?(?:\d+(?:\.\d+)?|\.\d+))px\b/gu, (_, pixels) => Number(pixels) === 0 ? '0' : `calc(${pixels}px * var(--qqj-ui-scale,1))`);
+  });
+}

@@ -20,11 +20,13 @@ for (const file of files.filter(value => /^recall-live-[0-7]\.json$/u.test(value
       active: data.active ? { pendingStep: data.active.step ?? data.active.pendingStep, lastCompletedStep: data.active.lastCompletedStep, pendingStepMs: data.active.pendingStepMs,
         currentPreparation: data.active.currentPreparation, selectorProgress: data.active.selectorProgress } : null,
       error: last?.error?.code, reasons: last?.skipReasons, vector: semantic, index: data.vector,
+      memory: data.memory, backend: data.backend,
       timings: last?.timings, injectionTokens: last?.stages?.estimatedTokenCount, injectionBudget: last?.stages?.estimatedTokenBudget,
       injected: last?.injected, persistence: last?.receiptPersistence, receiptSave: data.receiptSaveDiagnostic ?? last?.receiptSaveDiagnostic,
       lastTerminated: data.lastTerminated ? { sourceEvent: data.lastTerminated.sourceEvent, reason: data.lastTerminated.reason,
         pendingStep: data.lastTerminated.pendingStep, lastCompletedStep: data.lastTerminated.lastCompletedStep, timings: data.lastTerminated.timings } : null,
       http: data.requests?.entries });
   }
+  for (const failure of record.data.failures ?? []) if (failure.kind === 'memory') rows.push({ at: failure.capturedAt, bundle: record.data.bundleVersion, chat: anonymize(failure.chatId), kind: 'memoryFailure', memory: failure.memory });
 }
 console.log(JSON.stringify({ status: rows.length ? 'available' : 'waitingForBrowser', events: rows.sort((a, b) => a.at.localeCompare(b.at)).slice(-16) }, null, 2));

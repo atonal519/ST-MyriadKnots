@@ -1,7 +1,7 @@
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
 import { recallReceiptSelectionLimits, renderedQianshiProgressText } from '../v3/recall-runtime.js';
-import { CSE_RECALL_KNOWLEDGE_BOUNDARY } from '../v3/recall-selector.js';
+import { CSE_RECALL_KNOWLEDGE_BOUNDARY, placeRecallBlocks } from '../v3/recall-selector.js';
 
 const uniqueText = values => [...new Set(values.map(value => String(value ?? '').trim()).filter(Boolean))];
 const hasInternalTimeFields = value => /\|\s*(?:date|weekday|time)\s*=/iu.test(String(value ?? ''));
@@ -88,7 +88,7 @@ function parseHistoryBullet(line, allowedSequences, group, section, manualBlocks
   const match = /^- AI #(\d+)/u.exec(line);
   if (!match) return null;
   const assistantSeq = Number(match[1]);
-  if (!Number.isSafeInteger(assistantSeq) || assistantSeq < 1 || !allowedSequences.has(assistantSeq)) return null;
+  if (!Number.isSafeInteger(assistantSeq) || assistantSeq < 1) return null;
   let cursor = skipBalancedFullwidthParens(line, match[0].length);
   if (cursor === null || line[cursor] !== '：') return null;
   cursor += 1;
@@ -101,7 +101,8 @@ function parseHistoryBullet(line, allowedSequences, group, section, manualBlocks
     }
   }
   const text = line.slice(cursor).trim();
-  return text ? Object.freeze({ assistantSeq, text: manualArtifactText(text, manualBlocks), section }) : null;
+  const item = text ? Object.freeze({ assistantSeq, text: manualArtifactText(text, manualBlocks), section, ...(manualBlocks?.has(text) ? { manualArtifact: true } : {}) }) : null;
+  return item && (allowedSequences.has(assistantSeq) || auxiliaryRecallHistory(item)) ? item : null;
 }
 
 function splitTimeReference(injectionText) {
@@ -287,7 +288,14 @@ function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, s
     const sourceMatch = /^\[来源 AI #(\d+)(?:（.*）)?\]$/u.exec(line);
     if (sourceMatch) {
       currentSequence = Number(sourceMatch[1]); inStates = false; inProgressions = false;
-      if (!Number.isSafeInteger(currentSequence) || !allowedSequences.has(currentSequence)) return null;
+      if (!Number.isSafeInteger(currentSequence) || currentSequence < 1) return null;
+      if (!allowedSequences.has(currentSequence)) {
+        // Member-source space records can have a different carrier floor sequence.
+        const next = lines[index + 1];
+        const item = next?.startsWith('- [旧事] ') ? { text: next.slice('- [旧事] '.length).trim() }
+          : parseHistoryBullet(next ?? '', allowedSequences, 'objective', '', manualBlocks);
+        if (!item || !auxiliaryRecallHistory(item)) return null;
+      }
       continue;
     }
     if (line === STATE_HEADING || line === SAVED_STATE_HEADING) { currentSequence = null; inStates = true; continue; }
@@ -301,16 +309,34 @@ function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, s
       if (assistantSeq !== currentSequence || !selectedChanges.some(value => value.assistantSeq === assistantSeq && value.storylineId === currentLine.storylineId)) return null;
       continue;
     }
-    if (!historySequences.has(currentSequence)) return null;
     const section = currentLine.storylineId === 'recent' ? 'recent' : 'distant';
     const text = line.startsWith('- [旧事] ') ? line.slice('- [旧事] '.length).trim() : '';
-    const item = text ? Object.freeze({ assistantSeq: currentSequence, text: manualArtifactText(text, manualBlocks), section })
+    const item = text ? Object.freeze({ assistantSeq: currentSequence, text: manualArtifactText(text, manualBlocks), section, ...(manualBlocks?.has(text) ? { manualArtifact: true } : {}) })
       : parseHistoryBullet(line, allowedSequences, 'objective', section, manualBlocks);
-    if (!item || item.assistantSeq !== currentSequence) return null;
+    if (!item || item.assistantSeq !== currentSequence || !historySequences.has(currentSequence) && !auxiliaryRecallHistory(item)) return null;
     items.push(Object.freeze({ ...item, storylineId: currentLine.storylineId }));
   }
   if (storylines.length && seenLines.size !== storylines.length) return null;
   return Object.freeze(items);
+}
+
+// Frozen receipts retain the injection text, not item kinds. Only hide complete
+// program-owned wrappers after protocol parsing; manual source blocks stay literal.
+function auxiliaryRecallHistory(item) {
+  if (item.manualArtifact) return false;
+  const text = item.text.replace(/^(?:邻近背景；仅因时序相邻，不表示因果：|同人物与具体主题词关联，不表示因果：|来源关联：)/u, '');
+  if (/^当前已知地点条件：.+（来源 AI #[1-9]\d*；设施存在不代表所有人物知情）$/u.test(text)) return true;
+  if (/^有来源的历史设施（当前场地未核对）：.+（来源 AI #[1-9]\d*；设施存在不代表所有人物知情）$/u.test(text)) return true;
+  if (/^.+：当时现场：.+；不代表之后仍持续（来源楼当时 AI #[1-9]\d*）$/u.test(text)) return true;
+  if (/^.+：历史地点描述（持续性未标）：.+；未确认为当前固定设施（来源楼当时 AI #[1-9]\d*）$/u.test(text)) return true;
+  if (/^.+：(?:场所归属|所在楼层|相对位置)：.+（来源楼当时 AI #[1-9]\d*）$/u.test(text)) return true;
+  const source = text.replace(/^来源楼当时(?:（AI #[1-9]\d*）)?/u, '');
+  if (source === text) return false;
+  const body = source.replace(/；原句「[\s\S]*」$/u, '');
+  return /^地点包含：.+ 属于 .+$/u.test(body)
+    || /^确认.+当时位于.+；这是该来源楼位置，不代表之后仍在此处$/u.test(body)
+    || /^最后见到.+在.+；未确认楼末仍在此处$/u.test(body)
+    || /^记录.+已离开(?:原地点.+|原处)，去向未知；(?:.+不是当前位置|不能推定当前位置)$/u.test(body);
 }
 
 function groupRecallHistory(historyItems, selectedFloors) {
@@ -442,7 +468,7 @@ export function projectInlineRecallReceipt(receipt) {
     assistantSeq: Number.isSafeInteger(value?.assistantSeq) && value.assistantSeq > 0 ? value.assistantSeq : null,
     reasons: Object.freeze((Array.isArray(value?.reasons) ? value.reasons : []).slice(0, 32).map(reason => String(reason).slice(0, 500))),
   })));
-  const floorCount = new Set(selectedFloors.map(value => value.floorId).filter(Boolean)).size;
+  const selectedFloorCount = new Set(selectedFloors.map(value => value.floorId).filter(Boolean)).size;
   const stateItems = Object.freeze((safeShape ? rawStates : []).map(value => {
     const subject = frozenText(value?.subject, 500), toward = frozenText(value?.toward, 500), text = frozenText(value?.text);
     const stateId = frozenText(value?.stateId, 500), sourceFloorId = frozenText(value?.sourceFloorId, 500), sourceDeltaId = frozenText(value?.sourceDeltaId, 500);
@@ -481,6 +507,10 @@ export function projectInlineRecallReceipt(receipt) {
   const injectionText = typeof receipt.injectionText === 'string' ? receipt.injectionText : '';
   const signedQianshiProgress = Number(receipt.schemaVersion) >= 15 ? receipt.qianshiProgress : null;
   const manualBlocks = readManualArtifactBlocks(injectionText);
+  for (const block of placeRecallBlocks(receipt.selectedPlaces ?? [])) {
+    const marker = `${block}\n`, at = manualBlocks.text.lastIndexOf(marker);
+    if(at >= 0)manualBlocks.text = manualBlocks.text.slice(0,at)+manualBlocks.text.slice(at+marker.length);
+  }
   const locationReferences = splitLocationReferences(manualBlocks.text, receipt.selectedLocationReferences, receipt.schemaVersion);
   const locationReferenceItems = Object.freeze(locationReferences.items.map(value => frozenText(value, 600)).filter(Boolean));
   const qianshiProtocol = recallProtocolText(locationReferences.historyText, signedQianshiProgress, receipt.timeDependencies);
@@ -501,7 +531,7 @@ export function projectInlineRecallReceipt(receipt) {
   const dependencyTexts = [...(receipt.timeDependencies?.corrections ?? []), ...(receipt.timeDependencies?.reminders ?? [])]
     .map(value => frozenText(value?.text)).filter(Boolean);
   const timeReferenceDisplayItems = Object.freeze(timeReferenceItems.map(value => timeReferenceDisplayItem(value, dependencyTexts)));
-  const historyItems = parsedHistory ?? Object.freeze([]);
+  const historyItems = Object.freeze((parsedHistory ?? []).filter(item => !auxiliaryRecallHistory(item)));
   const historyGroups = groupRecallHistory(historyItems, selectedFloors);
   const storylineGroups = Object.freeze(storylines.map(storyline => {
     const items = historyItems.filter(value => value.storylineId === storyline.storylineId);
@@ -509,14 +539,18 @@ export function projectInlineRecallReceipt(receipt) {
     return Object.freeze({ ...storyline, floors, stateItems: Object.freeze(stateItems.filter(value => value.storylineId === storyline.storylineId)), cseChangeItems: Object.freeze(cseChangeItems.filter(value => value.storylineId === storyline.storylineId)) });
   }));
   const protocolRecognized = parsedHistory !== null;
+  const floorCount = protocolRecognized ? new Set(historyGroups.map(value => value.floorId || `sequence-${value.assistantSeq}`)).size : selectedFloorCount;
   const qianshiProgressText = qianshiProtocol.matched ? renderedQianshiProgressText(signedQianshiProgress, receipt.timeDependencies) : '';
   const status = receipt.status ?? (receipt.injectionText ? 'ready' : 'empty');
+  const hideCard = protocolRecognized && ['ready', 'empty'].includes(status) && !historyItems.length && !stateItems.length && !cseChangeItems.length;
   const rawReceiptAvailable = Boolean((containsManualArtifact || receipt.legacyReadOnly || receipt.restoredReceipt || receipt.reusedReceipt) && !protocolRecognized
     && ['ready', 'empty'].includes(status) && injectionText.trim());
   const terminated = receipt.status === 'stale' && (receipt.terminationEvent === 'GENERATION_STOPPED' || receipt.terminationEvent === 'GENERATION_ENDED'
     || (!receipt.terminationEvent && Array.isArray(receipt.skipReasons) && receipt.skipReasons.includes('stopped')));
   const terminationText = receipt.terminationEvent === 'GENERATION_ENDED' ? '生成已结束，召回未完成' : terminated ? '召回已停止' : null;
   const statusText = receipt.legacyReadOnly ? '旧版只读记录'
+    : status === 'skipped' && receipt.skipReasons?.includes('recentBodyOnly') ? '近期正文已覆盖，无需召回'
+    : status === 'ready' && !floorCount && (stateCount || cseChangeCount) ? '人物回忆'
     : status === 'ready' || status === 'empty' ? `寻回 ${floorCount} 个结`
         : status === 'stale' ? terminationText ?? '本轮结果已失效'
           : status === 'error' ? '本轮召回失败' : '本轮已跳过';
@@ -525,7 +559,8 @@ export function projectInlineRecallReceipt(receipt) {
   const terminationSummary = terminated
     ? `${receipt.diagnosticPhase ? `终止于${phaseCopy[receipt.diagnosticPhase] ?? '未知阶段'}${receipt.pendingStep ? ` · 终止步骤：${stepCopy[receipt.pendingStep] ?? '未记录'}` : ''}${receipt.lastCompletedStep ? ` · 上一步：${stepCopy[receipt.lastCompletedStep] ?? '未记录'}` : ''}` : '终止阶段未记录'} · ${Number.isFinite(receipt.timings?.totalMs) ? `召回等待 ${Number(receipt.timings.totalMs).toFixed(1)} ms` : '召回等待未记录'}${Number.isFinite(receipt.timings?.sourceMs) ? ` · 读取 ${Number(receipt.timings.sourceMs).toFixed(1)} ms` : ''}${Number.isFinite(receipt.timings?.selectorMs) ? ` · 选材 ${Number(receipt.timings.selectorMs).toFixed(1)} ms` : ''} · 本轮未注入`
     : null;
-  const summary = terminationSummary ?? (hasExactStageCounts
+  const summary = receipt.status === 'skipped' && receipt.skipReasons?.includes('recentBodyOnly')
+    ? '近期正文已覆盖，无需召回。' : terminationSummary ?? (hasExactStageCounts
     ? `近期摘要 ${recentSummaryCount} 条 · 远期旧事 ${distantHistoryItemCount} 条 · 当前人物状态 ${exactStateCount} 条${Number.isSafeInteger(receipt.stages?.cseChangeCount) ? ` · 历史变化 ${receipt.stages.cseChangeCount} 条` : ''}`
     : historyItems.length
     ? `已召回 ${historyItems.length} 条旧事${stateCount ? ` · ${stateCount} 条当前人物状态` : ''}${cseChangeCount ? ` · ${cseChangeCount} 条历史变化` : ''}`
@@ -537,7 +572,7 @@ export function projectInlineRecallReceipt(receipt) {
   const visibleSummary = receipt.skipReasons?.includes('manualArtifactBudget')
     ? `${summary} 已选原文超出本轮预算，全文未注入。` : summary;
   return Object.freeze({
-    kind: 'user', status, statusText, summary: visibleSummary, ...(terminationSummary ? { statusDetail: terminationSummary } : {}),
+    kind: 'user', status, hideCard, statusText, summary: visibleSummary, ...(terminationSummary ? { statusDetail: terminationSummary } : {}),
     injectionText, rawReceiptAvailable, qianshiProgressText, floorCount, stateCount, cseChangeCount, recentSummaryCount, distantHistoryItemCount, selectedFloors, historyItems, historyGroups, storylines, storylineGroups, stateItems, cseChangeItems, timeReferenceItems, timeReferenceDisplayItems, timeReferenceCount, locationReferenceItems, locationReferenceCount, protocolRecognized,
   });
 }

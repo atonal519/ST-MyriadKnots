@@ -8,6 +8,7 @@ import { selectRecallMemories } from './recall-source.js';
 export const VECTOR_INDEX_ID = 'qqj-vector-index';
 export const VECTOR_SHARD_PREFIX = 'qqj-vector-shard-';
 const SCHEMA = 1, BATCH = 16, COPY_BATCH = 4, INDEX_LOAD_TIMEOUT_MS = 15000, VECTOR_QUERY_TIMEOUT_MS = 15000;
+const MAX_QUERY_CHARACTERS = 6000;
 const hash = async value => `sha256:${await sha256(value)}`;
 const configKey = config => JSON.stringify([config.url, config.model, config.dimensions]);
 const ownerKey = (source, modelKey) => JSON.stringify([source.chatId, source.narrativeGeneration, modelKey]);
@@ -24,6 +25,17 @@ const witnessMatches = (actual, expected) => {
   return keys.every(key => Object.prototype.hasOwnProperty.call(actual, key) && actual[key] === expected[key]);
 };
 const errorWith = (code, message) => Object.assign(new Error(message), { code });
+
+function vectorQueryText(context) {
+  const text = String(context?.text ?? '');
+  const latest = String(context?.latestUserText ?? '');
+  if (text.length <= MAX_QUERY_CHARACTERS || !latest) return text.slice(0, MAX_QUERY_CHARACTERS);
+  // The merged context can already be truncated before the latest user turn.
+  const current = `用户:${latest}`.slice(0, MAX_QUERY_CHARACTERS);
+  const remaining = MAX_QUERY_CHARACTERS - current.length - 1;
+  const background = remaining > 0 ? String(context?.backgroundText ?? context?.recentAssistantText ?? '').slice(-remaining).replace(/^[\uDC00-\uDFFF]/u, '') : '';
+  return background ? `${background}\n${current}` : current;
+}
 
 // vectorWitnessShape 保持 schema 1 的旧摘要行可读；查询阶段只接受原文见证。
 export function vectorRecordOwned(record) {
@@ -814,7 +826,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       operation.eligibleRows = rows.length;
       if (changed(signature)) return complete('changed');
       if (!rows.length) return complete('unindexed');
-      const text = String(queryContext?.text ?? '').slice(0, 6000);
+      const text = vectorQueryText(queryContext);
       requestText = text;
       const reused = lastQuery?.key === key && lastQuery.text === text;
       let vector;

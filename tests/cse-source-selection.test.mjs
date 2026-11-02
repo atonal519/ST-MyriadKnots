@@ -75,14 +75,14 @@ function scannerContexts() {
   return { official, officialBindings, luker };
 }
 
-test('原生单本读取与 Luker 批量读取产生等价 metadata，并含全局、角色附加和内置书', async () => {
+test('原生单本与 Luker 批量读取等价，主外置书取代内嵌且保留全局与角色附加书', async () => {
   const { official, officialBindings, luker } = scannerContexts();
   const native = await scanWorldInfo(official, { bindings: officialBindings, strict: true, includeCatalog: false });
   const fork = await scanWorldInfo(luker, { strict: true, includeCatalog: false });
   const project = catalog => catalog.entries.map(item => ({ source: item.source, uid: item.uid, scope: item.scope, content: item.content, hostEnabled: item.hostEnabled, primaryKeys: item.primaryKeys, secondaryKeys: item.secondaryKeys, selective: item.selective, selectiveLogic: item.selectiveLogic, caseSensitive: item.caseSensitive, matchWholeWords: item.matchWholeWords }));
   assert.deepEqual(project(native), project(fork));
-  assert.deepEqual(native.entries.map(item => item.source), ['角色主书', '角色附加', '聊天书', '人格书', '全局书', '内置书', '内置书']);
-  assert.deepEqual(native.entries.filter(item => item.source === '内置书').map(item => [item.uid, item.hostEnabled, item.selectiveLogic]), [['6', true, 3], ['7', false, 0]]);
+  assert.deepEqual(native.entries.map(item => item.source), ['角色主书', '角色附加', '聊天书', '人格书', '全局书']);
+  assert.deepEqual(native.entries.filter(item => item.embedded), []);
 });
 
 test('严格关联书读取失败明确报错，且不会调用 simulate 或加载无关全库', async () => {
@@ -102,7 +102,7 @@ test('严格关联书读取失败明确报错，且不会调用 simulate 或加�
   assert.deepEqual(loaded, [], '整本排除必须在读取前生效');
 });
 
-test('读取前整本排除坏书，保留好书、人格书与角色内置书；全部排除和零书正常', async () => {
+test('读取前整本排除坏主书，保留好书与人格书且不补内嵌；全部排除和零书正常', async () => {
   const loaded = [];
   const ctx = {
     characterId: 0,
@@ -117,7 +117,7 @@ test('读取前整本排除坏书，保留好书、人格书与角色内置书�
   };
   const result = await scanWorldInfo(ctx, { strict: true, includeCatalog: false, filterBookNames: names => names.filter(name => name !== '坏书') });
   assert.deepEqual(loaded, ['好书', '人格书']);
-  assert.deepEqual(result.entries.map(item => item.source), ['好书', '人格书', '角色内置书']);
+  assert.deepEqual(result.entries.map(item => item.source), ['好书', '人格书']);
   const allExcluded = await scanWorldInfo(ctx, { strict: true, includeCatalog: false, filterBookNames: () => [] });
   assert.deepEqual(allExcluded.entries, []);
   const empty = await scanWorldInfo({ characters: [], chatMetadata: {} }, { strict: true, includeCatalog: false, filterBookNames: names => names });
@@ -184,7 +184,7 @@ async function sourceHarness({ onLoad } = {}) {
   const floor = { hostLocator: { messageIndex: 3 }, content: { rawFingerprint: `sha256:${await sha256(chat[3].mes)}` } };
   const loaded = [];
   const context = {
-    characterId: 0, characters: [{ avatar: 'char.png', name: '左佐', data: { description: '最新描述', personality: '最新性格', scenario: '最新场景', extensions: { world: '当前书' } } }],
+    characterId: 0, characters: [{ avatar: 'char.png', name: '左佐', data: { description: '最新描述', personality: '最新性格', scenario: '最新场景', extensions: { world: '当前书' }, character_book: { name: '卡内旧副本', entries: [{ id: 99, enabled: true, constant: true, content: '外置已删除的旧资料不得发送' }] } } }],
     name1: '辛夷', name2: '左佐', powerUserSettings: { persona_description: '最新用户人设' },
     chatMetadata: { qianqianjie: { chatId: CHAT }, note_prompt: '持续作者参考' }, extensionSettings: { note: { default: '默认不该覆盖' } }, chat,
     async loadWorldInfo(name) {
@@ -246,4 +246,69 @@ test('来源异步读取期间切聊天或改目标窗口会 stale，修改目�
   const changedTail = await sourceHarness({ onLoad: ({ chat }) => { chat[5].mes = '无关尾楼被改'; chat[5].swipes = ['无关尾楼被改']; } });
   const frozen = await captureCseRequestSources({ hostAdapter: changedTail.hostAdapter, baseline: changedTail.baseline, floor: changedTail.floor, expectedChatId: CHAT });
   assert.equal(frozen.worldInfoSources.length, 2);
+});
+
+
+test('主外置书删除的额外UID不从同名或异名内嵌恢复，普通与完整扫描一致', async t => {
+  for (const embeddedName of ['当前主书', '卡内旧书']) await t.test(embeddedName, async () => {
+    for (const complete of [false, true]) {
+      const loaded = [];
+      const ctx = { characterId: 0, characters: [{ data: { extensions: { world: '当前主书' }, character_book: { name: embeddedName, entries: [
+        { id: 1, enabled: true, constant: true, content: '卡内旧版' },
+        { id: 2, enabled: true, constant: true, content: '外置已删除的旧总结' },
+      ] } } }], async loadWorldInfo(name) { loaded.push(name); return { entries: { 1: { uid: 1, constant: true, content: '外置现行资料' } } }; } };
+      const catalog = await scanWorldInfo(ctx, { complete, strict: true, includeCatalog: false });
+      assert.deepEqual(catalog.entries.map(item => [item.key, item.content, item.embedded]), [['当前主书::1', '外置现行资料', false]]);
+      assert.deepEqual(loaded, ['当前主书']);
+      assert.deepEqual(catalog.bookNames, ['当前主书']);
+    }
+  });
+});
+
+test('主绑定在过滤和加载前决定权威：空书、整本排除、读取失败均不回退内嵌', async () => {
+  let reads = 0;
+  const ctx = { characterId: 0, characters: [{ data: { extensions: { world: '主外置' }, character_book: { name: '内嵌旧书', entries: [{ id: 9, enabled: true, content: '旧材料' }] } } }],
+    async loadWorldInfo() { reads += 1; return { entries: {} }; } };
+  assert.deepEqual((await scanWorldInfo(ctx, { strict: true, includeCatalog: false })).entries, []);
+  assert.equal(reads, 1);
+  assert.deepEqual((await scanWorldInfo(ctx, { strict: true, includeCatalog: false, filterBookNames: names => names.filter(name => name !== '主外置') })).entries, []);
+  assert.equal(reads, 1, '排除主书后不读外置，也不能补不同名内嵌');
+  ctx.loadWorldInfo = async () => { reads += 1; throw new Error('模拟读取失败'); };
+  const permissive = await scanWorldInfo(ctx, { includeCatalog: false });
+  assert.deepEqual(permissive.entries, []); assert.ok(permissive.warnings.some(item => item.code === 'WORLDBOOK_READ_FAILED'));
+  await assert.rejects(scanWorldInfo(ctx, { strict: true, includeCatalog: false }), error => error.code === 'V3_CSE_SOURCE_READ_FAILED');
+  await assert.rejects(scanWorldInfo(ctx, { complete: true, includeCatalog: false }), error => error.code === 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE');
+});
+
+test('兼容根层和助手primary主绑定，外置disabled不被内嵌enabled覆盖', async t => {
+  for (const mode of ['root', 'helper']) await t.test(mode, async () => {
+    const character = { data: { character_book: { name: '旧内嵌', entries: [{ id: 2, enabled: true, constant: true, content: '不再允许的内嵌资料' }] } } };
+    if (mode === 'root') character.extensions = { world: '外置' };
+    const ctx = { characterId: 0, characters: [character], async loadWorldInfo() { return { entries: { 1: { uid: 1, disable: true, constant: true, content: '宿主禁用' } } }; } };
+    const bindings = mode === 'helper' ? { getCharLorebooks: () => ({ primary: '外置', additional: [] }) } : {};
+    const catalog = await scanWorldInfo(ctx, { bindings, strict: true, includeCatalog: false });
+    assert.deepEqual(catalog.entries.map(item => [item.source, item.hostEnabled, item.availability]), [['外置', false, 'disabled']]);
+    assert.deepEqual(selectCseWorldInfoEntries({ entries: catalog.entries, scanText: '' }).filter(item => item.decision.selected), []);
+  });
+});
+
+test('无主绑定的纯内嵌及仅辅助书卡继续可读，保内嵌disabled与匹配元数据', async t => {
+  for (const mode of ['none', 'aux-api', 'charLore', 'helper-additional']) await t.test(mode, async () => {
+    const ctx = { characterId: 0, characters: [{ avatar: '角色.png', data: { character_book: { name: '未导入内嵌', entries: [
+      { id: 6, keys: ['内'], secondary_keys: ['置'], selective: true, enabled: true, content: '内嵌资料', extensions: { selectiveLogic: 3, case_sensitive: true, match_whole_words: true } },
+      { id: 7, enabled: false, content: '内嵌禁用' },
+    ] } } }], async loadWorldInfo(name) { assert.equal(name, '辅助书'); return { entries: { 1: { uid: 1, content: '辅助资料' } } }; } };
+    const bindings = {};
+    if (mode === 'aux-api') ctx.getCharaAuxWorlds = () => ['辅助书'];
+    if (mode === 'charLore') bindings.getWorldInfoSettings = () => ({ charLore: [{ name: '角色', extraBooks: ['辅助书'] }] });
+    if (mode === 'helper-additional') bindings.getCharLorebooks = () => ({ primary: '', additional: ['辅助书'] });
+    const catalog = await scanWorldInfo(ctx, { bindings, strict: true, includeCatalog: false });
+    const embedded = catalog.entries.filter(item => item.embedded);
+    assert.deepEqual(embedded.map(item => [item.uid, item.hostEnabled, item.selectiveLogic]), [['6', true, 3], ['7', false, 0]]);
+    assert.deepEqual(embedded[0].primaryKeys, ['内']); assert.deepEqual(embedded[0].secondaryKeys, ['置']);
+    assert.equal(embedded[0].caseSensitive, true); assert.equal(embedded[0].matchWholeWords, true);
+    assert.deepEqual(catalog.entries.filter(item => !item.embedded).map(item => item.source), mode === 'none' ? [] : ['辅助书']);
+    const excluded = await scanWorldInfo(ctx, { bindings, strict: true, includeCatalog: false, filterBookNames: names => names.filter(name => name !== '未导入内嵌') });
+    assert.deepEqual(excluded.entries.filter(item => item.embedded), []);
+  });
 });

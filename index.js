@@ -1,3 +1,6 @@
+import { filterPlaceFoundationSources, placeWorkspaceDependency } from './src/v3/place-foundation.js';
+import { captureQianchuangCharacterSources } from './src/place-worldbook-material.js';
+import { createPlaceWorkspaceStore } from './src/v3/place-workspace.js';
 import { normalizeIdentityProjection } from './src/v3/entity-identity.js';
 import { createVectorApiClient, resolveVectorConfig } from './src/vector-api.js';
 import { createVectorIndex } from './src/v3/vector-index.js';
@@ -7,6 +10,7 @@ import { user_avatar } from '/scripts/personas.js';
 import { power_user } from '/scripts/power-user.js';
 import { extension_settings, extensionNames, extensionTypes } from '/scripts/extensions.js';
 import { is_send_press, saveSettingsDebounced, getRequestHeaders } from '/script.js';
+import * as hostScript from '/script.js';
 import { is_group_generating } from '/scripts/group-chats.js';
 import { loadWorldInfo, selected_world_info, world_info, world_info_case_sensitive, world_info_match_whole_words, world_names } from '/scripts/world-info.js';
 import { localforage, showdown, DOMPurify } from '/lib.js';
@@ -48,7 +52,7 @@ import { createChatBranchInitializer } from './src/v3/chat-branch-inheritance.js
 import { copyLatestPeople } from './src/v3/chat-branch-inheritance.js';
 import { createChatMemoryMigration } from './src/chat-memory-migration.js';
 import { installPublicMemoryBridge } from './src/v3/public-memory-bridge.js';
-import { scanWorldInfo } from './src/world-info-scanner.js';
+import { scanWorldInfo, createWorldInfoSourceCandidates } from './src/world-info-scanner.js';
 import { installPublicQianshiBridge } from './src/v3/public-qianshi-bridge.js';
 import { createMyKnotsStoryClockController, createStoryClockStatusProjection, extensionStoryClockState } from './src/story-clock.js';
 import { createInlineRenderer } from './src/ui/inline-renderer.js';
@@ -57,6 +61,14 @@ import { normalizeStoryCalendar } from './src/v3/calendar-rules.js';
 let memoryTransfer = null;
 const isGenerating = () => Boolean(is_send_press || is_group_generating);
 const isMemoryWorkBlocked = () => isGenerating() || memoryTransfer?.getState().active === true;
+const readMainGenerationState = () => {
+  try {
+    if (typeof hostScript.isGenerationInFlight !== 'function') return null;
+    const inFlight = hostScript.isGenerationInFlight();
+    if (typeof inFlight !== 'boolean') return null;
+    return inFlight || Boolean(is_group_generating) || memoryTransfer?.getState().active === true;
+  } catch { return null; }
+};
 const hostAdapter = createHostAdapter({ personaIdentifierProvider: () => user_avatar, worldInfoBindings: {
   loadWorldInfo,
   getSelectedWorldInfo: () => selected_world_info,
@@ -190,12 +202,15 @@ const foundationRuntime = createFoundationRuntime({
   hasTimeFloorReference: (chatId, floorId) => timeStore.hasFloorReference(chatId, floorId),
 });
 const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient });
+const placeWorkspaceStore = createPlaceWorkspaceStore({ client: backendClient });
 let peopleWorkspaceRuntime;
+const placeWorkspaceDependencyProvider = async () => { const identity=session.identity(),value=await placeWorkspaceStore.read(identity);return placeWorkspaceDependency(identity.chatId,value.revision,filterPlaceFoundationSources(value.data,{filterWorldInfoSources:sourcePermissions.filterWorldInfoSources})); };
 const identityProjectionProvider = async identityValue => {
   const identity = identityValue ?? session.identity();
   const state = peopleWorkspaceRuntime?.getState?.();
-  if (state?.chatId === identity.chatId) return peopleWorkspaceRuntime.getIdentityProjection();
-  return normalizeIdentityProjection((await peopleWorkspaceStore.read(identity)).data ?? {});
+  const places = await placeWorkspaceStore.read(identity);
+  const people = state?.chatId === identity.chatId ? peopleWorkspaceRuntime.getIdentityProjection() : normalizeIdentityProjection((await peopleWorkspaceStore.read(identity)).data ?? {});
+  return normalizeIdentityProjection({ ...people, placeWorkspace: filterPlaceFoundationSources(places.data,{filterWorldInfoSources:sourcePermissions.filterWorldInfoSources}), placeWorkspaceRevision: places.revision });
 };
 const vectorApi = createVectorApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const vectorIndex = createVectorIndex({
@@ -243,6 +258,7 @@ const v3MemoryRuntime = createV3MemoryRuntime({
     ? globalThis.toastr?.warning?.(notification.text, undefined, { timeOut: 12000, closeButton: true, onclick: () => ui?.openMemory?.() })
     : globalThis.toastr?.[notification?.kind]?.(notification?.text),
   isMainGenerationActive: isMemoryWorkBlocked,
+  readMainGenerationState,
   extractorPromptGuidance: summaryPrompt,
   csePromptGuidance: csePrompt,
   processingPrompt,
@@ -251,6 +267,9 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   sanitizerOptions,
   persistAnchors: persistMessageFloorAnchors,
   identityProjectionProvider,
+  placeWorkspaceStore,
+  placeWorldInfoProvider: request=>qianchuangWorldInfoProvider(request),
+  onPlaceChanged: (chatId,change) => { if(change?.automatic!==true&&session.identity().chatId===chatId)v3RecallRuntime?.invalidate('placeEdited'); },
   captureBusinessIdentity: () => session.identity(),
   storeForIdentity: targetFoundationStore,
   onQianshiEventDeleted: () => v3RecallRuntime?.invalidate('qianshiManuallyDeleted'),
@@ -306,7 +325,7 @@ v3RecallRuntime = createV3RecallRuntime({
   recentBodyFloorLimit: () => settings.get().autoHideKeepAiCount,
   notifyUser: notification => globalThis.toastr?.[notification?.kind]?.(notification?.text),
   sanitizerOptions,
-  identityProjectionProvider,
+  identityProjectionProvider, placeWorkspaceDependencyProvider,
   timeProjectionProvider: source => timeRuntime.recallProjection(source),
   qianshiProgressProvider: async (source, context) => {
     // Selected Qianshi receipts replay saved IDs and do not consume current story time.
@@ -321,6 +340,7 @@ v3RecallRuntime = createV3RecallRuntime({
 const privateRecallDiagnostics = createPrivateRecallDiagnostics({
   client: createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {}, timeoutMs: 5000 }),
   recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, session, isEnabled: settings.isEnabled,
+  memoryRuntime: v3MemoryRuntime, backendDiagnosticProvider: () => backendClient.getDiagnosticSnapshot(),
 });
 if (globalThis.location?.origin) void privateRecallDiagnostics.start();
 globalThis.addEventListener?.('beforeunload', privateRecallDiagnostics.dispose, { once: true });
@@ -529,7 +549,21 @@ const setAllEnabled = async enabled => {
 };
 const pluginUpdates = createPluginUpdates({ moduleUrl: import.meta.url, extensionTypes: () => extensionTypes, noticePath: updateNoticePath, headers: getRequestHeaders });
 const pluginActivity = createPluginActivity([session, v3RecallRuntime, foundationRuntime, v3MemoryRuntime, timeRuntime, peopleWorkspaceRuntime, vectorIndex, chatMemoryManagement, storageManagement, memoryTransfer, compactClient, vectorApi, pluginUpdates]);
+const qianchuangWorldInfoProvider = async ({chatId,organize=false}) => {
+  const isCurrent=()=>chatId && session.identity().chatId===chatId;
+  const stale=()=>Object.assign(new Error('当前聊天已变化。'),{code:'CHAT_SESSION_STALE'});
+  if(!isCurrent())throw stale();
+  const context=contextProvider(),macros={user:context.name1??'',char:context.name2??''};
+  const characterCardSources=organize?await captureQianchuangCharacterSources(context,session.identity().characterLocator):[];
+  const catalog=await scanWorldInfo(context,{bindings:hostAdapter.getWorldInfoBindings(),complete:true,strict:true,includeCatalog:false,
+    filterBookNames:names=>sourcePermissions.filterWorldInfoSources(names.map(sourceName=>({sourceName}))).map(source=>source.sourceName)});
+  if(!isCurrent())throw stale();
+  const candidates=await createWorldInfoSourceCandidates(catalog);
+  if(!isCurrent())throw stale();
+  return {chatId,candidates:sourcePermissions.filterCandidates({chatId,candidates}),macros,...(organize?{characterCardSources}:{})};
+};
 ui = bootstrap({
+  moduleUrl: import.meta.url,
   activity: pluginActivity,
   pluginUpdates,
   renderUpdateMarkdown: text => DOMPurify.sanitize(new showdown.Converter().makeHtml(text), { FORBID_TAGS: ['img', 'iframe', 'object', 'embed', 'style', 'form'], FORBID_ATTR: ['style'] }),
@@ -577,6 +611,7 @@ ui = bootstrap({
   v3FoundationRuntime: v3MemoryRuntime,
   v3RecallRuntime,
   peopleWorkspaceRuntime,
+  qianchuangWorldInfoProvider,
   chatMemoryManagement,
   storageManagement,
   memoryTransfer,

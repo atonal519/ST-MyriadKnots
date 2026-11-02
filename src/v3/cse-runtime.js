@@ -72,6 +72,56 @@ export function selectUserAdaptiveHistory({ floors = [], floorMemories = [], tar
   return selected.sort((left, right) => left.index - right.index).map(({ floorId, assistantSeq, content }) => ({ floorId, assistantSeq, content }));
 }
 
+// These records supplement the same CSE request; they do not create shared character knowledge.
+export function selectRelationHistory({ floors = [], floorMemories = [], targetIndex, floorMemory, entities = [], trackedSubjectEntityIds = [] }) {
+  const people = new Map(entities.filter(entity => entity.entityType === 'person' && entity.specialRole !== 'user'
+    && entity.status !== 'invalidated' && entity.status !== 'merged' && (!entity.recordStatus || entity.recordStatus === 'active')).map(entity => [entity.id, entity]));
+  const tracked = new Set(trackedSubjectEntityIds), pairKey = (left, right) => [left, right].sort().join(':');
+  const pairsFor = (section, item) => {
+    const actor = section === 'actions' ? item.actorEntityId : section === 'informationTransfers' ? item.fromEntityId
+      : section === 'commitments' ? item.speakerEntityId : item.subjectEntityId;
+    const targets = section === 'actions' || section === 'commitments' ? item.targetEntityIds
+      : section === 'informationTransfers' ? item.toEntityIds : [item.objectEntityId];
+    if (!people.has(actor)) return [];
+    return (targets ?? []).filter(target => target !== actor && people.has(target)).map(target => [actor, target]);
+  };
+  const currentPairs = new Set();
+  for (const section of ['actions', 'informationTransfers', 'commitments', 'cseSignals']) for (const item of floorMemory?.[section] ?? [])
+    for (const [left, right] of pairsFor(section, item)) if (tracked.has(left) || tracked.has(right)) currentPairs.add(pairKey(left, right));
+  if (!currentPairs.size) return [];
+  const priorFloors = floors.slice(0, Math.max(0, targetIndex)), floorById = new Map(priorFloors.map(floor => [floor.id, floor]));
+  const name = id => people.get(id)?.displayName ?? null;
+  const rows = [];
+  for (const memory of floorMemories) {
+    if (memory.recordStatus !== 'active' || !floorById.has(memory.floorId)) continue;
+    for (const section of ['actions', 'informationTransfers', 'commitments']) for (const [index, item] of (memory[section] ?? []).entries()) {
+      const pairEntityIds = pairsFor(section, item).filter(([left, right]) => currentPairs.has(pairKey(left, right)));
+      if (!pairEntityIds.length) continue;
+      const rawRefs = item.evidenceRefs ?? [];
+      if (rawRefs.some(ref => !floorById.has(ref.floorId) || ref.evidenceMode === 'privateCognition')) continue;
+      const refs = rawRefs;
+      const sourceFloorIds = [...new Set(refs.length ? refs.map(ref => ref.floorId) : [memory.floorId])];
+      const sourceFloorId = sourceFloorIds.reduce((latest, id) => floorById.get(id).assistantSeq > floorById.get(latest).assistantSeq ? id : latest), sourceFloor = floorById.get(sourceFloorId);
+      if (!sourceFloor) continue;
+      const record = section === 'actions' ? { actor: name(item.actorEntityId), targets: (item.targetEntityIds ?? []).map(name).filter(Boolean), action: item.action, completion: item.completion, result: item.result }
+        : section === 'informationTransfers' ? { from: name(item.fromEntityId), to: (item.toEntityIds ?? []).map(name).filter(Boolean), channel: item.channel, claim: item.claimText }
+        : { speaker: name(item.speakerEntityId), targets: (item.targetEntityIds ?? []).map(name).filter(Boolean), kind: item.kind, content: item.content, status: item.status };
+      const quotes = [...new Set(refs.map(ref => ref.quotedText).filter(quote => typeof quote === 'string' && quote.length <= 2000))];
+      rows.push({ source: `relationHistory:${sourceFloorId}:${memory.id}:${section}:${index}`, floorId: sourceFloorId, floorMemoryId: memory.id,
+        assistantSeq: sourceFloor.assistantSeq, sourceFloorIds, section, record, quotes, pairEntityIds });
+    }
+  }
+  rows.sort((left, right) => right.assistantSeq - left.assistantSeq);
+  const selected = [], usedFloors = new Set(), seen = new Set(); let characters = 0;
+  for (const row of rows) {
+    if (seen.has(row.source) || row.source.length > 160 || new Set([...usedFloors, ...row.sourceFloorIds]).size > 3) continue;
+    const size = JSON.stringify(row).length;
+    if (characters + size > 6000) continue;
+    seen.add(row.source); row.sourceFloorIds.forEach(id => usedFloors.add(id)); selected.push(row); characters += size;
+  }
+  return selected.reverse();
+}
+
 function currentUserInputFromMemory(memory) {
   const messages = Array.isArray(memory?.sourceFloorSnapshots)
     ? memory.sourceFloorSnapshots.flatMap(snapshot => snapshot?.sourceUserInputSnapshot?.messages ?? [])
@@ -154,7 +204,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const value = operation.transportBudget.diagnostic;
     value.endedAt ??= Date.now();
     value.outcome = operation.controller.signal.aborted ? 'cancelled' : value.outcome === 'failed' ? 'failed' : 'completed';
-    lastRequest = { ...value, attempts: operation.transportBudget.used };
+    lastRequest = { ...value, attempts: operation.transportBudget.used, runId: operation.runId };
   };
   let identityProjection = normalizeIdentityProjection();
   let historyProjectionCache = null;
@@ -417,6 +467,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   function getActivityState() {
     return Object.freeze({ activeCse: active ? Object.freeze({ floorId: active.floorId, runId: active.runId, phase: active.phase }) : null });
   }
+  function getDiagnosticState() {
+    const request = requestSnapshot();
+    const lastCseError = lastFailure ? Object.fromEntries(['code', 'name', 'httpStatus', 'phase', 'floorId', 'runId'].filter(key => lastFailure[key] !== undefined).map(key => [key, lastFailure[key]])) : null;
+    return { ...getActivityState(), lastCseError, cseRequest: request ? { ...request, runId: active?.transportBudget?.diagnostic ? active.runId : lastRequest?.runId ?? null } : null };
+  }
 
   // Dollars asks for a few actors at a time; avoid constructing the full CSE UI projection.
   function getCurrentSubjectStates(entityIds = []) {
@@ -516,7 +571,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const nowValue = nowIso(now);
     const runId = operation.runId;
     const checkpointId = await deterministicUuid(['v3-cse-checkpoint', current.root.headCheckpointId, delta.id]);
-    const indexes = await buildFoundationIndexes({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, checkpointId, floors: current.floors, candidates: current.floors.map(item => ({ hostLocator: item.hostLocator, rawFingerprint: item.content.rawFingerprint, canonicalFingerprint: item.content.canonicalFingerprint })), entities, now: nowValue });
+    const indexes = await buildFoundationIndexes({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, checkpointId, floors: current.floors, candidates: current.floors.map(item => ({ hostLocator: item.hostLocator, rawFingerprint: item.content.rawFingerprint, canonicalFingerprint: item.content.canonicalFingerprint })), entities, existingIndexes: current.checkpoint?.indexLayout === V3_INDEX_LAYOUT_FLOOR_ORDER ? current.indexes : [], now: nowValue });
     const indexKeys = indexes.map(index => targetStore.recordKey(index));
     const previousState = current.currentStates.at(-1) ?? null;
     const currentState = await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline.id, floors: current.floors, floorMemories: current.floorMemories, stateDeltas: deltas, now: nowValue, previousId: previousState?.id ?? null });
@@ -529,7 +584,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const root = validateFoundationRoot({ ...current.root, capabilities, headCheckpointId: checkpointId, indexManifest: { ...emptyManifest(), floor: indexKeys.filter(key => key.includes('-floorOrder-') || key.includes('-fingerprint-')), entity: indexKeys.filter(key => key.includes('-entity-')), reverseRef: indexKeys.filter(key => key.includes('-reverseRef-')) }, activeStateRefs: [currentState.id], updatedAt: nowValue }, { expectedChatId: current.root.chatId });
     await validateCseGraph({ root, checkpoint, run, floors: current.floors, floorMemories: current.floorMemories, entities, indexes, indexKeys, baseline: current.baseline, stateDeltas: deltas, currentStates: [currentState] });
     const newEntities = entities.filter(entity => !current.entities.some(old => old.id === entity.id));
-    await persistPhaseA([...newEntities, delta, currentState, ...indexes], operation.controller.signal, targetStore);
+    const existingIndexKeys = new Set((current.indexes ?? []).map(index => targetStore.recordKey(index)));
+    const newIndexes = indexes.filter(index => !existingIndexKeys.has(targetStore.recordKey(index)));
+    await persistPhaseA([...newEntities, delta, currentState, ...newIndexes], operation.controller.signal, targetStore);
     await persist([run, checkpoint], operation.controller.signal, targetStore);
     if ((!operation.pinnedTarget && operation.epoch !== epoch) || operation.controller.signal.aborted) throw errorWith('V3_CSE_STALE', '人物状态分析已停止。');
     if (operation.userCoreExtraction && (operation.hostAdapter.snapshot()?.userIdentity?.personaIdentifier ?? '') !== operation.userCoreExtraction.personaLocator) throw errorWith('V3_CSE_STALE', '任务捕获的用户身份与提取材料不一致，人物状态结果未采用。');
@@ -678,8 +735,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         .map(entry => ({ entityId: entry.entityId, name: entry.displayName, labels: entry.labels, identityBrief: entry.identityBrief ?? null }));
       operation.identityBriefTargetIds = identityBriefTargets.map(target => target.entityId);
       const tracked = selectTrackedSubjects({ baseline: projectedBaseline, entities: scopedEntities, floorMemories: trackedMemories, floorMemory: projectedMemory });
+      const userHasFloorEvidence = tracked.some(entity => entity.id === projectedBaseline.userPersona.entityId);
       const trackedIds = new Set(tracked.map(entity => entity.id));
-      const previousIds = new Set((projectedPreviousCurrentState?.subjects ?? []).map(subject => subject.subjectEntityId));
+      const previousIds = new Set((projectedPreviousCurrentState?.subjects ?? [])
+        .filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length))
+        .map(subject => subject.subjectEntityId));
       const firstTrackedIds = new Set(tracked.filter(entity => !previousIds.has(entity.id)).map(entity => entity.id));
       const firstForAnyTracked = firstTrackedIds.size > 0;
       const prequelQueryIds = firstForAnyTracked ? firstTrackedIds : trackedIds;
@@ -743,6 +803,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         ? { userEntityId, personaLocator, descriptionFingerprint, hasDescription: hasPersonaDescription }
         : null;
       operation.userCoreExtraction = userCoreExtraction;
+      // Persona calibration is an independent authorial task, not a permanent story seat.
+      if (userCoreExtraction?.hasDescription && !userHasFloorEvidence) {
+        const user = scopedEntities.find(entity => entity.id === userEntityId);
+        if (user) tracked.push(user);
+      }
       operation.dependencySnapshot = await dependencySnapshot(value, floor.id, entities, previousCurrentState, coreUserEditedSubjectEntityIds, operation.identityProjection, operation.identityBriefTargetIds);
       if (!operation.dependencySnapshot) throw errorWith('V3_CSE_STALE', '此前楼层的人物状态资料不可用，请刷新状态后重试。');
       const identityMemberEntityIdsBySubject = Object.fromEntries(tracked.map(entity => [entity.id, (previousCurrentState?.subjects ?? [])
@@ -751,10 +816,12 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         .map(subject => subject.subjectEntityId)]));
       const userBindings = tracked.filter(entity => entity.id === userEntityId || identityMemberEntityIdsBySubject?.[entity.id]?.includes(userEntityId));
       const previousUserForReview = userBindings.length === 1 ? projectedPreviousCurrentState?.subjects?.find(subject => subject.subjectEntityId === userBindings[0].id) : null;
-      const userAdaptiveReviewEligible = userBindings.length === 1 && !(previousUserForReview?.adaptive?.length);
+      const userAdaptiveReviewEligible = userHasFloorEvidence && userBindings.length === 1 && !(previousUserForReview?.adaptive?.length);
       const userAdaptiveHistory = userAdaptiveReviewEligible
         ? selectUserAdaptiveHistory({ floors: value.floors, floorMemories: value.floorMemories, targetIndex, userEntityId, identityProjection: operation.identityProjection }) : [];
-      const envelope = createCseEnvelope({ floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectedPreviousCurrentState, trackedSubjects: tracked, entities: scopedEntities, identityDirectory: scopedDirectory, identityBriefTargets, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, operation.identityProjection)), identityMemberEntityIdsBySubject, relevantPriorContext, userCoreExtraction, userAdaptiveHistory });
+      const relationHistory = selectRelationHistory({ floors: value.floors, floorMemories: trackedMemories, targetIndex, floorMemory: projectedMemory,
+        entities: scopedEntities, trackedSubjectEntityIds: tracked.map(entity => entity.id) });
+      const envelope = createCseEnvelope({ relationHistory, floor: analysisFloor, floorMemory: projectedMemory, baseline: projectedBaseline, currentState: projectedPreviousCurrentState, trackedSubjects: tracked, entities: scopedEntities, identityDirectory: scopedDirectory, identityBriefTargets, requestSources, currentUserInput, coreUserEditedSubjectEntityIds: coreUserEditedSubjectEntityIds.map(id => resolveIdentityEntityId(id, operation.identityProjection)), identityMemberEntityIdsBySubject, relevantPriorContext, userCoreExtraction, userAdaptiveHistory, reviewUserAdaptive: userHasFloorEvidence });
       const deltaId = await deterministicUuid(['v3-cse-delta', operation.runId, floor.id, memory.id]);
       const promptGuidanceSnapshot = typeof promptGuidance === 'function' ? promptGuidance() : promptGuidance;
       const processingPromptSnapshot = typeof processingPrompt === 'function' ? processingPrompt() : processingPrompt;
@@ -772,7 +839,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         ? { floorId, runId: operation.runId, code: 'V3_CSE_STALE', message: stopped
           ? '人物状态分析已停止；请查看本楼记录确认当前状态。'
           : '本楼正文、摘要或人物资料已变化，请刷新状态后重新分析。', phase: 'stale' }
-        : { floorId, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '状态分析失败，可单独重试。').slice(0, 500), phase: 'retryableError', ...(operation.userCoreExtraction ? { userCoreExtraction: operation.userCoreExtraction } : {}), diagnostics: sanitizeDiagnosticValue(error?.cseDiagnostics ?? error?.sourceDiagnostics ?? null) };
+        : { floorId, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_FAILED').slice(0, 120), ...(error?.name ? { name: error.name } : {}), ...(Number.isInteger(error?.httpStatus ?? error?.status) ? { httpStatus: error.httpStatus ?? error.status } : {}), message: sanitizeSensitiveText(error?.message ?? '状态分析失败，可单独重试。').slice(0, 500), phase: 'retryableError', ...(operation.userCoreExtraction ? { userCoreExtraction: operation.userCoreExtraction } : {}), diagnostics: sanitizeDiagnosticValue(error?.cseDiagnostics ?? error?.sourceDiagnostics ?? null) };
       if (failure.phase === 'retryableError') publishFailureHint(value, floorId, failure);
       if (reachable?.root?.chatId === operation.targetIdentity?.chatId || !operation.pinnedTarget) lastFailure = failure;
       logger?.warn?.('[qianqianjie] V3 CSE failed', { code: error?.code ?? error?.name ?? 'V3_CSE_FAILED' });
@@ -813,7 +880,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     try {
       return await commitDeltaGraph({ operation, current, floor, memory, delta: correction.delta, deltas: deltas.map(item => item.floorId === floor.id ? correction.delta : item), entities: current.entities, diagnostics: { kind: 'cseManualCorrection', promptVersion: CSE_PROMPT_VERSION, compilerVersion: CSE_COMPILER_VERSION, manualSubjectEntityIds: correction.delta.source.manualSubjectEntityIds, cseRebuild: null } });
     } catch (error) {
-      lastFailure = { floorId: floor.id, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_MANUAL_SAVE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '人物状态纠正保存失败。').slice(0, 500), phase: error?.code === 'V3_CSE_MANUAL_STALE' || error?.code === 'V3_CSE_CAS_CONFLICT' || error?.name === 'AbortError' ? 'stale' : 'retryableError' };
+      if (error && typeof error === 'object') Object.assign(error, { runId: operation.runId, floorId: floor.id });
+      lastFailure = { ...(error?.name ? { name: error.name } : {}), ...(Number.isSafeInteger(error?.httpStatus ?? error?.status) ? { httpStatus: error.httpStatus ?? error.status } : {}), floorId: floor.id, runId: operation.runId, code: String(error?.code ?? 'V3_CSE_MANUAL_SAVE_FAILED').slice(0, 120), message: sanitizeSensitiveText(error?.message ?? '人物状态纠正保存失败。').slice(0, 500), phase: error?.code === 'V3_CSE_MANUAL_STALE' || error?.code === 'V3_CSE_CAS_CONFLICT' || error?.name === 'AbortError' ? 'stale' : 'retryableError' };
       if (lastFailure.phase === 'retryableError') publishFailureHint(current, floor.id, lastFailure);
       throw error;
     } finally {
@@ -833,5 +901,5 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   }
   function clearView() { lastRequest = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
   function invalidate() { lastRequest = null; epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
-  return Object.freeze({ load, analyzeFloor, correctSubjectState, cancelActive, clearView, invalidate, setIdentityProjection, getState, getActivityState, getCurrentSubjectStates, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
+  return Object.freeze({ load, analyzeFloor, correctSubjectState, cancelActive, clearView, invalidate, setIdentityProjection, getState, getActivityState, getDiagnosticState, getCurrentSubjectStates, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

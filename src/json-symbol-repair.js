@@ -316,7 +316,25 @@ export function parseJsonWithSymbolRepair(value, { finishReason } = {}) {
     return Object.freeze({ value: JSON.parse(text), text, repaired: false, operations: Object.freeze([]) });
   } catch { /* only a true stop may enter the symbol-only repair */ }
   if (normalizeFinishReason(finishReason) !== 'stop') return null;
-  return scanner(text);
+  const scanned = scanner(text);
+  if (scanned) return scanned;
+  // A quoted source excerpt may end with \" while its outer string quote is
+  // missing. Insert only that quote, leaving the excerpt and all other bytes.
+  let repaired = null;
+  for (const match of text.matchAll(/\\"(?=[,}\]])/gu)) {
+    const at = match.index + 2;
+    let slashes = 1;
+    while (text[match.index - slashes] === '\\') slashes += 1;
+    if (slashes % 2 === 0) continue;
+    const candidate = text.slice(0, at) + '"' + text.slice(at);
+    try { JSON.parse(candidate); } catch { continue; }
+    const inspected = scanner(candidate, { requireOperations: false });
+    if (!inspected) continue;
+    if (repaired) return null;
+    repaired = Object.freeze({ value: inspected.value, text: candidate, repaired: true,
+      operations: Object.freeze([Object.freeze({ type: 'insert-string-closing-quote', index: at, value: '"' })]) });
+  }
+  return repaired;
 }
 
 export function parseJsonWithSafeTrailingCommas(value) {

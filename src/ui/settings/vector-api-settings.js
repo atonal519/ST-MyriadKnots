@@ -5,7 +5,7 @@ import { publicErrorMessage } from '../../public-error.js';
 // 向量配置独立保存；旧显式预设只用于回填，用户保存后复制配置并解除共享引用。
 export function createVectorApiSettings({ settings, vectorApi, vectorIndex, documentRef = globalThis.document, open = false, onToggle } = {}) {
   const { element, field, button, subDrawer } = createSettingsKit(documentRef);
-  const { drawer: node, body } = subDrawer({ title: '向量召回', id: 'qqj-settings-vector-api', open, onToggle });
+  const { drawer: node, body } = subDrawer({ title: '向量配置', id: 'qqj-settings-vector-api', open, onToggle });
   node.classList.add('qqj-vector-api-settings');
   const savedConfig = () => {
     const value = settings.get();

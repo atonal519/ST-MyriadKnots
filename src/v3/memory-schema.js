@@ -162,10 +162,33 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
   if (hasQianshiDelta) value.qianshiDelta = validateQianshiDelta(value.qianshiDelta, { floorIds: sourceFloorIds });
   if (hasSpatialFacts) {
     const spatial = value.spatialFacts;
-    exact(spatial, ['schemaVersion', 'containments', 'positions'], 'V3_FLOORMEMORY_INVALID', 'spatialFacts');
+    exact(spatial, ['schemaVersion', 'containments', 'positions', ...(Object.hasOwn(spatial, 'features') ? ['features'] : []), ...(Object.hasOwn(spatial, 'relations') ? ['relations'] : [])], 'V3_FLOORMEMORY_INVALID', 'spatialFacts');
     if (spatial.schemaVersion !== 1) fail('V3_FLOORMEMORY_INVALID', 'spatialFacts.schemaVersion');
     const containments = boundedArray(spatial.containments, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.containments', 40);
     const positions = boundedArray(spatial.positions, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.positions', 40);
+    if (Object.hasOwn(spatial, 'features')) boundedArray(spatial.features, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.features', 40).forEach((item, index) => {
+      const path = `spatialFacts.features[${index}]`;
+      itemCommon(item, ['itemId', 'placeEntityId', ...(Object.hasOwn(item, 'kind') ? ['kind'] : []), 'text', 'replacesItemIds', 'evidenceRefs'], path);
+      if (Object.hasOwn(item, 'kind')) enumValue(item.kind, ['stable', 'temporary'], 'V3_FLOORMEMORY_INVALID', `${path}.kind`);
+      uuid(item.placeEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`);
+      text(item.text, 'V3_FLOORMEMORY_INVALID', `${path}.text`, { max: 1000 });
+      const replaces = uuidList(item.replacesItemIds, `${path}.replacesItemIds`);
+      if (replaces.includes(item.itemId) || new Set(replaces).size !== replaces.length) fail('V3_FLOORMEMORY_INVALID', `${path}.replacesItemIds`);
+      const refs = evidenceList(item.evidenceRefs, sourceFloorIds, `${path}.evidenceRefs`, { required: true });
+      if (refs.some(ref => ref.evidenceMode === 'privateCognition' || ref.evidenceMode === 'interpretation')) fail('V3_FLOORMEMORY_INVALID', `${path}.evidenceRefs`);
+    });
+    if (Object.hasOwn(spatial, 'relations')) boundedArray(spatial.relations, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.relations', 40).forEach((item, index) => {
+      const path = `spatialFacts.relations[${index}]`;
+      itemCommon(item, ['itemId', 'kind', 'placeEntityId', 'referencePlaceEntityIds', 'text', 'evidenceRefs'], path);
+      enumValue(item.kind, ['locatedIn', 'onFloor', 'relative'], 'V3_FLOORMEMORY_INVALID', `${path}.kind`);
+      uuid(item.placeEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`);
+      const refs = uuidList(item.referencePlaceEntityIds, `${path}.referencePlaceEntityIds`);
+      if (refs.length > 2 || new Set(refs).size !== refs.length || refs.includes(item.placeEntityId)
+        || item.kind === 'locatedIn' && refs.length !== 1 || item.kind === 'onFloor' && refs.length > 1) fail('V3_FLOORMEMORY_INVALID', path);
+      text(item.text, 'V3_FLOORMEMORY_INVALID', `${path}.text`, { max: 1000 });
+      const evidence = evidenceList(item.evidenceRefs, sourceFloorIds, `${path}.evidenceRefs`, { required: true });
+      if (evidence.some(ref => ['privateCognition', 'interpretation'].includes(ref.evidenceMode))) fail('V3_FLOORMEMORY_INVALID', `${path}.evidenceRefs`);
+    });
     const parentBySource = new Map();
     for (const [index, item] of containments.entries()) {
       const path = `spatialFacts.containments[${index}]`;
@@ -356,6 +379,8 @@ export function collectFloorMemoryEntityIds(memory, { includeReviewCandidates = 
   for (const event of memory.qianshiDelta?.events ?? []) for (const person of event.people ?? []) add(person.entityId);
   for (const item of memory.spatialFacts?.containments ?? []) { add(item.placeEntityId); add(item.parentEntityId); item.evidenceRefs.forEach(evidence => add(evidence.sourceEntityId)); }
   for (const item of memory.spatialFacts?.positions ?? []) { add(item.subjectEntityId); add(item.placeEntityId); item.evidenceRefs.forEach(evidence => add(evidence.sourceEntityId)); }
+  for (const item of memory.spatialFacts?.features ?? []) { add(item.placeEntityId); item.evidenceRefs.forEach(evidence => add(evidence.sourceEntityId)); }
+  for (const item of memory.spatialFacts?.relations ?? []) { add(item.placeEntityId); addMany(item.referencePlaceEntityIds); item.evidenceRefs.forEach(evidence => add(evidence.sourceEntityId)); }
   if (includeReviewCandidates) for (const candidate of memory.qianshiDelta?.historyReview?.candidates ?? []) {
     for (const person of candidate.event?.people ?? []) add(person.entityId);
   }
@@ -480,8 +505,12 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
     for (const field of ['chronology', 'locations', 'participants', 'actions', 'observations', 'informationTransfers', 'privateCognition', 'commitments', 'eventFragments', 'openLoops', 'ambiguities', 'cseSignals']) memory[field].forEach(item => evidence.push(...(item.evidenceRefs ?? [])));
     for (const item of memory.spatialFacts?.containments ?? []) evidence.push(...item.evidenceRefs);
     for (const item of memory.spatialFacts?.positions ?? []) evidence.push(...item.evidenceRefs);
+    for (const item of memory.spatialFacts?.features ?? []) evidence.push(...item.evidenceRefs);
+    for (const item of memory.spatialFacts?.relations ?? []) evidence.push(...item.evidenceRefs);
     if (evidence.some(item => !checkQuote(item))) fail('V3_MEMORY_GRAPH_EVIDENCE_INVALID');
     if (memory.spatialFacts) {
+      for (const item of memory.spatialFacts.features ?? []) if (entitiesById.get(item.placeEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
+      for (const item of memory.spatialFacts.relations ?? []) for (const id of [item.placeEntityId, ...item.referencePlaceEntityIds]) if (entitiesById.get(id)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
       for (const item of memory.spatialFacts.containments) {
         if (entitiesById.get(item.placeEntityId)?.entityType !== 'place' || entitiesById.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
       }

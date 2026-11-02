@@ -8,11 +8,11 @@ function parseFontFamily(css) {
 }
 
 const PALETTES = Object.freeze({
-  day: Object.freeze({ paper: '#f7f8fa', panel: '#ffffff', ink: '#22282b', soft: '#637077', faint: '#929da2', line: '#dce2e5', thread: '#cbd4d8', crimson: '#b63745', knot: '#b63745', onPrimary: '#fff', blue: '#4f8781', success: '#4b7d63' }),
+  day: Object.freeze({ paper: '#f7f8fa', panel: '#ffffff', ink: '#22282b', soft: '#637077', faint: '#929da2', line: '#dce2e5', thread: '#cbd4d8', crimson: '#b63745', knot: '#b63745', onPrimary: '#fff', blue: '#3b706a', success: '#3d6f55' }),
   night: Object.freeze({ paper: '#13181b', panel: '#1c2327', ink: '#e7ecee', soft: '#9db0b5', faint: '#6c7c81', line: '#2b363b', thread: '#33424a', crimson: '#d9707a', knot: '#d9707a', onPrimary: '#fff', blue: '#77b0aa', success: '#77b193' }),
 });
 const AUTO_FALLBACK_PALETTES = Object.freeze({
-  day: Object.freeze({ paper: '#e8ecec', panel: '#f6f8f8', ink: '#22282b', soft: '#5c6a70', faint: '#93a1a5', line: '#d0d9db', thread: '#c1ccce', crimson: '#a8322f', knot: '#a8322f', blue: '#4f8781', success: '#4b7d63' }),
+  day: Object.freeze({ paper: '#e8ecec', panel: '#f6f8f8', ink: '#22282b', soft: '#5c6a70', faint: '#93a1a5', line: '#d0d9db', thread: '#c1ccce', crimson: '#a8322f', knot: '#a8322f', blue: '#3b706a', success: '#3d6f55' }),
   night: PALETTES.night,
 });
 const alphaChannel = value => value === undefined ? 1 : Math.min(1, Math.max(0, Number.parseFloat(value) / (value.endsWith('%') ? 100 : 1)));
@@ -74,7 +74,7 @@ export function resolveAppearance({ value = {}, documentRef = globalThis.documen
   const systemTheme = windowRef?.matchMedia?.('(prefers-color-scheme: light)')?.matches ? 'day' : 'night';
   const effectiveTheme = mode === 'auto' ? (hostTheme ?? systemTheme) : mode;
   const palette = (mode === 'auto' ? AUTO_FALLBACK_PALETTES : PALETTES)[effectiveTheme];
-  if (mode !== 'auto') return { mode, effectiveTheme, palette, hasHostSignal: Boolean(hostTheme) };
+  if (mode !== 'auto') return { mode, effectiveTheme, palette: { ...palette, onPrimary: onPrimary(cssColor(documentRef, palette.knot)) }, hasHostSignal: Boolean(hostTheme) };
   const opaque = (raw, fallback) => cssColor(documentRef, raw)?.value ?? fallback;
   const accent = cssColor(documentRef, signals.quote) ?? cssColor(documentRef, palette.crimson);
   return {

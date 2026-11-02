@@ -133,6 +133,8 @@ export async function initializeMigrationGraph({ store, sourceIdentity, targetId
       seed.exactAnchors = (seed.exactAnchors ?? []).map(item => ({ ...item,
         ...(item.floorId ? { floorId: carriedLiveFloor.id } : {}),
         ...(item.sourceFloorId ? { sourceFloorId: carriedLiveFloor.id } : {}) }));
+      // The frozen original still owns these facts and their source/replacement identities.
+      delete seed.spatialFacts;
       // 千事事件仍由冻结楼唯一持有；B 的 live 摘要保留可用语义证据，不复制旧事件身份。
       seed.qianshiDelta = { schemaVersion: 1, status: 'empty', reason: null, compiledAt: createdAt,
         candidateStats: { count: 0, characters: 0 }, events: [], relations: [] };

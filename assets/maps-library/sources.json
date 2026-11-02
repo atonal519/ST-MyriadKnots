@@ -1,0 +1,554 @@
+[
+  {
+    "id": "modern-inland",
+    "family": "modern",
+    "layout": "inland",
+    "file": "modern-inland.svg",
+    "sha256": "5f86a9338351b3b8d393c3aa877da9120bee21038807f8524a9cf27367b5f78e",
+    "width": 1000,
+    "height": 1000,
+    "source": "Existing approved Qianchuang basemap",
+    "sourceSha256": null,
+    "modifications": [
+      "Reuse approved static geometry."
+    ],
+    "shortTags": [
+      "现代",
+      "城市",
+      "内陆",
+      "街网"
+    ]
+  },
+  {
+    "id": "modern-town-plain",
+    "family": "modern-town",
+    "layout": "plain",
+    "file": "modern-town-plain.svg",
+    "sha256": "4d0093e529b54666db9e96934e24fdac519677bb53bd3698d394ab9c301940d1",
+    "width": 1000,
+    "height": 1000,
+    "source": "Existing approved Qianchuang basemap",
+    "sourceSha256": null,
+    "modifications": [
+      "Reuse approved static geometry."
+    ],
+    "shortTags": [
+      "现代",
+      "小城",
+      "内陆",
+      "公共中心"
+    ]
+  },
+  {
+    "id": "old-town-inland",
+    "family": "old-town",
+    "layout": "inland",
+    "file": "old-town-inland.svg",
+    "sha256": "26c829dcb97d2859e61f4e284c65f193430885e2c2590f21a5c02c0b7f9e7efb",
+    "width": 590,
+    "height": 540,
+    "source": "Watabou MFCG Redfall seed222816148",
+    "sourceSha256": "79b3ba9329e5456d4af11e8a4aff01bab586198745b2ba115ab4fcc30598e88b",
+    "modifications": [
+      "Original town crop; text and outer closed wall/tower group removed; internal streets/buildings retained."
+    ],
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "城镇",
+      "内陆",
+      "街巷"
+    ]
+  },
+  {
+    "id": "palace-axial",
+    "family": "palace",
+    "layout": "axial",
+    "file": "palace-axial.svg",
+    "sha256": "f674218b06622fb4f17239bc91f16321061d7146ab00b665ba1b2776c3464e3c",
+    "width": 1000,
+    "height": 1000,
+    "source": "Existing approved Qianchuang basemap",
+    "sourceSha256": null,
+    "modifications": [
+      "Reuse approved static geometry."
+    ],
+    "shortTags": [
+      "宫廷",
+      "宫苑",
+      "中轴",
+      "院落"
+    ]
+  },
+  {
+    "id": "sci-fi-linear",
+    "family": "sci-fi",
+    "layout": "linear",
+    "file": "sci-fi-linear.svg",
+    "sha256": "719b54a3d7c360665e632b7bcc315be86b70da426e50269817374a5ae776ebf5",
+    "width": 1120,
+    "height": 1280,
+    "source": "Robert Pearce / Eric B. Smith · Luxury Liner Deck 1",
+    "sourceSha256": "c983882e11c0846958432e7b26576bc1280f3bb5691d2e37f7529d79d1056dac",
+    "modifications": [
+      "Interior window crop; no enclosing hull frame.",
+      "Prominent atrium captions removed; small generic room labels retained as low-contrast source detail.",
+      "Raster source separated into themed ink/water/vegetation masks; original walls, fixtures, paths and water geometry retained."
+    ],
+    "sourceUrl": "https://gurpsland.sytes.net/images/Geomorphs/LuxuryLiner/Luxury_Liner_Square_Deck_1_Pool.png",
+    "sourcePage": "https://gurpsland.sytes.net/geomorphs/",
+    "license": "CC BY-NC 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "crop": {
+      "x": 310,
+      "y": 1850,
+      "w": 1120,
+      "h": 1280
+    },
+    "shortTags": [
+      "科幻",
+      "舰内",
+      "设施",
+      "生活舱",
+      "甲板"
+    ]
+  },
+  {
+    "id": "modern-coast",
+    "family": "modern",
+    "layout": "coast",
+    "file": "modern-coast.svg",
+    "source": "ProbableTrain City Generator",
+    "sourceUrl": "https://probabletrain.itch.io/city-generator",
+    "license": "ProbableTrain downloaded image permission",
+    "sourceSha256": "c5bcf12a1a487ac9a3f3c1a1965607c26dbe5a74071114732433c67d68670c2d",
+    "crop": [
+      330,
+      60,
+      600,
+      600
+    ],
+    "sha256": "7f500369c4f1894f6cd94474943b24f56c5b917cb027a41782c67ad71faf272d",
+    "bytes": 957820,
+    "removedDecorations": null,
+    "modifications": [
+      "Remove text, remote font imports, source compass and decorative frame.",
+      "Crop offscreen shapes; merge adjacent paths with identical attributes without moving vertices.",
+      "Retain source geometry; theme colors and explicit water masks."
+    ],
+    "waterMarkers": 2,
+    "renderDiff": {
+      "pixelsOver5": 0,
+      "totalPixels": 490000,
+      "ratio": 0,
+      "maxDelta": 0
+    },
+    "shortTags": [
+      "现代",
+      "城市",
+      "水岸",
+      "海湾"
+    ]
+  },
+  {
+    "id": "terrain-forest",
+    "family": "terrain",
+    "layout": "forest",
+    "file": "terrain-forest.svg",
+    "source": "Watabou Perilous Shores",
+    "sourceUrl": "https://watabou.itch.io/perilous-shores",
+    "license": "Watabou generated output permission",
+    "sourceSha256": "89ebe11cf0f018060c6dfe4e07f0ce826161ecd0fcaabe8006f73c56a4420710",
+    "crop": [
+      120,
+      150,
+      1450,
+      1450
+    ],
+    "sha256": "53a20db089de6b710a58885e7918b989ee3a6d3ff36a77a4e4af019d237b2eeb",
+    "bytes": 4002076,
+    "removedDecorations": {
+      "compassAndRays": 209,
+      "sourceFrame": 4
+    },
+    "modifications": [
+      "Remove text, remote font imports, source compass and decorative frame.",
+      "Crop offscreen shapes; merge adjacent paths with identical attributes without moving vertices.",
+      "Retain source geometry; theme colors and explicit water masks."
+    ],
+    "waterMarkers": 1,
+    "renderDiff": {
+      "pixelsOver5": 0,
+      "totalPixels": 490000,
+      "ratio": 0,
+      "maxDelta": 0
+    },
+    "shortTags": [
+      "自然",
+      "地表",
+      "森林",
+      "山地"
+    ]
+  },
+  {
+    "id": "terrain-coast",
+    "family": "terrain",
+    "layout": "coast",
+    "file": "terrain-coast.svg",
+    "source": "Watabou Perilous Shores",
+    "sourceUrl": "https://watabou.itch.io/perilous-shores",
+    "license": "Watabou generated output permission",
+    "sourceSha256": "6feef911e2a45b67725eb5a136dd22c1caac3b38f1048e3b6b13701b9933a9af",
+    "crop": [
+      120,
+      150,
+      1450,
+      1450
+    ],
+    "sha256": "ea67a9697a3a3a43e2919dd5b5d7688a34271fa7661e1f4c1868d6d273d117c6",
+    "bytes": 714956,
+    "removedDecorations": {
+      "compassAndRays": 123,
+      "sourceFrame": 4
+    },
+    "modifications": [
+      "Remove text, remote font imports, source compass and decorative frame.",
+      "Crop offscreen shapes; merge adjacent paths with identical attributes without moving vertices.",
+      "Retain source geometry; theme colors and explicit water masks.",
+      "Remove the remaining decorative 32-ray path; soften15short hatches and coastal shadow without changing coast/rivers/land/water masks.",
+      "Align existing paper/water/vegetation/ink colors to shared theme tokens. Thin40of299dense conifer symbols and582fine branch polygons; preserve remaining forest/mountain silhouettes and all geographic layers.",
+      "Flatten the seven source woodland regions and soften decorative canopy teeth; remove individual tree, branch, crown-shadow and hill-hatch symbols. Preserve all38riverbank/river-edge/water paths, sea/land/coast geometry,52settlement faces with nested transforms, and the three original hill main outlines. No new elevation data or terrain is introduced."
+    ],
+    "waterMarkers": 1,
+    "shortTags": [
+      "自然",
+      "地表",
+      "海岸",
+      "原野",
+      "森林"
+    ]
+  },
+  {
+    "id": "terrain-mountain",
+    "family": "terrain",
+    "layout": "mountain",
+    "file": "terrain-mountain.svg",
+    "source": "USGS National Map contours and NHD hydrography",
+    "sourceUrl": "https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer",
+    "license": "USGS public domain",
+    "sourceSha256": "43820f6f3d4fbcaccec725c2f4eb77cb8bbe8b626aa63e47d0fb50712a3b8bf5",
+    "crop": [
+      0,
+      0,
+      750,
+      750
+    ],
+    "sha256": "9ad1d422c49c6cc18a84df530291ce2aca49e02a77cae99c33fcb432dfbac45c",
+    "bytes": 1179570,
+    "removedDecorations": null,
+    "modifications": [
+      "Remove text, remote font imports, source compass and decorative frame.",
+      "Crop offscreen shapes; merge adjacent paths with identical attributes without moving vertices.",
+      "Retain source geometry; theme colors and explicit water masks.",
+      "Use the approved flat preview bytes: shared city paper/water/contour tokens; thin existing minor contours without moving source hydrography or inventing terrain. Retain existing production regions and anchors."
+    ],
+    "waterMarkers": 392,
+    "shortTags": [
+      "自然",
+      "地表",
+      "山谷",
+      "河流",
+      "等高线"
+    ]
+  },
+  {
+    "id": "terrain-coast-relief",
+    "family": "terrain",
+    "layout": "coast",
+    "file": "terrain-coast-relief.svg",
+    "source": "USGS National Map contours and NHD hydrography",
+    "sourceUrl": "https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer",
+    "license": "USGS public domain",
+    "sourceSha256": "2bad3a51ca8b579aa20e8a20ee726c20a137c994bae4b51eeab112a33b152222",
+    "crop": [
+      0,
+      0,
+      750,
+      750
+    ],
+    "sha256": "d247346ae7adc60daea7135139b93820aca9dcfe4392e84b7d571222f8779e91",
+    "bytes": 4408713,
+    "removedDecorations": null,
+    "modifications": [
+      "Remove text, remote font imports, source compass and decorative frame.",
+      "Crop offscreen shapes; merge adjacent paths with identical attributes without moving vertices.",
+      "Retain source geometry; theme colors and explicit water masks."
+    ],
+    "waterMarkers": 266,
+    "renderDiff": {
+      "pixelsOver5": 0,
+      "totalPixels": 490000,
+      "ratio": 0,
+      "maxDelta": 0
+    },
+    "shortTags": [
+      "自然",
+      "地表",
+      "湾岸",
+      "海岸",
+      "等高线"
+    ]
+  },
+  {
+    "id": "terrain-desert",
+    "family": "terrain",
+    "layout": "desert",
+    "file": "terrain-desert.svg",
+    "source": "USGS National Map contours and NHD hydrography",
+    "sourceUrl": "https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer",
+    "license": "USGS public domain",
+    "sourceSha256": "389155ab1be43b6fa953cd4885db87425bb9543cb82ca447a0a6a900ccc2bf2c",
+    "crop": [
+      0,
+      0,
+      750,
+      750
+    ],
+    "sha256": "54bc9765a382dce4b94bd1e5aa0da303f7a251151559176b081bfe443d57a0fd",
+    "bytes": 2015851,
+    "removedDecorations": null,
+    "modifications": [
+      "Remove text, remote font imports, source compass and decorative frame.",
+      "Crop offscreen shapes; merge adjacent paths with identical attributes without moving vertices.",
+      "Retain source geometry; theme colors and explicit water masks."
+    ],
+    "waterMarkers": 83,
+    "renderDiff": {
+      "pixelsOver5": 0,
+      "totalPixels": 490000,
+      "ratio": 0,
+      "maxDelta": 0
+    },
+    "shortTags": [
+      "自然",
+      "地表",
+      "荒漠",
+      "沟壑",
+      "等高线"
+    ]
+  },
+  {
+    "id": "terrain-snow",
+    "family": "terrain",
+    "layout": "snow",
+    "file": "terrain-snow.svg",
+    "source": "USGS National Map contours and NHD hydrography",
+    "sourceUrl": "https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer",
+    "license": "USGS public domain",
+    "sourceSha256": "d85c7ea663936e3181ae379f65916ffd086a2927fad78d33e8a80ed4219d567b",
+    "crop": [
+      0,
+      0,
+      750,
+      750
+    ],
+    "sha256": "b068664131e25f56ccf433dba5e795b0571107592aee1933d156dc2724dbd8a9",
+    "bytes": 260130,
+    "removedDecorations": null,
+    "modifications": [
+      "Remove text, remote font imports, source compass and decorative frame.",
+      "Crop offscreen shapes; merge adjacent paths with identical attributes without moving vertices.",
+      "Retain source geometry; theme colors and explicit water masks.",
+      "Use the approved flat preview bytes: shared city paper/water/contour tokens; thin existing minor contours without moving source hydrography or inventing terrain. Retain existing production regions and anchors."
+    ],
+    "waterMarkers": 82,
+    "shortTags": [
+      "自然",
+      "地表",
+      "北地",
+      "湖群",
+      "山地"
+    ]
+  },
+  {
+    "id": "old-town-river",
+    "family": "old-town",
+    "layout": "river",
+    "file": "old-town-river.svg",
+    "source": "Watabou Village",
+    "sourceUrl": "https://watabou.github.io/village-generator/?seed=1105664726&tags=river,no%20square,isolated&width=705.8823529411765",
+    "license": "Watabou generated output permission",
+    "sourceSha256": "33d9cab58eb1e488aa662b2662469080698f5b7e78822f7d6bfb965920bbf930",
+    "crop": [
+      100,
+      45,
+      520,
+      390
+    ],
+    "sha256": "162c438d3381c3629cffd415a8843302e609130620f29fc38d858708a78f51c6",
+    "bytes": 3027054,
+    "modifications": [
+      "Approved flat preview, original vertices and crop retained.",
+      "Remove source names, decorative frame/outer shell, gradients and redundant shadow or hatch paint; map to shared ql semantic colors.",
+      "Production regions, labels and anchors follow source roads, waterways and existing natural boundaries; all layout data is static."
+    ],
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "河谷",
+      "聚落",
+      "桥",
+      "田野"
+    ]
+  },
+  {
+    "id": "old-town-coast",
+    "family": "old-town",
+    "layout": "coast",
+    "file": "old-town-coast.svg",
+    "source": "Watabou MFCG",
+    "sourceUrl": "https://watabou.github.io/city-generator/?size=30&seed=731042519&citadel=0&urban_castle=0&plaza=1&temple=1&walls=0&shantytown=0&coast=1&river=1&greens=1&gates=-1&export=svg",
+    "license": "Watabou generated output permission",
+    "sourceSha256": "c8c521aaf4f30a3492deebb48994e0bcf27b3330f889f2c08926337c4382d503",
+    "crop": [
+      70,
+      90,
+      650,
+      650
+    ],
+    "sha256": "e2e9fb93703ac3078cedf7136d80c27158af0934cbb54d6bb99f385b2c7625be",
+    "bytes": 214392,
+    "modifications": [
+      "Approved flat preview, original vertices and crop retained.",
+      "Remove source names, decorative frame/outer shell, gradients and redundant shadow or hatch paint; map to shared ql semantic colors.",
+      "Production regions, labels and anchors follow source roads, waterways and existing natural boundaries; all layout data is static."
+    ],
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "河口",
+      "港镇",
+      "码头"
+    ]
+  },
+  {
+    "id": "old-town-plain",
+    "family": "old-town",
+    "layout": "inland",
+    "file": "old-town-plain.svg",
+    "source": "Watabou Village",
+    "sourceUrl": "https://watabou.github.io/village-generator/?seed=770015231&tags=fields,no%20river,square&width=800",
+    "license": "Watabou generated output permission",
+    "sourceSha256": "9320198574e0deff2ab7fd9357e817b673ed42d939823d5a6d98a3b0147d4a8e",
+    "crop": [
+      0,
+      0,
+      800,
+      500
+    ],
+    "sha256": "9b4278a56b7119a34351b4406832bd75d65ec768d3296cf353c11818864fe549",
+    "bytes": 1759666,
+    "modifications": [
+      "Approved flat preview, original vertices and crop retained.",
+      "Remove source names, decorative frame/outer shell, gradients and redundant shadow or hatch paint; map to shared ql semantic colors.",
+      "Production regions, labels and anchors follow source roads, waterways and existing natural boundaries; all layout data is static."
+    ],
+    "shortTags": [
+      "西幻",
+      "江湖",
+      "平原",
+      "田镇",
+      "农田",
+      "广场"
+    ]
+  },
+  {
+    "id": "modern-radial",
+    "family": "modern",
+    "layout": "inland",
+    "file": "modern-radial.svg",
+    "source": "ProbableTrain City Generator",
+    "sourceUrl": "https://probabletrain.itch.io/city-generator",
+    "license": "ProbableTrain downloaded image permission",
+    "sourceSha256": "3b8348cd523ea0ba191233e26598baed45e8c7a536c7a64f2bae24d0abcb7900",
+    "crop": [
+      0,
+      0,
+      1100,
+      1000
+    ],
+    "sha256": "35fad584c2f5f48067d041906274887973e6862e59c107436d5ee70d9fef9a37",
+    "bytes": 2575362,
+    "modifications": [
+      "Use the approved2Doriginal export and crop; source buildingModels/showFrame were disabled.",
+      "Map original ground, water, parks, roads and building faces to the shared ql flat theme; retain every source polyline vertex.",
+      "Production regions, labels and anchors are static and follow the original street and shoreline structure."
+    ],
+    "shortTags": [
+      "现代",
+      "城市",
+      "环向",
+      "街网",
+      "水岸"
+    ]
+  },
+  {
+    "id": "modern-town-river",
+    "family": "modern-town",
+    "layout": "river",
+    "file": "modern-town-river.svg",
+    "source": "ProbableTrain City Generator",
+    "sourceUrl": "https://probabletrain.itch.io/city-generator",
+    "license": "ProbableTrain downloaded image permission",
+    "sourceSha256": "d53685fa2f106d9ce13ac4da932dc309342ad564eb3c96c2d9c56bea600d7fba",
+    "crop": [
+      0,
+      0,
+      1100,
+      1000
+    ],
+    "sha256": "62fcc50b409e1010c08a8c2002793c14d0432f373f4987cda8df920d45a4a98a",
+    "bytes": 818480,
+    "modifications": [
+      "Use the approved2Doriginal export and crop; source buildingModels/showFrame were disabled.",
+      "Map original ground, water, parks, roads and building faces to the shared ql flat theme; retain every source polyline vertex.",
+      "Production regions, labels and anchors are static and follow the original street and shoreline structure."
+    ],
+    "shortTags": [
+      "现代",
+      "小城",
+      "水岸",
+      "规整街区",
+      "绿地"
+    ]
+  },
+  {
+    "id": "modern-town-coast",
+    "family": "modern-town",
+    "layout": "coast",
+    "file": "modern-town-coast.svg",
+    "source": "ProbableTrain City Generator",
+    "sourceUrl": "https://probabletrain.itch.io/city-generator",
+    "license": "ProbableTrain downloaded image permission",
+    "sourceSha256": "ad474140719b2ed5e1b059c9b5a4f903eb92f98311f3b6beb21d5adb80a79f9c",
+    "crop": [
+      100,
+      0,
+      1000,
+      1000
+    ],
+    "sha256": "a1d14f8742930d1bb2fee9849f0e8ac04316040816e97c5681589425591084b8",
+    "bytes": 1076118,
+    "modifications": [
+      "Use the approved2Doriginal export and crop; source buildingModels/showFrame were disabled.",
+      "Map original ground, water, parks, roads and building faces to the shared ql flat theme; retain every source polyline vertex.",
+      "Production regions, labels and anchors are static and follow the original street and shoreline structure."
+    ],
+    "shortTags": [
+      "现代",
+      "小城",
+      "滨湾",
+      "斜向街区"
+    ]
+  }
+]

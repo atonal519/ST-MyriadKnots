@@ -99,11 +99,19 @@ test('记忆提取周期固定为 1，旧配置与更新请求都不能继续生
   assert.equal(settings.get().autoMemoryBatchSize, 1);
 });
 
-test('自动隐藏默认关闭并保留最近 3 个 AI 楼，数量只接受合理正整数', () => {
+test('自动隐藏默认开启并保留最近 3 个 AI 楼，已有明确关闭保持且读取不保存', () => {
   const extensionSettings = {};
   const { settings, saves } = setup(extensionSettings);
-  assert.equal(settings.get().autoHideEnabled, false);
+  assert.equal(settings.get().autoHideEnabled, true);
   assert.equal(settings.get().autoHideKeepAiCount, 3);
+  assert.equal(saves(), 0, '新设置读取不额外保存');
+  const oldMissing = setup({ qianqianjie: { pluginEnabled: true } });
+  assert.equal(oldMissing.settings.get().autoHideEnabled, true, '旧配置缺字段时采用开启默认');
+  assert.equal(oldMissing.saves(), 0);
+  const oldDisabled = setup({ qianqianjie: { autoHideEnabled: false, autoHideKeepAiCount: 7 } });
+  assert.equal(oldDisabled.settings.get().autoHideEnabled, false, '已保存的明确关闭不被默认值覆盖');
+  assert.equal(oldDisabled.settings.get().autoHideKeepAiCount, 7);
+  assert.equal(oldDisabled.saves(), 0);
   assert.equal(normalizeAutoHideKeepAiCount(1), 1); assert.equal(normalizeAutoHideKeepAiCount(50), 50);
   for (const invalid of [undefined, null, 0, 51, 2.5, 'abc']) assert.equal(normalizeAutoHideKeepAiCount(invalid), 3);
   settings.update({ autoHideEnabled: true, autoHideKeepAiCount: 7 });
@@ -737,4 +745,34 @@ test('人物独立router复用同resolver与client，按实际派发读配置并
   const stopped = people.generateUtilityTask({}); people.abortAll(); releases[3]();
   await assert.rejects(stopped, { name: 'AbortError' });
   assert.equal(people.getActiveCount(), 0); assert.equal(shared.getActiveCount(), 0);
+});
+
+test('API编辑器显式等待保存失败，回退自己参数且新建不遗留重复预设，旧同步调用不变', async () => {
+  let fail = false;
+  const data = { 'schedule-planner': { marker: true, apiPresets: [{ id: 'p', name: '旧名', url: 'https://old.test', key: 'old', model: 'old', vendor: 1 }] } };
+  const settings = createSettingsStore({ extensionSettings: data, save: () => fail ? Promise.reject(Error('异步保存失败')) : undefined });
+  settings.get();const before = structuredClone(data);fail = true;
+  await assert.rejects(async () => settings.upsertSharedPreset('新名', { url: 'https://new.test', key: 'new', model: 'new' }, 'p', { observeSaveFailure: true, requireExisting: true }), /异步保存失败/);
+  assert.deepEqual(data, before);
+  await assert.rejects(async () => settings.upsertSharedPreset('新增', { url: 'https://new.test', key: 'new', model: 'new' }, '', { observeSaveFailure: true }), /异步保存失败/);assert.deepEqual(data, before);
+  await assert.rejects(async () => settings.saveMainConfig({ url: 'https://new.test', key: 'new', model: 'new' }, { observeSaveFailure: true }), /异步保存失败/);assert.deepEqual(data, before);
+  fail = false;const id=settings.upsertSharedPreset('旧同步', { url: 'https://new.test', key: 'new', model: 'new' });assert.equal(typeof id,'string');
+  const count=settings.sharedPresets().length;
+  assert.throws(()=>settings.upsertSharedPreset('不复活', {}, 'missing', { requireExisting: true }), /不存在|失效/);assert.equal(settings.sharedPresets().length,count);
+});
+
+test('API保存失败只撤回本次字段或新增项，不覆盖期间其它预设和目标新改动', async () => {
+  const data = { 'schedule-planner': { apiPresets: [{ id: 'p', name: '原名', url: 'https://old.test', key: 'key', model: 'old', vendor: 1 }] } };
+  let mode='init';
+  const settings=createSettingsStore({extensionSettings:data,save(){
+    if(mode==='init')return;
+    const list=data['schedule-planner'].apiPresets;
+    if(mode==='edit'){const p=list.find(p=>p.id==='p');p.url='https://other.test';p.late=true;}
+    list.push({id:'other-'+mode,name:'外部新增'});return Promise.reject(Error('保存失败'));
+  }});
+  settings.get();mode='edit';
+  await assert.rejects(async()=>settings.upsertSharedPreset('已改', {url:'https://draft.test',key:'key',model:'draft'},'p',{observeSaveFailure:true}),/保存失败/);
+  const p=data['schedule-planner'].apiPresets.find(p=>p.id==='p');assert.equal(p.name,'原名');assert.equal(p.model,'old');assert.equal(p.url,'https://other.test');assert.equal(p.late,true);assert.ok(data['schedule-planner'].apiPresets.some(p=>p.id==='other-edit'));
+  mode='new';await assert.rejects(async()=>settings.upsertSharedPreset('本轮新增',{url:'https://new.test',key:'key',model:'new'},'',{observeSaveFailure:true}),/保存失败/);
+  assert.deepEqual(data['schedule-planner'].apiPresets.map(p=>p.id),['p','other-edit','other-new']);
 });

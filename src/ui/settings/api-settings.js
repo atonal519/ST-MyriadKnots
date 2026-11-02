@@ -1,341 +1,47 @@
 import { createSettingsKit } from './kit.js';
 import { createInlineSelect } from '../inline-select.js';
-import { createVectorApiSettings } from './vector-api-settings.js';
-import { publicErrorMessage } from '../../public-error.js';
-import { scrollManualEditorToTop } from '../manual-editor-scroll.js';
-import { parseAdditionalParams } from '../../settings.js';
+import { openApiPresetEditor } from './api-preset-editor.js';
 
-// API 角色选中即存；预设编辑区手动保存，跟随角色编辑其实际使用的配置。
-export function createApiSettings({
-  settings,
-  apiTools,
-  vectorApi,
-  vectorIndex,
-  vectorOpen = false,
-  onVectorToggle,
-  initialEditingRole = 'analysis',
-  onEditingRoleChange,
-  documentRef = globalThis.document,
-  open = false,
-  onToggle,
-  advancedOpen = false,
-  onAdvancedToggle,
-  rerender,
-  confirmImpl = options => globalThis.confirm?.(typeof options === 'string' ? options : `${options?.title ?? '请确认'}\n\n${options?.body ?? ''}\n\n${options?.note ?? ''}`) === true,
-  promptImpl = options => globalThis.prompt?.(typeof options === 'string' ? options : options?.title, typeof options === 'string' ? '' : options?.initialValue) ?? null,
-  isSevenDaysAvailable = () => false,
-} = {}) {
-  const { element, button, field, subDrawer } = createSettingsKit(documentRef);
+// 用途选择即时保存；连接表单只存在于独立草稿弹窗。
+export function createApiSettings({ settings, apiTools, vectorIndex, documentRef = globalThis.document, open = false, onToggle, customImpl, onEditingRoleChange } = {}) {
+  const { element, button, subDrawer } = createSettingsKit(documentRef);
   const { drawer, body } = subDrawer({ title: 'API 配置', id: 'qqj-settings-api', open, onToggle });
-  drawer.classList.add('qqj-api-editor'); body.classList.add('qqj-manual-editor');
-
-  const current = settings.get();
-  const presets = settings.sharedPresets();
-
-  let editingRole = initialEditingRole;
-  const analysisPresetId = current.apiMode === 'seven-preset' ? current.selectedSevenDaysPresetId : '';
-  const summaryPresetId = settings.summaryPresetId();
-  const recallPresetId = String(current.recallPresetId ?? '').trim();
-  const presetOptions = (first, selectedId) => [
-    { value: '', label: first },
-    ...presets.map(preset => ({ value: preset.id, label: preset.name })),
-    ...(selectedId && !presets.some(preset => preset.id === selectedId) ? [{ value: selectedId, label: `失效预设（${selectedId}）` }] : []),
-  ];
-  const analysisPicker = createInlineSelect({
-    documentRef, options: presetOptions('主配置', analysisPresetId), value: analysisPresetId, ariaLabel: '分析 API',
-    onFocus: () => setEditingRole('analysis'), onChange: value => changeAnalysis(value),
-  });
-  const summaryPicker = createInlineSelect({
-    documentRef, options: presetOptions('跟随分析API', summaryPresetId), value: summaryPresetId, ariaLabel: '摘要 API',
-    onFocus: () => setEditingRole('summary'), onChange: value => changeSummary(value),
-  });
-  const analysisSelect = analysisPicker.node, summarySelect = summaryPicker.node;
-  const recallPicker = createInlineSelect({
-    documentRef, options: presetOptions('跟随摘要API', recallPresetId), value: recallPresetId, ariaLabel: '召回 API',
-    onFocus: () => setEditingRole('recall'), onChange: value => {
-      settings.update({ recallPresetId: value }); setEditingRole('recall');
-    },
-  });
-  const recallSelect = recallPicker.node;
-  const presetById = id => settings.sharedPresets().find(item => item.id === id) ?? null;
-  const editingTarget = () => {
-    const followsSummary = editingRole === 'recall' && !recallSelect.value;
-    const followsAnalysis = (editingRole === 'summary' || followsSummary) && !summarySelect.value;
-    const presetId = editingRole === 'recall' && !followsSummary ? recallSelect.value : followsAnalysis || editingRole === 'analysis' ? analysisSelect.value : summarySelect.value;
-    const config = presetId ? presetById(presetId) : settings.mainConfig();
-    return Object.freeze({ sourceRole: editingRole, followsSummary, followsAnalysis, presetId, config, label: presetId ? (config?.name || '已失效预设') : '主配置' });
+  drawer.classList.add('qqj-api-editor');
+  const labels = { analysis: '分析 API', summary: '摘要 API', recall: '召回 API' };
+  let editor = null;
+  const targetFor = role => {
+    const value = settings.get(), analysis = value.apiMode === 'seven-preset' ? value.selectedSevenDaysPresetId : '', summary = settings.summaryPresetId(), recall = value.recallPresetId ?? '';
+    const followsSummary = role === 'recall' && !recall, followsAnalysis = (role === 'summary' || followsSummary) && !summary;
+    const presetId = role === 'analysis' || followsAnalysis ? analysis : role === 'summary' || followsSummary ? summary : recall;
+    const config = presetId ? settings.sharedPresets().find(preset => preset.id === presetId) : settings.mainConfig();
+    return { sourceRole: role, followsSummary, followsAnalysis, presetId, config, label: presetId ? config?.name || '已失效预设' : '主配置' };
   };
-
-  const url = element('input', 'settings-input'); url.placeholder = 'API URL';
-  const key = element('input', 'settings-input'); key.type = 'password'; key.placeholder = '留空保持原 Key';
-  const model = element('input', 'settings-input'); model.placeholder = '模型名称';
-  const modelSection = element('details', 'qqj-model-list-section'); modelSection.hidden = true;
-  const modelSummary = element('summary', 'qqj-model-list-summary');
-  const modelChevron = element('span', 'qqj-model-list-chevron', '›');
-  const modelCount = element('span', '', '已加载 0 个模型');
-  const modelBody = element('div', 'qqj-model-list-body');
-  const modelSearch = element('input', 'settings-input qqj-model-list-search'); modelSearch.type = 'search'; modelSearch.placeholder = '搜索模型…'; modelSearch.setAttribute('autocomplete', 'off');
-  const modelItems = element('div', 'qqj-model-list-items');
-  modelSummary.append(modelChevron, modelCount); modelBody.append(modelSearch, modelItems); modelSection.append(modelSummary, modelBody);
-  const exclude = element('textarea', 'settings-input'); exclude.placeholder = '排除参数，每行一个';
-  const additional = element('textarea', 'settings-input'); additional.rows = 3;
-  additional.placeholder = '{"thinking":{"type":"disabled"}}';
-  const additionalHint = element('p', 'settings-hint', '上例适用于智谱 API；留空使用默认。');
-  const timeout = element('input', 'settings-input'); timeout.type = 'number'; timeout.min = '5'; timeout.max = '600';
-  const temperature = element('input', 'settings-input'); temperature.type = 'number'; temperature.min = '0'; temperature.max = '2'; temperature.step = '0.01'; temperature.placeholder = '留空使用任务默认值';
-  const temperatureHint = element('p', 'settings-hint', '留空沿用当前任务温度；较高温度可能降低结构化提取稳定性。');
-  const stream = element('input'); stream.type = 'checkbox';
-  const editingHint = element('p', 'settings-hint');
-  let remove;
-  let cachedModels = [];
-  let modelListEpoch = 0;
-  const renderModels = (filter = modelSearch.value) => {
-    modelCount.textContent = `已加载 ${cachedModels.length} 个模型`;
-    const query = String(filter ?? '').trim().toLocaleLowerCase();
-    const shown = query ? cachedModels.filter(name => name.toLocaleLowerCase().includes(query)) : cachedModels;
-    if (!shown.length) {
-      modelItems.replaceChildren(element('div', 'qqj-model-list-empty', query ? '无匹配项' : '暂无模型'));
-      return;
-    }
-    modelItems.replaceChildren(...shown.map(name => {
-      const item = button(name, `qqj-model-list-item${name === model.value.trim() ? ' active' : ''}`, () => {
-        model.value = name;
-        renderModels();
-      });
-      item.setAttribute('data-model', name);
-      return item;
-    }));
-  };
-  const clearModels = () => {
-    modelListEpoch += 1;
-    cachedModels = [];
-    modelSearch.value = '';
-    modelSection.open = false;
-    modelSection.hidden = true;
-    renderModels('');
-  };
-
-  const fill = () => {
-    clearModels();
-    const target = editingTarget();
-    const config = target.config ?? {};
-    url.value = config.url ?? '';
-    key.value = '';
-    key.placeholder = config.key ? '已保存，留空保持不变' : '输入 API Key';
-    model.value = config.model ?? '';
-    exclude.value = (config.excludeParams ?? []).join('\n');
-    additional.value = config.qqjAdditionalParams ?? '';
-    timeout.value = String(config.timeoutSec ?? 180);
-    temperature.value = config.qqjTemperature == null ? '' : String(config.qqjTemperature);
-    stream.checked = config.stream === true;
-    editingHint.textContent = target.followsSummary
-      ? `正在编辑：召回 API 跟随摘要${target.followsAnalysis ? '，摘要跟随分析' : ''} · ${target.label}。直接保存会更新当前${target.followsAnalysis ? '分析' : '摘要'}配置；另存可建立召回专用预设。`
-      : target.followsAnalysis
-      ? `正在编辑：摘要 API 跟随分析 · ${target.label}。直接保存会更新当前分析配置；另存可建立摘要专用预设。`
-      : `正在编辑：${target.sourceRole === 'recall' ? '召回' : target.sourceRole === 'summary' ? '摘要' : '分析'} API · ${target.label}`;
-    if (remove) remove.disabled = !target.presetId || !target.config;
-  };
-
-  // 打开角色选择时同步编辑目标，选择立即用于后续请求。
-  function changeAnalysis(value) {
-    settings.update({ apiMode: value ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: value });
-    setEditingRole('analysis');
+  function launch(role, isNew = false) {
+    if (typeof customImpl !== 'function') return;
+    const target = isNew ? null : targetFor(role);
+    if (!isNew && !target.config) return;
+    if (role) onEditingRoleChange?.(role);
+    editor = openApiPresetEditor({ settings, apiTools, vectorIndex, documentRef, target, isNew, customImpl, onSaved: render });
   }
-  function changeSummary(value) {
-    settings.setSummaryPresetId(value);
-    setEditingRole('summary');
+  function render() {
+    body.replaceChildren();
+    const values = settings.get(), presets = settings.sharedPresets();
+    for (const role of Object.keys(labels)) {
+      const id = role === 'analysis' ? values.apiMode === 'seven-preset' ? values.selectedSevenDaysPresetId : '' : role === 'summary' ? settings.summaryPresetId() : values.recallPresetId ?? '';
+      const options = [{ value: '', label: role === 'analysis' ? '主配置' : role === 'summary' ? '跟随分析 API' : '跟随摘要 API' }, ...presets.map(preset => ({ value: preset.id, label: preset.name }))];
+      if (id && !presets.some(preset => preset.id === id)) options.push({ value: id, label: '失效预设（'+id+'）' });
+      const picker = createInlineSelect({ documentRef, options, value: id, ariaLabel: labels[role], onChange: next => {
+        if (role === 'analysis') settings.update({ apiMode: next ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: next });
+        else if (role === 'summary') settings.setSummaryPresetId(next);
+        else settings.update({ recallPresetId: next });
+        render();
+      } });
+      const row = element('div', 'qqj-api-purpose-row'), edit = button('编辑', 'secondary-action', () => launch(role)); edit.setAttribute('aria-label', '编辑'+labels[role]); edit.disabled = !targetFor(role).config;
+      row.append(picker.node, edit);
+      const purpose = element('div', 'qqj-api-purpose'); purpose.append(element('span', '', labels[role]), row); body.append(purpose);
+    }
+    const actions = element('div', 'settings-actions'); actions.append(button('新增 API', 'secondary-action', () => launch(null, true))); body.append(actions, element('p', 'settings-hint', '新增连接后，可在各用途中选择。'));
   }
-  function setEditingRole(role) { editingRole = role; onEditingRoleChange?.(role); result.textContent = ''; result.className = 'settings-result'; fill(); }
-
-  const draft = () => ({
-    url: url.value.trim(),
-    key: key.value.trim() || editingTarget().config?.key || '',
-    model: model.value.trim(),
-    excludeParams: exclude.value,
-    qqjAdditionalParams: additional.value.trim(),
-    timeoutSec: Number(timeout.value),
-    stream: stream.checked,
-    qqjTemperature: temperature.value.trim() === '' ? null : Number(temperature.value),
-  });
-  const validTemperature = () => {
-    const raw = temperature.value.trim();
-    if (!raw) return true;
-    const value = Number(raw);
-    return Number.isFinite(value) && value >= 0 && value <= 2 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
-  };
-
-  const result = element('p', 'settings-result');
-  const validAdditional = () => {
-    try { parseAdditionalParams(additional.value); return true; }
-    catch (error) { result.textContent = error.message; result.className = 'settings-result error'; return false; }
-  };
-  const selection = () => {
-    const target = editingTarget();
-    return { apiMode: target.presetId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: target.presetId, config: draft() };
-  };
-
-  const fetchBtn = button('拉取模型', 'secondary-action', async () => {
-    if (fetchBtn.disabled) return;
-    result.textContent = '正在拉取模型…'; result.className = 'settings-result';
-    fetchBtn.disabled = true;
-    const requestEpoch = modelListEpoch;
-    try {
-      const models = await apiTools.fetchModels(selection());
-      if (requestEpoch !== modelListEpoch) return;
-      cachedModels = [...models];
-      if (!model.value.trim() && models[0]) model.value = models[0];
-      modelSection.hidden = false;
-      modelSection.open = true;
-      renderModels('');
-      result.textContent = `已拉取 ${models.length} 个模型`; result.className = 'settings-result success';
-    } catch (error) {
-      if (requestEpoch !== modelListEpoch) return;
-      result.textContent = publicErrorMessage(error, { fallback: '模型列表拉取失败，请检查 API 配置后重试。' }); result.className = 'settings-result error';
-    } finally {
-      fetchBtn.disabled = false;
-    }
-  });
-  modelSearch.addEventListener('input', () => renderModels());
-  model.addEventListener('input', () => { if (!modelSection.hidden) renderModels(); });
-
-  const saveDraft = () => {
-    if (!validAdditional()) return false;
-    if (!validTemperature()) {
-      result.textContent = '温度须在 0–2 之间，并按 0.01 递增。'; result.className = 'settings-result error';
-      return false;
-    }
-    const target = editingTarget();
-    if (target.presetId && !target.config) {
-      result.textContent = '所选 API 预设已失效，请重新选择或另存为新预设。';
-      result.className = 'settings-result error';
-      return false;
-    }
-    const config = draft();
-    const vectorChanged = target.presetId && settings.get().vectorPresetId === target.presetId
-      && ['url', 'key', 'model'].some(name => String(config[name] ?? '') !== String(target.config?.[name] ?? ''));
-    if (target.presetId) {
-      settings.upsertSharedPreset(target.config.name, config, target.presetId);
-    } else {
-      settings.saveMainConfig(config);
-    }
-    if (target.sourceRole === 'analysis') settings.update({ apiMode: target.presetId ? 'seven-preset' : 'auto', selectedSevenDaysPresetId: target.presetId });
-    // 旧显式共享向量预设仍可被编辑；仅相关连接变更撤销缓存和运行中任务。
-    if (vectorChanged) vectorIndex?.abortAll();
-    return true;
-  };
-  const save = button('保存', 'primary-action', () => {
-    if (!saveDraft()) return;
-    result.textContent = 'API 设置已保存。'; result.className = 'settings-result success';
-    fill();
-    scrollManualEditorToTop(drawer);
-  });
-  const create = button('另存为', 'secondary-action', async () => {
-    if (!validAdditional()) return;
-    if (!validTemperature()) {
-      result.textContent = '温度须在 0–2 之间，并按 0.01 递增。'; result.className = 'settings-result error';
-      return;
-    }
-    const name = String(await Promise.resolve(promptImpl({ title: '另存为预设', body: '为当前 API 配置输入一个名称。', initialValue: '千千结预设', placeholder: '预设名称', confirmText: '保存', validate: value => String(value ?? '').trim() ? '' : '请输入预设名称。' })) ?? '').trim();
-    if (!name || !validAdditional()) return;
-    const id = settings.upsertSharedPreset(name, draft());
-    if (editingRole === 'recall') settings.update({ recallPresetId: id });
-    else if (editingRole === 'summary') settings.setSummaryPresetId(id);
-    else settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: id });
-    rerender?.();
-  });
-  remove = button('删除', 'secondary-action', async () => {
-    const target = editingTarget();
-    if (!target.presetId) {
-      result.textContent = '主配置不能删除。'; result.className = 'settings-result error';
-      return;
-    }
-    if (!target.config) {
-      result.textContent = '这个预设已不存在，未更改当前选择。'; result.className = 'settings-result error';
-      return;
-    }
-    const currentSelection = settings.get();
-    const analysisUsesTarget = currentSelection.apiMode === 'seven-preset' && currentSelection.selectedSevenDaysPresetId === target.presetId;
-    const summaryUsesTarget = settings.summaryPresetId() === target.presetId;
-    const summaryFollowsAnalysis = !settings.summaryPresetId();
-    const recallUsesTarget = currentSelection.recallPresetId === target.presetId;
-    const recallFollowsSummary = !currentSelection.recallPresetId;
-    const effects = [];
-    if (analysisUsesTarget) effects.push('分析 API 将回退到主配置。');
-    if (summaryUsesTarget) effects.push('摘要 API 将改为跟随分析。');
-    else if (analysisUsesTarget && summaryFollowsAnalysis) effects.push('摘要 API 当前跟随分析，也将随分析回退到主配置。');
-    if (recallUsesTarget) effects.push('召回 API 将改为跟随摘要。');
-    else if (recallFollowsSummary && (summaryUsesTarget || analysisUsesTarget && summaryFollowsAnalysis)) effects.push('召回 API 当前跟随摘要，也将随摘要使用回退后的配置。');
-    if (currentSelection.vectorPresetId === target.presetId) effects.push('向量召回将关闭，需重新配置。');
-    if (!effects.length) effects.push('当前分析、摘要和召回 API 不会切换。');
-    const sevenDaysAvailable = typeof isSevenDaysAvailable === 'function' ? isSevenDaysAvailable() : isSevenDaysAvailable === true;
-    if (sevenDaysAvailable) effects.push('构画中也会移除这个共享预设。');
-    const confirmed = await Promise.resolve(confirmImpl({ title: '删除 API 预设', body: `删除预设「${target.config.name}」？`, note: effects.join('\n'), confirmText: '删除', cancelText: '取消' }));
-    if (!confirmed) {
-      result.textContent = '已取消删除。'; result.className = 'settings-result';
-      return;
-    }
-    if (!settings.deleteSharedPreset(target.presetId)) {
-      result.textContent = '这个预设已不存在，未更改当前选择。'; result.className = 'settings-result error';
-      return;
-    }
-    if (currentSelection.vectorPresetId === target.presetId) vectorIndex?.abortAll();
-    const latest = settings.get();
-    if (latest.apiMode === 'seven-preset' && latest.selectedSevenDaysPresetId === target.presetId) {
-      settings.update({ apiMode: 'auto', selectedSevenDaysPresetId: '' });
-    }
-    result.textContent = `已删除预设「${target.config.name}」。`; result.className = 'settings-result success';
-    rerender?.();
-  });
-  const test = button('测试', 'secondary-action', async () => {
-    if (!validAdditional()) return;
-    if (test.disabled) return;
-    if (!validTemperature()) {
-      result.textContent = '温度须在 0–2 之间，并按 0.01 递增。'; result.className = 'settings-result error';
-      return;
-    }
-    result.textContent = '正在测试…'; result.className = 'settings-result';
-    const requestEpoch = modelListEpoch;
-    test.disabled = true;
-    try {
-      const requestSelection = selection();
-      const response = await apiTools.testConnection(requestSelection);
-      if (requestEpoch !== modelListEpoch) return;
-      result.textContent = `连接成功 · ${response?.model || '当前模型'}`; result.className = 'settings-result success';
-    } catch (error) {
-      if (requestEpoch !== modelListEpoch) return;
-      result.textContent = publicErrorMessage(error, { fallback: 'API 连接测试失败，请检查配置后重试。' }); result.className = 'settings-result error';
-    } finally {
-      test.disabled = false;
-    }
-  });
-
-  const modelRow = element('div', 'settings-inline');
-  modelRow.append(model, fetchBtn);
-  const actions = element('div', 'settings-actions qqj-manual-save-bar');
-  actions.append(save, create, remove, test);
-
-  const { drawer: advanced, body: advancedBody } = subDrawer({ title: '高级设置', id: 'qqj-settings-api-advanced', open: advancedOpen, onToggle: onAdvancedToggle });
-  advanced.classList.add('sub-advanced');
-  const streamLabel = element('label', 'setting-switch'); streamLabel.append(stream, element('span', '', '流式请求'));
-  advancedBody.append(field('排除参数', exclude), field('附加参数（JSON）', additional), additionalHint, streamLabel, field('超时秒数', timeout), field('千千结温度（0–2）', temperature), temperatureHint);
-  const vectorSettings = createVectorApiSettings({ settings, vectorApi, vectorIndex, documentRef, open: vectorOpen, onToggle: onVectorToggle });
-
-  body.append(
-    field('分析API（建议高质模型）', analysisSelect),
-    field('摘要API（建议快速模型）', summarySelect),
-    field('召回API（默认跟随摘要）', recallSelect),
-    editingHint,
-    element('p', 'settings-hint', '召回可选择另一 API 预设；默认使用摘要配置。不同预设仍可能共用同一账号的并发额度。'),
-    element('div', 'settings-divider'),
-    field('URL', url),
-    field('Key', key),
-    field('模型', modelRow),
-    modelSection,
-    result,
-    advanced,
-    actions,
-    vectorSettings.node,
-  );
-  fill();
-  return { node: drawer, dispose: vectorSettings.dispose };
+  render();
+  return { node: drawer, dispose: () => editor?.dispose() };
 }

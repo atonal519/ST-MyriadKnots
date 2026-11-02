@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "maps": [
+    {
+      "id": "modern-town",
+      "label": "现代小城",
+      "width": 1000,
+      "height": 1000,
+      "file": "modern-town.svg",
+      "bytes": 27034,
+      "sha256": "472080e97201a85a7161e56b4d2878972470ada55c674188cebf42475ec19149",
+      "source": "千窗原创静态示意几何"
+    },
+    {
+      "id": "old-town",
+      "label": "古风城镇",
+      "width": 1000,
+      "height": 1000,
+      "file": "old-town.svg",
+      "bytes": 27552,
+      "sha256": "3f71725d3333977e8240b66ad7ec9e13e9462231eb233c989b2956d48b3cb77b",
+      "source": "千窗原创静态示意几何"
+    },
+    {
+      "id": "sci-fi",
+      "label": "科幻设施",
+      "width": 1000,
+      "height": 1000,
+      "file": "sci-fi.svg",
+      "bytes": 11329,
+      "sha256": "b2fb1e75e45d8e3c465c740acde3cdc9d9362179fdbd2d1d81172827f2105bf1",
+      "source": "千窗原创静态示意几何"
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import { createOperationMenuController } from './operation-menu-controller.js';
 import { createInlineSelect } from './inline-select.js';
 import { PEOPLE_PROFILE_FIELDS, PEOPLE_PROFILE_GROUPS, PEOPLE_PROFILE_LABELS, emptyPeopleProfileFields } from '../v3/people-profile-fields.js';
 import { avatarCropLayout, cropAvatarDataUrl, fitAvatarDataUrl, loadAvatarSource } from './avatar-cropper.js';
-import { publicErrorMessage } from '../public-error.js';
+import { publicErrorMessage, sameErrorDetails } from '../public-error.js';
 import { bindHorizontalStrip, openPeopleOrderDialog } from './people-interactions.js';
 
 const PLACEHOLDERS = Object.freeze({ name: '人物姓名', aliases: '多个别名可用顿号或换行分隔', gender: '有明确依据时填写', age: '不把外观年龄当作实际年龄', birthday: '有明确依据时填写', species: '种族或物种', notes: '其他稳定基础资料', appearance: '旧资料或难归类的外貌补充', background: '稳定的背景经历', personality: '长期核心性格', nsfw: '有明确依据的成人向资料' });
@@ -17,15 +17,31 @@ function fieldsFrom(person) {
   return result;
 }
 function sameFields(left, right) { return PEOPLE_PROFILE_FIELDS.every(field => String(left?.[field] ?? '') === String(right?.[field] ?? '')); }
+function showProfileReadingField(field, value) {
+  const text = String(value ?? '').trim();
+  return Boolean(text) && !(field === 'species' && /^(?:人类|human)$/iu.test(text));
+}
 function profileReadingText(value) {
   // Reading-only formatting: keep the stored/editor value untouched.
   return String(value ?? '').replace(/([；;。](?:[”’」』"'])*)[ \t]*(?=[^\s”’」』"'])/gu, '$1\n');
 }
 
+
+// Reading layout only: reserve the existing 4em caption label and gap inside a 128px cell.
+function profileReadingEntries(group, profile) {
+  const emWidth = text => [...text].reduce((width, character) => width + (/^[\x00-\x7f]$/u.test(character) ? 0.55 : 1), 0);
+  return group.fields.filter(([field]) => showProfileReadingField(field, profile[field])).map(([field, label, control], index) => {
+    const value = control === 'textarea' ? profileReadingText(profile[field]) : String(profile[field]);
+    const short = !/[\r\n]/u.test(value) && 4 * 12 + 8 + 13 * emWidth(value.trim()) <= 128;
+    const compact = short && emWidth(label) <= 4;
+    return { field, value, compact, index, priority: short ? control === 'input' ? 0 : 1 : 2 };
+  }).sort((left, right) => left.priority - right.priority || left.index - right.index);
+}
+
 export function createPeopleProfilesView({ runtime, sessionStateProvider = null, prepareSession = null, dialog = null, documentRef = globalThis.document, imageFactory = () => new Image(), urlApi = globalThis.URL } = {}) {
   if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'setPersonOrderEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
-  let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = '人物资料状态已显示。';
+  let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = { source: 'read', text: '人物资料状态已显示。', error: state.lastError ?? null };
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
   let switcherNode = null, switcherSignature = null, switcherScrollLeft = 0;
   let renderedState = null, renderedNodes = null, busyControls = [], generationButtons = [];
@@ -40,13 +56,34 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     releaseCrop(draft);
   };
   const element = (tag, className = '', text = '') => { const node = documentRef.createElement(tag); if (className) node.className = className; if (text !== '') node.textContent = text; return node; };
+  function profileReadingSection(group, profile, { lead = false } = {}) {
+    const entries = profileReadingEntries(group, profile);
+    if (!entries.length) return null;
+    const section = element('section', `qqj-profile-section qqj-profile-section-${group.key}${lead ? ' lead' : ''}`);
+    section.append(element('h3', '', group.label));
+    for (const entry of entries) {
+      const row = element('div', `qqj-profile-read-row qqj-profile-read-${entry.field}`);
+      row.setAttribute('data-qqj-profile-layout', entry.compact ? 'compact' : 'wide');
+      row.append(element('span', '', PEOPLE_PROFILE_LABELS[entry.field]), element('p', '', entry.value)); section.append(row);
+    }
+    return section;
+  }
   const busyControl = (node, isDisabled) => { busyControls.push({ node, isDisabled }); return node; };
   const busyExceptGeneration = value => Boolean(value.active && !['generating', 'generatingAvatar'].includes(value.active.kind));
-  const readFeedback = value => value.active?.kind === 'loading' ? '正在读取当前聊天…'
-    : value.lastError ? `读取失败：${publicErrorMessage(value.lastError, { fallback: '人物资料暂时无法读取，请重试。' })}` : '人物资料读取完成。';
+  const readFeedback = value => ({ source: 'read', error: value.lastError ?? null, text: value.active?.kind === 'loading' ? '正在读取当前聊天…'
+    : value.lastError ? `读取失败：${publicErrorMessage(value.lastError, { fallback: '人物资料暂时无法读取，请重试。' })}` : '人物资料读取完成。' });
+  const feedbackCopy = value => {
+    if (typeof feedback === 'string') return feedback; // Independent operation receipts own their slot.
+    if (feedback?.source === 'read' || feedback?.source === 'operationError') {
+      if (feedback.source === 'read' && (!feedback.error || value.active?.kind === 'loading')) return '';
+      const sameFailure = sameErrorDetails(feedback.error, value.lastError);
+      if (value.status !== 'disabled' && !value.active && sameFailure) return feedback.receipt ?? '';
+    }
+    return feedback?.text ?? '';
+  };
   const statusCopy = value => {
     if (value.status === 'disabled') return '千千结已关闭';
-    if (value.active?.kind === 'loading') return '正在读取当前聊天的人物资料';
+    if (value.active?.kind === 'loading' || sessionStateProvider?.()?.status === 'preparing') return '正在读取当前聊天的人物资料';
     if (value.active?.kind === 'generating') {
       const index = value.active.batchIndex, total = value.active.batchTotal;
       const progress = Number.isSafeInteger(index) && Number.isSafeInteger(total) && index > 0 && total >= index ? ` · 第 ${index}/${total} 批` : '';
@@ -59,17 +96,17 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     if (value.active?.kind === 'savingAvatar') return '正在保存人物头像';
     if (value.active?.kind === 'merging') return '正在合并人物归属';
     if (value.active?.kind === 'deleting') return '正在删除人物';
-    if (value.lastError?.message) return `需要处理 · ${publicErrorMessage(value.lastError, { fallback: '人物资料处理失败，请重试。' })}`;
+    if (value.lastError) return `需要处理 · ${publicErrorMessage(value.lastError, { fallback: '人物资料处理失败，请重试。' })}`;
     return `已选 ${value.people.filter(person => person.selected).length} 位重要人物 · ${value.unprofiledSelectedCount} 位待建档`;
   };
   const healthClass = value => {
     if (value.lastError) return 'qqj-page-health qqj-profile-health error';
-    const checking = Boolean(value.active) || !['ready', 'empty'].includes(value.status);
+    const checking = Boolean(value.active) || sessionStateProvider?.()?.status === 'preparing' || !['ready', 'empty'].includes(value.status);
     return `qqj-page-health qqj-profile-health ${checking ? 'checking' : 'healthy'}`;
   };
   function resetForChat(nextChatId) {
     if (chatId === nextChatId) return;
-    closeCrop(); chatId = nextChatId; drafts.clear(); archivedHistory.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = '人物资料状态已显示。';
+    closeCrop(); chatId = nextChatId; drafts.clear(); archivedHistory.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = readFeedback(state);
   }
   async function run(label, task, { after = null, generationReport = false } = {}) {
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
@@ -88,7 +125,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       return result;
     } catch (error) {
       state = runtime.getState();
-      if (active && mine === epoch && chatId === operationChatId && (state.chatId ?? null) === operationChatId) { feedback = `${label}失败：${publicErrorMessage(error, { fallback: '操作没有完成，请重试。' })}`; render(state); }
+      if (active && mine === epoch && chatId === operationChatId && (state.chatId ?? null) === operationChatId) { feedback = { source: 'operationError', error, receipt: `${label}未完成。`, text: `${label}失败：${publicErrorMessage(error, { fallback: '操作没有完成，请重试。' })}` }; render(state); }
       return { status: 'error', error };
     }
   }
@@ -264,15 +301,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         details.append(summary);
         if (String(profile.aliases ?? '').trim()) details.append(element('p', 'qqj-profile-alias', `别名 · ${profile.aliases}`));
         for (const group of PEOPLE_PROFILE_GROUPS) {
-          const present = group.fields.filter(([field]) => String(profile[field] ?? '').trim());
-          if (!present.length) continue;
-          const groupNode = element('section', 'qqj-profile-section'); groupNode.append(element('h3', '', group.label));
-          for (const [field, , control] of present) {
-            const row = element('div', `qqj-profile-read-row qqj-profile-read-${field}`);
-            row.append(element('span', '', PEOPLE_PROFILE_LABELS[field]), element('p', '', control === 'textarea' ? profileReadingText(profile[field]) : String(profile[field])));
-            groupNode.append(row);
-          }
-          details.append(groupNode);
+          const groupNode = profileReadingSection(group, profile);
+          if (groupNode) details.append(groupNode);
         }
         section.append(details);
       }
@@ -298,14 +328,14 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       }
       if (chatId !== operationChatId || cropLifecycle !== cropLoadId) return;
       const result = await run('生成头像', () => runtime.generateAvatar(person.entityId, { character }));
-      if (result?.dataUrl && active && cropLifecycle === cropLoadId) await chooseAvatar(person, mark, result.dataUrl, true);
+      if (result?.dataUrl && active && cropLifecycle === cropLoadId) await chooseAvatar(person, mark, result.dataUrl, true, result.galleryCharacterName);
     } catch (error) {
       if (active && chatId === operationChatId && cropLifecycle === cropLoadId) {
         feedback = `生成头像失败：${publicErrorMessage(error, { fallback: '头像没有生成，请检查柏宝绘设置。' })}`; render(state);
       }
     }
   }
-  async function chooseAvatar(person, mark, file, generated = false) {
+  async function chooseAvatar(person, mark, file, generated = false, galleryCharacterName = '') {
     cropLoadController?.abort();
     const controller = new AbortController(); cropLoadController = controller;
     const loadId = ++cropLoadId, operationChatId = chatId, entityId = person.entityId;
@@ -315,7 +345,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       const source = await loadAvatarSource(file, { imageFactory, urlApi, signal: controller.signal });
       if (loadId !== cropLoadId || chatId !== operationChatId || currentEntityId !== entityId) { source.release(); return; }
       cropLoadController = null; closeCrop();
-      const draft = { entityId, chatId: operationChatId, source, generated, originalRef: null, aspectRatio, cropping: false, zoom: 1, offsetX: 0, offsetY: 0, saving: false, dialogOpen: false };
+      const draft = { entityId, chatId: operationChatId, source, generated, galleryCharacterName, originalRef: null, aspectRatio, cropping: false, zoom: 1, offsetX: 0, offsetY: 0, saving: false, dialogOpen: false };
       cropDraft = draft;
       if (!dialog?.custom) { releaseCrop(draft); feedback = '当前环境无法打开头像预览窗口。'; render(state); return; }
       const crop = avatarCropContent(person, draft); draft.dialogOpen = true;
@@ -377,7 +407,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
           ? cropAvatarDataUrl({ image: draft.source.image, aspectRatio: draft.aspectRatio, zoom: draft.zoom, offsetX: draft.offsetX, offsetY: draft.offsetY, canvas: documentRef.createElement('canvas') })
           : fitAvatarDataUrl({ image: draft.source.image, canvas: documentRef.createElement('canvas') });
         status.textContent = '正在保存头像…';
-        await runtime.saveAvatar(person.entityId, dataUrl, { originalFile: draft.source.blob, originalRef: draft.originalRef, generated: draft.generated,
+        await runtime.saveAvatar(person.entityId, dataUrl, { originalFile: draft.source.blob, originalRef: draft.originalRef, generated: draft.generated, galleryCharacterName: draft.galleryCharacterName,
           crop: draft.cropping ? { aspectRatio: draft.aspectRatio, zoom: draft.zoom, offsetX: draft.offsetX, offsetY: draft.offsetY } : null,
           onOriginalUploaded: value => { draft.originalRef = value; } });
         return true;
@@ -443,11 +473,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     {
       const reading = element('div', 'qqj-profile-reading');
       for (const group of PEOPLE_PROFILE_GROUPS) {
-        const present = group.fields.filter(([field]) => values[field]);
-        if (!present.length) continue;
-        const section = element('section', `qqj-profile-section qqj-profile-section-${group.key}${reading.children.length ? '' : ' lead'}`); section.append(element('h3', '', group.label));
-        for (const [field,,control] of present) { const row = element('div', `qqj-profile-read-row qqj-profile-read-${field}`); row.append(element('span', '', PEOPLE_PROFILE_LABELS[field]), element('p', '', control === 'textarea' ? profileReadingText(values[field]) : values[field])); section.append(row); }
-        reading.append(section);
+        const section = profileReadingSection(group, values, { lead: reading.children.length === 0 });
+        if (section) reading.append(section);
       }
       body.append(reading);
       if (draft?.notice || draft?.error) { const result = saveResult(draft); result.className += ' qqj-profile-reading-result'; body.append(result); }
@@ -528,6 +555,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   }
   function render(next = runtime.getState()) {
     state = next; resetForChat(state.chatId ?? null); if (!container) return;
+    const visibleFeedback = feedbackCopy(state);
     const active = state.active;
     const draft = currentEntityId ? drafts.get(currentEntityId) : null;
     const draftStamp = draft ? `${draft.editing}:${draft.saving}:${draft.error}:${draft.notice}` : '';
@@ -547,8 +575,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       if (!statusChanged) return;
       renderedNodes.health.className = healthClass(state);
       renderedNodes.health.textContent = statusCopy(state);
-      renderedNodes.feedback.className = `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`;
-      renderedNodes.feedback.textContent = feedback;
+      renderedNodes.feedback.className = `v3-foundation-feedback${visibleFeedback.includes('失败') ? ' error' : ''}`;
+      renderedNodes.feedback.textContent = visibleFeedback; renderedNodes.feedback.hidden = !visibleFeedback;
       for (const control of busyControls) control.node.disabled = control.isDisabled();
       for (const button of generationButtons) button.node.textContent = active?.kind === 'generating' ? '正在整理…' : button.label;
       renderedState = { ...renderedState, status: state.status, active, lastError: state.lastError,
@@ -561,7 +589,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const page = element('section', 'qqj-page qqj-profiles-page'), status = element('div', 'qqj-page-status');
     const health = element('p', healthClass(state), statusCopy(state));
     health.setAttribute?.('role', 'status');
-    const feedbackNode = element('p', `v3-foundation-feedback${feedback.includes('失败') ? ' error' : ''}`, feedback);
+    const feedbackNode = element('p', `v3-foundation-feedback${visibleFeedback.includes('失败') ? ' error' : ''}`, visibleFeedback); feedbackNode.hidden = !visibleFeedback;
     status.append(health, feedbackNode); page.append(status);
     const selected = state.people.filter(person => person.selected), moreCount = state.people.length - selected.length;
     if (!selected.some(person => person.entityId === currentEntityId)) { closeCrop(); currentEntityId = selected[0]?.entityId ?? null; }
@@ -604,7 +632,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   function mount(target) { unsubscribe?.(); unsubscribe = null; operationMenus.deactivate(); renderedState = null; renderedNodes = null; busyControls = []; generationButtons = []; switcherNode = null; container = target; active = true; render(runtime.getState()); operationMenus.activate(); subscribe(); }
   async function activate() {
     if (!container) throw new Error('千人人物资料 view 尚未挂载');
-    active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = '正在读取当前聊天…'; render(runtime.getState());
+    active = true; operationMenus.activate(); subscribe(); const mine = ++epoch; feedback = { source: 'read', text: '正在读取当前聊天…' }; render(runtime.getState());
     let preparingIdentity = false, operationChatId = runtime.getState().chatId ?? chatId;
     try {
       const sessionState = sessionStateProvider?.() ?? null;
@@ -628,7 +656,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       if ((next.chatId ?? null) !== (result.chatId ?? null)) return result;
       state = next; resetForChat(next.chatId ?? null); feedback = readFeedback(next); render(next); return result;
     }
-    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; const next = runtime.getState(); if ((next.chatId ?? null) !== operationChatId) return { status: 'stale' }; state = next; resetForChat(state.chatId ?? null); feedback = `${preparingIdentity ? '聊天身份准备失败' : '读取失败'}：${publicErrorMessage(error, { fallback: preparingIdentity ? '请到“记忆管理”页点击“复制状态诊断”反馈。' : '人物资料暂时无法读取，请重试。' })}`; render(state); return { status: 'error', error }; }
+    catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; const next = runtime.getState(); if ((next.chatId ?? null) !== operationChatId) return { status: 'stale' }; state = next; resetForChat(state.chatId ?? null); feedback = { source: preparingIdentity ? 'operation' : 'read', error, text: `${preparingIdentity ? '聊天身份准备失败' : '读取失败'}：${publicErrorMessage(error, { fallback: preparingIdentity ? '当前聊天身份准备失败，请稍后重试。' : '人物资料暂时无法读取，请重试。' })}` }; render(state); return { status: 'error', error }; }
   }
   function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); renderedState = null; renderedNodes = null; busyControls = []; generationButtons = []; switcherNode = null; unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });

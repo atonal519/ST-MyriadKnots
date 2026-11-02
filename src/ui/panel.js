@@ -5,13 +5,13 @@ import { createPanelGeometryController } from './layout.js';
 import { createAppearanceController } from './appearance.js';
 import { createSettingsDrawer, createSettingsDrawerState } from './settings-drawer.js';
 import { createApiSettings } from './settings/api-settings.js';
+import { createVectorApiSettings } from './settings/vector-api-settings.js';
 import { createPromptsSettings } from './settings/prompts-settings.js';
 import { createAppearanceSettings } from './settings/appearance-settings.js';
 import { publicErrorMessage } from '../public-error.js';
-import { createScrollDiagnostics } from './scroll-diagnostics.js';
 import { openHelpGuide } from './help-guide.js';
 import { applyPluginEnabledImmediately } from '../settings.js';
-import { scaleCssFontSizes } from './font-scale.js';
+import { scaleCssFontSizes, scaleCssSpacing } from './font-scale.js';
 import { createPluginUpdatesView } from './plugin-updates-view.js';
 import { isTauriTavern } from '../tauri-backend.js';
 import { sharedUiCss } from './shared-ui-style.js';
@@ -45,6 +45,7 @@ export function createPanel({
   v3FoundationView,
   peopleProfilesView,
   qianshiTimelineView,
+  qianchuangView,
   storageManagementView,
   memoryTransferViewFactory,
   sourcePermissionView,
@@ -74,6 +75,7 @@ export function createPanel({
   if (!qianshiTimelineView || ['mount', 'activate', 'deactivate'].some(name => typeof qianshiTimelineView[name] !== 'function')) {
     throw new TypeError('qianshiTimelineView 无效');
   }
+  if (!qianchuangView || ['mount', 'activate', 'deactivate'].some(name => typeof qianchuangView[name] !== 'function')) throw new TypeError('qianchuangView 无效');
   if (!storageManagementView || ['mount', 'activate', 'deactivate'].some(name => typeof storageManagementView[name] !== 'function')) {
     throw new TypeError('storageManagementView 无效');
   }
@@ -82,7 +84,7 @@ export function createPanel({
   host.hidden = true;
   host.setAttribute('aria-hidden', 'true');
   const root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = `<style>${sharedUiCss}\n${scrollbarCss}\n${shellCss}\n${scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)}</style>${html}`;
+  root.innerHTML = `<style>${sharedUiCss}\n${scrollbarCss}\n${shellCss}\n${scaleCssSpacing(scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true))}</style>${html}`;
   const panel = root.querySelector('.panel');
   const setActivity = value => {
     panel?.setAttribute?.('aria-busy', String(value.busy === true));
@@ -105,6 +107,7 @@ export function createPanel({
   const settingsDrawerState = createSettingsDrawerState();
   let apiEditingRole = 'analysis';
   let apiSettingsView = null;
+  let vectorSettingsView = null;
   let promptsSettingsView = null;
   let updatesSettingsView = null;
   let memoryTransferView = null;
@@ -114,12 +117,7 @@ export function createPanel({
   let swipeGesture = null;
   let settingsManagementError = null;
   let documentationFallbackText = '', documentationCopyFeedback = '';
-  const scrollDiagnostics = createScrollDiagnostics({
-    target: body,
-    getPage: () => screen === 'settings' ? 'settings' : activeTab,
-    windowRef: documentRef.defaultView ?? globalThis,
-    navigatorRef: documentRef.defaultView?.navigator ?? globalThis.navigator,
-  });
+
 
   let dialogAppearanceRevision = 0;
   const syncHeader = appearance => {
@@ -185,12 +183,14 @@ export function createPanel({
   };
   const unmountContent = () => {
     memoryTransferView?.dispose(); memoryTransferView = null;
-    apiSettingsView?.dispose(); apiSettingsView = null;
+    apiSettingsView?.dispose?.(); apiSettingsView = null;
+    vectorSettingsView?.dispose(); vectorSettingsView = null;
     promptsSettingsView?.dispose(); promptsSettingsView = null;
     updatesSettingsView?.dispose(); updatesSettingsView = null;
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
     qianshiTimelineView.deactivate();
+    qianchuangView.deactivate();
     storageManagementView.deactivate();
     view.replaceChildren();
     mountedContentView = null;
@@ -224,6 +224,13 @@ export function createPanel({
       }
       restoreScroll(activeTab);
       return qianshiTimelineView.activate();
+    }
+    if (activeTab === 'qianchuang') {
+      if (mountedContentView !== 'qianchuang') {
+        unmountContent(); qianchuangView.mount(view); mountedContentView = 'qianchuang';
+      }
+      restoreScroll(activeTab);
+      return qianchuangView.activate();
     }
     v3FoundationView.setPage?.(activeTab === 'people' ? 'people' : 'memories');
     if (mountedContentView !== 'foundation') {
@@ -319,17 +326,20 @@ export function createPanel({
     // 通用设置：世界书排除、提示词和外观即时保存；API 角色选择即时生效，配置编辑需点“保存设置”。
     const { drawer: general, body: generalBody } = groupOf('general', '通用设置');
     const api = createApiSettings({
-      settings, apiTools, vectorApi, vectorIndex, documentRef,
+      settings, apiTools, vectorIndex, documentRef,
       initialEditingRole: apiEditingRole, onEditingRoleChange: role => { apiEditingRole = role; },
       open: subOpen('api'), onToggle: subToggle('api'),
       advancedOpen: subOpen('api-advanced'), onAdvancedToggle: subToggle('api-advanced'),
-      vectorOpen: subOpen('api-vector'), onVectorToggle: subToggle('api-vector'),
       rerender: () => renderSettings(),
       isSevenDaysAvailable,
       confirmImpl: options => dialog?.confirm?.(options) ?? false,
       promptImpl: options => dialog?.prompt?.(options) ?? null,
+      customImpl: options => dialog?.custom?.(options) ?? Promise.resolve(null),
     });
     apiSettingsView = api;
+    const vector = createVectorApiSettings({ settings, vectorApi, vectorIndex, documentRef,
+      open: subOpen('vector'), onToggle: subToggle('vector') });
+    vectorSettingsView = vector;
     const worldbook = sourcePermissionView?.renderSettings?.({
       open: subOpen('worldbook'), onDrawerToggle: subToggle('worldbook'),
     });
@@ -339,7 +349,7 @@ export function createPanel({
       settings, documentRef, open: subOpen('appearance'), onToggle: subToggle('appearance'),
       applyAppearance: () => appearance.apply(),
     });
-    generalBody.append(api.node);
+    generalBody.append(api.node, vector.node);
     if (worldbook) generalBody.append(worldbook);
     generalBody.append(prompts.node, appearanceSettings.node);
     page.append(general);
@@ -527,7 +537,6 @@ export function createPanel({
     trigger = nextTrigger ?? trigger;
     host.hidden = false;
     host.setAttribute('aria-hidden', 'false');
-    scrollDiagnostics.start();
     geometry.restore();
     let result = { status: 'ready' };
     if (screen === 'settings') renderSettings();
@@ -540,16 +549,17 @@ export function createPanel({
     memoryTransferView?.dispose(); memoryTransferView = null;
     rememberScroll();
     activationEpoch += 1;
-    apiSettingsView?.dispose(); apiSettingsView = null;
+    apiSettingsView?.dispose?.(); apiSettingsView = null;
+    vectorSettingsView?.dispose(); vectorSettingsView = null;
     promptsSettingsView?.dispose(); promptsSettingsView = null;
     updatesSettingsView?.dispose(); updatesSettingsView = null;
     v3FoundationView.deactivate();
     peopleProfilesView.deactivate();
     qianshiTimelineView.deactivate();
+    qianchuangView.deactivate();
     storageManagementView.deactivate();
     geometry.cancelGesture();
     swipeGesture = null;
-    scrollDiagnostics.stop();
     dialog?.closeAll?.();
     host.hidden = true;
     host.setAttribute('aria-hidden', 'true');
@@ -561,14 +571,12 @@ export function createPanel({
   function openVectorSettings() {
     if (screen !== 'settings') return false;
     settingsDrawerState.open('general');
-    settingsDrawerState.open('api');
-    settingsDrawerState.open('api-vector');
+    settingsDrawerState.open('vector');
     const general = view?.querySelector?.('#qqj-settings-group-general');
-    const api = view?.querySelector?.('#qqj-settings-api');
     const vector = view?.querySelector?.('#qqj-settings-vector-api');
-    if (!general || !api || !vector) return false;
+    if (!general || !vector) return false;
     // 直接展开已有节点，以保留未保存的 API 输入。
-    general.open = true; api.open = true; vector.open = true;
+    general.open = true; vector.open = true;
     vector.scrollIntoView?.({ block: 'center' });
     vector.querySelector?.('summary')?.focus?.();
     return true;
@@ -580,6 +588,7 @@ export function createPanel({
       activationEpoch += 1;
       v3FoundationView.deactivate();
       qianshiTimelineView.deactivate();
+    qianchuangView.deactivate();
       if (!host.hidden && screen === 'content') showStatus('千千结当前已关闭。设置仍可打开。');
     } else if (!host.hidden && screen === 'content') void activateFoundation().catch(() => showStatus('当前聊天暂时无法读取千结记忆。'));
     else if (!host.hidden && screen === 'settings') void activateManagement();
@@ -597,15 +606,15 @@ export function createPanel({
     if (!swipeGesture) return; const touch = point(event); if (!touch) return;
     swipeGesture.dx = touch.clientX - swipeGesture.x; swipeGesture.dy = touch.clientY - swipeGesture.y;
     if (!swipeGesture.horizontal && Math.abs(swipeGesture.dy) > Math.abs(swipeGesture.dx)) { swipeGesture = null; return; }
-    if (Math.abs(swipeGesture.dx) >= 12 && Math.abs(swipeGesture.dx) > Math.abs(swipeGesture.dy) * 1.35) { swipeGesture.horizontal = true; event.preventDefault?.(); scrollDiagnostics.markQqjSwipeIntercepted(); }
+    if (Math.abs(swipeGesture.dx) >= 12 && Math.abs(swipeGesture.dx) > Math.abs(swipeGesture.dy) * 1.35) { swipeGesture.horizontal = true; event.preventDefault?.(); }
   }, { passive: false });
   body?.addEventListener?.('touchend', event => {
     if (!swipeGesture) return; const touch = point(event); if (touch) { swipeGesture.dx = touch.clientX - swipeGesture.x; swipeGesture.dy = touch.clientY - swipeGesture.y; }
     const gesture = swipeGesture; swipeGesture = null;
     if (Math.abs(gesture.dx) < 60 || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.35) return;
     event.preventDefault?.();
-    scrollDiagnostics.markQqjSwipeIntercepted();
-    const swipeTabs = ['profiles', 'events', 'qianshi', 'people', 'settings'], current = screen === 'settings' ? 'settings' : activeTab, index = swipeTabs.indexOf(current), next = index + (gesture.dx < 0 ? 1 : -1);
+
+    const swipeTabs = ['profiles', 'events', 'qianshi', 'qianchuang', 'people', 'settings'], current = screen === 'settings' ? 'settings' : activeTab, index = swipeTabs.indexOf(current), next = index + (gesture.dx < 0 ? 1 : -1);
     if (next >= 0 && next < swipeTabs.length) selectTab(swipeTabs[next]);
   }, { passive: false });
   body?.addEventListener?.('touchcancel', () => { swipeGesture = null; }, { passive: true });
@@ -640,9 +649,9 @@ export function createPanel({
       if (host.hidden || screen !== 'content') return { status: 'closed' };
       v3FoundationView.deactivate();
       qianshiTimelineView.deactivate();
+    qianchuangView.deactivate();
       return activateFoundation();
     },
-    getUiDiagnostic: () => JSON.stringify(scrollDiagnostics.snapshot(), null, 2),
     getState: () => ({ enabled, activeTab, screen, open: !host.hidden }),
   });
 }

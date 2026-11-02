@@ -6,7 +6,7 @@ import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
 import { newIdentityUuid } from '../identity.js';
-import { readRecentBodyStoryTimes, readTimeBody, timeBodyStart, resolveTimeStart, planTimeBody } from './time-body.js';
+import { readRecentBodyStoryTimes, readTimeBody, timeBodyStart, resolveTimeStart, resolveReplacedTimeStart, planTimeBody } from './time-body.js';
 import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualSettingResponse, projectAnnualSettings } from './time-annual-setting.js';
 import { prepareQianshiCandidates, projectQianshiGraph } from './qianshi-domain.js';
 import { migrationPartition } from './migration-prefix.js';
@@ -583,7 +583,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   }
   async function ensureStart(source, stored, signal) {
     let start = stored.head?.bodyStart ?? timeBodyStart(source);
-    const bound = resolveTimeStart(start, source);
+    const bound = resolveTimeStart(start, source) ?? await resolveReplacedTimeStart(start, source, hostAdapter.snapshot(), { sanitizerOptions: sanitizerOptions() });
     if (bound && !start.floorId && !start.awaitingFirst) start = { ...start, hostLocator: bound.hostLocator, rawFingerprint: bound.rawFingerprint, canonicalFingerprint: bound.canonicalFingerprint,
       ...(bound.floorId ? { floorId: bound.floorId, awaitingFirst: undefined } : {}) };
     else if (bound?.floorId && !start.floorId) start = { ...start, floorId: bound.floorId, awaitingFirst: undefined };

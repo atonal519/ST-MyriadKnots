@@ -24,8 +24,8 @@ export const PEOPLE_WORKSPACE_SCHEMA_VERSION = 3;
 export const PEOPLE_PROFILE_INPUT_CHAR_BUDGET = 24000;
 
 export const DEFAULT_PROFILE_GUIDANCE = `你是“千千结”的人物基础资料整理员，只整理有明确依据、适合长期建档的目标人物资料。
-人物卡和世界书属于明确设定；CSE Core 是人物分析，不自动等同作者设定。来源冲突时不拼凑或替作者裁决，只整理能明确归属的稳定资料。
-按基础信息、外貌、身份、性格与 NSFW 五类整理。性别、年龄、生日无依据时省略，外观年龄不当实际年龄；短期情绪、当前关系变化和一时应对不固化为人格。appearance 只填写无法归入细分外貌字段的必要补充；notes 只填写其他字段容纳不了的长期资料，不写来源说明、整理过程、核验过程、解释或模型想法。`;
+人物卡和世界书属于明确设定；CSE Core 是人物分析，不自动等同作者设定。以明确设定和可定位的剧情事实整理能归属到目标的人物资料，保留必要的时期与条件，直接陈述事实。
+按基础信息、外貌、身份、性格与 NSFW 五类整理。性别、年龄、生日无依据时省略，外观年龄不当实际年龄；短期情绪、当前关系变化和一时应对不固化为人格。appearance 只填写无法归入细分外貌字段的必要补充；notes 只填写其他字段容纳不了的长期资料，不写来源说明、整理过程、核验过程、解释或模型想法。缺少明确值时不补猜类型、数值或身份标签。`;
 
 const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
   .map(field => `${field}（${PEOPLE_PROFILE_LABELS[field]}）：${PEOPLE_PROFILE_DEFINITIONS[field]}`)
@@ -40,6 +40,9 @@ export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
 6. manualProfile 和 manualFields 由保存层保护，不需要模型复制；不输出解释、剧情续写、数据库 ID 或 JSON 之外的内容。
 7. 自动粗扫每约十个新增稳定AI楼运行一次，输入为楼层标记的清洗原文；仅提取明确新增或重大变化的长期基础资料，例如稳定外貌、职业和身份。短期处境、换装和剧情状态不固化；无变化时该人物只返回 personKey。原文按最新楼优先提供，人工资料和旧档案仅作边界参考。
 8. allowedWorldInfo 中的 EJS、MVU 或其他脚本包裹符号均为未执行的条件原文；不要执行，也不要把分支条件当成已成立。可整理明确归属的长期信息并保留其条件限定，不得仅因条目含控制符而忽略整条。
+9. 所有字段只写人物事实与必要的时间、阶段或条件，不把来源说明、材料比较、整理过程或核验评语写进字段。不要用“人物卡记载”“世界书条目称”“口径存在差异”“待核实”等话替代人物资料。既有 AI 档案中的这些评语也在同一次整理中改成事实表述，保留独立已知信息及有效限定；整段只有整理评语且没有人物事实时才可返回空字符串。不要按词删内容，人物回避冲突、技能涉及武器口径等真实资料应正常保留。manualProfile 中的人工字段及空值保持原样。
+10. 明确的作者更正优先于旧值；人物卡和许可世界书中明确归属的设定是稳定资料依据，CSE 分析、转述和旧 AI 档案不能自行覆盖它。对年龄、发型、衣着、职业和居所等按可定位的故事时点或阶段表达；过去与现在、不同条件下可并存的事实直接写出事实和限定，不把它们误写成冲突。年龄不能仅用年份相减，还需考虑生日是否已到及原资料对应时点，不为整理补算材料未明示的年龄。确有同一时点、同一属性的矛盾且没有可靠依据决定时，省略无法确定的新值，不臆选一方，也不将争议评语塞入其他字段；保留可独立确定的其它事实和未覆盖的旧细节。
+11. 在同一次整理中，将旧 existingProfile、manualProfile 及本次明确材料里的血型、星座、MBTI 等信息拆入对应独立字段。只处理明示值，不根据生日推星座、根据性格推MBTI或九型、根据国籍推语言，也不从一次行为夸大技能。非人工 notes、personality 等字段移除已拆出的重复标签，同时保留其独有事实、具体性格和条件；人工原文不改。没有新资料不强行填满字段，不因本次材料未覆盖而清空旧资料。
 
 【字段中文定义】
 ${PROFILE_FIELD_GUIDE}`;
@@ -1087,6 +1090,7 @@ export function createPeopleWorkspaceRuntime({
     return avatarGenerator.prepare(person);
   }
   async function generateAvatar(entityId, { character } = {}) {
+    const galleryCharacterName = String(contextProvider()?.name2 ?? '').trim() || '未命名角色';
     const operation = begin('generatingAvatar');
     let result;
     await settle(operation, async () => {
@@ -1096,9 +1100,9 @@ export function createPeopleWorkspaceRuntime({
       result = await avatarGenerator.generate({ character, prompt: avatarPrompt(), clothingStyle: person.profile?.clothingStyle ?? '', signal: operation.controller.signal });
       assertActive(operation);
     });
-    return result;
+    return { ...result, galleryCharacterName };
   }
-  async function saveAvatar(entityId, avatarDataUrl, { originalFile = null, originalRef = null, crop = null, generated = false, onOriginalUploaded } = {}) {
+  async function saveAvatar(entityId, avatarDataUrl, { originalFile = null, originalRef = null, crop = null, generated = false, galleryCharacterName = '', onOriginalUploaded } = {}) {
     const operation = begin('savingAvatar');
     return settle(operation, async () => {
       const startingAvatar = operation.workspace?.avatarsByEntityId?.[entityId] ?? null;
@@ -1110,7 +1114,7 @@ export function createPeopleWorkspaceRuntime({
       if (requested && originalRef) source = normalizeAvatarSource({ ...originalRef, crop });
       else if (requested && originalFile) {
         if (!avatarImageStore) throw new Error('当前环境无法保存头像原图。');
-        const uploaded = await avatarImageStore.upload(originalFile, { signal: operation.controller.signal, generated });
+        const uploaded = await avatarImageStore.upload(originalFile, { signal: operation.controller.signal, generated, galleryCharacterName });
         onOriginalUploaded?.(uploaded);
         source = normalizeAvatarSource({ ...uploaded, crop });
       }

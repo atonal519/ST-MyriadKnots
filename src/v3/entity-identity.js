@@ -1,5 +1,6 @@
 import { replaceCseSourceMacros } from '../cse-source-selection.js';
 import { identityBriefSourceForRecord } from './identity-brief.js';
+import { filterPlaceMemory, placeWorkspaceForPrefix, withCreatedPlaces, placeDeletionIdentityIds } from './place-workspace.js';
 
 const labelKey = value => String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase();
 
@@ -67,7 +68,7 @@ export function normalizeIdentityProjection(value = {}, macros = null) {
   const redirects = value?.identityRedirectsByEntityId && typeof value.identityRedirectsByEntityId === 'object' && !Array.isArray(value.identityRedirectsByEntityId)
     ? Object.fromEntries(Object.entries(value.identityRedirectsByEntityId).filter(([source, target]) => typeof source === 'string' && typeof target === 'string' && source && target && source !== target))
     : {};
-  const deleted = [...new Set(Array.isArray(value?.deletedEntityIds) ? value.deletedEntityIds.filter(id => typeof id === 'string' && id) : [])];
+  const deleted = [...new Set([...(Array.isArray(value?.deletedEntityIds) ? value.deletedEntityIds.filter(id => typeof id === 'string' && id && !(value?.placeDeletedEntityIds ?? []).includes(id)) : []), ...(value?.placeDeletedEntityIds ?? [])])];
   const manualAliases = manualAliasProjection(value);
   const reviewedAliases = reviewedAliasProjection(value);
   const profileNames = Object.hasOwn(value ?? {}, 'profilesByEntityId')
@@ -78,11 +79,14 @@ export function normalizeIdentityProjection(value = {}, macros = null) {
     ...(Object.hasOwn(value ?? {}, 'userEntityId') ? { userEntityId: typeof value.userEntityId === 'string' && value.userEntityId ? value.userEntityId : null } : {}),
     ...(Object.keys(manualAliases).length ? { manualAliasesByEntityId: Object.freeze(manualAliases) } : {}),
     ...(Object.keys(reviewedAliases).length ? { reviewedAliasesByEntityId: Object.freeze(reviewedAliases) } : {}),
-    ...(Object.keys(currentNames).length ? { currentNamesByEntityId: Object.freeze(currentNames) } : {}) });
+    ...(Object.keys(currentNames).length ? { currentNamesByEntityId: Object.freeze(currentNames) } : {}),
+    ...(value?.placeWorkspace ? { placeWorkspace: value.placeWorkspace } : {}), ...(value?.placeWorkspaceRevision ? { placeWorkspaceRevision: value.placeWorkspaceRevision } : {}), ...(value?.placeDeletedEntityIds?.length ? { placeDeletedEntityIds: value.placeDeletedEntityIds } : {}) });
 }
 
-export function deriveUserIdentityProjection({ entities = [], baseline = null, identityProjection = null } = {}) {
-  const projection = normalizeIdentityProjection(identityProjection ?? {}, { user: baseline?.userPersona?.name, char: baseline?.characterCard?.name });
+export function deriveUserIdentityProjection({ entities = [], baseline = null, floors = null, floorMemories = [], identityProjection = null } = {}) {
+  const oldPlaceDeleted = new Set(identityProjection?.placeDeletedEntityIds ?? []);
+  const placeDeletedEntityIds = floors ? placeDeletionIdentityIds(identityProjection?.placeWorkspace, { floors, floorMemories }) : identityProjection?.placeDeletedEntityIds ?? [];
+  const projection = normalizeIdentityProjection({ ...(identityProjection ?? {}), deletedEntityIds: (identityProjection?.deletedEntityIds ?? []).filter(id => !oldPlaceDeleted.has(id)), placeDeletedEntityIds, ...(identityProjection?.placeWorkspace ? { placeWorkspace: placeWorkspaceForPrefix(identityProjection.placeWorkspace, floors ? new Set(floors.map(floor => floor.id)) : null) } : {}) }, { user: baseline?.userPersona?.name, char: baseline?.characterCard?.name });
   const active = entities.filter(entity => (entity.recordStatus === undefined || entity.recordStatus === 'active') && entity.status !== 'invalidated');
   const users = active.filter(entity => entity.entityType === 'person' && entity.specialRole === 'user');
   const redirects = { ...Object.fromEntries(active.filter(entity => entity.status === 'merged' && entity.mergedIntoEntityId)
@@ -112,6 +116,7 @@ export function deriveUserIdentityProjection({ entities = [], baseline = null, i
 export function reuseIdentityProjection(previous, value) {
   const normalized = normalizeIdentityProjection(value);
   if (!previous) return normalized;
+  if ((previous.placeWorkspaceRevision ?? 0) !== (normalized.placeWorkspaceRevision ?? 0) || JSON.stringify(previous.placeWorkspace ?? null) !== JSON.stringify(normalized.placeWorkspace ?? null)) return normalized;
   if (previous.userEntityId !== normalized.userEntityId) return normalized;
   const previousRedirects = previous.identityRedirectsByEntityId ?? {};
   const nextRedirects = normalized.identityRedirectsByEntityId;
@@ -173,6 +178,7 @@ const resolvedParticipants = (values, projection) => {
 };
 
 export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
+  memory = filterPlaceMemory(memory, projection.placeWorkspace);
   const resolve = id => resolveIdentityEntityId(id, projection);
   const spatialFacts = memory?.spatialFacts ? (() => {
     const edges = (memory.spatialFacts.containments ?? []).flatMap(item => {
@@ -229,7 +235,17 @@ export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
       const evidenceRefs = (item.evidenceRefs ?? []).filter(ref => !invalidPositionSubjects.has(`${ref.floorId}|${subjectEntityId}`));
       return evidenceRefs.length ? [Object.freeze({ ...item, subjectEntityId, placeEntityId, evidenceRefs: Object.freeze(evidenceRefs) })] : [];
     });
-    return Object.freeze({ ...memory.spatialFacts, containments: Object.freeze(containments), positions: Object.freeze(positions) });
+    const features = memory.spatialFacts.features?.flatMap(item => {
+      const placeEntityId = resolve(item.placeEntityId);
+      return !placeEntityId || isIdentityDeleted(placeEntityId, projection) ? [] : [Object.freeze({ ...item, placeEntityId })];
+    });
+    const relations = memory.spatialFacts.relations?.flatMap(item => {
+      const placeEntityId = resolve(item.placeEntityId), referencePlaceEntityIds = item.referencePlaceEntityIds.map(resolve);
+      if (!placeEntityId || isIdentityDeleted(placeEntityId, projection) || referencePlaceEntityIds.some(id => !id || isIdentityDeleted(id, projection) || id === placeEntityId)
+        || new Set(referencePlaceEntityIds).size !== referencePlaceEntityIds.length) return [];
+      return [Object.freeze({ ...item, placeEntityId, referencePlaceEntityIds: Object.freeze(referencePlaceEntityIds) })];
+    });
+    return Object.freeze({ ...memory.spatialFacts, containments: Object.freeze(containments), positions: Object.freeze(positions), ...(features ? { features: Object.freeze(features) } : {}), ...(relations ? { relations: Object.freeze(relations) } : {}) });
   })() : undefined;
   return Object.freeze({ ...memory,
     participants: resolvedParticipants(memory?.participants, projection),
@@ -269,6 +285,7 @@ export function projectCseStateIdentityReferences(state, projection = {}) {
 }
 
 export function buildEntityIdentityDirectory({ entities = [], floorIds = null, floorOrder = null, identityProjection = null, identityRedirectsByEntityId = null, deletedEntityIds = null } = {}) {
+  entities = withCreatedPlaces(entities, identityProjection?.placeWorkspace);
   const supplied = identityProjection ?? { identityRedirectsByEntityId, deletedEntityIds };
   const projection = Object.hasOwn(supplied, 'userEntityId') ? normalizeIdentityProjection(supplied)
     : deriveUserIdentityProjection({ entities, identityProjection: supplied });
@@ -278,6 +295,7 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, f
     .filter(entity => isActive(entity) && entity.status === 'merged' && typeof entity.mergedIntoEntityId === 'string')
     .map(entity => [entity.id, entity.mergedIntoEntityId]));
   const combinedProjection = normalizeIdentityProjection({
+    ...projection,
     identityRedirectsByEntityId: { ...foundationRedirects, ...projection.identityRedirectsByEntityId },
     deletedEntityIds: projection.deletedEntityIds,
     userEntityId: projection.userEntityId,
@@ -311,7 +329,8 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, f
     const labels = [];
     const manual = combinedProjection.manualAliasesByEntityId;
     const reviewed = combinedProjection.reviewedAliasesByEntityId;
-    const displayName = entity.entityType === 'person' ? combinedProjection.currentNamesByEntityId?.[entity.id] || entity.displayName : entity.displayName;
+    const placeEdit = entity.entityType === 'place' ? combinedProjection.placeWorkspace?.placesByEntityId?.[entity.id] : null;
+    const displayName = placeEdit && Object.hasOwn(placeEdit, 'name') ? placeEdit.name || '未命名地点' : entity.entityType === 'person' ? combinedProjection.currentNamesByEntityId?.[entity.id] || entity.displayName : entity.displayName;
     const names = entity.entityType === 'person' && Object.hasOwn(manual ?? {}, entity.id)
       ? manual[entity.id]
       : entity.entityType === 'person' && Object.hasOwn(reviewed ?? {}, entity.id)

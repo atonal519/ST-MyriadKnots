@@ -11,10 +11,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   storyClockEnabled: true,
   timeEvolutionEnabled: false,
   storyCalendars: {},
+  qianchuangBasemaps: {},
   storyClockPrompt: '',
   storyClockReferenceTags: '',
   autoMemoryBatchSize: 1,
-  autoHideEnabled: false,
+  autoHideEnabled: true,
   autoHideKeepAiCount: 3,
   storageAutoCleanupEnabled: false,
   storageAutoCleanupProgress: {},
@@ -170,6 +171,8 @@ export async function applyPluginEnabledImmediately({ settings, enabled, onChang
   return task;
 }
 
+const normalizeQianchuangBasemaps = value => Object.fromEntries(Object.entries(value && typeof value === 'object' && !Array.isArray(value) ? value : {}).filter(([id, type]) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(id) && ['modern','town','palace','modern-town','old-town','sci-fi'].includes(type)));
+
 export function createSettingsStore({ extensionSettings, save = () => {}, now, random } = {}) {
   if (!extensionSettings || typeof extensionSettings !== 'object') throw new Error('千千结设置存储不可用');
   getSharedBodyWrappers(extensionSettings);
@@ -193,6 +196,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     settings.autoMemoryBatchSize = normalizeAutoMemoryBatchSize(settings.autoMemoryBatchSize);
     settings.timeEvolutionEnabled = settings.timeEvolutionEnabled === true;
     settings.storyCalendars = normalizeStoryCalendars(settings.storyCalendars);
+    settings.qianchuangBasemaps = normalizeQianchuangBasemaps(settings.qianchuangBasemaps);
     settings.autoHideEnabled = settings.autoHideEnabled === true;
     settings.autoHideKeepAiCount = normalizeAutoHideKeepAiCount(settings.autoHideKeepAiCount);
     settings.storageAutoCleanupEnabled = settings.storageAutoCleanupEnabled === true;
@@ -206,12 +210,23 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     try { return save(); }
     catch (error) { if (observeSaveFailure) throw error; }
   };
+  const persistApiEdit = (value, options, rollback) => {
+    if (options?.observeSaveFailure !== true) { notify(); return value; }
+    const failed = error => { rollback(); throw error; };
+    let saved;
+    try { saved = notify(true); } catch (error) { return failed(error); }
+    return saved && typeof saved.then === 'function' ? Promise.resolve(saved).then(() => value, failed) : value;
+  };
+  const restoreApiFields = (target, before, applied) => {
+    for (const key of Object.keys(before)) if (JSON.stringify(target[key]) === JSON.stringify(applied[key])) target[key] = before[key];
+  };
   const update = (patch, { observeSaveFailure = false } = {}) => {
     if (own(patch, 'apiAdditionalParams')) parseAdditionalParams(patch.apiAdditionalParams);
     const settings = get();
     if (own(patch, 'pluginEnabled')) settings.pluginEnabled = patch.pluginEnabled !== false;
     if (own(patch, 'coreCacheEnabled')) settings.coreCacheEnabled = patch.coreCacheEnabled !== false;
     if (own(patch, 'timeEvolutionEnabled')) settings.timeEvolutionEnabled = patch.timeEvolutionEnabled === true;
+    if (own(patch, 'qianchuangBasemaps')) settings.qianchuangBasemaps = normalizeQianchuangBasemaps(patch.qianchuangBasemaps);
     if (own(patch, 'storyCalendars')) settings.storyCalendars = normalizeStoryCalendars(patch.storyCalendars);
     if (own(patch, 'storyClockEnabled')) settings.storyClockEnabled = patch.storyClockEnabled !== false;
     if (own(patch, 'storyClockPrompt')) settings.storyClockPrompt = text(patch.storyClockPrompt);
@@ -354,9 +369,11 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       return preset;
     }).filter(value => value?.id);
   };
-  const saveMainConfig = config => {
+  const saveMainConfig = (config, options = {}) => {
     parseAdditionalParams(config?.qqjAdditionalParams);
     const current = get(), normalized = normalizePreset(config);
+    const keys = ['apiUrl', 'apiKey', 'apiModel', 'apiExcludeParams', 'apiAdditionalParams', 'apiTimeoutSec', 'apiStream', 'apiQianqianjieTemperature'];
+    const before = Object.fromEntries(keys.map(key => [key, current[key]]));
     current.apiUrl = normalized.url;
     current.apiKey = normalized.key;
     current.apiModel = normalized.model;
@@ -365,17 +382,20 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     current.apiTimeoutSec = normalized.timeoutSec;
     current.apiStream = normalized.stream;
     current.apiQianqianjieTemperature = normalized.qqjTemperature ?? null;
-    notify();
-    return mainConfig();
+    const result = mainConfig(), applied = Object.fromEntries(keys.map(key => [key, current[key]]));
+    return persistApiEdit(result, options, () => restoreApiFields(current, before, applied));
   };
-  const upsertSharedPreset = (name, config, id = '') => {
+  const upsertSharedPreset = (name, config, id = '', options = {}) => {
     parseAdditionalParams(config?.qqjAdditionalParams);
     // Every mutation re-reads the shared source so a concurrently changed preset pool is never replaced from a stale UI snapshot.
-    const shared = ensureSevenDaysSettings();
+    const priorShared = sevenDaysSettings(), shared = ensureSevenDaysSettings();
+    const previous = shared.apiPresets;
     const list = Array.isArray(shared.apiPresets) ? [...shared.apiPresets] : [];
     const requestedId = text(id).trim();
     const presetId = requestedId || createPresetId(now, random).replace(/^q/, 'p');
     const index = list.findIndex(value => value && typeof value === 'object' && text(value.id).trim() === presetId);
+    if (options.requireExisting && index < 0) throw new Error('这个共享预设已不存在，请重新选择。');
+    const priorRecord = index >= 0 ? { ...list[index] } : null;
     const normalized = normalizePreset({ ...config, id: presetId, name });
     const snapshot = {
       name: normalized.name,
@@ -399,8 +419,25 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (index >= 0) list[index] = { ...list[index], ...snapshot, id: presetId };
     else list.push({ ...snapshot, id: presetId });
     shared.apiPresets = list;
-    notify();
-    return presetId;
+    const appliedRecord = list[index >= 0 ? index : list.length - 1];
+    const fields = ['name', 'url', 'key', 'model', 'excludeParams', 'timeoutSec', 'stream', 'qqjTemperature', 'qqjAdditionalParams'];
+    const appliedValues = options.observeSaveFailure ? Object.fromEntries(fields.map(field => [field, JSON.stringify(appliedRecord[field])])) : {};
+    const createdSnapshot = options.observeSaveFailure && !priorRecord ? JSON.stringify(appliedRecord) : '';
+    return persistApiEdit(presetId, options, () => {
+      const owner = sevenDaysSettings();
+      if (!Array.isArray(owner?.apiPresets)) return;
+      owner.apiPresets = owner.apiPresets.flatMap(record => {
+        if (!record || typeof record !== 'object' || text(record.id).trim() !== presetId) return [record];
+        if (!priorRecord) return JSON.stringify(record) === createdSnapshot ? [] : [record];
+        const restored = { ...record };
+        for (const field of fields) if (JSON.stringify(record[field]) === appliedValues[field]) {
+          if (own(priorRecord, field)) restored[field] = priorRecord[field]; else delete restored[field];
+        }
+        return [restored];
+      });
+      if (previous === undefined && !owner.apiPresets.length) delete owner.apiPresets;
+      if (!priorShared && !Object.keys(owner).length) delete extensionSettings['schedule-planner'];
+    });
   };
   const renameSharedPreset = (id, name) => {
     const presetId = text(id).trim(), nextName = text(name).trim();
@@ -414,7 +451,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     notify();
     return true;
   };
-  const deleteSharedPreset = id => {
+  const deleteSharedPreset = (id, options = {}) => {
     const presetId = text(id).trim();
     if (!presetId) return false;
     const shared = ensureSevenDaysSettings();
@@ -423,6 +460,8 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (next.length === list.length) return false;
     shared.apiPresets = next;
     const current = get();
+    const keys = ['apiMode', 'selectedSevenDaysPresetId', 'summaryPresetId', 'recallPresetId', 'vectorEnabled'];
+    const before = Object.fromEntries(keys.map(key => [key, current[key]]));
     if (current.apiMode === 'seven-preset' && text(current.selectedSevenDaysPresetId).trim() === presetId) {
       current.apiMode = 'auto';
       current.selectedSevenDaysPresetId = '';
@@ -430,8 +469,14 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (text(current.summaryPresetId).trim() === presetId) current.summaryPresetId = '';
     if (text(current.recallPresetId).trim() === presetId) current.recallPresetId = '';
     if (text(current.vectorPresetId).trim() === presetId) current.vectorEnabled = false;
-    notify();
-    return true;
+    const applied = Object.fromEntries(keys.map(key => [key, current[key]]));
+    return persistApiEdit(true, options, () => {
+      const owner = sevenDaysSettings(), original = list.find(value => value && typeof value === 'object' && text(value.id).trim() === presetId);
+      if (Array.isArray(owner?.apiPresets) && !owner.apiPresets.some(value => value && typeof value === 'object' && text(value.id).trim() === presetId)) {
+        const restored = [...owner.apiPresets]; restored.splice(Math.min(list.indexOf(original), restored.length), 0, original); owner.apiPresets = restored;
+      }
+      restoreApiFields(current, before, applied);
+    });
   };
   const sharedSnapshotKey = () => {
     const shared = sevenDaysSettings() || {};

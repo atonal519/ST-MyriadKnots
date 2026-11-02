@@ -17,7 +17,7 @@ function characterFilename(ctx, character) {
   return text(character?.avatar ?? character?.data?.avatar).replace(/\.[^.]+$/u, '');
 }
 
-function linkedWorldNames(ctx, bindings = {}, options = {}) {
+function linkedCharacterBooks(ctx, bindings = {}, options = {}) {
   const names = [];
   const helperBooks = safeValue(() => bindings.getCharLorebooks?.(), null)
     ?? safeValue(() => globalThis.TavernHelper?.getCharLorebooks?.(), null);
@@ -33,7 +33,10 @@ function linkedWorldNames(ctx, bindings = {}, options = {}) {
     const extra = settings?.charLore?.find?.(entry => text(entry?.name) === filename)?.extraBooks;
     if (Array.isArray(extra)) names.push(...extra);
   }
-  return uniqueNames(names, options);
+  return {
+    names: uniqueNames(names, options),
+    hasPrimary: [helperBooks?.primary, character.data?.extensions?.world, character.extensions?.world].some(name => text(name)),
+  };
 }
 
 function chatWorldNames(ctx, options = {}) {
@@ -74,18 +77,19 @@ async function allWorldNames(ctx, bindings, known, options = {}) {
 }
 
 function scopedWorldNames(ctx, bindings = {}, options = {}) {
-  return new Map([
-    ['char', linkedWorldNames(ctx, bindings, options)],
+  const characterBooks = linkedCharacterBooks(ctx, bindings, options);
+  return { hasPrimaryCharacterBook: characterBooks.hasPrimary, names: new Map([
+    ['char', characterBooks.names],
     ['chat', chatWorldNames(ctx, options)],
     ['persona', uniqueNames([ctx?.powerUserSettings?.persona_description_lorebook], options)],
     ['global', globalWorldNames(ctx, bindings, options)],
-  ]);
+  ]) };
 }
 
 export async function listWorldInfoBookNames(ctx, { bindings = {} } = {}) {
   if (!ctx || typeof ctx !== 'object') throw new TypeError('世界书扫描上下文无效');
-  const scopedNames = scopedWorldNames(ctx, bindings);
-  const embedded = currentCharacter(ctx)?.data?.character_book;
+  const { names: scopedNames, hasPrimaryCharacterBook } = scopedWorldNames(ctx, bindings);
+  const embedded = hasPrimaryCharacterBook ? null : currentCharacter(ctx)?.data?.character_book;
   const embeddedBook = text(embedded?.name) || '角色内置世界书';
   const embeddedRows = Array.isArray(embedded?.entries) ? embedded.entries : [];
   return Object.freeze(await allWorldNames(ctx, bindings, [
@@ -169,14 +173,15 @@ export async function scanWorldInfo(ctx, { bindings = {}, strict = false, comple
   if (!ctx || typeof ctx !== 'object') throw new TypeError('世界书扫描上下文无效');
   const warnings = [];
   // Full profile rebuilds opt into uncapped names and exact entry bodies; exceeding scanner limits fails visibly instead of yielding a partial source set.
-  const scopedNames = scopedWorldNames(ctx, bindings, { complete });
+  const { names: scopedNames, hasPrimaryCharacterBook } = scopedWorldNames(ctx, bindings, { complete });
   const relevantNames = uniqueNames([...scopedNames.values()].flat(), { complete });
   if (complete && relevantNames.length > LIMITS.books) {
     const error = new Error('关联世界书数量超过完整读取上限，本次人物资料未保存。');
     error.code = 'QQJ_PEOPLE_WORLDBOOK_INCOMPLETE';
     throw error;
   }
-  const embedded = currentCharacter(ctx)?.data?.character_book;
+  // A primary external binding replaces the embedded copy, even if it is excluded, empty or unavailable. Auxiliary books do not.
+  const embedded = hasPrimaryCharacterBook ? null : currentCharacter(ctx)?.data?.character_book;
   const embeddedBook = text(embedded?.name) || '角色内置世界书';
   const embeddedRows = Array.isArray(embedded?.entries) ? embedded.entries.map((entry, index) => [String(entry?.id ?? index), entry]) : [];
   const filteredNames = filterBookNames(uniqueNames([...relevantNames, ...(embeddedRows.length ? [embeddedBook] : [])], { complete }));
@@ -248,7 +253,7 @@ export async function createWorldInfoSourceCandidates(catalog) {
     world: entry.source, uid: entry.uid, permissionKey: entry.key, fingerprint: `sha256:${await sha256(entry.content)}`,
     label: `${entry.source} · ${entry.label}`.slice(0, 240), entryLabel: entry.entryLabel ?? entry.label,
     comment: entry.comment ?? '', title: entry.title ?? '', content: entry.content, selected: true,
-    primaryKeys: entry.primaryKeys, secondaryKeys: entry.secondaryKeys,
+    primaryKeys: entry.primaryKeys, secondaryKeys: entry.secondaryKeys, constant: entry.constant === true,
     availability: entry.hostEnabled === false ? 'disabled' : 'enabled', activated: false, hostEnabled: entry.hostEnabled !== false, linked: true, scope: entry.scope,
   })));
 }

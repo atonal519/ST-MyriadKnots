@@ -7,7 +7,7 @@ import { createRawSourceLookup, projectVectorSources, rawWitnessValid, summaryCa
 import { readVectorSource } from '../src/v3/vector-source-reader.js';
 import { projectRecallSource, selectRecallMemories } from '../src/v3/recall-source.js';
 import { selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
-import { addSemanticHistory, buildRecallHistoryCandidatePool, historySelectionContext, mergeSemanticHistoryPool } from '../src/v3/recall-selector.js';
+import { addSemanticHistory, buildRecallHistoryCandidatePool, buildRecallQueryContext, historySelectionContext, mergeSemanticHistoryPool } from '../src/v3/recall-selector.js';
 import { createSettingsStore } from '../src/settings.js';
 import { classifyStorageRecords } from '../src/storage-management.js';
 import { sha256 } from '../src/identity.js';
@@ -103,6 +103,49 @@ function harness(source, { api = { embed: async (_config, texts) => vectors(text
   const index = createVectorIndex({ client, api, configProvider: () => route, identityProvider: () => identity, sourceProvider: async () => current, isEnabled });
   return { index, records, calls, client, setSource: value => { current = value; }, setConfig: value => { route = value; }, setIdentity: value => { identity = value; } };
 }
+
+test('向量查询文本在6000字符内逐字保留，长上下文保留完整本轮输入', async t => {
+  const latest = `本轮苹果问题:${'新'.repeat(3900)}本轮问题结束。`;
+  const longContext = length => buildRecallQueryContext({ coreChat: [
+    { is_user: true, mes: '旧'.repeat(length) },
+    { is_user: false, mes: '邻'.repeat(length) },
+    { is_user: true, mes: latest },
+  ] });
+  const cases = [
+    { name: '短查询', context: { text: '用户：苹果  原文\nAI：背景', latestUserText: '不能替换短查询' }, expected: '用户：苹果  原文\nAI：背景' },
+    { name: '恰好6000字符', context: { text: '界'.repeat(6000), latestUserText: '不能替换边界查询' }, expected: '界'.repeat(6000) },
+    { name: '本轮输入全部被旧截断丢弃', context: longContext(4000) },
+    { name: '本轮输入尾部被旧截断丢弃', context: longContext(2000) },
+    { name: '背景裁剪不拆开emoji', context: { text: '旧'.repeat(7000), latestUserText: latest, backgroundText: `${'😀'.repeat(3999)}邻` } },
+    { name: '没有独立本轮字段的旧调用', context: { text: '旧'.repeat(7000) }, expected: '旧'.repeat(6000) },
+  ];
+  for (const { name, context, expected } of cases) await t.test(name, async () => {
+    const requests = [];
+    const api = createVectorApiClient({ fetchImpl: async (_url, options) => {
+      const { input } = JSON.parse(options.body);
+      requests.push(input);
+      return Response.json({ data: input.map((_, index) => ({ index, embedding: [1, 0] })) });
+    } });
+    const source = await sourceFixture(), h = harness(source, { api });
+    assert.equal((await h.index.build()).status, 'ready');
+    requests.length = 0;
+    const recordsBefore = structuredClone([...h.records]);
+    const result = await h.index.query({ source, queryContext: context });
+    assert.equal(result.diagnostic.status, 'ready');
+    assert.equal(requests.length, 1, '一次查询只发原有的一次embedding请求');
+    assert.equal(requests[0].length, 1, '不拆成多个查询');
+    const [text] = requests[0];
+    assert.ok(text.length <= 6000);
+    assert.ok(text.isWellFormed(), '实际embedding输入不含裁剪产生的孤立代理项');
+    if (expected !== undefined) assert.equal(text, expected);
+    else {
+      assert.equal(context.latestUserText, latest);
+      assert.ok(text.includes(latest), '实际embedding输入保留完整本轮问题');
+      assert.ok(text.includes('邻'), '剩余预算仍携带邻近背景');
+    }
+    assert.deepEqual([...h.records], recordsBefore, '查询不写入或重建索引');
+  });
+});
 
 test('已读manifest只服务索引读取，查询回执仍独立保留', async () => {
   const source = await sourceFixture(), h = harness(source);

@@ -402,11 +402,24 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
     }
   }
   async function readContext({ query = '', entityIds = [], maxCharacters = 12000 } = {}) {
+    const empty = state => ({ ...state, anchor: null, routerText: '', actors: [], coverage: { partial: false, selectedCharacters: 0, maxCharacters: 0 } });
     const status = localStatus();
-    if (status.status !== 'ready') return { ...status, anchor: null, routerText: '', actors: [], coverage: { partial: false, selectedCharacters: 0, maxCharacters: 0 } };
+    if (status.status !== 'ready') return empty(status);
     try {
-      const reachable = completeFoundationSnapshot(foundationRuntime);
-      if (!reachable) return { status: 'not-ready', message: '千千结记忆尚未准备好。', identity: status.identity, anchor: null, routerText: '', actors: [], coverage: { partial: false, selectedCharacters: 0, maxCharacters: 0 } };
+      const before = session.identity();
+      let reachable = completeFoundationSnapshot(foundationRuntime);
+      let inspected;
+      if (!reachable && typeof foundationRuntime?.inspect === 'function') {
+        inspected = await foundationRuntime.inspect('publicContext', { allowCached: true });
+        const after = localStatus();
+        if (after.status !== 'ready') return empty(after);
+        if (!sameIdentity(before, session.identity())) return empty({ status: 'stale', message: '读取期间当前聊天身份已变化。', identity: after.identity });
+        reachable = completeFoundationSnapshot(foundationRuntime);
+      }
+      if (!reachable) return empty(inspected?.status === 'error'
+        ? { status: 'error', message: inspected.lastError || '千千结已存记忆读取失败。', identity: status.identity }
+        : { status: 'not-ready', message: '千千结记忆尚未准备好。', identity: status.identity });
+      if (reachable.root.chatId !== before.chatId) return empty({ status: 'stale', message: '已存记忆与当前聊天身份不匹配。', identity: status.identity });
       const peopleState = typeof peopleRuntime?.getState === 'function' ? peopleRuntime.getState() : null;
       const requested = Array.isArray(entityIds) ? entityIds.filter(id => typeof id === 'string').slice(0, 100) : [];
       const currentStates = typeof memoryRuntime?.getCurrentSubjectStates === 'function'

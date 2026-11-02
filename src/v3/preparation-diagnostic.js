@@ -17,7 +17,7 @@ export const PREPARATION_STEPS = Object.freeze([
 const PREPARATION_STEP_SET = new Set(PREPARATION_STEPS);
 const failureSteps = new WeakMap();
 const SAFE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9]{0,79}$/u;
-const SAFE_INTERNAL_CODE = /^(?:(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}|BACKEND_TIMEOUT)$/u;
+const SAFE_INTERNAL_CODE = /^(?:(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}|BACKEND_(?:TIMEOUT|NETWORK|HTTP))$/u;
 const PLUGIN_FRAME = /(?:^|[/\\])((?:src\/[A-Za-z0-9_./-]+\.js)|index\.js|dist\/qqj-app\.js)(?:\?[^:\s)]*)?:(\d{1,7}):(\d{1,7})(?:\)?$|\s)/u;
 
 export function normalizePreparationStep(value) {

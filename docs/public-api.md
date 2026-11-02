@@ -6,7 +6,7 @@
 const bridge = globalThis.qqj_v3_public_bridge_v1;
 ```
 
-它只读取当前聊天。调用方不能通过该桥切换聊天、修改记忆、启动摘要或人物状态分析，也不能要求千千结自动补齐尚未加载的数据。
+它只读取当前聊天。调用方不能通过该桥切换聊天、修改记忆、启动摘要或人物状态分析。`readContext` 可复用既有只读 `inspect` 装载已存正式数据，不生成、补齐或写入资料。
 
 界面中的调用说明和复制示例位于“设置 → 教程与配置文件 → API 接口”。
 
@@ -116,7 +116,7 @@ if (result.status === 'ready') {
 
 ### `readContext({ query, entityIds, maxCharacters })`
 
-为指定人物按当前话题挑选已加载的档案、CSE 和有效 FloorMemory。它只读取当前已加载且通过完整性校验的正式快照，不调用模型、不读取整段酒馆聊天、不准备摘要或向量索引。
+为指定人物按当前话题挑选档案、CSE 和有效 FloorMemory。完整正式快照已就绪时直接读取；尚未装载时等待一次既有只读 `inspect`（复用正在进行的装载），完成后重核身份与快照归属。它不调用模型、不返回宿主聊天正文、不生成或补齐资料、不写入存档，也不准备摘要或向量索引。
 
 ```js
 const result = await bridge.readContext({

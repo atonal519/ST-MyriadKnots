@@ -23,9 +23,8 @@ const RECORD_TYPE_PREFIXES = Object.freeze([
   ['v3-current-state-', 'currentState'], ['v3-index-', 'index'],
 ]);
 const ACTION_FOR_METHOD = Object.freeze({ GET: '读取记忆', POST: '读取记忆', PUT: '保存记忆', DELETE: '删除记忆' });
-const DIAGNOSTIC_NEXT_STEP = '请到“记忆管理”页点击“复制状态诊断”反馈。';
 function safeError(status, action) {
-  return new Error(`${action}失败（HTTP ${status}）。${DIAGNOSTIC_NEXT_STEP}`);
+  return Object.assign(new Error(`${action}失败（HTTP ${status}）。`), { code: 'BACKEND_HTTP' });
 }
 function shortDiagnosticText(value, limit) {
   if (typeof value !== 'string') return undefined;
@@ -34,7 +33,7 @@ function shortDiagnosticText(value, limit) {
 }
 function timeoutError(action = null) {
   const message = action
-    ? `${action}超时，记忆存储服务未及时响应。请稍后重试；仍失败时，${DIAGNOSTIC_NEXT_STEP}`
+    ? `${action}超时，请稍后重试。`
     : '后端请求超时';
   const error = new Error(message); error.name = 'TimeoutError'; error.code = 'BACKEND_TIMEOUT'; return error;
 }
@@ -94,7 +93,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       completedAt: new Date().toISOString(),
       outcome,
       ...(Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? { httpStatus } : {}),
-      ...(code === 'BACKEND_TIMEOUT' ? { code } : {}),
+      ...(['BACKEND_TIMEOUT', 'BACKEND_NETWORK'].includes(code) ? { code } : {}),
       ...(backendError ? { backendError } : {}),
       ...(backendMessage ? { backendMessage } : {}),
       ...(requestDiagnostic.method === 'PUT' && transport ? {
@@ -175,11 +174,11 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
         throw timeout;
       }
       if (Number.isSafeInteger(error?.status)) finishDiagnostic(requestDiagnostic, startedAt, 'httpError', { httpStatus: error.status, ...(error.status === 400 ? http400Diagnostic : {}), transport });
-      else finishDiagnostic(requestDiagnostic, startedAt, outerSignal?.aborted ? 'aborted' : 'failure', { transport });
+      else finishDiagnostic(requestDiagnostic, startedAt, outerSignal?.aborted ? 'aborted' : 'failure', { ...(action && fetchFailed && error?.name === 'TypeError' && !outerSignal?.aborted ? { code: 'BACKEND_NETWORK' } : {}), transport });
       if (action && fetchFailed && !useTauri && error?.name === 'TypeError' && !outerSignal?.aborted) {
-        const failure = new Error(`${action}失败，无法连接记忆存储服务。请稍后重试；仍失败时，${DIAGNOSTIC_NEXT_STEP}`, { cause: error });
+        const failure = new Error(`${action}失败，无法连接记忆存储服务。请稍后重试。`, { cause: error });
         failure.name = error?.name ?? 'Error';
-        if (error?.code !== undefined) failure.code = error.code;
+        failure.code = 'BACKEND_NETWORK';
         throw failure;
       }
       throw error;

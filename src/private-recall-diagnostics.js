@@ -1,3 +1,4 @@
+import { safePrefixDifference } from './v3/memory-prefix-diagnostic.js';
 import { storedPreparationDiagnostic } from './v3/preparation-diagnostic.js';
 import { REQUEST_CONNECTION_FIELDS, REQUEST_SIZE_FIELDS, requestProtocol } from './v3/recall-request-diagnostic.js';
 
@@ -160,10 +161,32 @@ function selector(value) {
         retryOutcome: choose(semantic.retryOutcome, ['not_retried', 'retrying', 'retry_succeeded', 'retry_failed', 'cancelled', 'budget_exhausted']) } : {}) } : null };
 }
 
+const memoryPhase = value => choose(value, ['preparing', 'requesting', 'request', 'fetch', 'responseBody', 'sseBody', 'read', 'load', 'foundation', 'normalize', 'validating', 'saving', 'committing', 'stale', 'anchor', 'extracting', 'reconciling', 'baseline', 'analyzing', 'correcting', 'analyzingCse', 'syncing', 'retryableError', 'failed', 'completed', 'cancelled']);
+const memoryError = value => value ? { code: code(value.code), name: choose(value.name, ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AbortError', 'TimeoutError']),
+  phase: memoryPhase(value.phase), floorId: uuid(value.floorId), runId: uuid(value.runId), attempts: number(value.attempts), httpStatus: httpStatus(value.httpStatus),
+  count: number(value.count), lastFailedAt: stamp(value.lastFailedAt), prefixDifference: safePrefixDifference(value.prefixDifference) } : null;
+const memoryRequest = request => request ? { runId: uuid(request.runId), phase: memoryPhase(request.phase), outcome: choose(request.outcome, ['running', 'completed', 'failed', 'cancelled']),
+  ...counts(request, ['startedAt', 'endedAt', 'elapsedMs', 'phaseElapsedMs', 'attemptElapsedMs', 'attempts', 'timeoutMs', 'fromAssistantSeq', 'toAssistantSeq']),
+  error: memoryError(request.error), lastAttemptError: memoryError(request.lastAttemptError) } : null;
+function memoryDiagnostic(value) {
+  return { chatId: uuid(value?.chatId), activeExtraction: value?.activeExtraction ? { floorId: uuid(value.activeExtraction.floorId), runId: uuid(value.activeExtraction.runId), phase: memoryPhase(value.activeExtraction.phase) } : null,
+    activeCse: value?.activeCse ? { floorId: uuid(value.activeCse.floorId), runId: uuid(value.activeCse.runId), phase: memoryPhase(value.activeCse.phase) } : null,
+    lastCseError: memoryError(value?.lastCseError), cseRequest: memoryRequest(value?.cseRequest),
+    lastExtractorError: memoryError(value?.lastExtractorError), lastAutomationError: memoryError(value?.lastAutomationError),
+    extractorRequest: memoryRequest(value?.extractorRequest) };
+}
+function backendDiagnostic(value) {
+  const entry = row => row ? { sequence: number(row.sequence), method: choose(row.method, ['GET', 'POST', 'PUT', 'DELETE']),
+    recordType: choose(row.recordType, ['root', 'floor', 'floorMemory', 'run', 'checkpoint', 'entity', 'baseline', 'stateDelta', 'currentState', 'index', 'peopleWorkspace', 'binding', 'collection', 'unknown']),
+    outcome: choose(row.outcome, ['success', 'timeout', 'httpError', 'aborted', 'failure']), elapsedMs: number(row.elapsedMs), completedAt: stamp(row.completedAt), code: code(row.code), httpStatus: httpStatus(row.httpStatus),
+    bodyBytes: number(row.bodyBytes), encodedBodyBytes: number(row.encodedBodyBytes), contentEncoding: choose(row.contentEncoding, ['gzip', 'identity']) } : null;
+  return { sinceClientCreatedRequestCounts: counts(value?.sinceClientCreatedRequestCounts, ['get', 'put', 'delete']), latestRead: entry(value?.latestRead), latestWrite: entry(value?.latestWrite), lastFailure: entry(value?.lastFailure) };
+}
+
 // 临时失败不能依赖聊天回执落盘；独立诊断只投影白名单，绝不复制材料、异常消息或配置对象。
-export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityState, sessionState } = {}) {
+export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityState, sessionState, memoryState, backendState } = {}) {
   const active = state?.activeRecall, last = state?.lastRecall, request = state?.requestDiagnostic;
-  return { ...(sessionState ? { identity: { status: choose(sessionState.status, ['idle', 'disabled', 'preparing', 'ready', 'error', 'suspended']),
+  return { ...(memoryState ? { memory: memoryDiagnostic(memoryState) } : {}), ...(backendState ? { backend: backendDiagnostic(backendState) } : {}), ...(sessionState ? { identity: { status: choose(sessionState.status, ['idle', 'disabled', 'preparing', 'ready', 'error', 'suspended']),
     preparationFailure: sessionState.preparationFailure ? storedPreparationDiagnostic(sessionState.preparationFailure) : null } } : {}),
     status: choose(state?.recallStatus, ['running', 'ready', 'empty', 'skipped', 'stale', 'error', 'idle']), pageVisibility: choose(visibilityState, ['visible', 'hidden', 'prerender']),
     chatId: uuid(active?.chatId ?? state?.lastRecallBinding?.chatId),
@@ -196,7 +219,7 @@ export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityS
 }
 
 export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRuntime, fetchImpl = globalThis.fetch, documentRef = globalThis.document, isEnabled = () => true, policyUrl = PRIVATE_DIAGNOSTIC_POLICY,
-  session = null, bundleUrl = import.meta.url, random = Math.random, now = Date.now, pollMs = 5000, flushMs = 1000 } = {}) {
+  session = null, memoryRuntime = null, backendDiagnosticProvider = null, bundleUrl = import.meta.url, random = Math.random, now = Date.now, pollMs = 5000, flushMs = 1000 } = {}) {
   let enabled = false, disposed = false, starting = null, revision = null, sequence = 0, sent = 0, previous = null, pending = null, timer = null, poll = null;
   const events = [], failureSnapshots = [], cleanups = [];
   const recordId = `recall-live-${Math.min(SLOT_COUNT - 1, Math.max(0, Math.floor(random() * SLOT_COUNT)))}`;
@@ -224,8 +247,20 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
       if (!existing) candidates.push({ kind: 'identity', chatId: failure.identityRead?.expectedChatId ?? null,
         roundStartedAt: capturedAt, reason: failure.code, capturedAt, identity: data.identity });
     }
+    const memory = data.memory;
+    for (const failureSource of ['lastExtractorError', 'lastAutomationError', 'lastCseError']) {
+      const memoryFailure = memory?.[failureSource];
+      if (!memoryFailure?.code) continue;
+      const requestKey = failureSource === 'lastCseError' ? 'cseRequest' : 'extractorRequest';
+      const request = memoryFailure.runId && memory[requestKey]?.runId === memoryFailure.runId ? memory[requestKey] : null;
+      const startedAt = request?.startedAt;
+      candidates.push({ kind: 'memory', chatId: memory.chatId, roundStartedAt: Number.isSafeInteger(startedAt) && startedAt <= 8640000000000000 ? new Date(startedAt).toISOString() : memoryFailure.lastFailedAt,
+        reason: memoryFailure.code, failureSource, capturedAt, memory: { ...memory, [requestKey]: request }, backend: data.backend });
+    }
     for (const value of candidates) {
-      const key = JSON.stringify([value.chatId, value.roundStartedAt, value.reason]);
+      const key = value.kind === 'memory'
+        ? JSON.stringify(['memory', value.chatId, value.failureSource, value.reason, value.memory[value.failureSource]?.runId ?? value.memory[value.failureSource]?.lastFailedAt, value.memory[value.failureSource]?.floorId])
+        : JSON.stringify([value.chatId, value.roundStartedAt, value.reason]);
       const index = failureSnapshots.findIndex(item => item.key === key);
       if (index >= 0) {
         // 同一回合补到终止帧时合并白名单投影；旧 lastTerminated 不覆盖新回合快照。
@@ -233,6 +268,10 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
         const enriched = { ...previousValue };
         if (!enriched.last && value.last) { enriched.last = value.last; enriched.kind = 'last'; }
         if (!enriched.lastTerminated && value.lastTerminated) enriched.lastTerminated = value.lastTerminated;
+        const requestKey = value.failureSource === 'lastCseError' ? 'cseRequest' : 'extractorRequest';
+        if (value.memory) enriched.memory = { ...value.memory, [requestKey]: value.memory[requestKey] ?? previousValue.memory?.[requestKey],
+          lastExtractorError: value.memory.lastExtractorError ?? previousValue.memory?.lastExtractorError };
+        if (!enriched.backend && value.backend) enriched.backend = value.backend;
         failureSnapshots[index] = { key, value: enriched };
       } else failureSnapshots.push({ key, value });
     }
@@ -241,7 +280,7 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
   };
   const capture = () => {
     if (!enabled || disposed || !isEnabled()) return;
-    const data = projectPrivateRecallDiagnostic(recallRuntime.getState(), vectorRuntime?.getState?.(), { visibilityState: documentRef?.visibilityState, sessionState: session?.getState?.() });
+    const data = projectPrivateRecallDiagnostic(recallRuntime.getState(), vectorRuntime?.getState?.(), { visibilityState: documentRef?.visibilityState, sessionState: session?.getState?.(), memoryState: memoryRuntime?.getDiagnosticState?.(), backendState: backendDiagnosticProvider?.() });
     rememberFailure(data, new Date(now()).toISOString());
     const signature = JSON.stringify(data);
     if (signature === previous) return;
@@ -283,6 +322,7 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
         if (!response.ok || (await response.json())?.enabled !== true || disposed) return false;
         enabled = true;
         cleanups.push(recallRuntime.subscribe(capture));
+        if (memoryRuntime?.subscribeActivity) cleanups.push(memoryRuntime.subscribeActivity(capture));
         if (session?.subscribeActivity) cleanups.push(session.subscribeActivity(capture));
         if (vectorRuntime?.subscribe) cleanups.push(vectorRuntime.subscribe(capture));
         // 手机切到后台可能暂停计时与网络；只记状态切换，不读取页面内容或设备信息。

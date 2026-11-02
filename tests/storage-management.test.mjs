@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { classifyStorageRecords, createStorageManagement, STORAGE_AUTO_BYTE_THRESHOLD, STORAGE_AUTO_RECORD_THRESHOLD } from '../src/storage-management.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
+import { buildFoundationIndexes } from '../src/v3/foundation-runtime.js';
 
 const CHAT = '123e4567-e89b-42d3-a456-426614174000';
 const HOST = 'host-chat';
@@ -83,8 +84,9 @@ function recordsWithOld(oldCount = 3) {
 
 function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null, warmCache = false,
   cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null,
-  trashGcSupport = undefined, pluginEnabled = true, trashGcCompletedAt = '', trashGcPages = null, streamRecords = false } = {}) {
-  let items = recordsWithOld(oldCount), memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
+  trashGcSupport = undefined, pluginEnabled = true, trashGcCompletedAt = '', trashGcPages = null, streamRecords = false,
+  extraRecords = [], reachableOverride = null, rootHeadCheckpointId = null } = {}) {
+  let items = [...recordsWithOld(oldCount), ...extraRecords], memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
   const removes = [], ordinaryRemoves = [], listeners = new Set(), sessionCalls = [];
   let listCalls = 0, rootReads = 0, fullReads = 0, listFailure = null, rootReadFailure = null, maintenanceRootFailure = null;
   let streamedRecords = 0;
@@ -112,7 +114,7 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     async get(_collection, recordId) {
       assert.equal(recordId, 'v3-root');
       if (maintenanceRootFailure) { const failure = maintenanceRootFailure; maintenanceRootFailure = null; throw failure; }
-      return { revision: rootChanged ? 10 : 9, data: rootData(CHAT, rootChanged ? RUN : HEAD) };
+      return { revision: rootChanged ? 10 : 9, data: rootData(CHAT, rootChanged ? RUN : (rootHeadCheckpointId ?? HEAD)) };
     },
     async remove(_collection, recordId, revision) {
       ordinaryRemoves.push([recordId, revision]);
@@ -144,12 +146,12 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
   };
   const store = {
     async readRoot() { rootReads += 1; if (rootReadFailure) { const failure = rootReadFailure; rootReadFailure = null; throw failure; }
-      const root = cacheRootMismatch ? reachable('other-chat').root : rootData(CHAT, rootVersion === 9 ? HEAD : RUN);
+      const root = cacheRootMismatch ? reachable('other-chat').root : rootData(CHAT, rootVersion === 9 ? (rootHeadCheckpointId ?? HEAD) : RUN);
       return { status: 'ready', revision: cacheRootMismatch ? 10 : rootVersion, data: root }; },
     async readReachable() {
       fullReads += 1;
       if (pendingScanFailure) { const failure = pendingScanFailure; pendingScanFailure = null; throw failure; }
-      const value = reachable(rootChatId);
+      const value = reachableOverride ? structuredClone(reachableOverride) : reachable(rootChatId);
       if (!cacheRootMismatch && rootVersion !== 9) {
         value.rootRevision = rootVersion;
         value.root.headCheckpointId = RUN;
@@ -314,6 +316,56 @@ test('统计只把通过生产完整 schema 校验且不可达的九类 foundati
   assert.equal(classified.stats.retained.count, 8);
   assert.equal(classified.candidates.length, 9);
   assert.deepEqual(new Set(classified.candidates.map(item => item.recordId)), new Set(oldRecords.map(item => item.recordId)));
+});
+
+test('复用的旧floorOrder key由新checkpoint/root闭包保护，旧checkpoint索引仍可清理', async () => {
+  const oldIndex = validEnvelope('index', INDEX);
+  const oldCheckpointKey = `v3-checkpoint-${HEAD}`;
+  const newCheckpointId = 'e23e4567-e89b-42d3-a456-426614174000';
+  const reused = structuredClone(oldIndex);
+  const orphan = structuredClone(oldIndex);
+  orphan.recordId = `v3-index-floorOrder-0-f23e4567-e89b-42d3-a456-999999999999`;
+  orphan.data.id = 'f23e4567-e89b-42d3-a456-999999999999';
+  const next = reachable();
+  next.root = { ...next.root, headCheckpointId: newCheckpointId,
+    indexManifest: { ...next.root.indexManifest, floor: [reused.recordId] } };
+  next.checkpoint = { ...next.checkpoint, id: newCheckpointId,
+    producedRefs: { ...next.checkpoint.producedRefs, indexes: [reused.recordId] } };
+  const classified = await classifyStorageRecords([
+    { recordId: 'v3-root', revision: 1, data: next.root },
+    { recordId: oldCheckpointKey, revision: 1, data: validData('checkpoint', HEAD) },
+    { recordId: `v3-checkpoint-${newCheckpointId}`, revision: 1, data: { ...validData('checkpoint', HEAD), id: newCheckpointId } },
+    reused, orphan,
+  ], next, CHAT);
+  assert.equal(classified.candidates.some(item => item.recordId === reused.recordId), false,
+    'new checkpoint producedRefs and root manifest keep the reused immutable index active');
+  assert.ok(classified.candidates.some(item => item.recordId === orphan.recordId),
+    'an old index key outside the current graph remains a cleanup candidate');
+});
+
+test('存储管理真实扫描与清理保护复用key并删除合法孤立floorOrder', async () => {
+  const nextCheckpointId = 'e23e4567-e89b-42d3-a456-426614174000';
+  const currentIndexKey = validEnvelope('index', INDEX).recordId;
+  const [orphanIndex] = await buildFoundationIndexes({
+    chatId: CHAT, narrativeGeneration: GENERATION, checkpointId: oldId(99),
+    floors: [{ id: FLOOR, hostLocator: { messageIndex: 1, swipeId: null, selectedSwipeIndex: null } }],
+    candidates: [{ hostLocator: { messageIndex: 1, swipeId: null, selectedSwipeIndex: null } }], now: NOW,
+  });
+  const orphan = { recordId: `v3-index-${orphanIndex.kind}-${orphanIndex.shard}-${orphanIndex.id}`, revision: 41, data: orphanIndex };
+  const next = reachable();
+  next.root = { ...next.root, headCheckpointId: nextCheckpointId, indexManifest: { ...next.root.indexManifest, floor: [currentIndexKey] } };
+  next.checkpoint = { ...next.checkpoint, id: nextCheckpointId,
+    producedRefs: { ...next.checkpoint.producedRefs, indexes: [currentIndexKey] } };
+  const nextCheckpoint = validEnvelope('checkpoint', nextCheckpointId);
+  const f = fixture({ extraRecords: [orphan, nextCheckpoint], reachableOverride: next, rootHeadCheckpointId: nextCheckpointId });
+  const preview = await f.manager.scan();
+  assert.equal(preview.status, 'ready');
+  assert.equal(preview.candidates.some(item => item.recordId === currentIndexKey), false);
+  assert.ok(preview.candidates.some(item => item.recordId === orphan.recordId));
+  const result = await f.manager.cleanup();
+  assert.equal(result.status, 'completed');
+  assert.ok(f.removes.some(([recordId]) => recordId === orphan.recordId), 'cleanup deletes the orphan index through removePermanent');
+  assert.equal(f.removes.some(([recordId]) => recordId === currentIndexKey), false, 'cleanup preserves the reused index key');
 });
 
 test('存储管理扫描向量续建见证并保留精确有效的未发布shard', async () => {
