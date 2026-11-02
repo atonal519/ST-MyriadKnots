@@ -16,6 +16,7 @@ export function qianchuangMapCandidates(style,layout){
 }
 export function selectQianchuangMapAsset({entityId,style,layout=null,previousAssetId=null,usedAssetIds=[]}){
  const candidates=qianchuangMapCandidates(style,layout),previous=QIANCHUANG_MAP_ASSETS[previousAssetId];
+ if(previousAssetId&&!previous)return previousAssetId;
  if(previous&&compatible(previous,style))return previous.id;
  const unused=candidates.filter(asset=>!usedAssetIds.includes(asset.id)),choices=unused.length?unused:candidates;
  if(!choices.length)return null;

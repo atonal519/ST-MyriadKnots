@@ -1,3 +1,6 @@
+import { startQianchuangMapCatalog } from './src/qianchuang-map-catalog.js';
+import { QIANCHUANG_MAP_ASSETS } from './src/qianchuang-map-assets.js';
+import { CITY_MAPS } from './src/ui/qianchuang-city-maps.js';
 import { filterPlaceFoundationSources, placeWorkspaceDependency } from './src/v3/place-foundation.js';
 import { captureQianchuangCharacterSources } from './src/place-worldbook-material.js';
 import { createPlaceWorkspaceStore } from './src/v3/place-workspace.js';
@@ -526,6 +529,10 @@ globalThis.addEventListener?.('beforeunload', autoHideController.dispose, { once
 globalThis.addEventListener?.('beforeunload', inlineRenderer.destroy, { once: true });
 globalThis.addEventListener?.('beforeunload', storageManagement.dispose, { once: true });
 globalThis.qqj_v3_recall_interceptor = (coreChat, contextSize, abort, type) => v3RecallRuntime.intercept(coreChat, contextSize, abort, type);
+// Static map preparation stays outside chat/model/storage work.
+const startQianchuangMaps = () => startQianchuangMapCatalog({ genericAssets: QIANCHUANG_MAP_ASSETS, cityAssets: CITY_MAPS,
+  sanitizeSvg: svg => DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }),
+});
 const setAllEnabled = async enabled => {
   const diagnosticRevisionAtStart = pluginLifecycleFailureRevision;
   try { refreshStoryClock({ announce: true }); }
@@ -541,6 +548,7 @@ const setAllEnabled = async enabled => {
     clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
     return v3Result ?? lifecycleResult;
   }
+  startQianchuangMaps();
   inlineRenderer.setEnabled(true);
   if (globalThis.location?.origin) void privateRecallDiagnostics.start();
   const lifecycleResult = await lifecycle?.setEnabled(enabled);
@@ -563,6 +571,7 @@ const qianchuangWorldInfoProvider = async ({chatId,organize=false}) => {
   if(!isCurrent())throw stale();
   return {chatId,candidates:sourcePermissions.filterCandidates({chatId,candidates}),macros,...(organize?{characterCardSources}:{})};
 };
+if (settings.isEnabled()) startQianchuangMaps();
 ui = bootstrap({
   moduleUrl: import.meta.url,
   activity: pluginActivity,

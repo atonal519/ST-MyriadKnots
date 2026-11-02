@@ -30,6 +30,8 @@ import { createTauriBackendFetch } from '../src/tauri-backend.js';
 import { localForageHarness } from './helpers/indexeddb-harness.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const publicMapCatalogUrls = ['https://st-myriadknots.pages.dev/maps-library/catalog.json', 'https://st-myriadknots.pages.dev/maps-real/catalog.json'];
+const isPublicMapCatalogUrl = url => publicMapCatalogUrls.includes(String(url));
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 const fingerprintText = value => `sha256:${createHash('sha256').update(String(value ?? '')).digest('hex')}`;
@@ -488,6 +490,11 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
       fetchRequests.push({ url: String(url), method: options.method ?? 'GET' });
+      if (isPublicMapCatalogUrl(url)) {
+        assert.equal(options.method ?? 'GET', 'GET'); assert.equal(options.credentials, 'omit');
+        assert.equal(options.body, undefined); assert.equal(options.headers, undefined);
+        return { ok: true, json: async () => String(url).includes('/maps-real/') ? { cities: [] } : [] };
+      }
       if (nativeBranch && String(url) === '/api/characters/chats') return { ok: true, status: 200,
         async json() { return [{ file_id: 'source-chat' }, { file_id: 'host-chat' }]; } };
       if (String(url) === '/api/chats/get') { chatReadCalls++; return hostFile
@@ -741,9 +748,10 @@ test('TT production bundle reads the file identity graph through native store wi
   assert.equal(result.chatSaveCalls, 0);
   assert.equal([...result.ttRecords.values()].some(value => (value.format === 'qqj-tt-json-v2' ? JSON.parse(value.serialized) : value).collection === 'chat-identity-bindings'), false);
   assert.equal(result.backendHealthCalls, 0);
+  assert.deepEqual(result.fetchRequests.filter(request => isPublicMapCatalogUrl(request.url)).map(request => request.url).sort(), [...publicMapCatalogUrls].sort());
   // A real origin also enables the existing local diagnostics configuration check.
-  assert.ok(result.fetchRequests.every(request => request.method === 'GET' && request.url.endsWith('/diagnostics.local.json')),
-    'TT正式记忆不得走HTTP，唯一允许的全局fetch是读取本地诊断配置');
+  assert.ok(result.fetchRequests.every(request => request.method === 'GET' && (request.url.endsWith('/diagnostics.local.json') || isPublicMapCatalogUrl(request.url))),
+    'TT正式记忆不得走HTTP，公共静态图库与本地诊断配置可读');
   assert.equal(result.localForageCreateCalls, 1, 'TT生产入口在实际账户和origin作用域下启用同一IndexedDB派生cache');
   assert.equal(result.interceptorType, 'function');
 });
@@ -832,7 +840,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.0.0');
+  assert.equal(manifest.version, '1.0.1');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -980,6 +988,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const runtimeEnables = [];
   const recallInvalidations = [];
   let bootstrapOptions;
+  let mapCatalogOptions;
+  const mapCatalogStarts = [], mapSanitizerCalls = [], genericMapAssets = {}, cityMapAssets = {};
   let compactOptions;
   let pluginActivitySources;
   const compactStub = {};
@@ -1018,7 +1028,10 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   define('/scripts/utils.js', { download: hostDownload });
   define('/scripts/user.js', { getCurrentUserHandle: () => 'isolated-test-user' });
   const hostLocalForage = { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) };
-  define('/lib.js', { showdown: {}, DOMPurify: {}, localforage: hostLocalForage });
+  define('/lib.js', { showdown: {}, DOMPurify: { sanitize: (svg, options) => { mapSanitizerCalls.push({ svg, options }); return 'clean-svg'; } }, localforage: hostLocalForage });
+  define('./src/qianchuang-map-assets.js', { QIANCHUANG_MAP_ASSETS: genericMapAssets });
+  define('./src/ui/qianchuang-city-maps.js', { CITY_MAPS: cityMapAssets });
+  define('./src/qianchuang-map-catalog.js', { startQianchuangMapCatalog: options => { mapCatalogOptions = options; mapCatalogStarts.push(options); return new Promise(() => {}); } });
   define('/scripts/power-user.js', { power_user: { persona_description: '' } });
   const peerExtensionSettings = { disabledExtensions: [], 'schedule-planner': {} };
   const peerExtensionNames = ['third-party/ST-SevenDaysCal'];
@@ -1170,6 +1183,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     return dependency;
   });
   await entry.evaluate();
+  assert.equal(mapCatalogStarts.length, 0, '插件初始关闭时不启动外链目录');
   assert.equal(bootstrapOptions.pluginDiagnosticProvider(), null, 'APP_READY前不可先启动身份准备');
   assert.equal(failStartupLifecycleStart, true);
   assert.equal(productionEventHandlers.get('app-ready')?.size, 1);
@@ -1407,6 +1421,10 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(typeof lifecycleOptions.onPrepared, 'function', '生产入口必须把身份成功后的后台续接注入 lifecycle');
   assert.deepEqual(backgroundStarts, [], '插件初始关闭时不得绕过 lifecycle 单独启动 memory/people');
   await bootstrapOptions.onPluginEnabledChange(true);
+  assert.equal(mapCatalogStarts.length, 1, '正常启用启动公共静态目录，未完成的准备不能阻塞入口');
+  assert.equal(mapCatalogOptions.genericAssets, genericMapAssets); assert.equal(mapCatalogOptions.cityAssets, cityMapAssets);
+  assert.equal(mapCatalogOptions.sanitizeSvg('<svg/>'), 'clean-svg');
+  assert.deepEqual(nativeJson(mapSanitizerCalls), [{ svg: '<svg/>', options: { USE_PROFILES: { svg: true, svgFilters: true } } }]);
   assert.equal(hostUuidCalls, 3, '关闭后打开插件的身份准备必须调用宿主 uuidv4 且不依赖浏览器 crypto.randomUUID');
   assert.equal(backgroundStarts[0], 'memory');
   assert.equal(memoryStartOptions[0].explicitEnable, true, '真实总开关路径必须把一次性初始化意图传到 memory.start');

@@ -5,45 +5,77 @@ import { validateEntityRecord } from './memory-schema.js';
 import { isUuid } from '../identity.js';
 import { normalizePlaceFacilities, validQianchuangMapStyle, validQianchuangMapLayout } from '../qianchuang-display-hints.js';
 import {selectQianchuangMapAsset} from '../qianchuang-map-assets.js';
+import { locatePlaceQuote } from './place-evidence.js';
 const label=value=>String(value??'').normalize('NFKC').trim().toLocaleLowerCase();
 const copy=value=>structuredClone(value);
-
-function originalQuote(content, quote) {
-  if (typeof content !== 'string' || typeof quote !== 'string' || !quote.trim()) return null;
-  if (content.includes(quote)) return quote;
-  const pattern = quote.trim().split(/\s+/u).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
-  const matches = [...content.matchAll(new RegExp(pattern, 'gu'))];
-  return matches.length === 1 ? matches[0][0] : null;
-}
 
 function pathEvidence(entry, scope) {
   if (!entry || typeof entry !== 'object') return [];
   const requested = Array.isArray(entry.evidence) ? entry.evidence : [entry];
-  return requested.map(ref => {
-    if (!ref || typeof ref !== 'object') return null;
+  return requested.flatMap(ref => {
+    if (!ref || typeof ref !== 'object') return [null];
     if (ref.source === 'characterCard') {
-      const card=scope.characterCardSources?.find(source=>source.sourceKey===ref.sourceKey),quote=originalQuote(card?.content,ref.exactQuote);
-      return quote ? {source:{kind:'characterCard',field:card.field,locator:card.locator,fingerprint:card.fingerprint,quote}} : null;
+      const card=scope.characterCardSources?.find(source=>source.sourceKey===ref.sourceKey),segments=locatePlaceQuote(card?.content,ref.exactQuote,{allowWhitespace:true,allowOmission:Boolean(ref.sourceKey)});
+      return segments ? segments.map(({quote})=>({source:{kind:'characterCard',field:card.field,locator:card.locator,fingerprint:card.fingerprint,quote}})) : [null];
     }
     if (ref.source === 'worldbook') {
-      const book = scope.placeWorldbookSources?.find(source => source.sourceKey === ref.sourceKey), quote = originalQuote(book?.content, ref.exactQuote);
-      return quote ? { source: { kind: 'worldbook', sourceName: book.sourceName ?? '', locator: book.locator, fingerprint: book.fingerprint, quote } } : null;
+      const book = scope.placeWorldbookSources?.find(source => source.sourceKey === ref.sourceKey), segments = locatePlaceQuote(book?.content, ref.exactQuote, {allowWhitespace:true,allowOmission:Boolean(ref.sourceKey)});
+      return segments ? segments.map(({quote})=>({ source: { kind: 'worldbook', sourceName: book.sourceName ?? '', locator: book.locator, fingerprint: book.fingerprint, quote } })) : [null];
     }
-    if (!['canonicalContent','precedingUserInput','storedPlaceEvidence'].includes(ref.source)) return null;
+    if (!['canonicalContent','precedingUserInput','storedPlaceEvidence'].includes(ref.source)) return [null];
     const choices = (scope.sourceFloorBindings ?? []).flatMap(binding => ref.source === 'precedingUserInput'
       ? (binding.sourceUserInputSnapshot?.messages ?? []).map((message, sourceSnapshotIndex) => ({ ...binding, canonicalContent: message.content, sourceType: 'precedingUser', sourceSnapshotIndex }))
       : [{ ...binding, sourceType: binding.sourceType ?? 'assistant' }]);
-    const matches = choices.filter(binding => ref.source === 'storedPlaceEvidence' ? binding.evidenceKey === ref.sourceKey
-      : (!ref.sourceFloorKey || binding.floorKey === ref.sourceFloorKey) && (!Number.isSafeInteger(ref.sourceSnapshotIndex) || binding.sourceSnapshotIndex === ref.sourceSnapshotIndex))
-      .flatMap(binding => { const quote = originalQuote(binding.canonicalContent, ref.source === 'storedPlaceEvidence' && !Object.hasOwn(ref,'exactQuote') ? binding.canonicalContent : ref.exactQuote); return quote ? [{ binding, quote }] : []; });
-    if (matches.length !== 1) return null;
-    const { binding, quote } = matches[0];
-    return { body: binding, source: { kind: 'body', floorId: binding.floorId, sourceType: binding.sourceType,
+    const candidates = choices.filter(binding => ref.source === 'storedPlaceEvidence' ? binding.evidenceKey === ref.sourceKey
+      : (!ref.sourceFloorKey || binding.floorKey === ref.sourceFloorKey) && (!Number.isSafeInteger(ref.sourceSnapshotIndex) || binding.sourceSnapshotIndex === ref.sourceSnapshotIndex));
+    const match = allowOmission => candidates.flatMap(binding => {
+      const segments=locatePlaceQuote(binding.canonicalContent,ref.source === 'storedPlaceEvidence' && !Object.hasOwn(ref,'exactQuote') ? binding.canonicalContent : ref.exactQuote,{allowWhitespace:true,allowOmission});
+      return segments?[{binding,segments}]:[];
+    });
+    const strict = match(false), matches = strict.length ? strict : (ref.sourceFloorKey || ref.source === 'storedPlaceEvidence' && ref.sourceKey) ? match(true) : [];
+    if (matches.length !== 1) return [null];
+    const { binding, segments } = matches[0];
+    return segments.map(({quote})=>({ body: binding, source: { kind: 'body', floorId: binding.floorId, sourceType: binding.sourceType,
       ...(binding.sourceSnapshotIndex !== undefined ? { sourceSnapshotIndex: binding.sourceSnapshotIndex } : {}),
       ...(binding.memoryId ? { memoryId: binding.memoryId } : {}), locator: `floor:${binding.floorId}`, fingerprint: binding.rawFingerprint, quote },
       semantic: { source: binding.sourceType === 'precedingUser' ? 'precedingUserInput' : 'canonicalContent', sourceFloorKey: binding.floorKey,
-        ...(binding.sourceType === 'precedingUser' ? { sourceSnapshotIndex: binding.sourceSnapshotIndex } : {}), exactQuote: quote } };
+        ...(binding.sourceType === 'precedingUser' ? { sourceSnapshotIndex: binding.sourceSnapshotIndex } : {}), exactQuote: quote } }));
   });
+}
+
+function linkedBodyLeaf(entry, spatial, resolved, scope) {
+  const name = entry.path.at(-1).name.trim(), candidates = spatial.places.filter(place => typeof place?.name === 'string' && place.name.trim() === name);
+  if (!candidates.length) return { leaf: null, conflict: false };
+  const validPlace=place=>/^place-mention-[1-9]\d*$/u.test(place?.key??'')&&spatial.places.filter(other=>other?.key===place.key).length===1
+    &&(place.identity==='new'?!place.sameAsPlaceKey:place.identity==='existing'&&typeof place.sameAsPlaceKey==='string'&&Boolean(place.sameAsPlaceKey.trim()));
+  const source = resolved[0]?.body;
+  if (candidates.length !== 1 || !validPlace(candidates[0]) || !source || entry.path.length < 2 || resolved.some(ref => ref.body?.floorId !== source.floorId || ref.body.sourceType !== 'assistant')) return { leaf: null, conflict: true };
+  const ranges = refs => {
+    if (!refs.length || refs.some(ref => !ref?.body || ref.body.floorId !== source.floorId || ref.body.sourceType !== 'assistant' || ref.semantic.sourceFloorKey !== source.floorKey)) return null;
+    return refs.map(ref => {
+      const start=source.canonicalContent.indexOf(ref.source.quote);
+      return start<0||source.canonicalContent.indexOf(ref.source.quote,start+1)>=0?null:{start,end:start+ref.source.quote.length};
+    });
+  };
+  const pathRanges=ranges(resolved),overlap=(a,b)=>a.start<b.end&&b.start<a.end,contains=(a,b)=>a.start<=b.start&&a.end>=b.end;
+  if(!pathRanges||pathRanges.some(range=>!range))return {leaf:null,conflict:true};
+  let child=candidates[0];
+  const linkedEdges=new Set(),nodes=new Map([[entry.path.length-1,child]]);
+  for(let depth=entry.path.length-1;depth>0;depth--){
+    const parents=new Set(spatial.containments.filter(edge=>edge?.placeKey===child.key).map(edge=>edge.parentPlaceKey));
+    if(!parents.size)break;
+    if(parents.size!==1)return {leaf:null,conflict:true};
+    const parentKey=[...parents][0],parentsByKey=spatial.places.filter(place=>place?.key===parentKey),parent=parentsByKey[0];
+    if(parentsByKey.length!==1||!validPlace(parent)||typeof parent.name!=='string'||parent.name.trim()!==entry.path[depth-1].name.trim())return {leaf:null,conflict:true};
+    const childRanges=ranges(pathEvidence(child,scope)),parentRanges=ranges(pathEvidence(parent,scope));
+    const evidence=spatial.containments.filter(edge=>edge?.placeKey===child.key&&edge.parentPlaceKey===parentKey).flatMap(edge=>pathEvidence(edge,scope)),edgeRanges=ranges(evidence);
+    if(!childRanges||!parentRanges||!edgeRanges||[...childRanges,...parentRanges,...edgeRanges].some(range=>!range)
+      || !childRanges.some(a=>edgeRanges.some(b=>overlap(a,b)))||!parentRanges.some(a=>edgeRanges.some(b=>overlap(a,b)))
+      || pathRanges.some(range=>!edgeRanges.some(edge=>contains(edge,range))||![...childRanges,...parentRanges].some(node=>contains(node,range))))return {leaf:null,conflict:true};
+    linkedEdges.add(`${child.key}:${parent.key}`);nodes.set(depth-1,parent);child=parent;
+  }
+  for(const [depth,place]of nodes)if(entry.path[depth].sameAsPlaceKey&&entry.path[depth].sameAsPlaceKey!==place.sameAsPlaceKey)return {leaf:null,conflict:true};
+  return {leaf:linkedEdges.size?candidates[0]:null,conflict:!linkedEdges.size,linkedEdges,nodes};
 }
 
 const referencedSources = source => source?.references ?? (source ? [source] : []);
@@ -158,6 +190,9 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     }
   }
   spatial.places ??= []; spatial.containments ??= [];
+  // Only the model's original local edges can link an omitted leaf key; a path
+  // expanded earlier in this pass cannot supply evidence for another path.
+  const linkedInput={places:spatial.places.map(place=>place&&{...place}),containments:[...spatial.containments]};
   let mentionIndex = Math.max(0, ...spatial.places.map(place => Number(/place-mention-(\d+)$/u.exec(place?.key)?.[1]) || 0));
   const mentionById = new Map();
   for (const place of spatial.places) {
@@ -180,8 +215,17 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     const primary = resolved.find(ref => ref.source.kind === 'worldbook') ?? resolved[0];
     const autoSource = !bodySource || persistBodyPaths ? { ...primary.source,
       ...(resolved.length > 1 ? { references: resolved.map(ref => ref.source) } : {}) } : null;
-    const leaf = typeof entry.placeKey === 'string' ? spatial.places.find(place => place?.key === entry.placeKey) : undefined;
-    const segments = entry.path.map((segment, i) => ({ ...segment, ...(i === entry.path.length - 1 && leaf?.sameAsPlaceKey && !segment.sameAsPlaceKey ? { sameAsPlaceKey: leaf.sameAsPlaceKey } : {}) }));
+    let leaf = typeof entry.placeKey === 'string' ? spatial.places.find(place => place?.key === entry.placeKey) : undefined;
+    let bridge = null;
+    if (!entry.placeKey && bodySource && !persistBodyPaths) {
+      const linked=linkedBodyLeaf(entry,linkedInput,resolved,scope);
+      if(linked.conflict){isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_IDENTITY_INVALID',path:`placePaths[${index}]`});continue;}
+      leaf=spatial.places.find(place=>place?.key===linked.leaf?.key);bridge=linked;
+    }
+    const segments = entry.path.map((segment, i) => {
+      const linked = bridge?.nodes?.get(i) ?? (i === entry.path.length - 1 ? leaf : null);
+      return { ...segment, ...(linked?.sameAsPlaceKey && !segment.sameAsPlaceKey ? { sameAsPlaceKey: linked.sameAsPlaceKey } : {}) };
+    });
     if (segments.some(segment => segment.sameAsPlaceKey && !byKey.has(segment.sameAsPlaceKey))) {
       isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_IDENTITY_INVALID', path: `placePaths[${index}]` }); continue;
     }
@@ -255,7 +299,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       if (parentId) {
         parents.set(entityId, new Set([parentId]));
         if (bodySource && !persistBodyPaths) {
-          if (!spatial.containments.some(edge => edge?.placeKey === mention && edge.parentPlaceKey === parentMention && edge.exactQuote === quote && edge.source === bodyEvidence.source && edge.sourceFloorKey === bodyEvidence.sourceFloorKey && edge.sourceSnapshotIndex === bodyEvidence.sourceSnapshotIndex)) spatial.containments.push({ placeKey: mention, parentPlaceKey: parentMention, exactQuote: quote, ...bodyEvidence });
+          if (!bridge?.linkedEdges?.has(`${mention}:${parentMention}`) && !spatial.containments.some(edge => edge?.placeKey === mention && edge.parentPlaceKey === parentMention && edge.exactQuote === quote && edge.source === bodyEvidence.source && edge.sourceFloorKey === bodyEvidence.sourceFloorKey && edge.sourceSnapshotIndex === bodyEvidence.sourceSnapshotIndex)) spatial.containments.push({ placeKey: mention, parentPlaceKey: parentMention, exactQuote: quote, ...bodyEvidence });
         }
         else {
           const itemId = await deterministicUuid(['v3-worldbook-place', autoSource.locator, autoSource.fingerprint, entityId, parentId, 'containment']);

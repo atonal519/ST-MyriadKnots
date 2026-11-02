@@ -1,3 +1,6 @@
+import {startQianchuangMapCatalog} from '../src/qianchuang-map-catalog.js';
+import {QIANCHUANG_MAP_ASSETS} from '../src/qianchuang-map-assets.js';
+import {CITY_MAPS} from '../src/ui/qianchuang-city-maps.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as module from '../src/ui/qianchuang-view.js';
@@ -267,4 +270,19 @@ test('189新地点类型按父级默认且手选后不随所属变化，自动�
  h.find('qqj-window-add')[0].fire('click');choose('mapLevel','scope');await editor.submit();assert.equal(writes.at(-1).mapRole,'area');
  h.find('qqj-window-add')[0].fire('click');choose('mapRole','site');choose('parentEntityId','room');await editor.submit();assert.equal(writes.at(-1).mapRole,'site');
  h.find('qqj-window-edit').find(n=>n.attributes['data-edit-place']==='room').fire('click');choose('mapRole','interior');await editor.submit();assert.deepEqual(writes.at(-1),{id:'room',fields:{mapRole:'interior'}});
+});
+
+test('外部已存图目录离线时保地点与底图ID，页面使用已有同类背景且零写', async()=>{
+ const data={...initial,places:initial.places.map(node=>node.entityId==='root'?{...node,mapLevel:'scope',mapRole:'area',mapStyle:'sci-fi',mapLayout:'linear',mapAssetId:'external-unavailable'}:node.entityId==='room'?{...node,mapRole:'site'}:node)},before=structuredClone(data),h=harness({snapshot:data});
+ await h.view.activate();assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'sci-fi-linear');assert.equal(h.find('qqj-window-marker').length,1);assert.equal(h.writes.length,0);assert.deepEqual(data,before);
+});
+
+
+test('目录在千窗关闭期间新增城市，重开沿相同core版本更新底图且零写',async()=>{
+ let release;const gate=new Promise(resolve=>release=resolve),city={...structuredClone(CITY_MAPS.seoul),id:'reopen-city',label:'外部城市',aliases:['外部城市']};
+ const client=startQianchuangMapCatalog({genericAssets:QIANCHUANG_MAP_ASSETS,cityAssets:CITY_MAPS,sanitizeSvg:value=>value,fetchImpl:async url=>({ok:true,json:()=>url.includes('/maps-real/')?gate:Promise.resolve([])})});
+ const data={...initial,places:[{...place('city','外部城市',['site']),mapLevel:'city',mapRole:'area'},{...place('site','城内场地',[],'city'),mapRole:'site'}],mapRootIds:['city'],unassignedPlaceIds:[]},before=structuredClone(data),h=harness({snapshot:data});
+ await h.view.activate();assert.notEqual(h.find('qqj-window-map')[0].attributes['data-basemap'],'reopen-city');h.view.deactivate();
+ release({cities:[city]});await client.prepare();await h.view.activate();
+ assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'reopen-city');assert.equal(h.writes.length,0);assert.deepEqual(data,before);h.view.deactivate();
 });

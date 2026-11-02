@@ -1,3 +1,4 @@
+import {subscribeQianchuangMapCatalog} from '../qianchuang-map-catalog.js';
 import {projectQianchuangSheets,snapshotForCitySheet,placeMapLevel} from './qianchuang-city-sheets.js';
 import {CITY_MAPS,createCityMapLoader,citySchematicLayout} from './qianchuang-city-maps.js';
 import { projectQianchuangBrowse } from './qianchuang-browse.js';
@@ -20,7 +21,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   if (!runtime || ['getQianchuangSnapshot','prepareCurrent','subscribe'].some(key => typeof runtime[key] !== 'function')) throw new TypeError('千窗 runtime 无效');
   const operationMenus = createOperationMenuController(documentRef);
   const visitMenus = (node, action) => { if (String(node?.className ?? '').split(/\s+/u).includes('qqj-window-operation-menu')) operationMenus[action](node); for (const child of node?.children ?? []) visitMenus(child, action); };
-  let container = null, active = false, unsubscribe = null, epoch = 0, chatId = null, highlightedMapRootId = null, renderedRevision = null;
+  let container = null, active = false, unsubscribe = null, unsubscribeCatalog = null, epoch = 0, chatId = null, highlightedMapRootId = null, renderedRevision = null;
   let page, health, toolbar, search, searchClear, navigation, mapGroup, map, regions, areas, points, copyright, contents, position, rootRegion, drawer, drawerHead, directory, basemap = 'modern', preparing = false, failure = null;
   let snapshot = runtime.getQianchuangSnapshot(), byId = new Map(), openIds = new Set(), localSelections = new Map(), unassignedOpen = false, rootEntries = new Map(), orphanEntries = new Map(), markers = new Map();
   let markerKey=null,positionKey=null,browseScopeId=undefined,browse=null,mapBrowse=null,query='';
@@ -276,7 +277,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     if(!container)return;
     const base=runtime.getQianchuangSnapshot();resetChat(base.chatId ?? null);
     const chosen=settings?.get?.()?.qianchuangBasemaps?.[chatId],projection=projectQianchuangSheets(base),sheet=projection.sheets.find(sheet=>sheet.id===activeSheetId)??projection.sheets.find(sheet=>sheet.id===projection.defaultSheetId),hint=base.places.find(place=>place.entityId===sheet?.rootPlaceId),automatic=hint?.mapStyle?selectQianchuangMapAsset({entityId:hint.entityId,style:hint.mapStyle,layout:hint.mapLayout,previousAssetId:sheet?.mapAssetId}):QIANCHUANG_MAP_ASSETS[sheet?.mapAssetId]?.id;
-    const selectedBasemap=QIANCHUANG_BASEMAPS[chosen]||QIANCHUANG_MAP_ASSETS[chosen]?chosen:automatic??(QIANCHUANG_BASEMAPS[base.mapStyle]?base.mapStyle:qianchuangMapCandidates(base.mapStyle)[0]?.id??'modern');
+    const selectedBasemap=QIANCHUANG_BASEMAPS[chosen]||QIANCHUANG_MAP_ASSETS[chosen]?chosen:(QIANCHUANG_MAP_ASSETS[automatic]?automatic:null)??(QIANCHUANG_BASEMAPS[base.mapStyle]?base.mapStyle:qianchuangMapCandidates(hint?.mapStyle??base.mapStyle)[0]?.id??'modern');
     const nextBasemap=selectedBasemap==='sci-fi'?'sci-fi-linear':selectedBasemap;
     const styleChanged=basemap!==nextBasemap;basemap=nextBasemap;
     const needsRender=styleChanged||renderedRevision!==base.projectionRevision;
@@ -310,8 +311,9 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     sheetRow=el('div','qqj-window-sheet-row');page.append(health,searchRow,toolbar,sheetRow,mapGroup,navigation,contents);container.replaceChildren(page);drawBasemap();renderedRevision=null;update();
   }
   async function activate() {
-    if(active){update();return {status:snapshot.status};}active=true;visitMenus(page,'register');operationMenus.activate();const mine=++epoch;
-    unsubscribe=runtime.subscribe(()=>{if(active)update();});preparing=true;failure=null;update();
+    if(active){update();return {status:snapshot.status};}active=true;renderedRevision=null;visitMenus(page,'register');operationMenus.activate();const mine=++epoch;
+    unsubscribe=runtime.subscribe(()=>{if(active)update();});
+    unsubscribeCatalog=subscribeQianchuangMapCatalog(()=>{if(active){renderedRevision=null;assetDrawKey=null;markerKey=null;update();}});preparing=true;failure=null;update();
     try{
       const session=sessionStateProvider?.();
       if(session?.status==='error')throw session.error;
@@ -322,6 +324,6 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     }catch(error){if(active&&mine===epoch)failure=publicErrorMessage(error,{fallback:'地点资料暂时无法读取，请重试。'});return {status:'error'};}
     finally{if(active&&mine===epoch){preparing=false;update();}}
   }
-  function deactivate(){operationMenus.deactivate();active=false;epoch++;unsubscribe?.();unsubscribe=null;}
+  function deactivate(){operationMenus.deactivate();active=false;epoch++;unsubscribe?.();unsubscribe=null;unsubscribeCatalog?.();unsubscribeCatalog=null;}
   return Object.freeze({mount,activate,deactivate});
 }

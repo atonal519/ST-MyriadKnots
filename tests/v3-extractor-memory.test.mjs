@@ -2988,8 +2988,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(buildExtractorSystemPrompt('自定义偏好'), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
   assertQianshiLifecycleGuidance(buildExtractorSystemPrompt('用户自定义偏好'));
   assert.doesNotMatch(buildHighFloorExtractorSystemPrompt(), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-52');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-52/schema-3/semantic-compiler-24');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-53');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-53/schema-3/semantic-compiler-25');
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.aliases.maxItems, 20);
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.maxLength, 400);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /identityBriefEvidence.*identityFacts/u);
@@ -13255,6 +13255,59 @@ function precisionPlace(index, displayName, aliases = []) {
     firstSeenFloorId: '11111111-1111-4111-8111-111111111111', lastSeenFloorId: '11111111-1111-4111-8111-111111111111', status: 'provisional', mergedIntoEntityId: null,
     mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: NOW, updatedAt: NOW, recordStatus: 'active', supersedes: null };
 }
+
+function place194Fixture() {
+ const first='城区内的电视台大楼开始录制。',room='3号待机室的门打开。',stage='演播大厅的门打开。';
+ const content=first+room+'中间剧情。'.repeat(500)+stage+'你站在演播大厅舞台上。';
+ const ev=exactQuote=>({source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote});
+ const names=['电视台大楼','电视台大楼3号待机室','电视台大楼演播大厅舞台'];
+ const packet={summary:'你进入电视台大楼并在舞台停下。',people:[{name:'林岚'}],spatialFacts:{places:names.map((name,i)=>({key:`place-mention-${i+1}`,name,identity:'new',...ev([first,room,stage][i])})),containments:[1,2].map(i=>({placeKey:`place-mention-${i+1}`,parentPlaceKey:'place-mention-1',...ev(first+'……'+[room,stage][i-1])})),positions:[{subject:'林岚',placeKey:'place-mention-3',status:'confirmed',...ev('你站在演播大厅舞台上。')}],features:[{key:'feature-1',placeKey:'place-mention-2',kind:'stable',text:'门已打开',replacesKeys:[],...ev(room)}]},placePaths:[1,2].map(i=>({path:[{name:'城区'},{name:names[0]},{name:names[i]}],evidence:[ev(first+'……'+[room,stage][i-1])]}))};
+ return {content,packet};
+}
+
+test('194同次正文显式父子后缀桥接无placeKey路径，地点身份与位置设施共用且只保短引文',async()=>{
+ const {content,packet}=place194Fixture(),result=await direct(packet,{content});
+ assert.deepEqual(result.isolated.filter(item=>item.code!=='V3_EXTRACTOR_ENTITY_KIND_DEFAULTED'),[]);
+ const places=result.newEntities.filter(item=>item.entityType==='place');assert.equal(places.length,4);
+ for(const name of ['城区','电视台大楼','电视台大楼3号待机室','电视台大楼演播大厅舞台'])assert.equal(places.filter(place=>place.displayName===name).length,1);
+ const ids=new Map(places.map(place=>[place.displayName,place.id])),spatial=result.memory.spatialFacts;
+ assert.equal(spatial.containments.length,3);assert.ok(spatial.containments.some(edge=>edge.placeEntityId===ids.get('电视台大楼')&&edge.parentEntityId===ids.get('城区')));
+ for(const name of ['电视台大楼3号待机室','电视台大楼演播大厅舞台'])assert.ok(spatial.containments.some(edge=>edge.placeEntityId===ids.get(name)&&edge.parentEntityId===ids.get('电视台大楼')));
+ assert.equal(spatial.positions[0].placeEntityId,ids.get('电视台大楼演播大厅舞台'));assert.equal(spatial.features[0].placeEntityId,ids.get('电视台大楼3号待机室'));
+ assert.ok(spatial.containments.every(edge=>edge.evidenceRefs.every(ref=>content.includes(ref.quotedText)&&ref.quotedText.length<100)));
+ assert.equal(result.memory.summary.aiText,packet.summary);
+});
+
+test('194无显式父子、同名多候选、不同来源的正文路径不靠名字桥接',async()=>{
+ for(const variant of ['no-parent','two-leaves','wrong-parent','wrong-source','uncertain-leaf','bad-key']){
+  const {content,packet}=place194Fixture();packet.placePaths=packet.placePaths.slice(0,1);
+  if(variant==='no-parent')packet.spatialFacts.containments=[];
+  if(variant==='two-leaves')packet.spatialFacts.places.push({...packet.spatialFacts.places[1],key:'place-mention-4'});
+  if(variant==='wrong-parent')packet.placePaths[0].path[1].name='其他大楼';
+  if(variant==='wrong-source')packet.spatialFacts.containments[0].sourceFloorKey='floor-2';
+  if(variant==='uncertain-leaf')packet.spatialFacts.places[1].identity='uncertain';
+  if(variant==='bad-key'){packet.spatialFacts.places[1].key='bad-key';packet.spatialFacts.containments[0].placeKey='bad-key';}
+  const result=await direct(packet,{content});assert.ok(result.isolated.some(item=>item.field==='placePaths'),'不能用裸同名补链接：'+variant);
+  assert.equal(result.newEntities.filter(place=>place.displayName==='城区').length,0);
+ }
+});
+
+test('194省略引用只接空间，普通事件仍不修拼接引文且跨用户来源不拼段',async()=>{
+ const content='甲楼内有客房。中间经过。客房内有书桌。',ev={source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote:'甲楼内有客房。……客房内有书桌。'};
+ const result=await direct({summary:'已有合法摘要',events:[{title:'本楼事项',description:'进入客房',...ev}],spatialFacts:{places:[{key:'place-mention-1',name:'客房',identity:'new',...ev}],containments:[],positions:[],features:[{key:'feature-1',placeKey:'place-mention-1',text:'有书桌',kind:'stable',replacesKeys:[],...ev}]}},{content});
+ assert.equal(result.memory.eventFragments[0].evidenceRefs.length,0);assert.equal(result.memory.spatialFacts.features[0].evidenceRefs.length,2);
+ const split=await direct({summary:'已有合法摘要',spatialFacts:{places:[{key:'place-mention-1',name:'客房',identity:'new',...ev,source:'precedingUserInput'}],containments:[],positions:[]}},{content:'无地点',sourceUserInputSnapshot:{messages:[{content:'甲楼内有客房。',messageIndex:0},{content:'客房内有书桌。',messageIndex:1}]}});
+ assert.ok(split.isolated.some(item=>item.code==='V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID'));assert.equal(split.newEntities.length,0);
+});
+
+test('194同楼跨建筑的宽路径引文不能把另一建筑的局部父子接过来',async()=>{
+ const a='甲楼一楼设有客房。',b='乙楼一楼也设有客房。',content=a+b,ev=exactQuote=>({source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote});
+ for(const edgeQuote of [b,content]){
+  const response={summary:content,spatialFacts:{places:[{key:'place-mention-1',name:'一楼',identity:'new',...ev(b)},{key:'place-mention-2',name:'客房',identity:'new',...ev(b)}],containments:[{placeKey:'place-mention-2',parentPlaceKey:'place-mention-1',...ev(edgeQuote)}],positions:[]},placePaths:[{path:[{name:'甲楼'},{name:'一楼'},{name:'客房'}],...ev(content)}]};
+  const result=await direct(response,{content});assert.ok(result.isolated.some(item=>item.field==='placePaths'));assert.equal(result.newEntities.filter(place=>place.displayName==='甲楼').length,0);
+  assert.equal(result.memory.spatialFacts.containments.length,1,'保留原局部父子');
+ }
+});
 
 test('地点40候选之外的同名和别名冲突不能制造唯一绑定', async () => {
   for (const aliasCollision of [false, true]) {

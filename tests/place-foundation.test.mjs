@@ -12,6 +12,18 @@ const source={sourceKey:'worldbook-1',locator:'地图:18',fingerprint:'sha256:ab
 const envelope={scope:{chatId:id(90),narrativeGeneration:id(91),batchId:id(92),floorId:id(93),placeCatalogBindings:[{entityKey:'place-1',entityId:id(1),labels:['宿舍']},{entityKey:'place-2',entityId:id(2),labels:['客房']}],parentEntityIdsByPlaceId:new Map([[id(2),new Set([id(1)])]]),placeWorldbookSources:[source]}};
 const path={path:[{name:'宿舍',sameAsPlaceKey:'place-1'},{name:'一楼'},{name:'客房',sameAsPlaceKey:'place-2'}],source:'worldbook',sourceKey:'worldbook-1',exactQuote:'宿舍一楼设有客房。客房内有独立浴室。',description:'内有独立浴室。'};
 
+test('194地点路径省略引文只在显式单来源展开原短片段，不把中间剧情写入证据',async()=>{
+ const text='甲楼内有客房。'+'剧情经过。'.repeat(500)+'客房内有书桌。',quote='甲楼内有客房。……客房内有书桌。';
+ const entry={path:[{name:'甲楼'},{name:'客房'}],source:'worldbook',sourceKey:'worldbook-1',exactQuote:quote};
+ const result=await foundation.expandPlacePaths({packet:{placePaths:[entry]},envelope:{scope:{...envelope.scope,placeCatalogBindings:[],parentEntityIdsByPlaceId:new Map(),placeWorldbookSources:[{...source,content:text}]}},now:'2026-11-02T00:00:00Z'});
+ assert.deepEqual(result.isolated,[]);const evidence=result.foundationPatch.facts.find(f=>f.kind==='containment').source;
+ assert.deepEqual(evidence.references.map(ref=>ref.quote),['甲楼内有客房。','客房内有书桌。']);
+ assert.ok(evidence.references.every(ref=>ref.locator===source.locator));
+ for(const sources of [[{...source,content:'甲楼内有客房。'},{...source,sourceKey:'worldbook-2',content:'客房内有书桌。'}],[{...source,content:text+'甲楼内有客房。'}]]){
+  const invalid=await foundation.expandPlacePaths({packet:{placePaths:[entry]},envelope:{scope:{...envelope.scope,placeWorldbookSources:sources}},now:'2026-11-02T00:00:00Z'});assert.equal(invalid.isolated[0].code,'QQJ_PLACE_PATH_SOURCE_INVALID');
+ }
+});
+
 function correctionFixture(){
  const entities=[seed(1,'甲楼'),seed(2,'客房'),seed(3,'乙楼'),seed(4,'城区'),seed(5,'内间')],parents=new Map([[id(1),new Set([id(4)])],[id(3),new Set([id(4)])],[id(2),new Set([id(3)])],[id(5),new Set([id(2)])]]),quote='甲楼和乙楼位于城区，客房实际位于甲楼，客房里有内间。';
  const base={scope:{...envelope.scope,parentEntityIdsByPlaceId:parents,placeCatalogBindings:entities.map((entity,index)=>({entityKey:`place-${index+1}`,entityId:entity.id,labels:[entity.displayName]})),placeWorldbookSources:[{...source,content:quote}]}},entry={path:[{name:'甲楼',sameAsPlaceKey:'place-1'},{name:'客房',sameAsPlaceKey:'place-2',description:'已有客房说明。',facilities:[]},{name:'内间',sameAsPlaceKey:'place-5'}],source:'worldbook',sourceKey:'worldbook-1',exactQuote:quote};
@@ -196,4 +208,11 @@ test('可选city/country提示沿place fact保存，逐字段合并保旧role与
  assert.equal(r.isolated.length,0);const byName=new Map(r.entities.map(e=>[e.displayName,e.id])),level=name=>r.foundationPatch.facts.find(f=>f.kind==='place'&&f.placeEntityId===byName.get(name));assert.equal(level('中国').mapLevel,'country');assert.equal(level('上海').mapLevel,'city');assert.equal(level('青石馆').mapLevel,undefined);
  const current=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),r.foundationPatch),prior=level('上海'),next={...prior,itemId:id(199),mapLevel:undefined};delete next.mapLevel;const kept=foundation.mergePlaceFoundation(current,{entities:[],facts:[next],replaceFields:[{entityId:prior.placeEntityId,kind:'place'}]});assert.equal(kept.foundation.facts.find(f=>f.itemId===id(199)).mapLevel,'city');
  const changed={...next,itemId:id(198),mapLevel:'country'};delete changed.mapRole;const merged=foundation.mergePlaceFoundation(kept,{entities:[],facts:[changed],replaceFields:[{entityId:prior.placeEntityId,kind:'place'}]});assert.equal(merged.foundation.facts.find(f=>f.itemId===id(198)).mapRole,'area');assert.equal(merged.foundation.facts.find(f=>f.itemId===id(198)).mapLevel,'country');
+});
+
+test('外部已存图目录离线时原保存链保ID，环境提示真变化才沿原逻辑换图',()=>{
+ const fact={itemId:id(201),kind:'place',placeEntityId:id(1),mapStyle:'modern',mapLayout:'inland',mapAssetId:'remote-persisted'},workspace={...emptyPlaceWorkspace(id(90)),foundation:{schemaVersion:1,entities:[seed(1,'已有范围')],facts:[fact]}};
+ const unchanged=foundation.mergePlaceFoundation(workspace,{entities:[],facts:[{itemId:id(202),kind:'place',placeEntityId:id(1),facilities:[]}]});
+ assert.equal(unchanged.foundation.facts.find(row=>row.itemId===id(202)).mapAssetId,'remote-persisted');assert.equal(workspace.foundation.facts[0].mapAssetId,'remote-persisted');
+ const changed=foundation.mergePlaceFoundation(unchanged,{entities:[],facts:[{itemId:id(203),kind:'place',placeEntityId:id(1),mapStyle:'sci-fi',mapLayout:'linear'}]});assert.equal(changed.foundation.facts.find(row=>row.itemId===id(203)).mapAssetId,'sci-fi-linear');
 });
