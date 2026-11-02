@@ -1,7 +1,7 @@
 import { createActivitySignal } from '../plugin-activity.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, compileTimeCreate, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -455,9 +455,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (!plan || plan.epoch !== epoch || plan.chatId !== identity().chatId || manualBlock()) return notify();
     return runPlan(plan, true);
   }
-  async function editItems(edits) {
+  async function saveItems(edits, createFields = null) {
     const blocked = manualBlock(); if (blocked) throw new Error(blocked);
-    if (!Array.isArray(edits) || !edits.length || new Set(edits.map(edit => edit?.itemId)).size !== edits.length) throw new Error('请选择有效且不重复的时间事项。');
+    if (!Array.isArray(edits) || !createFields && !edits.length || new Set(edits.map(edit => edit?.itemId)).size !== edits.length) throw new Error('请选择有效且不重复的时间事项。');
     const operation = { epoch, chatId: identity().chatId, controller: new AbortController(), phase: 'saving', promise: null, manual: true };
     active = operation; notify();
     operation.promise = (async () => {
@@ -465,16 +465,18 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       const key = sourceKey(reachable);
       const valid = () => current(operation) && sourceKey(getReachable()) === key && !manualBlock(true);
       if (!valid() || !reachable?.root || reachable.root.chatId !== operation.chatId || !reachable.floors?.length) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
-      const stored = await store.read(operation.chatId);
+      let stored = await store.read(operation.chatId);
       if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
       const currentItems = replayTimeBatches(stored.batches, reachable);
       for (const edit of edits) {
         const item = currentItems.find(value => value.id === edit?.itemId);
         if (!item || item.observationKey !== edit.observationKey) throw new Error('事项已变化或来源已失效，请取消编辑并刷新后重试。');
       }
-      const batch = await compileTimeEdits(edits, reachable, `v3-time-batch-${newUuid()}`, currentItems);
+      const batch = createFields ? await compileTimeCreate(createFields,reachable,`v3-time-batch-${newUuid()}`,`time-${newUuid()}`,currentItems)
+        : await compileTimeEdits(edits, reachable, `v3-time-batch-${newUuid()}`, currentItems);
       const root = await foundationStore.readRoot();
       if (!valid() || root.data?.chatId !== operation.chatId || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
+      if(createFields)stored=await ensureStart(reachable,stored,operation.controller.signal);
       await store.putBatch(operation.chatId, batch, operation.controller.signal);
       if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用。');
       const lastRun = stored.head?.lastRun ? { ...stored.head.lastRun, items: itemCount([...stored.batches, batch], reachable) } : null;
@@ -505,6 +507,8 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     finally { if (active === operation) active = null; notify(); }
     return getState();
   }
+  const editItems = edits => saveItems(edits);
+  const createItem = fields => saveItems([],fields);
   const editItem = (itemId, fields, observationKey) => editItems([{ itemId, fields, observationKey }]);
   async function deleteItems(items = []) {
     const blocked = manualBlock(); if (blocked) throw new Error(blocked);
@@ -979,7 +983,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     return replayTimeBatches(stored.batches, reachable).filter(item => item.qianshiRef?.matterId && item.qianshiRef?.originEventId)
       .map(item => ({ id: item.id, qianshiRef: { ...item.qianshiRef } }));
   }
-  return Object.freeze({ subscribeActivity: activity.subscribeActivity, runBatch, prepareHistoryPlan, organize, authorizeHistory, editItem, editItems, deleteItems, refreshStatus, recallProjection, currentStoryContext,
+  return Object.freeze({ subscribeActivity: activity.subscribeActivity, runBatch, prepareHistoryPlan, organize, authorizeHistory, createItem, editItem, editItems, deleteItems, refreshStatus, recallProjection, currentStoryContext,
     getQianshiReferences: () => qianshiReferences === null ? null : structuredClone(qianshiReferences), getQianshiReferencesForChat, getState, getActivityState, invalidate, stop, bind,
     subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

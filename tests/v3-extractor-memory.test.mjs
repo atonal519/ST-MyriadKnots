@@ -8855,7 +8855,8 @@ test('历史重建中关闭会使旧响应失效，重新开启后从 reachable 
 
   h.setEnabled(true);
   await h.runtime.setEnabled(true);
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await waitFor(() => h.runtime.getState().memorySnapshotStatus === 'ready'
+    && h.runtime.getState().memorySyncStatus === 'idle', '重新启用后的记忆读取未完成');
   assert.equal(h.calls.length, 1, '重新开启不得恢复已经失效的运行时授权');
   assert.equal(h.runtime.getState().rebuildStatus, 'pendingRebuild');
   await h.runtime.startHistoricalRebuild();
@@ -13925,4 +13926,61 @@ test('187同一摘要与整理请求带题材和中文地貌目录，coast沿原
  let root=h.runtime.getQianchuangSnapshot().places.find(place=>place.displayName==='港镇甲');assert.equal(root.mapStyle,'old-town');assert.equal(root.mapLayout,'coast');assert.equal(root.mapAssetId,'old-town-coast');const id=root.entityId;
  const before=h.backend.calls.filter(call=>call[0]==='put'&&call[2]==='v3-place-workspace').length;
  assert.equal((await h.runtime.organizePlaces()).status,'saved');root=h.runtime.getQianchuangSnapshot().places.find(place=>place.entityId===id);assert.equal(root.mapAssetId,'old-town-coast');assert.equal(h.calls.length,2);assert.equal(requests[1].task,'organizePlaces');assert.equal(h.backend.calls.filter(call=>call[0]==='put'&&call[2]==='v3-place-workspace').length,before+1);
+});
+
+test('189地点双输出复用明确同实体父引用，新旧父都不产生假多父',async()=>{
+ const content='乙楼内部的客房内有钢琴。',ev={source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote:content};
+ for(const knownParent of [true,false]){
+  const entities=knownParent?[precisionPlace(201,'乙楼')]:[];
+  const response={summary:content,spatialFacts:{places:[{key:'place-mention-1',name:'乙楼',identity:knownParent?'existing':'new',...(knownParent?{sameAsPlaceKey:'place-1'}:{}),...ev},{key:'place-mention-2',name:'客房',identity:'new',...ev}],containments:[{placeKey:'place-mention-2',parentPlaceKey:'place-mention-1',...ev}],positions:[]},placePaths:[{placeKey:'place-mention-2',path:[{name:'乙楼',...(knownParent?{sameAsPlaceKey:'place-1'}:{})},{name:'客房',mapRole:'site',facilities:[{icon:'Piano',label:'钢琴'}]}],evidence:[ev]}]};
+  const result=await direct(response,{content,entities});assert.deepEqual(result.isolated,[]);
+  const edge=result.memory.spatialFacts.containments[0];assert.ok(edge);assert.equal(result.memory.spatialFacts.containments.length,1);
+  assert.equal([...entities,...result.newEntities].find(row=>row.id===edge.parentEntityId).displayName,'乙楼');
+  assert.equal(result.foundationPatch.facts.find(row=>row.kind==='place').placeEntityId,edge.placeEntityId);
+ }
+});
+
+test('189真实不同父即便同名也继续隔离，不以名称复用身份',async()=>{
+ const content='两处会馆各有独立身份，客房的所属尚有冲突。',ev={source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote:content};
+ const result=await direct({summary:content,spatialFacts:{places:[{key:'place-mention-1',name:'会馆',identity:'existing',sameAsPlaceKey:'place-1',...ev},{key:'place-mention-2',name:'会馆',identity:'existing',sameAsPlaceKey:'place-2',...ev},{key:'place-mention-3',name:'客房',identity:'new',...ev}],containments:[{placeKey:'place-mention-3',parentPlaceKey:'place-mention-1',...ev},{placeKey:'place-mention-3',parentPlaceKey:'place-mention-2',...ev}],positions:[]}}, {content,entities:[precisionPlace(202,'会馆'),precisionPlace(203,'会馆')]});
+ assert.ok(result.isolated.some(row=>row.code==='V3_EXTRACTOR_SPATIAL_PLACE_SCOPE_CONFLICT'));assert.equal(result.memory.spatialFacts?.containments?.length??0,0);
+});
+
+test('189坏可选空间places只局部隔离，合法summary和另一条好辅助仍保留',async()=>{
+ const content='乙楼内部有客房。',ev={source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote:content};
+ for(const places of [[null,{key:'place-mention-1',name:'乙楼',identity:'new',...ev}],'bad']){
+  const result=await direct({summary:content,spatialFacts:{places,containments:[],positions:[]},locations:[{name:'乙楼',change:'present'}]},{content});
+  assert.equal(result.memory.summary.aiText,content);assert.ok(result.memory.locations.length);assert.ok(result.isolated.some(row=>row.field==='spatialFacts.places'));
+  if(Array.isArray(places))assert.ok(result.newEntities.some(row=>row.displayName==='乙楼'));
+ }
+});
+
+test('189人工类型显式保存、自动恢复和冷读共享存储，后端缺省不推断',async()=>{
+ const captured=[],h=harness({withPlaces:true,modernAnchors:true,readOnlyLifecycle:true,initialChat:[user('继续'),assistant('你在大厅内室停下。'),user('继续下一楼'),assistant('之后你仍停在原处。'),user('稳定')],utility:options=>{const request=JSON.parse(options.taskMessages[0].content);captured.push(request);if(request.task==='organizePlaces')return{jsonData:{placePaths:[]}};if(request.payload.canonicalContent.includes('之后'))return{jsonData:{summary:request.payload.canonicalContent}};return{jsonData:{summary:'你在大厅内室停下。',placePaths:[{path:[{name:'大厅',mapRole:'site'},{name:'内室',mapRole:'interior'}],source:'canonicalContent',sourceFloorKey:request.payload.sourceFloorKey,exactQuote:request.payload.canonicalContent}]}};}});
+ await h.foundationRuntime.reconcile('manual-role');await h.runtime.start();await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId,{analyzeState:false});
+ let snapshot=h.runtime.getQianchuangSnapshot(),hall=snapshot.places.find(p=>p.displayName==='大厅'),room=snapshot.places.find(p=>p.displayName==='内室');assert.equal(room.mapRole,'interior');
+ const boundary=await h.runtime.createPlace({name:'独立地域',mapLevel:'scope',mapRole:'area'},h.runtime.getPlaceEditContext(null));const child=await h.runtime.createPlace({name:'新场地',parentEntityId:boundary.entityId,mapRole:'site'},h.runtime.getPlaceEditContext(null));const inside=await h.runtime.createPlace({name:'新室内',parentEntityId:hall.entityId,mapRole:'interior'},h.runtime.getPlaceEditContext(null));
+ const omitted=await h.runtime.createPlace({name:'未指定类型',parentEntityId:boundary.entityId},h.runtime.getPlaceEditContext(null));assert.equal(Object.hasOwn((await h.placeWorkspaceStore.read({chatId:CHAT},{fresh:true})).data.placesByEntityId[omitted.entityId],'mapRole'),false);
+ const by=()=>new Map(h.runtime.getQianchuangSnapshot().places.map(p=>[p.entityId,p]));assert.equal(by().get(boundary.entityId).mapRole,'area');assert.equal(by().get(child.entityId).mapRole,'site');assert.equal(by().get(inside.entityId).mapRole,'interior');
+ const modelCount=h.calls.length;await h.runtime.savePlace(room.entityId,{mapRole:'site'},h.runtime.getPlaceEditContext(room.entityId));assert.equal(by().get(room.entityId).mapRole,'site');assert.equal(h.calls.length,modelCount);
+ await h.runtime.extractFloor(h.runtime.getState().floors[1].floorId,{analyzeState:false});const ordinary=captured.at(-1).payload.knownPlaces.find(p=>p.displayName==='内室');assert.equal(ordinary.manualCurrentFacts.mapRole,'site');assert.equal(by().get(room.entityId).mapRole,'site');
+ await h.runtime.organizePlaces();const manual=captured.at(-1).payload.knownPlaces.find(p=>p.entityId===room.entityId||p.displayName==='内室');assert.equal(manual.manualCurrentFacts.mapRole,'site');
+ await h.runtime.savePlace(room.entityId,{mapRole:null},h.runtime.getPlaceEditContext(room.entityId));assert.equal(by().get(room.entityId).mapRole,'interior');assert.equal(by().get(room.entityId).manualMapRole,false);
+ const cold=harness({withPlaces:true,sharedBackend:h.backend,sharedContext:h.context,initialChat:h.context.chat,modernAnchors:true,readOnlyLifecycle:true});await cold.runtime.start();const coldBy=new Map(cold.runtime.getQianchuangSnapshot().places.map(p=>[p.entityId,p]));assert.equal(coldBy.get(room.entityId).mapRole,'interior');assert.equal(coldBy.get(child.entityId).mapRole,'site');assert.equal(cold.calls.length,0);
+});
+
+test('190空待办清单人工新建独立事项，同楼重提保人工并接新自动事件',async()=>{
+ let reextract=false;const h=harness({modernAnchors:true,readOnlyLifecycle:true,initialChat:[user('开始'),assistant('你坐在大厅。'),user('继续'),assistant('你坐在大厅。'),user('稳定')],utility:options=>JSON.parse(options.taskMessages[0].content).task==='rejudgeStoredQianshiV1'?{jsonData:{qianshi:{events:[]}}}:({jsonData:{summary:reextract?'重提摘要':'原摘要',qianshi:{manualEventIds:['eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'],events:reextract?[{key:'new-event',title:'新自动事件',description:'你坐在大厅。',status:'occurred',matter:false}]:[]}}})});
+ await h.foundationRuntime.reconcile('manual-todo');await h.runtime.start();await assert.rejects(h.runtime.createQianshiTodo({title:'归还书',description:'手工登记归还书',people:[]}),/初始化/u);
+ const floors=h.runtime.getState().floors;for(const row of floors)await h.runtime.extractFloor(row.floorId,{analyzeState:false});const floor=floors.at(-1),models=h.calls.length;assert.ok((await h.store.readReachable({mode:'runtime'})).floorMemories.every(memory=>!memory.qianshiDelta?.manualEventIds?.length));
+ const made=await h.runtime.createQianshiTodo({title:'归还书',description:'手工登记归还书',people:[],storyTime:null,scheduledTime:null});assert.equal(made.status,'saved');assert.equal(h.calls.length,models);
+ let snapshot=h.runtime.getQianshiSnapshot(),event=snapshot.events.find(e=>e.id===made.eventId);assert.equal(event.manuallyCreated,true);assert.equal(event.sourceFloorId,floor.floorId);assert.equal(event.status,'planned');assert.equal(snapshot.matters.find(m=>m.matterId===made.matterId).following,true);assert.equal(event.storyTime,null);assert.ok(snapshot.timeline.undatedEventIds.includes(made.eventId));assert.equal(snapshot.matters[0].manualStatusOverride,null);
+ reextract=true;await h.runtime.extractFloor(floor.floorId,{analyzeState:false});snapshot=h.runtime.getQianshiSnapshot();assert.ok(snapshot.events.some(e=>e.id===made.eventId&&e.title==='归还书'));assert.ok(snapshot.events.some(e=>e.title==='新自动事件'));assert.deepEqual((await h.store.readReachable({mode:'runtime'})).floorMemories.find(memory=>memory.floorId===floor.floorId).qianshiDelta.manualEventIds,[made.eventId]);
+ const plan=await h.runtime.prepareQianshiRejudge();assert.ok(plan.planId);await h.runtime.startQianshiRejudge(plan.planId);assert.ok(h.runtime.getQianshiSnapshot().events.some(e=>e.id===made.eventId&&e.manuallyCreated));
+ const cold=harness({sharedBackend:h.backend,sharedContext:h.context,utility:()=>assert.fail('冷读不调用模型')});await cold.runtime.start();assert.ok(cold.runtime.getQianshiSnapshot().events.some(e=>e.id===made.eventId&&e.manuallyCreated));
+});
+
+test('190人工待办不把原待补千事冒记已自动检查',async()=>{
+ const h=harness({modernAnchors:true,readOnlyLifecycle:true,initialChat:[user('开始'),assistant('你在大厅。'),user('稳定')],utility:()=>({jsonData:{summary:'你在大厅。'}})});await h.foundationRuntime.reconcile('manual-pending');await h.runtime.start();await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId,{analyzeState:false});
+ await h.runtime.createQianshiTodo({title:'人工计划',description:'人工登记新计划',people:[]});const source=await h.store.readReachable({mode:'runtime'});assert.equal(source.floorMemories[0].qianshiDelta.status,'partial');assert.equal(source.floorMemories[0].qianshiDelta.manualEventIds.length,1);
 });

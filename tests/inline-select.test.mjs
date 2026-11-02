@@ -97,3 +97,8 @@ test('可搜索内联单选按完整路径过滤，清空搜索/取消不改已�
 test('搜索输入的Enter与Escape截住表单提交，IME确认不触发选择',()=>{
  const changes=[],picker=createInlineSelect({documentRef,searchable:true,options,value:'a',onChange:value=>changes.push(value)}),search=descendants(picker.node).find(node=>node.className==='settings-input qqj-inline-select-search-input');assert.ok(search);picker.open();search.value='乙';search.fire('input');let stopped=0;search.fire('keydown',{key:'Enter',isComposing:true,preventDefault(){stopped++;},stopPropagation(){stopped++;}});assert.equal(stopped,0);assert.equal(picker.value,'a');search.fire('keydown',{key:'Enter',preventDefault(){stopped++;},stopPropagation(){stopped++;}});assert.equal(stopped,2);assert.equal(picker.value,'b');assert.deepEqual(changes,['b']);
 });
+
+test('手动确认当前值仍通知onSelect，程序同步不通知',()=>{
+ const changes=[],selections=[],picker=createInlineSelect({documentRef,options:[{value:'a',label:'甲'},{value:'b',label:'乙'}],value:'a',onChange:v=>changes.push(v),onSelect:v=>selections.push(v)});
+ picker.list.children[0].fire('click');assert.deepEqual(changes,[]);assert.deepEqual(selections,['a']);picker.setValue('b');assert.deepEqual(selections,['a']);picker.list.children[0].fire('click');assert.deepEqual(changes,['a']);assert.deepEqual(selections,['a','a']);
+});

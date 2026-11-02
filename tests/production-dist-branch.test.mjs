@@ -195,6 +195,7 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
     const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
     if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'persona.png' });
+    else if (hostPath === '/scripts/utils.js') module = synthetic(identifier, { download: async () => assert.fail('分支初始化不应下载文件') });
     else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
     else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: { Converter: class { makeHtml(value) { return value; } } }, DOMPurify: { sanitize: value => value }, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '调查员' } });

@@ -165,7 +165,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     note.setAttribute('role', saving.error ? 'alert' : 'status');
     return note;
   };
-  const sourceCopy = event => event.frozen === true && validMessageIndex(event.sourceOrigin?.sourceMessageIndex)
+  const sourceCopy = event => event.manuallyCreated ? '人工登记' : event.frozen === true && validMessageIndex(event.sourceOrigin?.sourceMessageIndex)
     ? `来源聊天第 ${event.sourceOrigin.sourceMessageIndex} 楼`
     : validMessageIndex(event.sourceMessageIndex) ? `第 ${event.sourceMessageIndex} 楼` : `AI 记录 ${event.sourceAssistantSeq ?? '未明'}`;
   const statusBadge = (event, { currentMatter = false } = {}) => {

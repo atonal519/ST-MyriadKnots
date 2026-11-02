@@ -1,14 +1,22 @@
 import { validateEntityRecord } from './memory-schema.js';
 import { isUuid } from '../identity.js';
-import { validatePlaceFoundation, effectiveFoundationFacts } from './place-foundation.js';
+import { validatePlaceFoundation, effectiveFoundationFacts, filterPlaceFoundationSources } from './place-foundation.js';
 import { validQianchuangMapStyle } from '../qianchuang-display-hints.js';
 
 export const PLACE_WORKSPACE_RECORD_ID = 'v3-place-workspace';
-const fields = ['name', 'description', 'relations', 'parentEntityId', 'mapLevel'];
+const fields = ['name', 'description', 'relations', 'parentEntityId', 'mapLevel', 'mapRole'];
 const copy = value => structuredClone(value);
 const fail = text => Object.assign(new Error(text), { code: 'QQJ_PLACE_WORKSPACE_INVALID' });
 const own = (value, key) => Object.hasOwn(value ?? {}, key);
 export const emptyPlaceWorkspace = chatId => ({ schemaVersion: 1, kind: 'qqj-v3-place-workspace', chatId, placesByEntityId: {}, deletionsByEntityId: {} });
+
+export function rehomePlaceWorkspace(value,chatId,narrativeGeneration=null){
+  const data={...copy(value),chatId};
+  for(const entity of [...Object.values(data.placesByEntityId).flatMap(row=>row.createdEntity?[row.createdEntity]:[]),...(data.foundation?.entities??[])]){
+    entity.chatId=chatId;if(narrativeGeneration)entity.narrativeGeneration=narrativeGeneration;
+  }
+  return data;
+}
 
 export function validatePlaceWorkspace(value, chatId) {
   if (!value || value.schemaVersion !== 1 || value.kind !== 'qqj-v3-place-workspace' || !isUuid(chatId) || value.chatId !== chatId
@@ -22,7 +30,7 @@ export function validatePlaceWorkspace(value, chatId) {
     if (!isUuid(id) || !row || !row.scopes || typeof row.scopes !== 'object'
       || fields.filter(key => own(row, key)).some(key => {
         const scope = row.scopes[key];
-        return (key === 'parentEntityId' ? row[key] !== null && !isUuid(row[key]) : key==='mapLevel'?row[key]!==null&&!['city','country','scope'].includes(row[key]):typeof row[key] !== 'string')
+        return (key === 'parentEntityId' ? row[key] !== null && !isUuid(row[key]) : key==='mapLevel'?row[key]!==null&&!['city','country','scope'].includes(row[key]):key==='mapRole'?row[key]!==null&&!['area','site','interior'].includes(row[key]):typeof row[key] !== 'string')
           || !scope || !isUuid(scope.knownThroughFloorId) || !Array.isArray(scope.coveredFloorIds) || scope.coveredFloorIds.some(id => !isUuid(id))
           || !Array.isArray(scope.coveredItemIds) || scope.coveredItemIds.some(id => typeof id !== 'string' || !id);
       })) throw fail('地点人工修订格式无效。');
@@ -54,14 +62,22 @@ export function createPlaceWorkspaceStore({ client } = {}) {
     const saved = { data: validatePlaceWorkspace(result.data, identity.chatId), revision: result.revision };
     cache.set(identity.chatId, Promise.resolve(saved)); return saved;
   }
-  return Object.freeze({ read, put, invalidate(chatId) { if (chatId) cache.delete(chatId); else cache.clear(); } });
+  async function copyFrom(sourceIdentity,targetIdentity,{floorIds=null,narrativeGeneration=null}={}){
+    const target=await read(targetIdentity,{fresh:true});if(target.data)return target;
+    const source=await read(sourceIdentity,{fresh:true});if(!source.data)return null;
+    const data=rehomePlaceWorkspace(placeWorkspaceForPrefix(source.data,floorIds),targetIdentity.chatId,narrativeGeneration);
+    return put(targetIdentity,data,target.revision);
+  }
+  return Object.freeze({ read, put, copy:copyFrom, invalidate(chatId) { if (chatId) cache.delete(chatId); else cache.clear(); } });
 }
 
 // The boundary records which knowledge the user edited, not a story evidence source.
 export function placeWorkspaceForPrefix(workspace, floorIds = null) {
   if (!workspace || !floorIds) return workspace;
-  return { ...workspace, placesByEntityId: Object.fromEntries(Object.entries(workspace.placesByEntityId ?? {})
-    .map(([id, row]) => { const scoped = { scopes: {}, ...(row.createdEntity ? { createdEntity: row.createdEntity } : {}) }; for (const key of fields) if (own(row, key) && floorIds.has(row.scopes[key].knownThroughFloorId)) { scoped[key] = row[key]; scoped.scopes[key] = row.scopes[key]; } if (row.createdEntity && !Object.keys(scoped.scopes).length) delete scoped.createdEntity; return [id, scoped]; })) };
+  const scoped={ ...workspace, placesByEntityId: Object.fromEntries(Object.entries(workspace.placesByEntityId ?? {})
+    .map(([id, row]) => { const scoped = { scopes: {}, ...(row.createdEntity ? { createdEntity: row.createdEntity } : {}) }; for (const key of fields) if (own(row, key) && floorIds.has(row.scopes[key].knownThroughFloorId)) { scoped[key] = row[key]; scoped.scopes[key] = row.scopes[key]; } if (row.createdEntity && !Object.keys(scoped.scopes).length) delete scoped.createdEntity; return [id, scoped]; })),
+    deletionsByEntityId:Object.fromEntries(Object.entries(workspace.deletionsByEntityId??{}).filter(([,scope])=>scope.knownThroughFloorId?floorIds.has(scope.knownThroughFloorId):scope.coveredFloorIds.some(id=>floorIds.has(id))).map(([id,scope])=>[id,{...scope,coveredFloorIds:scope.coveredFloorIds.filter(id=>floorIds.has(id))}])) };
+  return filterPlaceFoundationSources(scoped,{floorIds});
 }
 
 export function filterPlaceMemory(memory, workspace) {
@@ -108,6 +124,8 @@ export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),me
     if (own(row, 'name')) result.displayName = row.name || '未命名地点';
     if (own(row, 'parentEntityId')) result.parentEntityId = row.parentEntityId;
     if (own(row,'mapLevel'))result.mapLevel=row.mapLevel;
+    result.manualMapRole=own(row,'mapRole')&&row.mapRole!==null;
+    if(result.manualMapRole)result.mapRole=row.mapRole;
     if (own(row, 'description')) {
       result.manualDescription = true;
       if (row.description.trim()) result.features.unshift({ itemId: `manual-description-${place.entityId}`, text: row.description, kind: 'stable', manual: true });

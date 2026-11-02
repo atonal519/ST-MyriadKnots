@@ -255,3 +255,16 @@ test('184旧sci-fi保存值与自动环境同走按需舰图及源比例',async(
  let map=h.find('qqj-window-map')[0];assert.equal(map.attributes['data-basemap'],'sci-fi-linear');assert.equal(map.style['--qqj-window-map-aspect'],'1120 / 1280');assert.deepEqual(loads,['sci-fi-linear']);
  h.stored.qianchuangBasemaps[chat]='sci-fi';h.emit({projectionRevision:2});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'sci-fi-linear');assert.equal(h.find('qqj-window-map')[0].style['--qqj-window-map-aspect'],'1120 / 1280');assert.equal(h.writes.length,0);
 });
+
+test('189方位单独成为本级折叠详情，和描述归一去重',async()=>{
+ const data={...initial,places:[{...place('root','区域',['room']),mapRole:'area',features:[]},{...place('room','大厅',[],'root'),mapRole:'site',features:[],relations:[{text:'位于\n走廊尽头'}]}],unassignedPlaceIds:[]};const h=harness({snapshot:data});await h.view.activate();const entry=h.find('qqj-window-entry').find(n=>n.attributes['data-place-id']==='room');assert.match(entry.className,/has-content/u);assert.equal(flat(entry).filter(n=>n.className==='qqj-window-copy'&&n.textContent==='位于\n走廊尽头').length,1);
+ data.places[1].features=[{text:'位于 走廊尽头'}];h.emit({projectionRevision:2,places:data.places});assert.equal(h.find('qqj-window-copy').filter(n=>/位于/u.test(n.textContent)).length,1);
+});
+test('189新地点类型按父级默认且手选后不随所属变化，自动编辑仅释放类型',async()=>{
+ let editor;const writes=[],data={...initial,places:[{...place('root','区域',['room']),mapRole:'area'},{...place('room','大厅',[],'root'),mapRole:'site'}],unassignedPlaceIds:[]};const h=harness({snapshot:data,dialog:{custom(v){editor=v;return new Promise(()=>{});}},editingRuntime:{getPlaceEditContext:()=>({chatId:chat}),createPlace:async fields=>writes.push(fields),savePlace:async(id,fields)=>writes.push({id,fields})}});await h.view.activate();
+ const choose=(key,value)=>{const f=flat(editor.content).find(n=>n.attributes['data-place-field']===key);assert.ok(f,key);flat(f).find(n=>n.attributes['data-value']===value).fire('click');};
+ h.find('qqj-window-add')[0].fire('click');choose('parentEntityId','room');await editor.submit();assert.equal(writes.at(-1).mapRole,'interior');
+ h.find('qqj-window-add')[0].fire('click');choose('mapLevel','scope');await editor.submit();assert.equal(writes.at(-1).mapRole,'area');
+ h.find('qqj-window-add')[0].fire('click');choose('mapRole','site');choose('parentEntityId','room');await editor.submit();assert.equal(writes.at(-1).mapRole,'site');
+ h.find('qqj-window-edit').find(n=>n.attributes['data-edit-place']==='room').fire('click');choose('mapRole','interior');await editor.submit();assert.deepEqual(writes.at(-1),{id:'room',fields:{mapRole:'interior'}});
+});

@@ -3,7 +3,7 @@ const cleanOptions = options => (Array.isArray(options) ? options : []).map(opti
   label: String(option?.label ?? option?.value ?? ''),
 }));
 
-export function createInlineSelect({ documentRef = globalThis.document, options = [], value = '', ariaLabel = '选择', onChange = null, onFocus = null, searchable = false, searchPlaceholder = '搜索选项', showChevron = true } = {}) {
+export function createInlineSelect({ documentRef = globalThis.document, options = [], value = '', ariaLabel = '选择', onChange = null, onSelect = null, onFocus = null, searchable = false, searchPlaceholder = '搜索选项', showChevron = true } = {}) {
   if (!documentRef?.createElement) throw new TypeError('inline select documentRef 无效');
   const items = cleanOptions(options);
   const root = documentRef.createElement('div'); root.className = `qqj-inline-select${searchable ? ' qqj-inline-select-searchable' : ''}`;
@@ -88,6 +88,7 @@ export function createInlineSelect({ documentRef = globalThis.document, options 
     if (!items.some(item => item.value === normalized)) return false;
     const changed = normalized !== selected; selected = normalized; sync(); close();
     if (announce && changed) onChange?.(selected);
+    if (announce) onSelect?.(selected);
     if (announce) {
       try { trigger.focus?.({ preventScroll: true }); } catch { trigger.focus?.(); }
     }

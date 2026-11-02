@@ -272,6 +272,15 @@ export async function validateFoundationGraph({ root = null, checkpoint, run = n
   const safeRun = run ? validateFoundationRun(run, { expectedChatId: chatId }) : null;
   const safeFloors = await Promise.all(floors.map(floor => validateFoundationFloorContent(floor, { expectedChatId: chatId })));
   const safeIndexes = indexes.map(index => validateFoundationIndex(index, { expectedChatId: chatId }));
+  return validateFoundationGraphReferences({ root: safeRoot, checkpoint: safeCheckpoint, run: safeRun,
+    floors: safeFloors, indexes: safeIndexes, indexKeys, entityIds, allowMissingIndexes, allowLegacySnapshot });
+}
+
+// Both full reads and streamed transfers validate each original record before
+// checking these cross-record relations. The latter retain only floor metadata.
+export async function validateFoundationGraphReferences({ root: safeRoot = null, checkpoint: safeCheckpoint, run: safeRun = null,
+  floors: safeFloors = [], indexes: safeIndexes = [], indexKeys = [], entityIds = [],
+  allowMissingIndexes = false, allowLegacySnapshot = false } = {}) {
   const floorOrderOnly = safeCheckpoint.indexLayout === V3_INDEX_LAYOUT_FLOOR_ORDER;
   const floorIds = safeFloors.map(floor => floor.id);
   const floorIdSet = new Set(floorIds);

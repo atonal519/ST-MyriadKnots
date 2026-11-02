@@ -75,6 +75,13 @@ const eventSignature = event => {
 };
 const relationSignature = relation => JSON.stringify([relation.type, relation.fromEventId, relation.toEventId, relation.certainty]);
 
+export function preserveManualQianshiEvents(prior, next) {
+  if(!prior?.manualEventIds?.length)return next;
+  const manualIds=new Set(prior.manualEventIds),events=prior.events.filter(event=>manualIds.has(event.id));
+  return {...next,events:[...events.map(event=>structuredClone(event)),...next.events.filter(event=>!manualIds.has(event.id))],manualEventIds:[...manualIds],
+    status:['ready','partial'].includes(next.status)?next.status:next.status==='empty'?'ready':'partial'};
+}
+
 export function effectiveQianshiDelta(memory) {
   const delta = memory?.qianshiDelta;
   const formalEvents = ['ready', 'partial'].includes(delta?.status) ? (delta.events ?? []) : [];
@@ -398,6 +405,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
     const eventData = structuredClone(raw);
     delete eventData.important;
+    if(memory.qianshiDelta?.manualEventIds?.includes(raw.id)){eventData.manuallyCreated=true;eventData.timeManuallyEdited=true;}
     const manualEventOverride = memory.qianshiDelta?.manualEventOverrides?.find(item => item.eventId === raw.id);
     if (manualEventOverride) {
       for (const key of ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime', 'scheduledTime', 'people']) if (Object.hasOwn(manualEventOverride, key)) {
@@ -572,7 +580,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       sourceFloorId: representative.sourceFloorId, sourceAssistantSeq: representative.assistantSeq,
       storyTime: representative.storyTime, scheduledTime: representative.scheduledTime, description: representative.description,
       origin: frozen({ eventId: origin.id, title: origin.title, description: origin.description, storyTime: origin.storyTime, scheduledTime: origin.scheduledTime,
-        sourceFloorId: origin.sourceFloorId, sourceAssistantSeq: origin.assistantSeq }) }));
+        sourceFloorId: origin.sourceFloorId, sourceAssistantSeq: origin.assistantSeq, ...(origin.manuallyCreated?{manuallyCreated:true}:{}) }) }));
   }
   matterDtos.sort((left, right) => Number(!left.following) - Number(!right.following)
     || Number(TERMINAL_STATUSES.has(left.status)) - Number(TERMINAL_STATUSES.has(right.status))
@@ -1113,7 +1121,7 @@ function prepareQianshiCandidatesFromMatters(matters, { canonicalContent = '', p
     const value = { key, candidateType: 'matter', title: matter.title, status: matter.status,
       ...(matter.trackingOverride === true ? { tracking: 'following' } : {}), people: matter.people.map(person => person.name), object: matter.object,
       origin: { title: matter.origin.title, description: matter.origin.description, storyTime: matter.origin.storyTime,
-        scheduledTime: matter.origin.scheduledTime, sourceAssistantSeq: matter.origin.sourceAssistantSeq },
+        scheduledTime: matter.origin.scheduledTime, sourceAssistantSeq: matter.origin.sourceAssistantSeq, ...(matter.origin.manuallyCreated?{source:'manual'}:{}) },
       latestProgress: { title: matter.title, description: matter.description, storyTime: matter.storyTime,
         scheduledTime: matter.scheduledTime, sourceAssistantSeq: matter.sourceAssistantSeq } };
     const line = JSON.stringify(value);
@@ -1181,7 +1189,7 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
       if (state.events.has(event.id)) continue;
       const assistantSeq = aggregate ? floorSeq.get(event.sourceFloorId) ?? null : floor.assistantSeq;
       const manualEventOverride = delta.manualEventOverrides?.find(item => item.eventId === event.id);
-      const projectedEvent = { ...event, ...(manualEventOverride ? Object.fromEntries(
+      const projectedEvent = { ...event, ...(delta.manualEventIds?.includes(event.id)?{manuallyCreated:true,timeManuallyEdited:true}:{}), ...(manualEventOverride ? Object.fromEntries(
         ['title', 'description', 'object', 'status', 'actionStatus', 'storyTime', 'scheduledTime'].filter(key => Object.hasOwn(manualEventOverride, key)).map(key => [key, manualEventOverride[key]])) : {}),
         ...(manualEventOverride && Object.hasOwn(manualEventOverride, 'people') ? { people: structuredClone(manualEventOverride.people) } : {}),
         ...(manualEventOverride && (Object.hasOwn(manualEventOverride, 'status') || Object.hasOwn(manualEventOverride, 'actionStatus')) ? { statusManuallyEdited: true } : {}),
@@ -1193,7 +1201,7 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
       state.eventsByMatter.set(event.matterId, [...(state.eventsByMatter.get(event.matterId) ?? []), projectedEvent]);
       const prior = state.matters.get(event.matterId);
       const current = prior ?? { matterId: event.matterId, origin: { eventId: event.id, title: projectedEvent.title, description: projectedEvent.description,
-        storyTime: projectedEvent.storyTime, scheduledTime: projectedEvent.scheduledTime, sourceFloorId: event.sourceFloorId, sourceAssistantSeq: assistantSeq },
+        storyTime: projectedEvent.storyTime, scheduledTime: projectedEvent.scheduledTime, sourceFloorId: event.sourceFloorId, sourceAssistantSeq: assistantSeq, ...(projectedEvent.manuallyCreated?{manuallyCreated:true}:{}) },
         title: projectedEvent.title, object: projectedEvent.object, status: projectedEvent.status, currentEventId: null, people: [], latestEventIds: [], recordIds: [], eventIds: [], _frontier: [] };
       if (!prior) current.manualStatusOverride = delta.manualMatterStatusOverrides?.find(item => item.matterId === event.matterId)?.status ?? null;
       state.matters.set(event.matterId, addLineRecord(current, projectedEvent));
@@ -1477,7 +1485,7 @@ export function publicQianshiSnapshot(reachable, history = null, identityProject
   const floorById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
   const publicEvent = event => ({ id: event.id, matterId: event.matterId, title: event.title, description: event.description, status: event.status,
     actionStatus: event.actionStatus ?? null, statusManuallyEdited: event.statusManuallyEdited === true,
-    timeManuallyEdited: event.timeManuallyEdited === true,
+    timeManuallyEdited: event.timeManuallyEdited === true, ...(event.manuallyCreated?{manuallyCreated:true}:{}),
     updatesMatter: event.updatesMatter, storyTime: event.storyTime, scheduledTime: event.scheduledTime, people: event.people.map(person => ({ ...person })), object: event.object,
     sourceFloorId: event.sourceFloorId, sourceFloorMemoryId: event.floorMemoryId, sourceAssistantSeq: event.assistantSeq,
     ...(partition.isFrozenFloor(event.sourceFloorId) ? { frozen: true, sourceOrigin: partition.originForFloor(event.sourceFloorId) } : {}),

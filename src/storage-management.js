@@ -293,30 +293,36 @@ export function createStorageManagement({
     return matches ? { snapshot: cached.snapshot, stale: false } : { snapshot: null, stale: true };
   }
 
-  async function scanSnapshot(identity) {
+  async function scanSnapshot(identity, { signal } = {}) {
+    const checkCancelled = () => { if (signal?.aborted) throw signal.reason; };
     return withIdentityStore(identity, async targetStore => {
+      checkCancelled();
       let reachable = warmReachable(identity);
       if (reachable && typeof targetStore.readRoot === 'function') {
         const root = await targetStore.readRoot();
+        checkCancelled();
         if (root?.status !== 'ready' || root.revision !== reachable.rootRevision
           || root.data?.chatId !== reachable.root.chatId
           || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration
           || root.data?.headCheckpointId !== reachable.root.headCheckpointId
           || root.data?.sourceSnapshotFingerprint !== reachable.root.sourceSnapshotFingerprint) reachable = null;
       } else reachable = null;
-      if (!reachable) reachable = await targetStore.readReachable({ mode: 'full' });
+      if (!reachable) reachable = await targetStore.readReachable({ mode: 'full', signal });
+      checkCancelled();
       if (reachable?.status === 'ready' && reachable.root?.chatId !== identity.chatId) {
         throw errorWith('QQJ_STORAGE_ROOT_IDENTITY_MISMATCH', '当前基础数据身份无法安全核对，本次没有生成清理候选。');
       }
       if (reachable?.status !== 'ready' || !reachable.root || !reachable.root.headCheckpointId) {
         const totals = { count: 0, bytes: 0 };
         if (typeof client.iterRecords === 'function') {
-          for await (const item of client.iterRecords(`chat-${identity.chatId}`)) { totals.count += 1; totals.bytes += textBytes(item); }
+          for await (const item of client.iterRecords(`chat-${identity.chatId}`, { signal })) { checkCancelled(); totals.count += 1; totals.bytes += textBytes(item); }
         } else {
-          const records = await client.list(`chat-${identity.chatId}`);
+          const records = await client.list(`chat-${identity.chatId}`, { signal });
+          checkCancelled();
           if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
           for (const item of records) { totals.count += 1; totals.bytes += textBytes(item); }
         }
+        checkCancelled();
         return Object.freeze({ status: reachable?.status === 'uninitialized' ? 'uninitialized' : 'notReady', identity, stats: Object.freeze({ total: totals, active: { count: 0, bytes: 0 }, cleanup: { count: 0, bytes: 0 }, retained: totals, breakdown: { active: emptyBreakdown(), cleanup: emptyBreakdown() } }), candidates: Object.freeze([]), anchor: null });
       }
       let classified;
@@ -324,22 +330,27 @@ export function createStorageManagement({
         const classifier = createStorageClassifier(reachable, identity.chatId);
         const vectorRecords = [];
         let sourceIndex = 0;
-        for await (const record of client.iterRecords(`chat-${identity.chatId}`)) {
+        for await (const record of client.iterRecords(`chat-${identity.chatId}`, { signal })) {
+          checkCancelled();
           if (record?.recordId === VECTOR_INDEX_ID || String(record?.recordId ?? '').startsWith('qqj-vector-shard-')) vectorRecords.push({ record, sourceIndex });
           else await classifier.add(record, sourceIndex);
           sourceIndex += 1;
         }
         const vectorEnvelopes = vectorRecords.map(item => item.record);
         const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, vectorEnvelopes) ?? [];
+        checkCancelled();
         classifier.protectVectorRecords(vectorEnvelopes, resumableVectorShardIds);
-        for (const item of vectorRecords) await classifier.add(item.record, item.sourceIndex);
+        for (const item of vectorRecords) { checkCancelled(); await classifier.add(item.record, item.sourceIndex); }
         classified = classifier.finish();
       } else {
-        const records = await client.list(`chat-${identity.chatId}`);
+        const records = await client.list(`chat-${identity.chatId}`, { signal });
+        checkCancelled();
         if (!Array.isArray(records)) throw errorWith('QQJ_STORAGE_LIST_INVALID', '后端没有返回可核对的记录清单。');
         const resumableVectorShardIds = await vectorRuntime?.getResumableShardIds?.(reachable, records) ?? [];
+        checkCancelled();
         classified = await classifyStorageRecords(records, reachable, identity.chatId, { resumableVectorShardIds });
       }
+      checkCancelled();
       return Object.freeze({
         status: 'ready', identity, stats: classified.stats, candidates: classified.candidates,
         anchor: Object.freeze({ status: 'ready', chatId: reachable.root.chatId, revision: reachable.rootRevision, headCheckpointId: reachable.root.headCheckpointId,
@@ -349,13 +360,19 @@ export function createStorageManagement({
   }
 
   async function scan() {
-    if (operation) return operation.promise;
-    const identity = capture();
+    let identity;
+    if (operation) {
+      if (operation.kind !== 'scanning' || !operation.controller) return operation.promise;
+      try { identity = capture(); } catch { return operation.promise; }
+      if (sameIdentity(identity, operation.identity)) return operation.promise;
+      operation.controller.abort(errorWith('QQJ_STORAGE_CHAT_CHANGED', '当前聊天已经变化，已停止旧聊天的存储统计。'));
+    }
+    identity ??= capture();
     const stableCount = currentStableCount(identity);
     reusableAutomaticSnapshot = null;
-    const current = { kind: 'scanning', identity, promise: null };
+    const current = { kind: 'scanning', identity, promise: null, controller: new AbortController() };
     operation = current; notify();
-    current.promise = scanSnapshot(identity).then(snapshot => {
+    current.promise = scanSnapshot(identity, { signal: current.controller.signal }).then(snapshot => {
       setResult(identity, { status: snapshot.status, stats: snapshot.stats, error: null, lastResult: null });
       rememberAutomaticSnapshot(identity, snapshot, stableCount);
       return snapshot;
@@ -656,7 +673,12 @@ export function createStorageManagement({
     }).finally(() => { automaticCheck = null; notify(); });
   }
   const scheduleAutomatic = () => { void Promise.resolve().then(checkAutomatic); };
-  const activity = () => { notify(); scheduleAutomatic(); };
+  const activity = () => {
+    if (operation?.kind === 'scanning' && operation.controller && !hostMatches(operation.identity)) {
+      operation.controller.abort(errorWith('QQJ_STORAGE_CHAT_CHANGED', '当前聊天已经变化，已停止旧聊天的存储统计。'));
+    }
+    notify(); scheduleAutomatic();
+  };
   const unsubscribers = [...new Set([memoryRuntime, ...activitySources])]
     .map(source => typeof source?.subscribe === 'function' ? source.subscribe(activity) : null).filter(Boolean);
 

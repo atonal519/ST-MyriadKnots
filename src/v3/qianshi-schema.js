@@ -28,7 +28,7 @@ const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-
 export function validateQianshiDelta(input, { floorId = null, floorIds = null } = {}) {
   const value = structuredClone(input);
   exactKeysWithOptional(value, ['schemaVersion', 'status', 'reason', 'compiledAt', 'candidateStats', 'events', 'relations'],
-    ['historyReview', 'trackingOverrides', 'deletedEventIds', 'manualEventOverrides', 'manualMatterStatusOverrides'], 'qianshiDelta');
+    ['historyReview', 'trackingOverrides', 'deletedEventIds', 'manualEventOverrides', 'manualMatterStatusOverrides', 'manualEventIds'], 'qianshiDelta');
   if (value.schemaVersion !== QIANSHI_SCHEMA_VERSION || !DELTA_STATUSES.has(value.status)) fail('qianshiDelta.status');
   if (value.reason !== null && (!clean(value.reason, 500) || value.reason.length > 500)) fail('qianshiDelta.reason');
   if (!Number.isFinite(Date.parse(value.compiledAt))) fail('qianshiDelta.compiledAt');
@@ -104,6 +104,7 @@ export function validateQianshiDelta(input, { floorId = null, floorIds = null } 
     }
     if (event.continuesFromEventIds.some(id => !uuid(id))) fail(`${path}.continuesFromEventIds`);
   }
+  if(value.manualEventIds!==undefined&&(!Array.isArray(value.manualEventIds)||value.manualEventIds.some((id,index)=>!eventIds.has(id)||value.manualEventIds.indexOf(id)!==index)))fail('qianshiDelta.manualEventIds');
   const relationIds = new Set();
   for (const [index, relation] of value.relations.entries()) {
     const path = `qianshiDelta.relations[${index}]`;

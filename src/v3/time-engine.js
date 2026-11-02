@@ -701,6 +701,16 @@ export async function compileTimeEdit(item, fields, reachable, batchId, items = 
     ...(changes.length > 1 ? { mergeGroups: [{ itemIds: changes.map(value => value.id) }] } : {}), changes };
 }
 
+export async function compileTimeCreate(fields, reachable, batchId, itemId, items = []) {
+  if(!['body','cycle','deadline'].includes(fields?.type)||!reachable.floors?.length)throw Object.assign(new Error('请选择事项类型，并等待当前聊天记录就绪。'),{code:'QQJ_TIME_EDIT_INVALID'});
+  const seed={id:itemId,subjectEntityId:fields.subjectEntityId,subjectName:null,type:fields.type,label:'',observation:'',observationKey:await timeFingerprint(['manual',itemId]),status:'active',
+    observationTime:projectTime(''),occurrenceTime:projectTime(''),dueTime:projectTime(''),periodDays:null,sourceIdentity:null,sourceRefs:[],stateRefs:[],projection:null};
+  const batch=await compileTimeEdit(seed,{...fields,subjectEntityId:String(fields.subjectEntityId??''),status:'active'},reachable,batchId,items);
+  batch.changes[0].previousObservationKey=null;
+  batch.dependencies=[{floorId:batch.cutoffFloorId}];
+  return batch;
+}
+
 export async function compileTimeEdits(edits, reachable, batchId, items = []) {
   const fail = message => Object.assign(new Error(message), { code: 'QQJ_TIME_EDIT_INVALID' });
   if (!Array.isArray(edits) || !edits.length) throw fail('没有可保存的时间事项。');

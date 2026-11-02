@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { access, readFile } from 'node:fs/promises';
 
-test('生产入口只装配 V3 记忆与独立人物工作区，面板提供五个主页面且旧 V1/V2 入口不存在', async () => {
+test('生产入口只装配 V3 记忆与独立人物工作区，面板提供六个主页面且旧 V1/V2 入口不存在', async () => {
   const [entry, panel, html, bootstrap, bundle, manifest, people] = await Promise.all([
     readFile(new URL('../index.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8'),
@@ -26,7 +26,7 @@ test('生产入口只装配 V3 记忆与独立人物工作区，面板提供五�
   for (const marker of ['createArchiveV2', 'archiveV2', 'archive-v2', 'myriad-knots-bond-draft', '首次建立双丝网']) {
     assert.doesNotMatch(entry + panel + bootstrap + bundle, new RegExp(marker, 'i'));
   }
-  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)">([^<]+)/g)].map(match => [match[1], match[2]]), [['profiles', '千人'], ['events', '千结'], ['qianshi', '千事'], ['people', '双丝网'], ['settings', '设置']]);
+  assert.deepEqual([...html.matchAll(/data-tab="([^"]+)">([^<]+)/g)].map(match => [match[1], match[2]]), [['profiles', '千人'], ['events', '千结'], ['qianshi', '千事'], ['qianchuang', '千窗'], ['people', '双丝网'], ['settings', '设置']]);
   assert.match(panel, /activeTab === 'profiles'/, '千人必须使用独立人物资料视图');
   assert.match(panel, /activeTab === 'qianshi'/, '千事必须使用独立完整时间线视图');
   assert.match(panel, /setPage\?\.\(activeTab === 'people' \? 'people' : 'memories'\)/, '真实内容入口必须显式选择千结或双丝网页，不能落入视图默认管理页');

@@ -1262,8 +1262,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function updateRecentItems(timeSnapshot = null) {
     if (!active || page !== 'memories' || !recentItemsUi) return;
-    const { toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, clockReminder } = recentItemsUi;
+    const { toggle, body, status, organize, retryRead, reason, list, addItem, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, clockReminder } = recentItemsUi;
     const state = timeSnapshot ?? timeRuntime?.getState?.(), result = state?.last, tracked = state?.trackedItems, stopped = state?.stoppedItems, annual = state?.annualItems;
+    if(addItem)addItem.disabled=state?.canOrganize!==true||Boolean(recentItemDraft)||typeof timeRuntime?.createItem!=='function';
     const selectable = new Map(((showStoppedItems ? stopped : tracked) ?? []).map(item => [item.id, item]));
     if (state?.pendingDeletionCount > 0) selectedRecentItems.clear();
     for (const [id, key] of selectedRecentItems) if (selectable.get(id)?.observationKey !== key) selectedRecentItems.delete(id);
@@ -1452,50 +1453,55 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     } catch (error) { if (currentUi()) actionFeedback.textContent = `永久删除未完成：${publicErrorMessage(error, { fallback: '旧历史记录尚未清理完，可在同一入口继续。' })}`; }
     finally { if (ui.pendingAction === pending) ui.pendingAction = null; updateRecentItems(); }
   }
-  function startRecentEdit(item) {
+  function startRecentEdit(item = null) {
+    const creating=!item;
+    item??={label:'',observation:'',subjectEntityId:'',type:'body',periodDays:'',status:'active'};
     if (typeof customImpl !== 'function') return;
     const timeValue = value => value?.raw || (value?.date ? `${value.date}${value.clock ? ` ${value.clock}` : ''}` : '');
     const canEditProjection = item.status === 'active' && item.type !== 'deadline' && Boolean(item.projection && item.projectionTime?.date);
     const mine = epoch;
-    const draft = { item, chatId, mine, foundationState, ui: recentItemsUi, fields: { label: item.label, observation: item.observation, observationTime: timeValue(item.observationTime), occurrenceTime: timeValue(item.occurrenceTime), dueTime: timeValue(item.dueTime), periodDays: item.periodDays ?? '', subjectEntityId: item.subjectEntityId ?? '', ...(canEditProjection ? { projectionText: item.projection } : {}) }, controls: [], saving: false, error: '' };
+    const draft = { item, chatId, mine, foundationState, ui: recentItemsUi, fields: { label: item.label, observation: item.observation, observationTime: timeValue(item.observationTime), occurrenceTime: timeValue(item.occurrenceTime), dueTime: timeValue(item.dueTime), periodDays: item.periodDays ?? '', subjectEntityId: item.subjectEntityId ?? '', ...(creating?{type:'body'}:{}), ...(canEditProjection ? { projectionText: item.projection } : {}) }, controls: [], saving: false, error: '' };
     const initialFields = { ...draft.fields };
     recentItemDraft = draft;
     recentItemsDialogSuspended = true;
     const editor = element('div', 'qqj-editor-dialog qqj-profile-form');
     const groups = new Map();
     const group = (name, title, collapsed = false) => { let node = groups.get(name); if (!node) { node = element(collapsed ? 'details' : 'section', 'qqj-editor-group'); node.append(collapsed ? element('summary', 'qqj-editor-group-summary', title) : element('h3', '', title)); groups.set(name, node); editor.append(node); } return node; };
-    const field = (name, labelText, multiline = false, section = '事项内容', groupKey = section, collapsed = false) => { const row = element('label', 'settings-field'), input = element(multiline ? 'textarea' : 'input', 'settings-input'); input.value = draft.fields[name]; input.addEventListener('input', () => { draft.fields[name] = input.value; }); input.setAttribute('aria-label', labelText); row.append(element('span', '', labelText), input); group(groupKey, section, collapsed).append(row); draft.controls.push(input); };
+    const field = (name, labelText, multiline = false, section = '事项内容', groupKey = section, collapsed = false) => { const row = element('label', 'settings-field'), input = element(multiline ? 'textarea' : 'input', 'settings-input'); input.value = draft.fields[name]; input.addEventListener('input', () => { draft.fields[name] = input.value; }); input.setAttribute('aria-label', labelText); row.append(element('span', '', labelText), input); group(groupKey, section, collapsed).append(row); draft.controls.push(input); return row; };
     const people = new Map();
     for (const person of foundationState?.memoryEntities ?? []) if (person.entityId && person.displayName) people.set(person.entityId, person.displayName);
     const timeState = timeRuntime?.getState?.();
     for (const known of [...(timeState?.trackedItems ?? []), ...(timeState?.stoppedItems ?? [])]) if (String(known.subjectEntityId ?? '').startsWith('time-person-') && known.person) people.set(known.subjectEntityId, known.person);
     if (item.subjectEntityId && !people.has(item.subjectEntityId) && item.person) people.set(item.subjectEntityId, item.person);
     const personRow = element('label', 'settings-field');
-    const personSelect = createInlineSelect({ documentRef, options: [...people].map(([value, label]) => ({ value, label })), value: draft.fields.subjectEntityId, ariaLabel: '人物归属', onChange: value => { draft.fields.subjectEntityId = value; } });
+    const personSelect = createInlineSelect({ documentRef, options: [...(creating?[{value:'',label:'选择人物'}]:[]),...people].map(item=>Array.isArray(item)?{value:item[0],label:item[1]}:item), value: draft.fields.subjectEntityId, ariaLabel: '人物归属', onChange: value => { draft.fields.subjectEntityId = value; } });
     personRow.append(element('span', '', '人物归属'), personSelect.node); draft.controls.push(personSelect.node);
     if (item.hasMergedMembers === true) editor.append(element('p', 'settings-hint', '此项仍有归并成员；请先在“停止项”中恢复追踪所有成员，再修改人物归属。'));
     else if (item.mergedInto && item.status !== 'active') editor.append(element('p', 'settings-hint', '此项仍归属于其他主项；请先恢复追踪并解除归并，再修改人物归属。'));
+    if(creating){const row=element('label','settings-field');row.append(element('span','','事项类型'));const select=createInlineSelect({documentRef,options:[{value:'body',label:'身体状态'},{value:'cycle',label:'周期'},{value:'deadline',label:'约定期限'}],value:draft.fields.type,ariaLabel:'事项类型',onChange:value=>{draft.fields.type=value;dueField.hidden=!['cycle','deadline'].includes(value);periodField.hidden=value!=='cycle';}});row.append(select.node);draft.controls.push(select.node);group('事项内容','事项内容').append(row);}
     field('label', '事项名称'); field('observation', '观察描述', true);
     field('observationTime', '观察时间', false, '时间信息', 'time', true); field('occurrenceTime', '发生时间（可空，优先用于计算经过时间）', false, '时间信息', 'time', true);
-    if (['cycle', 'deadline'].includes(item.type)) field('dueTime', item.type === 'cycle' ? '预计周期日' : '约定期限', false, '时间信息', 'time', true);
-    if (item.type === 'cycle') { field('periodDays', '周期天数（可空）', false, '时间信息', 'time', true); group('time', '时间信息', true).append(element('p', 'settings-hint', '已知发生时间与周期天数时，预计周期日由程序计算。模糊时间保留原词，不补现实年份。')); }
-    group('identity', '人物归属', true).append(personRow);
+    let dueField,periodField;
+    if(creating){dueField=field('dueTime','约定期限 / 预计周期日（可空）',false,'时间信息','time',true);periodField=field('periodDays','周期天数（可空）',false,'时间信息','time',true);dueField.hidden=true;periodField.hidden=true;}
+    if (!creating&&['cycle', 'deadline'].includes(item.type)) field('dueTime', item.type === 'cycle' ? '预计周期日' : '约定期限', false, '时间信息', 'time', true);
+    if (!creating&&item.type === 'cycle') { field('periodDays', '周期天数（可空）', false, '时间信息', 'time', true); group('time', '时间信息', true).append(element('p', 'settings-hint', '已知发生时间与周期天数时，预计周期日由程序计算。模糊时间保留原词，不补现实年份。')); }
+    group('identity', '人物归属', !creating).append(personRow);
     if (canEditProjection) { field('projectionText', '当前推测', true, '当前推测', 'projection', true); const projectionInput = draft.controls.at(-1); projectionInput.maxLength = 2000; }
-    editor.append(element('p', 'qqj-editor-intro', '保存不调用模型。只改人物或推测会保留原推算时间；修改其他内容会清除旧推测。'));
+    editor.append(element('p', 'qqj-editor-intro', creating?'保存后开始跟进；时间未知可留空，不调用模型。':'保存不调用模型。只改人物或推测会保留原推算时间；修改其他内容会清除旧推测。'));
     const finish = () => {
       recentItemDraft = null; draft.ui.listSignature = null; recentItemsDialogSuspended = false;
       if (active && container && page === 'memories' && draft.foundationState !== foundationState) render(foundationState); else updateRecentItems();
       if (active && page === 'memories' && chatId === draft.chatId && epoch === draft.mine) openRecentItemsDialog();
     };
     let saved = false;
-    void Promise.resolve(customImpl({ title: `编辑近期事项 · ${item.label}`, content: editor, confirmText: '保存事项', cancelText: '取消', submit: async () => {
+    void Promise.resolve(customImpl({ title: creating?'新增事项':`编辑近期事项 · ${item.label}`, content: editor, confirmText: '保存事项', cancelText: '取消', submit: async () => {
       if (draft.saving) return false;
-      const fields = Object.fromEntries(Object.entries(draft.fields).filter(([name, value]) => value !== initialFields[name]));
+      const fields = creating?draft.fields:Object.fromEntries(Object.entries(draft.fields).filter(([name, value]) => value !== initialFields[name]));
       if (!Object.keys(fields).length) { saved = true; finish(); return true; }
       if (!active || page !== 'memories' || chatId !== draft.chatId || epoch !== draft.mine) return false;
       draft.saving = true; draft.error = '';
       try {
-        await timeRuntime.editItem(item.id, fields, item.observationKey);
+        if(creating)await timeRuntime.createItem(fields);else await timeRuntime.editItem(item.id, fields, item.observationKey);
         if (recentItemDraft !== draft || chatId !== draft.chatId) return false;
         saved = true; finish(); return true;
       } catch (error) { if (recentItemDraft === draft && chatId === draft.chatId) { draft.saving = false; draft.error = `保存失败：${publicErrorMessage(error, { fallback: '事项未保存，请重试。' })}`; } throw error; }
@@ -1537,7 +1543,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const retryRead = element('button', 'secondary-action', '重试读取'); retryRead.type = 'button';
     const stop = element('button', 'secondary-action', '停止补查'); stop.type = 'button'; stop.hidden = true;
     stop.addEventListener('click', () => timeRuntime?.stop?.());
-    const buttons = element('div', 'qqj-recent-primary-actions'); buttons.append(retryRead, stop, organize);
+    const buttons = element('div', 'qqj-recent-primary-actions'),addItem=element('button','secondary-action compact','新增事项');addItem.type='button';addItem.addEventListener('click',()=>{if(!addItem.disabled)startRecentEdit();});buttons.append(addItem,retryRead, stop, organize);
     const reason = element('p', 'settings-hint'), list = element('div', 'v3-foundation');
     const stoppedToggle = element('button', 'secondary-action', '查看停止项'); stoppedToggle.type = 'button';
     const batchEntry = element('button', 'secondary-action', '批量管理'); batchEntry.type = 'button';
@@ -1553,7 +1559,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     batchAll.addEventListener('click', () => { if (batchAll.disabled) return; selectedRecentItems.clear(); for (const item of showStoppedItems ? timeRuntime.getState().stoppedItems ?? [] : timeRuntime.getState().trackedItems ?? []) selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
     batchProblems.addEventListener('click', () => { if (batchProblems.disabled) return; selectedRecentItems.clear(); for (const item of timeRuntime.getState().trackedItems ?? []) if (item.failureReason || item.assessmentReason || item.reviewStatus === 'unanswered') selectedRecentItems.set(item.id, item.observationKey); recentItemsUi.listSignature = null; updateRecentItems(); });
     copy.append(status, reason, clockReminder); row.append(copy); body.append(row, buttons, batchControls, batchFeedback, list); actions.append(toggle); section.append(actions);
-    recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, clockReminder, itemControls: [], listSignature: null };
+    recentItemsUi = { section, toggle, body, status, organize, retryRead, reason, list, addItem, stoppedToggle, stop, batchEntry, batchControls, batchAll, batchProblems, batchActions, batchDelete, clockReminder, itemControls: [], listSignature: null };
     toggle.addEventListener('click', () => {
       if (recentItemsOpen) {
         recentItemsOpen = false;
@@ -1582,6 +1588,21 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (recentItemsOpen) void timeRuntime?.refreshStatus?.();
     return section;
   }
+  function startTodoCreate(){
+    if(!customImpl||!runtime.createQianshiTodo)return;
+    const draft={title:'',description:'',storyTime:'',scheduledTime:'',people:[]},owner=chatId,mine=epoch,form=element('div','qqj-editor-dialog qqj-profile-form'),content=element('section','qqj-editor-group');content.append(element('h3','','待办内容'));form.append(content);
+    const field=(key,label,parent,multiline=false)=>{const row=element('label','settings-field'),input=element(multiline?'textarea':'input','settings-input');input.value=draft[key];input.setAttribute('aria-label',label);input.addEventListener('input',()=>{draft[key]=input.value;});if(multiline)input.rows=4;row.append(element('span','',label),input);parent.append(row);};
+    field('title','待办名称',content);field('description','待办说明',content,true);
+    const peopleGroup=element('details','qqj-editor-group');peopleGroup.append(element('summary','qqj-editor-group-summary','涉及人物（可选）'));
+    const search=element('input','settings-input');search.type='search';search.placeholder='搜索人物';search.setAttribute('aria-label','搜索待办人物');const searchField=element('label','settings-field');searchField.append(element('span','','搜索人物'),search);peopleGroup.append(searchField);
+    const choices=element('div','qqj-qianshi-people-choices'),rows=[],selected=new Map();
+    for(const person of runtime.getQianshiEditPeople?.()??[]){const row=element('label','qqj-qianshi-person-choice'),input=element('input');input.type='checkbox';input.setAttribute('aria-label',person.name);input.addEventListener('change',()=>{if(input.checked)selected.set(person.entityId,{entityId:person.entityId,name:person.name});else selected.delete(person.entityId);});row.append(input,element('span','',person.name));choices.append(row);rows.push({row,text:[person.name,...(person.aliases??[])].join(' ').toLocaleLowerCase()});}
+    const empty=element('p','settings-hint','没有匹配的人物。');empty.hidden=rows.length>0;choices.append(empty);search.addEventListener('input',()=>{const query=search.value.trim().toLocaleLowerCase();let visible=0;for(const item of rows){item.row.hidden=!item.text.includes(query);if(!item.row.hidden)visible++;}empty.hidden=visible>0;});peopleGroup.append(choices);form.append(peopleGroup);
+    const timing=element('details','qqj-editor-group');timing.append(element('summary','qqj-editor-group-summary','时间信息'));field('storyTime','发生时间（可空）',timing);field('scheduledTime','约定 / 预计时间（可空）',timing);form.append(timing,element('p','settings-hint','保存为人工待办，时间未知可留空；不调用模型。'));
+    let saving=false;
+    void customImpl({title:'新增待办',content:form,confirmText:'保存待办',cancelText:'取消',submit:async()=>{if(saving)return false;if(!active||page!=='memories'||chatId!==owner||epoch!==mine)return false;saving=true;try{await runtime.createQianshiTodo({...draft,people:[...selected.values()],storyTime:draft.storyTime.trim()||null,scheduledTime:draft.scheduledTime.trim()||null});return true;}finally{saving=false;}}});
+  }
+
   function renderMemories(state) {
     const pageNode = element('section', 'qqj-page qqj-memories-page');
     pageNode.append(pageStatus(state));
@@ -1674,6 +1695,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const memorySearch = searchControl({ value: memorySearchQuery, placeholder: '搜索全部摘要', ariaLabel: '搜索当前聊天的全部摘要', onInput: value => { if (value !== memorySearchQuery) memoryListPage = 0; memorySearchQuery = value; fillList(); }, onClear: () => { memorySearchQuery = ''; memoryListPage = 0; fillList(); } });
     const toolbar = element('div', 'qqj-memory-toolbar'); toolbar.append(paginationSlot);
     if (timeRuntime) toolbar.append(renderRecentItems());
+    if(runtime.createQianshiTodo){const actions=element('div','qqj-profile-toolbar-actions'),add=element('button','secondary-action compact','新增待办');add.type='button';add.disabled=workBusy(state);memoryWorkControls.push({node:add,disabled:current=>workBusy(current)});add.addEventListener('click',startTodoCreate);actions.append(add);toolbar.append(actions);}
     pageNode.append(memorySearch, toolbar);
     fillList();
     pageNode.append(list); return pageNode;

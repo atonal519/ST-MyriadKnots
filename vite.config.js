@@ -5,6 +5,6 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     codeSplitting: false,
-    rollupOptions: { output: { comments: { legal: true } }, external: ['/scripts/personas.js', '/scripts/power-user.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js', '/lib.js', '/scripts/user.js'] },
+    rollupOptions: { output: { comments: { legal: true } }, external: ['/scripts/personas.js', '/scripts/power-user.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js', '/lib.js', '/scripts/user.js', '/scripts/utils.js'] },
   },
 });

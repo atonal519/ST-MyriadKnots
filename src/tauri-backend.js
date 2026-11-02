@@ -120,21 +120,6 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     if (result?.found !== true) throw error(500, 'Invalid storage response');
     return unpack(result.value, namespace, collection, recordId);
   };
-  const scan = async (store, table, namespace, collection, signal) => {
-    const keys = await store.listKeys({ namespace: STORAGE_NAMESPACE, table });
-    if (!Array.isArray(keys)) throw error(500, 'Invalid storage listing');
-    const slots = [];
-    for (const key of keys) {
-      // Native reads cannot be cancelled once submitted, but cancellation must stop the next read.
-      abort(signal);
-      const slot = await read(store, table, key, namespace, collection);
-      abort(signal);
-      if (!slot || key !== await keyFor(slot.recordId) || table !== await tableFor(namespace, slot.collection)) throw error(500, 'Stored record identity mismatch');
-      slots.push({ table, key, slot });
-    }
-    return slots;
-  };
-
   const dispatch = async (url, init) => {
     if (typeof url !== 'string' || !url.startsWith(`${API_BASE}/v1/`)) throw error(400, 'Unsupported local backend URL');
     const parts = url.slice(`${API_BASE}/v1/`.length).split('/').map(value => {
@@ -149,14 +134,56 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
       await store.listTables({ namespace: STORAGE_NAMESPACE });
       return { ok: true, plugin: { id: 'st-bainiaodata', name: 'Bainiao Data (TT)', version: '0.1.0-tt.3' },
         api: { current: 1, supported: [1] }, storage: { scope: 'tauritavern-data-root', envelopeSchemaVersion: 1 },
-        capabilities: { records: true, recordList: true, optimisticRevision: true, atomicReplace: true, trash: true,
+        capabilities: { records: true, recordList: true, recordBatchRead: true, optimisticRevision: true, atomicReplace: true, trash: true,
           trashRestore: true, permanentDelete: true, trashGc: true, pagination: false, batchTransactions: false },
         adapter: { version: 3, revisionScope: 'single-app-runtime' } };
     }
     const namespace = segment(parts[1]);
     if (namespace === 'system-trash') throw error(400, 'Reserved namespace');
-    // Namespace lock also protects collection/trash scans against concurrent mutation.
-    return locked(globalRef, `${STORAGE_NAMESPACE}:${namespace}`, async () => {
+    const lockName = `${STORAGE_NAMESPACE}:${namespace}`;
+    if (parts[0] === 'records' && parts.length === 3 && method === 'GET') {
+      const records = [];
+      // Release the shared queue between native records so other chats can load.
+      for await (const record of fetch.iterRecords(namespace, segment(parts[2]), { signal })) records.push(record);
+      return records.sort((a, b) => a.recordId.localeCompare(b.recordId));
+    }
+    if (parts[0] === 'record-batch' && parts.length === 3) {
+      if (method !== 'POST') throw error(405, 'Unsupported method');
+      let body;
+      try { body = JSON.parse(init.body); } catch { throw error(400, 'Invalid JSON'); }
+      if (!Array.isArray(body?.recordIds) || body.recordIds.length < 1 || body.recordIds.length > 64) throw error(400, 'Invalid recordIds');
+      const ids = body.recordIds.map(segment), collection = segment(parts[2]);
+      const table = await tableFor(namespace, collection), results = new Array(ids.length);
+      for (let start = 0; start < ids.length; start += 8) {
+        abort(signal);
+        // Let queued roots/writes run between groups, never during native reads.
+        await locked(globalRef, lockName, async () => {
+          abort(signal);
+          const workers = await Promise.allSettled(ids.slice(start, start + 8).map(async (recordId, offset) => {
+            abort(signal);
+            const index = start + offset;
+            try {
+              const key = await keyFor(recordId);
+              abort(signal);
+              const slot = await read(store, table, key, namespace, collection, recordId);
+              abort(signal);
+              results[index] = slot?.current ? { recordId, status: 200, envelope: slot.current }
+                : { recordId, status: 404, error: 'not_found', message: 'Record not found' };
+            } catch {
+              abort(signal);
+              results[index] = { recordId, status: 500, error: 'storage_error', message: 'Unable to read record' };
+            }
+          }));
+          // Submitted reads must all finish before a copying write can enter.
+          abort(signal);
+          const failed = workers.find(worker => worker.status === 'rejected');
+          if (failed) throw failed.reason;
+        });
+      }
+      return results;
+    }
+    // Native replacement can fall back to copy; reads must still wait for writes.
+    return locked(globalRef, lockName, async () => {
       abort(signal);
       const permanent = parts.length === 5 && parts[4] === 'permanent';
       const collectExpired = parts[0] === 'trash' && parts.length === 3 && parts[2] === 'collect-expired';
@@ -232,11 +259,6 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
         if (permanent && method !== 'DELETE') throw error(405, 'Unsupported method');
         const collection = segment(parts[2]);
         const table = await tableFor(namespace, collection);
-        if (parts.length === 3 && method === 'GET') {
-          const slots = await scan(store, table, namespace, collection, signal);
-          return slots.filter(({ slot }) => slot.current).map(({ slot }) => ({ recordId: slot.recordId, ...slot.current }))
-            .sort((a, b) => a.recordId.localeCompare(b.recordId));
-        }
         const recordId = segment(parts[3]);
         const key = await keyFor(recordId);
         const slot = await read(store, table, key, namespace, collection, recordId)
@@ -325,7 +347,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
       throw error(404, 'Unsupported local backend route');
     });
   };
-  return async (url, init = {}) => {
+  const fetch = async (url, init = {}) => {
     try {
       // Native writes already submitted cannot be cancelled. Keep their lock
       // until completion even if the caller times out, as with an HTTP write.
@@ -336,4 +358,43 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
       return { ok: false, status: cause.status, json: async () => ({ message: cause.message }) };
     }
   };
+  // Only the key list survives between reads; consumers never hold the namespace lock.
+  fetch.iterRecords = (rawNamespace, rawCollection, { signal: outerSignal } = {}) => {
+    const namespace = segment(rawNamespace), collection = segment(rawCollection);
+    if (namespace === 'system-trash') throw error(400, 'Reserved namespace');
+    const lockName = `${STORAGE_NAMESPACE}:${namespace}`;
+    let store, table, keys, position = 0, closed = false;
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      async next(signal = outerSignal) {
+        return abortable(async () => {
+          if (closed) return { done: true };
+          abort(outerSignal); abort(signal);
+          store ??= await ready(); table ??= await tableFor(namespace, collection);
+          if (!keys) keys = await locked(globalRef, lockName, async () => {
+            abort(outerSignal); abort(signal);
+            const listed = await store.listKeys({ namespace: STORAGE_NAMESPACE, table });
+            abort(outerSignal); abort(signal);
+            if (!Array.isArray(listed)) throw error(500, 'Invalid storage listing');
+            return listed;
+          });
+          while (position < keys.length) {
+            const key = keys[position++];
+            const record = await locked(globalRef, lockName, async () => {
+              abort(outerSignal); abort(signal);
+              const slot = await read(store, table, key, namespace, collection);
+              abort(outerSignal); abort(signal);
+              if (!slot || key !== await keyFor(slot.recordId) || table !== await tableFor(namespace, slot.collection)) throw error(500, 'Stored record identity mismatch');
+              return slot.current ? copy({ recordId: slot.recordId, ...slot.current }) : null;
+            });
+            if (record) return { done: false, value: record };
+          }
+          closed = true; keys = null;
+          return { done: true };
+        }, signal);
+      },
+      async return() { closed = true; keys = null; return { done: true }; },
+    };
+  };
+  return fetch;
 }

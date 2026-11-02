@@ -13,6 +13,8 @@ import {createGenericMapLoader} from './qianchuang-map-loader.js';
 import {qianchuangFacilityTags} from './qianchuang-facilities.js';
 export {qianchuangFacilityTags};
 const displayText = value => String(value ?? '').replace(/\s+/gu,' ').trim();
+const defaultPlaceMapRole = ({mapLevel=null,parentRole=null}={}) =>
+ ['city','country','scope'].includes(mapLevel)?'area':['site','interior'].includes(parentRole)?'interior':'site';
 
 export function createQianchuangView({ runtime, settings, sessionStateProvider = null, prepareSession = null, dialog = null, moduleUrl, loadCityMap = createCityMapLoader({moduleUrl}), loadGenericMap=createGenericMapLoader({moduleUrl}), documentRef = globalThis.document } = {}) {
   if (!runtime || ['getQianchuangSnapshot','prepareCurrent','subscribe'].some(key => typeof runtime[key] !== 'function')) throw new TypeError('千窗 runtime 无效');
@@ -65,7 +67,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   function textFor(node, target) {
     const supplements=node.manualDescription?[]:node.worldInfoDescriptions??[],tags=node.facilities?.map(({icon,label})=>({key:icon,label}))??qianchuangFacilityTags(node.features,supplements),seen=new Set();
     if(tags.length){const row=el('div','qqj-window-tags');for(const tag of tags){const pill=el('span','qqj-window-tag'),icon=el('span','qqj-window-tag-icon');icon.innerHTML=qianchuangIcon(tag.key);pill.append(icon,el('span','',tag.label));row.append(pill);}target.append(row);}
-    for(const items of [node.features,supplements])for(const item of items){const text=displayText(item.text);if(text&&!seen.has(text)){seen.add(text);target.append(el('p','qqj-window-copy',item.text));}}
+    for(const items of [node.features,supplements,node.relations??[]])for(const item of items){const text=displayText(item.text);if(text&&!seen.has(text)){seen.add(text);target.append(el('p','qqj-window-copy',item.text));}}
   }
   function placeOperationMenu(node) {
     const menu = operationMenus.register(el('details', 'qqj-profile-menu qqj-window-operation-menu'));
@@ -117,8 +119,10 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     const context = runtime.getPlaceEditContext(node?.entityId ?? null);
     const original = { name: node?.displayName ?? '', parentEntityId: node?.parentEntityId ?? null,
       description: [...new Set([...(node?.features ?? []), ...(node?.worldInfoDescriptions ?? [])].map(item => item.text))].join('\n'),
-      relations: (node?.relations ?? []).map(item => item.text).join('\n'),mapLevel:node?placeMapLevel(node):null };
-    const draft = { ...original }, childIds = new Set(), form = el('form', 'qqj-editor-dialog qqj-profile-form qqj-place-editor');
+      relations: (node?.relations ?? []).map(item => item.text).join('\n'),mapLevel:node?placeMapLevel(node):null,mapRole:node?.manualMapRole?node.mapRole:null };
+    const draft = { ...original,...(!node?{mapRole:defaultPlaceMapRole()}: {}) }, childIds = new Set(), form = el('form', 'qqj-editor-dialog qqj-profile-form qqj-place-editor');
+    let roleTouched=false,rolePicker;
+    const syncDefaultRole=()=>{if(!node&&!roleTouched){draft.mapRole=defaultPlaceMapRole({mapLevel:draft.mapLevel,parentRole:byId.get(draft.parentEntityId)?.mapRole});rolePicker?.setValue(draft.mapRole);}};
     const field = (key, labelText, tag) => {
       const label = el('label', 'qqj-profile-field'), input = el(tag, 'settings-input');
       label.append(el('span', '', labelText)); input.value = draft[key]; input.setAttribute('data-place-field', key);
@@ -132,11 +136,17 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     const descendants = new Set(node ? [node.entityId] : []);
     for (const id of descendants) for (const child of byId.get(id)?.childEntityIds ?? []) descendants.add(child);
     for (const place of orderedPlaces()) if (!descendants.has(place.entityId)) parentOptions.push({ value: place.entityId, label: placePath(place) });
-    const parent = createInlineSelect({ documentRef, options: parentOptions, value: original.parentEntityId ?? '', ariaLabel: '所属地点', searchable: true, searchPlaceholder: '搜索地点名称或路径', showChevron: false, onChange: value => { draft.parentEntityId = value || null; } });
+    const parent = createInlineSelect({ documentRef, options: parentOptions, value: original.parentEntityId ?? '', ariaLabel: '所属地点', searchable: true, searchPlaceholder: '搜索地点名称或路径', showChevron: false, onChange: value => { draft.parentEntityId = value || null; syncDefaultRole(); } });
     parent.node.setAttribute('data-place-field', 'parentEntityId'); parentField.append(parent.node); form.append(parentField);
     {
       const levelField=el('div','qqj-profile-field qqj-place-level-field');levelField.append(el('span','','地图层级'));
-      const level=createInlineSelect({documentRef,options:[{value:'',label:'普通地点'},{value:'city',label:'城市'},{value:'country',label:'国家'},{value:'scope',label:'独立地图'}],value:original.mapLevel??'',ariaLabel:'地图层级',showChevron:false,onChange:value=>{draft.mapLevel=value||null;}});level.node.setAttribute('data-place-field','mapLevel');levelField.append(level.node);form.append(levelField);
+      const level=createInlineSelect({documentRef,options:[{value:'',label:'普通地点'},{value:'city',label:'城市'},{value:'country',label:'国家'},{value:'scope',label:'独立地图'}],value:original.mapLevel??'',ariaLabel:'地图层级',showChevron:false,onChange:value=>{draft.mapLevel=value||null;syncDefaultRole();}});level.node.setAttribute('data-place-field','mapLevel');levelField.append(level.node);form.append(levelField);
+    }
+    {
+      const roleField=el('div','qqj-profile-field');roleField.append(el('span','','地点类型'));
+      const labels={area:'区域',site:'场地',interior:'室内'},automatic=node&&!node.manualMapRole&&labels[node.mapRole]?`自动（当前：${labels[node.mapRole]}）`:'自动';
+      rolePicker=createInlineSelect({documentRef,options:[{value:'',label:automatic},...Object.entries(labels).map(([value,label])=>({value,label}))],value:draft.mapRole??'',ariaLabel:'地点类型',showChevron:false,onSelect:value=>{draft.mapRole=value||null;roleTouched=true;}});
+      rolePicker.node.setAttribute('data-place-field','mapRole');roleField.append(rolePicker.node);form.append(roleField);
     }
     if(node){
       const field=el('div','qqj-profile-field qqj-place-children-field'),picker=childPicker(node,childIds);
@@ -195,7 +205,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     const entry=rootEntries.get(id)??orphanEntries.get(id);entry?.summary?.scrollIntoView?.({block:'nearest'});
   }
   function treeNode(id,registry) {
-    const node=byId.get(id),childIds=displayById.get(id)?.childEntityIds??node.childEntityIds,hasContent=childIds.length||node.features.length||(node.worldInfoDescriptions??[]).length,group=el('details',`qqj-window-entry${childIds.length?' qqj-window-parent':' qqj-window-leaf'}${hasContent?' qqj-window-has-content':''}`),summary=el('summary','qqj-window-summary');
+    const node=byId.get(id),childIds=displayById.get(id)?.childEntityIds??node.childEntityIds,hasContent=childIds.length||node.features.length||(node.worldInfoDescriptions??[]).length||(node.relations??[]).length,group=el('details',`qqj-window-entry${childIds.length?' qqj-window-parent':' qqj-window-leaf'}${hasContent?' qqj-window-has-content':''}`),summary=el('summary','qqj-window-summary');
     const icon=el('span','qqj-window-title-icon');icon.innerHTML=qianchuangIcon('place');summary.append(icon,el('span','qqj-window-entry-name',node.displayName));if(dialog?.custom&&runtime.savePlace)summary.append(placeOperationMenu(node));
     group.setAttribute('data-place-id',id);summary.setAttribute('data-place-id',id);group.open=openIds.has(id);
     summary.addEventListener('click',()=>{if(!query.trim()){if(group.open)openIds.delete(id);else openIds.add(id);}chooseChild(id);});group.addEventListener('toggle',()=>{if(!query.trim()){if(group.open)openIds.add(id);else openIds.delete(id);}});

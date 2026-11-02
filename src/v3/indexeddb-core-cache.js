@@ -197,13 +197,13 @@ export function createIndexedDbCoreRecordCache({
     return nativeReadyPromise;
   }
 
-  function nativeTransaction(phase, begin) {
+  function nativeTransaction(phase, begin, mode = 'readwrite') {
     return boundedIo(new Promise((resolve, reject) => {
       const database = nativeDatabase;
       if (!database) { resolve({ ok: false, unavailable: true }); return; }
       let transaction;
       let value;
-      try { transaction = database.transaction(STORE_NAME, 'readwrite'); }
+      try { transaction = database.transaction(STORE_NAME, mode); }
       catch (error) { reject(error); return; }
       transaction.oncomplete = () => resolve(value);
       transaction.onerror = () => reject(transaction.error ?? new Error('IDB_CACHE_TRANSACTION_FAILED'));
@@ -381,14 +381,8 @@ export function createIndexedDbCoreRecordCache({
     } catch (error) { recordIoFailure('manifest-read', error, 0, 0, 'rejected'); disableIo(); return false; }
   }
 
-  async function readRecord(scope, witness, recordType, recordId, recordRefs = null) {
-    const db = await ensureReady();
-    if (!db || ioUnavailable || !scope || !CORE_TYPES.has(recordType) || !witness?.generationId || typeof recordId !== 'string') return null;
-    const refs = recordRefs?.recordRefs ?? recordRefs;
-    if (!Array.isArray(refs?.[recordType]) || !refs[recordType].includes(recordId)) { stats.misses += 1; return null; }
-    const key = `r:${scope}:${encoded(witness.generationId)}:${recordType}:${encoded(recordId)}`;
+  async function readCachedValue(value, scope, witness, recordType, recordId) {
     try {
-      const value = await boundedIo(db.getItem(key), 'record-read');
       if (!value) { stats.misses += 1; return null; }
       if (value.format !== FORMAT || value.scope !== scope || value.rootGenerationId !== witness.generationId
         || value.recordType !== recordType || value.recordId !== recordId
@@ -409,6 +403,53 @@ export function createIndexedDbCoreRecordCache({
       disableIo();
       return null;
     }
+  }
+
+  async function readRecord(scope, witness, recordType, recordId, recordRefs = null) {
+    const db = await ensureReady();
+    if (!db || ioUnavailable || !scope || !CORE_TYPES.has(recordType) || !witness?.generationId || typeof recordId !== 'string') return null;
+    const refs = recordRefs?.recordRefs ?? recordRefs;
+    if (!Array.isArray(refs?.[recordType]) || !refs[recordType].includes(recordId)) { stats.misses += 1; return null; }
+    const key = `r:${scope}:${encoded(witness.generationId)}:${recordType}:${encoded(recordId)}`;
+    try { return await readCachedValue(await boundedIo(db.getItem(key), 'record-read'), scope, witness, recordType, recordId); }
+    catch (error) { stats.misses += 1; recordIoFailure('record-read', error, 0, 0, 'rejected'); disableIo(); return null; }
+  }
+
+  async function readRecords(scope, witness, recordType, recordIds, recordRefs = null) {
+    if (!Array.isArray(recordIds) || recordIds.length > 64) throw new TypeError('缓存批次最多读取64条记录。');
+    const results = new Array(recordIds.length).fill(null), db = await ensureReady();
+    if (!db || ioUnavailable || !scope || !CORE_TYPES.has(recordType) || !witness?.generationId || !recordIds.length) return results;
+    const refs = recordRefs?.recordRefs ?? recordRefs, allowed = new Set(Array.isArray(refs?.[recordType]) ? refs[recordType] : []);
+    const selected = [];
+    for (const [index, id] of recordIds.entries()) {
+      if (typeof id !== 'string') continue;
+      if (!allowed.has(id)) { stats.misses += 1; continue; }
+      selected.push({ index, id, key: `r:${scope}:${encoded(witness.generationId)}:${recordType}:${encoded(id)}` });
+    }
+    if (!selected.length) return results;
+    let values;
+    try {
+      values = await nativeTransaction('record-read', (store, transaction, setResult) => {
+        const rows = new Array(selected.length); let remaining = rows.length;
+        // Queue every get before yielding; validation runs after the transaction.
+        selected.forEach(({ key }, index) => {
+          const request = store.get(key);
+          request.onsuccess = () => { rows[index] = request.result; if (--remaining === 0) setResult(rows); };
+        });
+      }, 'readonly');
+      if (values?.unavailable) { stats.misses += selected.length; return results; }
+    } catch (error) {
+      stats.misses += selected.length; recordIoFailure('record-read', error, 0, 0, 'rejected'); disableIo(); return results;
+    }
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(16, selected.length) }, async () => {
+      while (cursor < selected.length) {
+        const row = cursor++, { index, id } = selected[row];
+        results[index] = await readCachedValue(values[row], scope, witness, recordType, id);
+        values[row] = null;
+      }
+    }));
+    return results;
   }
 
   async function removeRecord(scope, witness, recordType, recordId) {
@@ -809,7 +850,7 @@ export function createIndexedDbCoreRecordCache({
     return !ioUnavailable;
   }
 
-  return Object.freeze({ scopeFor, captureScopeVersion, captureIdentityVersion, readManifest, readRecord, removeRecord, publish, invalidateScope, invalidateIdentity,
+  return Object.freeze({ scopeFor, captureScopeVersion, captureIdentityVersion, readManifest, readRecord, readRecords, removeRecord, publish, invalidateScope, invalidateIdentity,
     maintain,
     getStats: () => Object.freeze({ ...stats, firstFailure: publicFailure(stats.firstFailure), lastFailure: publicFailure(stats.lastFailure) }) });
 }

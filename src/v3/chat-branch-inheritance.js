@@ -21,6 +21,7 @@ import { validateCseGraph } from './cse-schema.js';
 import { MIGRATION_ALIAS_KEY, migrationPartition, validateMigrationDescriptor } from './migration-prefix.js';
 import { createPeopleWorkspaceStore } from './people-workspace.js';
 import { createTimeStore } from './time-runtime.js';
+import { createPlaceWorkspaceStore } from './place-workspace.js';
 import { assertCapturedBranchTargetMatches, inspectMessageFloorAnchor, persistBranchedMessageMetadata, readTargetChat, sameQqjMessageMetadata } from './message-floor-anchor.js';
 import { captureTargetChatDescriptor } from './host-adapter.js';
 import { isMemoryExcludedMessage } from './memory-exclusion.js';
@@ -284,6 +285,7 @@ export function createChatBranchInitializer({
     const targetStore = createFoundationStore({ client, contextProvider: () => targetIdentity });
     const peopleStore = createPeopleWorkspaceStore({ client });
     const timeStore = createTimeStore({ client });
+    const placeStore = createPlaceWorkspaceStore({ client });
 
     let target = await targetStore.readReachable();
     let sourceReachable = null;
@@ -391,6 +393,7 @@ export function createChatBranchInitializer({
           report({ phase: 'committingBranch' });
           const checkpointResult = await targetStore.putRecord(checkpoint, { signal });
           if (!['saved', 'reused'].includes(checkpointResult.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
+          await placeStore.copy(sourceIdentity,targetIdentity,{floorIds:new Set(floorIds),narrativeGeneration});
           const committed = await targetStore.commitRoot(root, 0, { signal });
           if (!['saved'].includes(committed.status)) {
             target = await targetStore.readReachable();
@@ -408,6 +411,7 @@ export function createChatBranchInitializer({
       throw fail('V3_BRANCH_TARGET_UNAVAILABLE', '分支目标记忆暂时无法读取。');
     }
 
+    await placeStore.copy(sourceIdentity,targetIdentity,{floorIds:new Set(retainedFloorIds),narrativeGeneration:target.root?.narrativeGeneration});
     report({ phase: 'copyingTime' });
     await timeStore.copyPrefix(sourceChatId, targetChatId, target.floors ?? [], signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');

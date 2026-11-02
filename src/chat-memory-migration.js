@@ -7,6 +7,7 @@ import { deterministicUuid, selectAssistantMessage } from './v3/foundation-domai
 import { sanitizeMemoryContent } from './memory-content-sanitizer.js';
 import { initializeMigrationGraph, selectCompletedCarriedAliases } from './v3/memory-migration.js';
 import { MIGRATION_ALIAS_KEY, migrationPartition } from './v3/migration-prefix.js';
+import { createPlaceWorkspaceStore } from './v3/place-workspace.js';
 
 const RECEIPT_KEY = 'qqj_v3_recall_receipt';
 const ANCHOR_KEY = 'qianqianjie_floor';
@@ -112,6 +113,7 @@ export function createChatMemoryMigration({ client, session, hostAdapter, source
   sanitizerOptions = () => ({}), listHostChats, freshUuid = () => globalThis.crypto?.randomUUID?.(),
   now = () => new Date(), fetchImpl = globalThis.fetch, copyPeople = null, copyTime = null, copyVector = null,
   captureStoryCalendar = () => null, persistStoryCalendar = async () => {},
+  placeWorkspaceStore = createPlaceWorkspaceStore({client}),
 } = {}) {
   if (!client?.get || !client?.put || !session?.identity || !hostAdapter?.snapshot || typeof sourceStoreForIdentity !== 'function'
     || typeof listHostChats !== 'function' || typeof fetchImpl !== 'function') throw new TypeError('记忆搬家依赖无效');
@@ -192,6 +194,7 @@ export function createChatMemoryMigration({ client, session, hostAdapter, source
       const peopleWorkspace = copyPeople
         ? await copyPeople({ sourceIdentity: identity, targetIdentity, entities: sourceReachable.entities, sourceReachable })
         : null;
+      await placeWorkspaceStore.copy(identity,targetIdentity,{floorIds:new Set(sourceReachable.floors.map(floor=>floor.id)),narrativeGeneration:targetNarrativeGeneration});
       // Keep the marker already embedded in the copied message; the descriptor is its stable authority.
       const initialized = await initializeMigrationGraph({ store: sourceStoreForIdentity(targetIdentity), sourceIdentity: identity,
         targetIdentity, sourceReachable, carriedAliases, targetChat,
