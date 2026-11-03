@@ -24,8 +24,10 @@
 
 地点编辑弹窗内可展开“添加子地点”，搜索并多选已有地点，与名称、所属、描述和方位草稿一起保存；取消或无改动不提交。选中父项时其下级仍随原子树保留。三点菜单保留编辑、设为顶层地点与删除。独立“设为顶层地点”可将未归属叶子显式登记到顶层，普通编辑无改动仍不保存。父、子候选均按当前真实树的前序排列，同一分支相邻、未归属在后。手工共同父未标角色但已有明确区域子级时，默认浏览进入这个区域容器。
 
-千窗按最近的city或scope边界分地图页：城市、独立地域、巨舰和星球可各自成页，原UUID和父树保持；国家保在原父树和编辑完整路径中，普通地图、列表与导航隐藏。已有七城使用按需静态SVG，未知城市/架空地点保通用底图，城内地点按陆地近路预置点示意，不画假行政边界。地图层级city/country/scope是原摘要/整理同次可选提示，人工普通null优先，编辑和新增同次保存。
+千窗按最近的city或scope边界分地图页：城市、独立地域、巨舰和星球可各自成页，原UUID和父树保持；国家保在原父树和编辑完整路径中，普通地图、列表与导航隐藏。已有十城使用按需静态SVG，未知城市/架空地点保通用底图，城内地点按陆地近路预置点示意，不画假行政边界。地图层级city/country/scope是原摘要/整理同次可选提示，人工普通null优先，编辑和新增同次保存。
 
+
+重庆、香港、名古屋采用各自主城范围的OpenStreetMap道路和水体；香港海岸使用实际OSM coastline，重庆与名古屋海陆底面沿Natural Earth公共领域数据。名古屋本批水体仅包含已取得的闭合way，不补造缺失relation。三城来源、采集时间、原始SHA和投影记录见`assets/maps-real/catalog.json`；署名为© OpenStreetMap contributors，按[ODbL 1.0](https://www.openstreetmap.org/copyright)使用。城市落点在真实陆地近路位置预选，区名框避水并留出图钉和标签边距。
 
 ## 独立地图与素材库
 
@@ -33,7 +35,7 @@
 
 可点图库预览见`mockups/map-library.html`，默认只显示底图，辅助分区和落点可切换。`src/qianchuang-map-assets.js`集中登记实际可用素材及静态区域/落点，SVG沿现有按需读取模式加载。异星地表暂共用成熟的自然地形源：生态类优先森林/原野/海岸，岩质类优先山地/荒漠/北地，独立星球不回退成舰内设施。
 
-现库共18张：现代城市3、现代小城3、古风城镇4、自然地形6、宫苑1、舰内设施1。新增6图使用用户认可预览的原字节；山谷/北地只替换原terrain-mountain/snow的统一样式，不重复登记同一地理范围。平涂细线沿现paper/blue/ql主题，保源道路、水岸、田块与建筑位置，撤题签、外框、重复阴影与排线。分区从源道路、田埂、水系和林界离线归并，点可落建筑但避水面、通道和区名；运行沿原静态布局接口，没有载入生成器或运行裁图系统。原七城与六个旧保存值继续可用。乡镇区名以手机可读为准，中心留在本区陆地，可轻印淡建筑或田块，不把白巷细缝当作字号限制；常规点位优先屋舍、街巷或田界内侧并留出约6%视口边距。
+现库共20张：现代城市3、现代小城3、古风城镇4、自然地形6、宫苑2、舰内设施2。新增6图使用用户认可预览的原字节；山谷/北地只替换原terrain-mountain/snow的统一样式，不重复登记同一地理范围。平涂细线沿现paper/blue/ql主题，保源道路、水岸、田块与建筑位置，撤题签、外框、重复阴影与排线。分区从源道路、田埂、水系和林界离线归并，点可落建筑但避水面、通道和区名；运行沿原静态布局接口，没有载入生成器或运行裁图系统。十座真实城市与六个旧保存值继续可用。乡镇区名以手机可读为准，中心留在本区陆地，可轻印淡建筑或田块，不把白巷细缝当作字号限制；常规点位优先屋舍、街巷或田界内侧并留出约6%视口边距。
 
 | 素材 | 真实来源与使用条款 |
 |---|---|
@@ -42,11 +44,15 @@
 | 环向城区、临水/滨湾小城 | [ProbableTrain City Generator](https://probabletrain.itch.io/city-generator)三个独立参数原生导出，全部二维道路/建筑顶点保留；原始SHA及裁窗见sources.json，完整导出参数保留任务来源记录。 |
 | 城镇街巷 | [Watabou MFCG](https://watabou.github.io/city-generator/) Redfall，seed222816148；沿用原图。 |
 | 森林山地、海岸原野 | [Watabou Perilous Shores](https://watabou.itch.io/perilous-shores)，seed123456789与987654321。 |
+| 园林庄园 | Rijksmuseum [Gunterstein庄园平面 RP-P-1899-A-21589](https://id.rijksmuseum.nl/200431916)，数字图像为[Public Domain Mark 1.0](https://creativecommons.org/publicdomain/mark/1.0/)。保留宅邸、主园路、地块和水景，去纸底、题签与密排线。 |
+| 环廊生活设施 | Robert Pearce / Eric B. Smith 的 [Luxury Liner Deck 1](https://gurpsland.sytes.net/geomorphs/)尾部旋转餐厅，沿 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)署名及非商业条件使用；保原舱壁、家具与环廊，移除图中文字。 |
 | 现代城市水岸 | [ProbableTrain City Generator](https://probabletrain.itch.io/city-generator)导出的现成SVG；作者允许自由使用下载图像，本插件不分发其生成器引擎。 |
 | 山地河谷、海岸水系、荒漠、北地湖原 | USGS [National Map等高线](https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer)与[NHD水系](https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer)的公共领域矢量输出，原服务关闭标签，保真实地形线。 |
 
-Watabou输出按[官方FAQ](https://watabou.github.io/faq.html)的复制、修改及商业RPG使用许可；这里使用静态输出，未复制生成器代码，也未将输出许可改标为CC0。各素材来源、原始SHA、裁窗及衍生SHA记录在`assets/maps-library/sources.json`。宫苑继续使用既有已认可示意图。科幻设施使用已认可的现成甲板内部裁取，见下方署名与许可。
+Watabou输出按[官方FAQ](https://watabou.github.io/faq.html)的复制、修改及商业RPG使用许可；这里使用静态输出，未复制生成器代码，也未将输出许可改标为CC0。各素材来源、原始SHA、裁窗及衍生SHA记录在`assets/maps-library/sources.json`。宫苑保留既有已认可示意图，并新增现成庄园平面内部裁窗。科幻设施使用已认可的现成甲板内部裁取，见下方署名与许可。
 
+
+新增园林庄园（`palace/courtyard`）与环廊生活设施（`sci-fi/ring`）沿源园路、水岸和舱壁离线描取1至5区；少区由相邻完整区合并。各区有独立留白、落点和全图点池，不改变旧图ID、几何和已保存选图。两张SVG仅继承既有`--ql-*`主题变量，自包含PNG蒙版和原图结构保持；旧版前端从外链读到新图时同样随日夜切换。
 
 ## 舰内生态生活甲板
 

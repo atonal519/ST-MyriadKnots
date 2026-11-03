@@ -10,7 +10,7 @@ test('本地SVG根可直接插入HTML并保SVG命名空间',()=>{
  }
 });
 test('现成源素材可用，既有兼容ID优先，未采用手绘草稿',()=>{
- assert.equal(Object.keys(QIANCHUANG_MAP_ASSETS).length,18);assert.equal(qianchuangMapCandidates('terrain').length,6);
+ assert.equal(Object.keys(QIANCHUANG_MAP_ASSETS).length,20);assert.equal(qianchuangMapCandidates('terrain').length,6);
  const first=selectQianchuangMapAsset({entityId:'arbitrary-a',style:'modern'});
  assert.equal(selectQianchuangMapAsset({entityId:'renamed-or-reordered',style:'modern',previousAssetId:first}),first);assert.equal(selectQianchuangMapAsset({entityId:'arbitrary-a',style:'terrain',layout:'snow',previousAssetId:first}),'terrain-snow');assert.ok(qianchuangMapCandidates('town').every(asset=>asset.family==='old-town'));
 });
@@ -42,4 +42,11 @@ test('184新甲板按当前文件SHA单次读取，几何不进入主模块',asy
  assert.deepEqual(qianchuangMapCandidates('old-town','coast').map(a=>a.id),['old-town-coast']);assert.deepEqual(qianchuangMapCandidates('modern-town','coast').map(a=>a.id),['modern-town-coast']);
  assert.equal(selectQianchuangMapAsset({entityId:'arbitrary-renamed-root',style:'modern',layout:'inland',previousAssetId:'modern-inland'}),'modern-inland');
  for(const asset of Object.values(QIANCHUANG_MAP_ASSETS)){assert.ok(asset.shortTags.length>1,asset.id);assert.equal(new Set(asset.shortTags).size,asset.shortTags.length,asset.id);}
+ });
+
+ test('两张已验收新图可选，旧宫苑与舰图选择保持',()=>{
+ const expected={'palace-courtyard-garden':'46157fd19c13a86bfb1d6dd40f5fdff962960624fb5dff9b1ee1a5787bcb0df8','sci-fi-ring-life':'16b53652141e4369e8bb724289cfcc58833ca5830ac1292475ff8c96b5043b96'};
+ for(const[id,sha]of Object.entries(expected)){const asset=QIANCHUANG_MAP_ASSETS[id];assert.ok(asset,id);assert.equal(asset.sha256,sha);assert.equal(createHash('sha256').update(readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url))).digest('hex'),sha);}
+ assert.deepEqual(qianchuangMapCandidates('palace','courtyard').map(a=>a.id),['palace-courtyard-garden']);assert.deepEqual(qianchuangMapCandidates('sci-fi','ring').map(a=>a.id),['sci-fi-ring-life']);
+ for(const[style,layout,previous]of[['palace','courtyard','palace-axial'],['sci-fi','ring','sci-fi-linear']])assert.equal(selectQianchuangMapAsset({entityId:'existing-root',style,layout,previousAssetId:previous}),previous);
  });

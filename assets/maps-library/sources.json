@@ -550,5 +550,71 @@
       "滨湾",
       "斜向街区"
     ]
+  },
+  {
+    "id": "palace-courtyard-garden",
+    "family": "palace",
+    "layout": "courtyard",
+    "file": "palace-courtyard-garden.svg",
+    "sha256": "46157fd19c13a86bfb1d6dd40f5fdff962960624fb5dff9b1ee1a5787bcb0df8",
+    "bytes": 1067748,
+    "width": 1200,
+    "height": 1096,
+    "source": "Gunterstein castle, gardens and park, Rijksmuseum RP-P-1899-A-21589",
+    "sourceUrl": "https://iiif.micr.io/NyYTo/full/max/0/default.jpg",
+    "sourcePage": "https://id.rijksmuseum.nl/200431916",
+    "license": "Public Domain Mark 1.0",
+    "sourceSha256": "ca4b4a476e4417e53759b34619ae0d5b1712b53ec834b42f7ebb0e83a153f46a",
+    "crop": [
+      356,
+      289,
+      4115,
+      3759
+    ],
+    "processing": "Original estate engraving crop; paper and title/scale margins removed; local-contrast ink and low-density tonal masks; water tint follows source river and fountain.",
+    "modifications": [
+      "Original estate engraving crop; paper and title/scale margins removed; local-contrast ink and low-density tonal masks; water tint follows source river and fountain.",
+      "Theme declarations only: inherit published --ql-* palette, green→park, structure→contour.",
+      "Offline source-path/wall regions and land/floor anchors; no runtime map generation."
+    ],
+    "shortTags": [
+      "宫苑",
+      "园林",
+      "庄园",
+      "庭院"
+    ]
+  },
+  {
+    "id": "sci-fi-ring-life",
+    "family": "sci-fi",
+    "layout": "ring",
+    "file": "sci-fi-ring-life.svg",
+    "sha256": "16b53652141e4369e8bb724289cfcc58833ca5830ac1292475ff8c96b5043b96",
+    "bytes": 831804,
+    "width": 1000,
+    "height": 1000,
+    "source": "Robert Pearce / Eric B. Smith, Luxury Liner Deck 1 aft rotating restaurant",
+    "sourceUrl": "https://gurpsland.sytes.net/images/Geomorphs/LuxuryLiner/Luxury_Liner_Square_Deck_1_Pool.png",
+    "sourcePage": "https://gurpsland.sytes.net/geomorphs/",
+    "license": "CC BY-NC 4.0",
+    "sourceSha256": "c983882e11c0846958432e7b26576bc1280f3bb5691d2e37f7529d79d1056dac",
+    "crop": [
+      550,
+      4250,
+      650,
+      650
+    ],
+    "processing": "Existing source crop; connected glyph components removed only inside documented label windows; original walls, furniture and connected ring retained.",
+    "modifications": [
+      "Existing source crop; connected glyph components removed only inside documented label windows; original walls, furniture and connected ring retained.",
+      "Theme declarations only: inherit published --ql-* palette, green→park, structure→contour.",
+      "Offline source-path/wall regions and land/floor anchors; no runtime map generation."
+    ],
+    "shortTags": [
+      "科幻",
+      "环廊",
+      "设施",
+      "生活区"
+    ]
   }
 ]

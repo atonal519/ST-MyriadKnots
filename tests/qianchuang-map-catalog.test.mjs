@@ -82,10 +82,10 @@ test('目录与响应正文超时均有界，只发一次且不自动重试', as
 
 test('已保存远程ID目录离线仍保留，原题材改变仍可选新图', () => {
   assert.equal(selectQianchuangMapAsset({ entityId: 'same', style: 'modern', previousAssetId: 'remote-existing' }), 'remote-existing');
-  assert.equal(selectQianchuangMapAsset({ entityId: 'same', style: 'sci-fi', previousAssetId: 'modern-inland' }), 'sci-fi-linear');
+  assert.equal(QIANCHUANG_MAP_ASSETS[selectQianchuangMapAsset({ entityId: 'same', style: 'sci-fi', previousAssetId: 'modern-inland' })].family, 'sci-fi');
 });
 
-test('全部18种现成几何克隆新ID都可独立入库', async () => {
+test('全部20种现成几何克隆新ID都可独立入库', async () => {
   const rows = Object.values(QIANCHUANG_MAP_ASSETS).map(asset => ({ ...structuredClone(asset), id: asset.id + '-next', file: asset.id + '-next.svg' }));
   const h = harness({ rows, timeoutMs: 2000 }); await h.client.prepare();
   assert.deepEqual(Object.keys(h.assets).filter(id => id.endsWith('-next')), rows.map(row => row.id));
@@ -112,16 +112,16 @@ test('公共完整目录含全部当前几何，SVG仍与登记SHA逐字一致',
 });
 
 
-test('packed银行解包支持全部18种新ID，坏轮廓项不挡其余新图', async () => {
+test('packed银行解包支持全部20种新ID，坏轮廓项不挡其余新图', async () => {
   const packed = JSON.parse(readFileSync(new URL('../assets/maps-library/catalog.json', import.meta.url)));
   packed.assets = Object.fromEntries(Object.values(packed.assets).map(row => [row.id + '-packed', { ...row, id: row.id + '-packed', file: row.id + '-packed.svg' }]));
   packed.assets.broken = { ...structuredClone(packed.assets['modern-inland-packed']), id: 'broken', regions: null };
   const h = harness({ rows: packed, timeoutMs: 2000 }); await h.client.prepare();
-  assert.equal(Object.keys(h.assets).filter(id => id.endsWith('-packed')).length, 18); assert.equal(h.assets.broken, undefined);
+  assert.equal(Object.keys(h.assets).filter(id => id.endsWith('-packed')).length, 20); assert.equal(h.assets.broken, undefined);
   for (const asset of Object.values(QIANCHUANG_MAP_ASSETS)) assert.deepEqual(h.assets[asset.id + '-packed'].regions, asset.regions);
 });
 
-test('全部25张原SVG按目录远端读取通过，不触本地降级并保原始图文', async () => {
+test('全部30张原SVG按目录远端读取通过，不触本地降级并保原始图文', async () => {
   const calls = [], client = catalogModule.createQianchuangMapCatalog({ genericAssets: { ...QIANCHUANG_MAP_ASSETS }, cityAssets: { ...CITY_MAPS }, sanitizeSvg: value => value,
     fetchImpl: async url => { const path = new URL(url).pathname; calls.push(path); const value = readFileSync(new URL('../assets' + path, import.meta.url), 'utf8'); return path.endsWith('.json') ? response(JSON.parse(value)) : response(value); },
   });
@@ -130,7 +130,7 @@ test('全部25张原SVG按目录远端读取通过，不触本地降级并保原
     const text = await client.load(kind, asset, async () => { local++; return 'local'; });
     assert.equal(text, readFileSync(new URL('../assets/' + folder + '/' + asset.file, import.meta.url), 'utf8'), asset.id);
   }
-  assert.equal(local, 0); assert.equal(calls.length, 27);
+  assert.equal(local, 0); assert.equal(calls.length, 32);
 });
 
 test('正式两loader外链成功时不预读本地文件，保完整原图与单次下载', async () => {
@@ -144,4 +144,11 @@ test('正式两loader外链成功时不预读本地文件，保完整原图与�
   assert.equal(await createGenericMapLoader(options)(source.id), text);
   assert.equal(await createCityMapLoader(options)(city.id), cityText);
   assert.equal(local, 0); assert.equal(calls.length, 4);
+});
+
+test('旧远端目录缺新五图时保内置并读取各自本地SVG',async()=>{
+ const ids=['palace-courtyard-garden','sci-fi-ring-life','chongqing','hong-kong','nagoya'],genericAssets={...QIANCHUANG_MAP_ASSETS},cityAssets={...CITY_MAPS},calls=[];
+ const client=catalogModule.createQianchuangMapCatalog({genericAssets,cityAssets,sanitizeSvg:x=>x,fetchImpl:async url=>{calls.push(url);return url.endsWith('/maps-library/catalog.json')?response(Object.values(QIANCHUANG_MAP_ASSETS).filter(a=>!ids.includes(a.id))):response({cities:Object.values(CITY_MAPS).filter(a=>!ids.includes(a.id))});}});
+ await client.prepare();let local=0;for(const id of ids){const kind=id==='chongqing'||id==='hong-kong'||id==='nagoya'?'city':'generic',asset=(kind==='city'?cityAssets:genericAssets)[id];assert.ok(asset,id);const text=await client.load(kind,asset,async()=>{local++;return readFileSync(new URL('../assets/'+(kind==='city'?'maps-real/':'maps-library/')+asset.file,import.meta.url),'utf8');});assert.equal(digest(text),asset.sha256);}
+ assert.equal(local,5);assert.equal(calls.length,2);
 });
