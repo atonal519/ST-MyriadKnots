@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as foundation from '../src/v3/place-foundation.js';
-import { emptyPlaceWorkspace, validatePlaceWorkspace, applyPlaceSnapshot } from '../src/v3/place-workspace.js';
+import { emptyPlaceWorkspace, validatePlaceWorkspace, applyPlaceSnapshot, filterPlaceMemory as filterPlaceMemoryForCurrent } from '../src/v3/place-workspace.js';
 import { projectQianchuangSnapshot } from '../src/v3/qianchuang-domain.js';
 import { expandPlaceParents } from '../src/v3/spatial-domain.js';
 import {captureQianchuangCharacterSources} from '../src/place-worldbook-material.js';
@@ -255,4 +255,42 @@ test('外部已存图目录离线时原保存链保ID，环境提示真变化才
  const unchanged=foundation.mergePlaceFoundation(workspace,{entities:[],facts:[{itemId:id(202),kind:'place',placeEntityId:id(1),facilities:[]}]});
  assert.equal(unchanged.foundation.facts.find(row=>row.itemId===id(202)).mapAssetId,'remote-persisted');assert.equal(workspace.foundation.facts[0].mapAssetId,'remote-persisted');
  const changed=foundation.mergePlaceFoundation(unchanged,{entities:[],facts:[{itemId:id(203),kind:'place',placeEntityId:id(1),mapStyle:'sci-fi',mapLayout:'linear'}]});assert.equal(changed.foundation.facts.find(row=>row.itemId===id(203)).mapAssetId,'sci-fi-linear');
+});
+
+test('正文完整地点简介进入自动资料并仅覆盖已读事实，旧来源保独立',async()=>{
+ const old={itemId:id(401),placeEntityId:id(2),kind:'feature',text:'客房保留床和卫浴。',replacesItemIds:[id(400)],source:{kind:'body',floorId:id(93),locator:'floor:'+id(93),quote:'客房内原有床和卫浴。'}},quote='客房新增双层玻璃窗。';
+ const scope={...envelope.scope,floorId:id(94),sourceFloorBindings:[{floorId:id(94),floorKey:'floor-1',sourceType:'assistant',canonicalContent:quote,rawFingerprint:'sha256:next'}],placeCurrentFactBindings:[old]};
+ const result=await foundation.expandPlacePaths({packet:{placePaths:[{path:[{name:'客房',sameAsPlaceKey:'place-2',description:'客房有床、卫浴和双层玻璃窗。'}],source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote:quote}]},envelope:{request:{task:'extractFloorSemantics'},scope},existingEntities:[seed(1,'宿舍'),seed(2,'客房')],now:'2026-11-03T00:00:00Z'});
+ const fact=result.foundationPatch.facts.find(f=>f.kind==='feature');assert.ok(fact,'完整简介保存在自动地点资料');assert.deepEqual(new Set(fact.replacesItemIds),new Set([id(401),id(400)]));assert.equal(result.packet.spatialFacts.features?.length??0,0,'不把完整简介冒作本楼原始设施');assert.equal(fact.source.quote,quote);assert.ok(fact.source.references.some(ref=>ref.quote===old.source.quote&&ref.floorId===id(93)));assert.ok(fact.source.references.some(ref=>ref.quote===quote&&ref.floorId===id(94)));
+});
+
+test('当前简介覆盖按同地点同字段具体ID，后来同楼新项保留且人工字段仍优先',()=>{
+ const fact={itemId:id(410),kind:'feature',placeEntityId:id(2),text:'床和卫浴。',knownFromFloorId:id(93),replacesItemIds:[id(411)],source:{kind:'body',floorId:id(93),quote:'床和卫浴。'}},workspace=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),{entities:[],facts:[fact]});
+ const mem={floorId:id(93),locations:[],spatialFacts:{features:[{itemId:id(411),placeEntityId:id(2),kind:'stable',text:'旧重复床',evidenceRefs:[{floorId:id(93)}]},{itemId:id(412),placeEntityId:id(2),kind:'stable',text:'后来新增净化器',evidenceRefs:[{floorId:id(93)}]}],relations:[],positions:[],containments:[]}};
+ const filtered=filterPlaceMemoryForCurrent(mem,workspace);
+ assert.deepEqual(filtered.spatialFacts.features.map(f=>f.itemId),[id(412)]);assert.deepEqual(mem.spatialFacts.features.map(f=>f.itemId),[id(411),id(412)]);
+});
+
+test('当前描述重复归并继承旧覆盖，省略和人工空值不解除已保存资料',async()=>{
+ const quote='客房新增窗帘。',source={floorId:id(94),floorKey:'floor-1',sourceType:'assistant',canonicalContent:quote,rawFingerprint:'sha256:next'},original={itemId:id(420),placeEntityId:id(2),kind:'feature',text:'床和卫浴。',replacesItemIds:[id(419)],source:{kind:'body',floorId:id(93),quote:'原有床和卫浴。'}};
+ const invoke=(fields,prior=[original],manual)=>foundation.expandPlacePaths({packet:{placePaths:[{path:[{name:'客房',sameAsPlaceKey:'place-2',...fields}],source:'canonicalContent',sourceFloorKey:'floor-1',exactQuote:quote}]},envelope:{request:{payload:{knownPlaces:[{entityKey:'place-2',manualCurrentFacts:manual??{}}]}},scope:{...envelope.scope,floorId:id(94),sourceFloorBindings:[source],placeCurrentFactBindings:foundation.placeCurrentFactBindings(prior)}},existingEntities:[seed(1,'宿舍'),seed(2,'客房')],now:'2026-11-03T00:00:00Z'});
+ const first=await invoke({description:'床、卫浴和窗帘。'}),fact=first.foundationPatch.facts.find(f=>f.kind==='feature'),again=await invoke({description:fact.text},[fact]);assert.ok(again.foundationPatch.facts.find(f=>f.kind==='feature').replacesItemIds.includes(id(419)));assert.equal(again.foundationPatch.facts.find(f=>f.kind==='feature').replacesItemIds.includes(fact.itemId),false,'同ID不自覆盖');
+ const workspace=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),first.foundationPatch),omitted=await invoke({mapRole:'interior'},[fact]);assert.deepEqual(foundation.mergePlaceFoundation(workspace,omitted.foundationPatch).foundation.facts.filter(f=>f.kind==='feature'),workspace.foundation.facts.filter(f=>f.kind==='feature'));
+ const manual=await invoke({description:'不应反改',relations:['不应反改']},[fact],{description:'',relations:''});assert.equal(manual.foundationPatch.facts.some(f=>['feature','relation'].includes(f.kind)),false);
+ const empty=await invoke({description:'',relations:[]},[fact]);assert.ok(empty.foundationPatch.facts.find(f=>f.kind==='feature').replacesItemIds.includes(fact.itemId));
+});
+
+
+test('本丸布局沿同次path兼容确定中文，原merge更正旧图且人工普通层级优先',async()=>{
+ const content='示例院落设有主殿、居住院与庭园。',old={...emptyPlaceWorkspace(id(90)),foundation:{schemaVersion:1,entities:[seed(1,'示例院落')],facts:[{itemId:id(10),kind:'place',placeEntityId:id(1),mapLevel:'scope',mapStyle:'palace',mapLayout:'courtyard',mapAssetId:'palace-courtyard-garden'}]}};
+ const scope={...envelope.scope,placeCatalogBindings:[{entityKey:'place-1',entityId:id(1),labels:['示例院落']}],placeWorldbookSources:[{...source,content}]};
+ for(const layout of ['honmaru',' Honmaru ','本丸','和风院落','和风御殿','日式院落群']){
+  const result=await foundation.expandPlacePaths({packet:{placePaths:[{path:[{name:'示例院落',sameAsPlaceKey:'place-1',mapLevel:'scope',mapStyle:'palace',mapLayout:layout}],source:'worldbook',sourceKey:'worldbook-1',exactQuote:content}]},envelope:{request:{task:'organizePlaces'},scope},existingEntities:[seed(1,'示例院落')],now:'2026-11-03T00:00:00Z'});
+  assert.deepEqual(result.isolated,[]);const fact=result.foundationPatch.facts.find(f=>f.kind==='place');assert.equal(fact.mapLayout,'honmaru',layout);
+  const merged=foundation.mergePlaceFoundation(old,result.foundationPatch);assert.equal(merged.foundation.facts.at(-1).mapAssetId,'palace-courtyard-honmaru');
+  merged.placesByEntityId[id(1)]={mapLevel:null,scopes:{mapLevel:{knownThroughFloorId:id(93),coveredFloorIds:[id(93)],coveredItemIds:[]}}};
+  const current=applyPlaceSnapshot({chatId:id(90),places:[{entityId:id(1),displayName:'示例院落',features:[],relations:[],childEntityIds:[],parentEntityId:null}],mapRootIds:[id(1)],unassignedPlaceIds:[],userPosition:{}},merged);assert.equal(current.places[0].mapLevel,null);
+ }
+ assert.equal(foundation.mergePlaceFoundation(old,{entities:[],facts:[]}).foundation.facts[0].mapAssetId,'palace-courtyard-garden');
+ const {normalizeQianchuangMapLayout,validQianchuangMapLayout}=await import('../src/qianchuang-display-hints.js');assert.equal(normalizeQianchuangMapLayout('本丸','terrain'),undefined);assert.equal(normalizeQianchuangMapLayout('刀剑乱舞','palace'),undefined);assert.equal(validQianchuangMapLayout('本丸','palace'),false);
 });

@@ -34,6 +34,7 @@ export function bootstrap({
   v3RecallRuntime,
   peopleWorkspaceRuntime,
   qianchuangWorldInfoProvider,
+  userAvatarProvider,
   chatMemoryManagement,
   storageManagement,
   memoryTransfer,
@@ -72,7 +73,7 @@ export function bootstrap({
   const foundationView = v3FoundationViewFactory({ runtime: v3FoundationRuntime, recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, onOpenVectorSettings: () => panel?.openVectorSettings?.(), peopleRuntime: peopleWorkspaceRuntime, timeRuntime, memoryManagement: chatMemoryManagement, sessionStateProvider, prepareSession, backendDiagnosticProvider, pluginDiagnosticProvider, pluginVersion, documentRef, confirmImpl: options => dialog.confirm(options), chooseImpl: options => dialog.choose?.(options) ?? null, infoImpl: options => dialog.info(options), customImpl: options => dialog.custom(options), cancelDialogImpl: () => dialog.cancelTop?.() });
   const peopleProfilesView = peopleProfilesViewFactory({ runtime: peopleWorkspaceRuntime, sessionStateProvider, prepareSession, documentRef, dialog });
   const qianshiTimelineView = qianshiTimelineViewFactory({ runtime: v3FoundationRuntime, documentRef, dialog });
-  const qianchuangView = qianchuangViewFactory({ runtime: v3FoundationRuntime, settings, sessionStateProvider, prepareSession, dialog, moduleUrl, documentRef });
+  const qianchuangView = qianchuangViewFactory({ runtime: v3FoundationRuntime, settings, sessionStateProvider, prepareSession, dialog, moduleUrl, userAvatarProvider, documentRef });
   const storageManagementView = storageManagementViewFactory({ manager: storageManagement, documentRef, confirmImpl: options => dialog.confirm(options) });
   const syncAppearance = value => {
     fab?.setAppearance?.(value); inlineRenderer?.setAppearance?.(value);

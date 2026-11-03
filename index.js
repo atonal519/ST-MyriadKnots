@@ -9,7 +9,7 @@ import { createVectorApiClient, resolveVectorConfig } from './src/vector-api.js'
 import { createVectorIndex } from './src/v3/vector-index.js';
 import { createVectorAutoUpdater } from './src/v3/vector-auto-update.js';
 import { readVectorSource } from './src/v3/vector-source-reader.js';
-import { user_avatar } from '/scripts/personas.js';
+import { user_avatar, getUserAvatar } from '/scripts/personas.js';
 import { power_user } from '/scripts/power-user.js';
 import { extension_settings, extensionNames, extensionTypes } from '/scripts/extensions.js';
 import { is_send_press, saveSettingsDebounced, getRequestHeaders } from '/script.js';
@@ -573,6 +573,7 @@ const qianchuangWorldInfoProvider = async ({chatId,organize=false}) => {
 };
 if (settings.isEnabled()) startQianchuangMaps();
 ui = bootstrap({
+  userAvatarProvider: () => user_avatar ? getUserAvatar(user_avatar) : null,
   moduleUrl: import.meta.url,
   activity: pluginActivity,
   pluginUpdates,

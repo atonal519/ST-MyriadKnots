@@ -565,7 +565,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     // Host imports use URL-root paths on Windows as well as POSIX.
     const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
-    if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
+    if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png', getUserAvatar: name => '/User Avatars/' + name });
     else if (hostPath === '/scripts/utils.js') module = synthetic(identifier, { download: async () => assert.fail('启动不应下载记忆文件') });
     else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => tauri ? 'default-user' : 'isolated-test-user' });
     else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: {}, DOMPurify: {}, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: config => { localForageCreateCalls += 1; return ttIdb ? ttIdb.localForage.createInstance(config) : { async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }; } } });
@@ -840,7 +840,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.0.4');
+  assert.equal(manifest.version, '1.0.5');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -906,7 +906,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
     const path = fileURLToPath(identifier);
     const hostPath = new URL(identifier).pathname.replace(new RegExp('^/[A-Za-z]:'), '');
     let module;
-    if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png' });
+    if (hostPath === '/scripts/personas.js') module = synthetic(identifier, { user_avatar: 'me.png', getUserAvatar: name => '/User Avatars/' + name });
     else if (hostPath === '/scripts/utils.js') module = synthetic(identifier, { download: async () => assert.fail('隔离加载不应下载文件') });
     else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
     else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: {}, DOMPurify: {}, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
@@ -1023,7 +1023,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     modules.set(specifier, module);
     return module;
   };
-  define('/scripts/personas.js', { user_avatar: 'me.png' });
+  define('/scripts/personas.js', { user_avatar: 'me.png', getUserAvatar: name => '/User Avatars/' + name });
   const hostDownload = async () => assert.fail('接线时不应发起文件下载');
   define('/scripts/utils.js', { download: hostDownload });
   define('/scripts/user.js', { getCurrentUserHandle: () => 'isolated-test-user' });

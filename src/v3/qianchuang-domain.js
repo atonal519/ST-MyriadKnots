@@ -3,8 +3,9 @@ import { selectRecallMemories } from './recall-source.js';
 import { memorySourceFloorIds } from './memory-schema.js';
 import { migrationPartition } from './migration-prefix.js';
 import { isMemoryExcludedFloor } from './memory-exclusion.js';
-import { projectPlaceFeatures } from './spatial-domain.js';
+import { projectPlaceFeatures, projectPlaceRelations } from './spatial-domain.js';
 import { applyPlaceSnapshot, filterPlaceMemory, placeWorkspaceForPrefix } from './place-workspace.js';
+import { coveredPlaceItemIds } from './place-foundation.js';
 
 const frozen = values => Object.freeze(values.map(value => Object.freeze(value)));
 const unknownPosition = () => Object.freeze({ status: 'unknown', placeEntityId: null, mapRootEntityId: null, isCurrent: false, sourceAssistantSeq: null });
@@ -59,7 +60,8 @@ export function projectQianchuangSnapshot(source, { identityProjection = null, t
     if (place) place.features.push({ itemId: feature.itemId, text: feature.text, sourceFloorId: feature.floorId, sourceAssistantSeq: feature.assistantSeq });
   }
   const relationRows = new Map();
-  for (const memory of projected) for (const item of memory.spatialFacts?.relations ?? []) {
+  for (const item of projectPlaceRelations({floorMemories:projected,floors,throughAssistantSeq})) {
+    if(coveredPlaceItemIds(projection.placeWorkspace,item.placeEntityId,'relation').has(item.itemId))continue;
     const sourceOrigin = origin(item);
     if (!sourceOrigin || !byId.has(item.placeEntityId) || item.referencePlaceEntityIds.some(id => !byId.has(id))) continue;
     const key = JSON.stringify([item.placeEntityId, item.kind, item.referencePlaceEntityIds, item.text]), prior = relationRows.get(key);

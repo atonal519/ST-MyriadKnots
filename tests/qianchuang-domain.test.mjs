@@ -133,3 +133,22 @@ test('共同area容器的直属site留未命名组，不把范围父再画成子
  const snapshot={mapRootIds:['scope'],places:[node('scope',['a','b','site','room'],'area'),node('a',[],'area','scope'),node('b',[],'area','scope'),node('site',[],'site','scope'),node('room',[],undefined,'scope')]},before=structuredClone(snapshot),browse=projectQianchuangBrowse(snapshot);assert.equal(browse.scopeId,'scope');assert.deepEqual(browse.groups.map(g=>g.entityId),['a','b',null]);assert.deepEqual(browse.groups.at(-1).siteIds,['site']);assert.deepEqual(browse.treeRootIds,['a','b','site','room']);assert.deepEqual(snapshot,before);
  assert.deepEqual(projectQianchuangBrowse({mapRootIds:['scope'],places:[node('scope',['site'],'area'),node('site',[],'site','scope')]}).groups,[{entityId:'scope',siteIds:['site']}]);
 });
+
+test('当前简介与覆盖同时生效，有限历史仍只读原facts且未读同楼增量不被吞',()=>{
+ const old=memory(1,{features:[feature(300,1,'原有床和卫浴')],relations:[{itemId:id(310),placeEntityId:id(1),kind:'relative',referencePlaceEntityIds:[],text:'走廊深处',evidenceRefs:[ref(1)]}]}),newer=memory(2,{features:[feature(301,1,'新增窗帘',2),feature(302,1,'未读独立净化器',2)]}),value=graph([old,newer]),before=JSON.stringify(value);
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:id(90),placesByEntityId:{},deletionsByEntityId:{},foundation:{schemaVersion:1,entities:[],facts:[{itemId:id(400),kind:'feature',placeEntityId:id(1),text:'床、卫浴和窗帘。',replacesItemIds:[id(300),id(301)],knownFromFloorId:id(102),source:{kind:'body',floorId:id(102),quote:'新增窗帘',references:[{kind:'body',floorId:id(101),quote:'原有床和卫浴'},{kind:'body',floorId:id(102),quote:'新增窗帘'}]}},{itemId:id(401),kind:'relation',placeEntityId:id(1),text:'走廊尽头',replacesItemIds:[id(310)],knownFromFloorId:id(102),source:{kind:'body',floorId:id(102),quote:'走廊尽头'}}]}};
+ const current=project(value,{identityProjection:{placeWorkspace:workspace}}).places.find(p=>p.entityId===id(1));assert.deepEqual(current.features.map(f=>f.text),['未读独立净化器','床、卫浴和窗帘。']);assert.deepEqual(current.relations.map(f=>f.text),['走廊尽头']);
+ const history=project(value,{identityProjection:{placeWorkspace:workspace},throughAssistantSeq:1}).places.find(p=>p.entityId===id(1));assert.deepEqual(history.features.map(f=>f.text),['原有床和卫浴']);assert.deepEqual(history.relations.map(f=>f.text),['走廊深处']);assert.equal(JSON.stringify(value),before);
+});
+
+test('分支地点库复制当前简介及覆盖，截止楼重落但原来源楼和Core原facts不改',async()=>{
+ const {createPlaceWorkspaceStore,emptyPlaceWorkspace}=await import('../src/v3/place-workspace.js'),records=new Map(),targetChat=id(95),client={async get(c){if(!records.has(c))throw Object.assign(Error('missing'),{status:404});return structuredClone(records.get(c));},async put(c,key,data,revision){const row={data:structuredClone(data),revision:revision+1};records.set(c,row);return structuredClone(row);}},store=createPlaceWorkspaceStore({client});
+ const workspace={...emptyPlaceWorkspace(id(90)),foundation:{schemaVersion:1,entities:[],facts:[{itemId:id(450),kind:'feature',placeEntityId:id(1),text:'床、卫浴与新窗。',replacesItemIds:[id(300)],knownFromFloorId:id(102),source:{kind:'body',floorId:id(102),quote:'后楼新增窗。'}}]}};await store.put({chatId:id(90)},workspace,0);const sourceBefore=JSON.stringify(records.get('chat-'+id(90)));
+ const copied=await store.copy({chatId:id(90)},{chatId:targetChat},{targetFloors:[floor(1)],sourceEntities:[]});assert.equal(copied.data.foundation.facts[0].knownFromFloorId,id(101));assert.equal(copied.data.foundation.facts[0].source.floorId,id(102));assert.deepEqual(copied.data.foundation.facts[0].replacesItemIds,[id(300)]);
+ const source=graph([memory(1,{features:[feature(300,1,'原床和卫浴')]})],undefined,1);source.root.chatId=targetChat;const result=project(source,{identityProjection:{placeWorkspace:copied.data}});assert.deepEqual(result.places.find(p=>p.entityId===id(1)).features.map(f=>f.text),['床、卫浴与新窗。']);assert.equal(source.floorMemories[0].spatialFacts.features[0].text,'原床和卫浴');assert.equal(JSON.stringify(records.get('chat-'+id(90))),sourceBefore);
+});
+
+test('合并简介的旧来源不把本批末尾才可用的全文提前带入聚合历史',()=>{
+ const snapshot=feature(470,1,'床、卫浴和后加的窗帘',1,{source:{kind:'body',floorId:id(101),quote:'旧床',knownFromFloorId:id(104),references:[{kind:'body',floorId:id(101),quote:'旧床'},{kind:'body',floorId:id(104),quote:'新增窗帘'}]}}),value=graph([memory(4,{features:[snapshot]},{sourceFloorIds:[id(101),id(104)]})]);
+ const early=project(value,{throughAssistantSeq:2});assert.equal(early.places.find(p=>p.entityId===id(1)).features.length,0);assert.equal(project(value).places.find(p=>p.entityId===id(1)).features[0].text,snapshot.text);
+});

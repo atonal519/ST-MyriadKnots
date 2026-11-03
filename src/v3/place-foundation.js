@@ -3,7 +3,7 @@ import { cseWorldInfoKeyMatches } from '../cse-source-selection.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { isUuid } from '../identity.js';
-import { normalizePlaceFacilities, validQianchuangMapStyle, validQianchuangMapLayout } from '../qianchuang-display-hints.js';
+import { normalizePlaceFacilities, validQianchuangMapStyle, validQianchuangMapLayout, normalizeQianchuangMapLayout } from '../qianchuang-display-hints.js';
 import {selectQianchuangMapAsset} from '../qianchuang-map-assets.js';
 import { locatePlaceQuote } from './place-evidence.js';
 const label=value=>String(value??'').normalize('NFKC').trim().toLocaleLowerCase();
@@ -82,6 +82,45 @@ function linkedBodyLeaf(entry, spatial, resolved, scope) {
 
 const referencedSources = source => source?.references ?? (source ? [source] : []);
 
+export const PLACE_CURRENT_GUIDANCE='地点description是本次已读资料合并后的完整、简洁当前简介，relations是完整当前方位说明，不是追加一段本楼复述。合并重复和同义说法，保留未改变的有效设施、布局和独立方位；新增或局部改造时只更新对应内容，不能因换书桌就丢床和卫浴。knownPlaces.description为已有合并简介，features为其余有来源事实；简介不作为可单项替换的known-feature。普通摘要在同一次输出placePaths中更新有真实新信息的地点，完整description/relations须保上述旧内容并合入本次变化；已有内容仅复述且无有效变化则省略字段，不重写。旧部分继续关联其原来源，exactQuote仅引用本次新增或变化的真实依据，不把旧陈设伪作本楼原句。人物临时在场、情绪、床单状态、灯光气味等现场不进入长期简介。显式整理还要把已有重复段落、多种同义方位视为需要归并的变化；即使无新增，也返回归并后的完整字段。省略保原，明确清空才返回空description或relations:[]。人工description/relations及空值优先。';
+
+// These are the exact facts offered to this request, not every fact on their floors.
+export function placeCurrentFactBindings(facts = []) {
+ return facts.filter(fact=>isUuid(fact.itemId)&&isUuid(fact.placeEntityId)&&['feature','relation'].includes(fact.kind)).map(fact=>{
+  const sources=fact.source?referencedSources(fact.source).map(({replacesItemIds,...source})=>source):(fact.evidenceRefs??[]).filter(ref=>ref.quotedText).map(ref=>({kind:'body',floorId:ref.floorId,locator:`floor:${ref.floorId}`,quote:ref.quotedText,...(ref.sourceType?{sourceType:ref.sourceType}:{}),...(ref.sourceSnapshotIndex!==undefined?{sourceSnapshotIndex:ref.sourceSnapshotIndex}:{})}));
+  return {itemId:fact.itemId,placeEntityId:fact.placeEntityId,kind:fact.kind,text:fact.text,replacesItemIds:[...new Set([...(fact.replacesItemIds??[]),...(fact.source?.replacesItemIds??[])])],sources,
+   ...(fact.source&&Array.isArray(fact.replacesItemIds)?{current:true,source:fact.source,knownFromFloorId:fact.knownFromFloorId}: {})};
+ });
+}
+
+export function coveredPlaceItemIds(workspace,placeEntityId,kind) {
+ const field=kind==='feature'?'description':'relations';
+ if(Object.hasOwn(workspace?.placesByEntityId?.[placeEntityId]??{},field))return new Set();
+ return new Set((workspace?.foundation?.facts??[]).filter(fact=>fact.kind===kind&&fact.placeEntityId===placeEntityId).flatMap(fact=>fact.replacesItemIds??[]));
+}
+
+function currentFact(kind,entityId,itemId,text,source,scope,reuse=true) {
+ const prior=(scope.placeCurrentFactBindings??[]).filter(fact=>fact.placeEntityId===entityId&&fact.kind===kind);
+ const same=prior.find(fact=>fact.current&&fact.text===text);
+ if(reuse&&same)return {itemId:same.itemId,kind,placeEntityId:entityId,text,knownFromFloorId:same.knownFromFloorId??null,replacesItemIds:same.replacesItemIds,source:same.source};
+ const sources=[...referencedSources(source),...prior.flatMap(fact=>fact.sources??referencedSources(fact.source))];
+ const references=[...new Map(sources.map(ref=>[JSON.stringify(ref),ref])).values()];
+ return {itemId,kind,placeEntityId:entityId,text,knownFromFloorId:scope.floorId??null,
+  replacesItemIds:[...new Set(prior.flatMap(fact=>[fact.itemId,...(fact.replacesItemIds??[])]))].filter(id=>id!==itemId),
+  source:{...source,...(references.length>1?{references}:{})}};
+}
+
+export function completePlaceCurrentPatch(patch,memory) {
+ const rows=placeCurrentFactBindings([...(memory.spatialFacts?.features??[]).filter(item=>item.kind==='stable').map(item=>({...item,kind:'feature'})),...(memory.spatialFacts?.relations??[]).map(item=>({...item,kind:'relation'}))]);
+ return {...patch,facts:(patch.facts??[]).map(fact=>{
+  if(!Array.isArray(fact.replacesItemIds))return fact;
+  const field=fact.kind==='feature'?'features':'relations';
+  if(!(memory.spatialFacts?.[field]??[]).some(item=>item.source&&item.placeEntityId===fact.placeEntityId&&item.text===fact.text))return fact;
+  const current=currentFact(fact.kind,fact.placeEntityId,fact.itemId,fact.text,fact.source,{floorId:fact.knownFromFloorId,placeCurrentFactBindings:rows},false);
+  return {...fact,replacesItemIds:[...new Set([...fact.replacesItemIds,...current.replacesItemIds])],source:current.source};
+ })};
+}
+
 export function selectPlaceWorldbookSources({ candidates = [], macros = {}, texts = [], places = [], organize = false } = {}) {
   const names = places.flatMap(place => [place.displayName, ...(place.aliases ?? [])]).filter(Boolean);
   const scanText = [...texts, ...names].join('\n');
@@ -112,6 +151,7 @@ export function validatePlaceFoundation(value,chatId){
  if(!value||value.schemaVersion!==1||!Array.isArray(value.entities)||!Array.isArray(value.facts))throw new TypeError('地点索引格式无效。');
  for(const entity of value.entities)if(validateEntityRecord(entity,{expectedChatId:chatId}).entityType!=='place')throw new TypeError('地点索引归属无效。');
  for(const fact of value.facts)if(!isUuid(fact.itemId)||!isUuid(fact.placeEntityId)||!['place','containment','feature','relation'].includes(fact.kind)||fact.kind==='containment'&&!isUuid(fact.parentEntityId))throw new TypeError('地点索引结构无效。');
+ for(const fact of value.facts)if(Object.hasOwn(fact,'replacesItemIds')&&(!['feature','relation'].includes(fact.kind)||!Array.isArray(fact.replacesItemIds)||fact.replacesItemIds.some(id=>!isUuid(id)||id===fact.itemId)||new Set(fact.replacesItemIds).size!==fact.replacesItemIds.length))throw new TypeError('地点当前资料覆盖无效。');
  return value;
 }
 
@@ -119,7 +159,7 @@ export function mergePlaceFoundation(workspace,patch={entities:[],facts:[]},remo
  const result=structuredClone(workspace),prior=result.foundation??{schemaVersion:1,entities:[],facts:[]};
  const entities=new Map(prior.entities.map(entity=>[entity.id,entity]));
  for(const entity of patch.entities??[])if(!entities.has(entity.id))entities.set(entity.id,entity);
- const replaced=new Set((patch.replaceFields??[]).map(value=>`${value.entityId}:${value.kind}`)),removed=new Set(removedItemIds);
+ const replaced=new Set((patch.replaceFields??[]).map(value=>`${value.entityId}:${value.kind}`)),removed=new Set([...removedItemIds,...(patch.facts??[]).flatMap(fact=>fact.replacesItemIds??[])]);
  const hints=new Map();for(const fact of [...prior.facts,...(patch.facts??[])])if(fact.kind==='place'){
   const row=hints.get(fact.placeEntityId)??{};
   if(['area','site','interior'].includes(fact.mapRole))row.mapRole=fact.mapRole;
@@ -134,7 +174,8 @@ export function mergePlaceFoundation(workspace,patch={entities:[],facts:[]},remo
  for(const [entityId,row]of hints)if(row.mapStyle){row.mapAssetId=selectQianchuangMapAsset({entityId,style:row.mapStyle,layout:row.mapLayout,previousAssetId:row.mapAssetId,usedAssetIds});if(row.mapAssetId)usedAssetIds.push(row.mapAssetId);}
  const facts=new Map(prior.facts.filter(fact=>!replaced.has(`${fact.placeEntityId}:${fact.kind}`)&&!removed.has(fact.itemId)).map(fact=>[fact.itemId,fact]));
  for(const fact of patch.facts??[])facts.set(fact.itemId,fact.kind==='place'?{...fact,...hints.get(fact.placeEntityId)}:fact);
- result.foundation={schemaVersion:1,entities:[...entities.values()],facts:[...facts.values()]};
+ const sameFacts=prior.facts.length===facts.size&&prior.facts.every(fact=>JSON.stringify(facts.get(fact.itemId))===JSON.stringify(fact));
+ result.foundation={schemaVersion:1,entities:[...entities.values()],facts:sameFacts?prior.facts:[...facts.values()]};
  if(validQianchuangMapStyle(patch.mapStyle))result.mapStyle=patch.mapStyle;
  return result;
 }
@@ -142,7 +183,7 @@ export function mergePlaceFoundation(workspace,patch={entities:[],facts:[]},remo
 export function filterPlaceFoundationSources(workspace,{filterWorldInfoSources=sources=>sources,floorIds=null}={}){
  if(!workspace?.foundation)return workspace;
  const facts=workspace.foundation.facts.filter(fact=>referencedSources(fact.source).every(source=>(source.kind!=='worldbook'||filterWorldInfoSources([{sourceName:source.sourceName??''}]).length)
-  &&(source.kind!=='body'||!floorIds||floorIds.has(source.floorId))));
+  &&(source.kind!=='body'||!floorIds||floorIds.has(source.floorId)))&&(!floorIds||!Array.isArray(fact.replacesItemIds)||!fact.knownFromFloorId||floorIds.has(fact.knownFromFloorId)));
  const ids=new Set(facts.flatMap(fact=>[fact.placeEntityId,fact.parentEntityId,...(fact.referencePlaceEntityIds??[])].filter(Boolean)));
  for(const [id,row]of Object.entries(workspace.placesByEntityId??{}))if(Object.keys(row.scopes??{}).length){ids.add(id);if(row.parentEntityId)ids.add(row.parentEntityId);}
  return {...workspace,foundation:{...workspace.foundation,facts,entities:workspace.foundation.entities.filter(entity=>ids.has(entity.id))}};
@@ -292,7 +333,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       const description = typeof segment.description === 'string' ? segment.description : depth === segments.length - 1 ? entry.description : undefined;
       const relations = Array.isArray(segment.relations) ? segment.relations : depth === segments.length - 1 ? entry.relations : undefined;
       const facilities = normalizePlaceFacilities(segment.facilities);
-      const mapStyle=validQianchuangMapStyle(segment.mapStyle)?segment.mapStyle:undefined,mapLayout=validQianchuangMapLayout(segment.mapLayout,mapStyle)?segment.mapLayout:undefined;
+      const mapStyle=validQianchuangMapStyle(segment.mapStyle)?segment.mapStyle:undefined,mapLayout=normalizeQianchuangMapLayout(segment.mapLayout,mapStyle);
       seenPaths.set(pathKey, entityId);
       const binding = bindings.find(binding => binding.entityId === entityId);
       if (depth === segments.length - 1 && leaf) { leaf.identity = 'existing'; leaf.sameAsPlaceKey = binding.entityKey; }
@@ -317,32 +358,36 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       }
       if (autoSource || facilities !== undefined || mapStyle || mapLayout || ['area','site','interior'].includes(segment.mapRole) || [null,'city','country','scope'].includes(segment.mapLevel)) {
         const displaySource = autoSource ?? { ...primary.source, ...(resolved.length > 1 ? { references: resolved.map(ref => ref.source) } : {}) };
-        replaceFields.push({ entityId, kind: 'place' });
         const itemId = await deterministicUuid(['v3-worldbook-place', displaySource.locator, displaySource.fingerprint, entityId, 'place']);
-        facts.set(itemId, { ...facts.get(itemId), itemId, kind: 'place', placeEntityId: entityId, ...(facilities !== undefined ? {facilities} : {}), ...(mapStyle?{mapStyle}:{}),...(mapLayout?{mapLayout}:{}), ...(['area','site','interior'].includes(segment.mapRole) ? { mapRole: segment.mapRole } : {}), ...([null,'city','country','scope'].includes(segment.mapLevel)?{mapLevel:segment.mapLevel}:{}), knownFromFloorId: scope.floorId ?? null,
-          source: displaySource });
+        const value={ ...facts.get(itemId), itemId, kind: 'place', placeEntityId: entityId, ...(facilities !== undefined ? {facilities} : {}), ...(mapStyle?{mapStyle}:{}),...(mapLayout?{mapLayout}:{}), ...(['area','site','interior'].includes(segment.mapRole) ? { mapRole: segment.mapRole } : {}), ...([null,'city','country','scope'].includes(segment.mapLevel)?{mapLevel:segment.mapLevel}:{}), knownFromFloorId: scope.floorId ?? null,source:displaySource };
+        const existing=scope.identityProjection?.placeWorkspace?.foundation?.facts??[],old=existing.find(fact=>fact.kind==='place'&&fact.placeEntityId===entityId),keys=['mapRole','mapLevel','facilities','mapStyle','mapLayout'].filter(key=>Object.hasOwn(value,key));
+        const same=Object.hasOwn(scope,'placeCurrentFactBindings')&&old&&keys.every(key=>JSON.stringify(old[key])===JSON.stringify(value[key]));
+        if(same||keys.length||!Object.hasOwn(scope,'placeCurrentFactBindings')||!existing.some(fact=>fact.placeEntityId===entityId)){
+          const fact=same?old:value;replaceFields.push({entityId,kind:'place'});facts.set(fact.itemId,fact);
+        }
       }
-      if (typeof description === 'string' && description.trim()) {
+      const manual=envelope.request?.payload?.knownPlaces?.find(place=>place.entityKey===binding?.entityKey)?.manualCurrentFacts??{};
+      if (typeof description === 'string' && !Object.hasOwn(manual,'description')) {
         const text = description.trim();
-        if (bodySource && !persistBodyPaths) (spatial.features ??= []).push({ placeKey: mention, key: `feature-${(spatial.features?.length ?? 0) + 1}`, kind: 'stable', text, replacesKeys: [], exactQuote: quote, ...bodyEvidence });
-        else {
-          const itemId = await deterministicUuid(['v3-worldbook-place', autoSource.locator, autoSource.fingerprint, entityId, 'feature', text]);
-          facts.set(itemId, { itemId, kind: 'feature', placeEntityId: entityId, text, knownFromFloorId: scope.floorId ?? null,
-            source: autoSource });
-        }
+        const source=autoSource??{...primary.source,...(resolved.length>1?{references:resolved.map(ref=>ref.source)}:{})};
+        const itemId = await deterministicUuid(['v3-worldbook-place', source.locator, source.fingerprint, entityId, 'feature', text]);
+        const prior=(scope.placeCurrentFactBindings??[]).filter(fact=>fact.placeEntityId===entityId&&fact.kind==='feature');
+        const fact=currentFact('feature',entityId,itemId,text,source,scope,prior.length===1&&prior[0].current===true);facts.set(fact.itemId,fact);
       }
-      for (const raw of Array.isArray(relations) ? relations : []) {
-        const text = typeof raw === 'string' ? raw.trim() : ''; if (!text) continue;
-        if (bodySource && !persistBodyPaths) (spatial.relations ??= []).push({ kind: 'relative', placeKey: mention, referencePlaceKeys: [], text, exactQuote: quote, ...bodyEvidence });
-        else {
-          const itemId = await deterministicUuid(['v3-place-relation',autoSource.locator,autoSource.fingerprint,entityId,text]);
-          facts.set(itemId, { itemId,kind:'relation',relationKind:'relative',placeEntityId:entityId,text,referencePlaceEntityIds:[],knownFromFloorId:scope.floorId??null,source:autoSource });
-        }
+      for (const raw of Array.isArray(relations)&&!Object.hasOwn(manual,'relations') ? relations.length?relations:[''] : []) {
+        const text = typeof raw === 'string' ? raw.trim() : '';if(typeof raw!=='string')continue;
+        const source=autoSource??{...primary.source,...(resolved.length>1?{references:resolved.map(ref=>ref.source)}:{})};
+        const itemId = await deterministicUuid(['v3-place-relation',source.locator,source.fingerprint,entityId,text]);
+        const prior=(scope.placeCurrentFactBindings??[]).filter(fact=>fact.placeEntityId===entityId&&fact.kind==='relation'),texts=relations.length?relations.map(text=>text.trim()):[''];
+        const unchanged=prior.length===texts.length&&prior.every(fact=>fact.current&&texts.includes(fact.text));
+        const fact={...currentFact('relation',entityId,itemId,text,source,scope,unchanged),relationKind:'relative',referencePlaceEntityIds:[]};facts.set(fact.itemId,fact);
       }
       if(autoSource&&parentId)replaceFields.push({entityId,kind:'containment'});
       if(autoSource){
-        if(description!==undefined)replaceFields.push({entityId,kind:'feature'});
-        if(relations!==undefined)replaceFields.push({entityId,kind:'relation'});
+        if(!Object.hasOwn(scope,'placeCurrentFactBindings')){
+          if(description!==undefined)replaceFields.push({entityId,kind:'feature'});
+          if(relations!==undefined)replaceFields.push({entityId,kind:'relation'});
+        }
       }
       parentId = entityId; parentMention = mention;
     }

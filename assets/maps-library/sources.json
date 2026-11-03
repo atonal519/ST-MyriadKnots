@@ -616,5 +616,46 @@
       "设施",
       "生活区"
     ]
+  },
+  {
+    "id": "palace-courtyard-honmaru",
+    "family": "palace",
+    "layout": "honmaru",
+    "file": "palace-courtyard-honmaru.svg",
+    "sha256": "3497ac3f4aeef2390debf762607595cf03c16ed84f6391738d509c3ebf35da61",
+    "bytes": 54753,
+    "width": 1000,
+    "height": 723,
+    "source": "OpenStreetMap Nijō Castle inner grounds",
+    "sourceUrl": "https://api.openstreetmap.org/api/0.6/map?bbox=135.7435,35.0095,135.753,35.0175",
+    "sourcePage": "https://www.openstreetmap.org/copyright",
+    "attribution": "© OpenStreetMap contributors",
+    "license": "ODbL-1.0",
+    "sourceSha256": "53194f409d604fb0151bb9a16e17114fe9d0bc4b836160a92c0b5df7082ef3fc",
+    "capturedAt": "2026-11-03T06:19:05.576880+00:00",
+    "captureBounds": [
+      135.7435,
+      35.0095,
+      135.753,
+      35.0175
+    ],
+    "bounds": [
+      135.74605,
+      35.01265,
+      135.75095,
+      35.01555
+    ],
+    "projection": "Web Mercator; longitude/latitude source clipped to interior preview window",
+    "processing": "Source building footprints, footpaths, gardens, water and mapped trees; cropped outside streets and complete outer moat. No baked names, game art, invented buildings or generated tree texture. Original approved SVG retained byte-for-byte.",
+    "modifications": [
+      "Palette inherits existing --ql-* variables.",
+      "Offline regions follow source paths, courtyard boundaries and inner-moat banks. Smaller layouts merge complete adjacent regions; anchors stay off water/buildings/walls and near mapped paths."
+    ],
+    "shortTags": [
+      "宫苑",
+      "本丸",
+      "和风",
+      "日式院落"
+    ]
   }
 ]

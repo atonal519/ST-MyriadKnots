@@ -1,6 +1,6 @@
 import { validateEntityRecord } from './memory-schema.js';
 import { isUuid } from '../identity.js';
-import { validatePlaceFoundation, effectiveFoundationFacts, filterPlaceFoundationSources } from './place-foundation.js';
+import { validatePlaceFoundation, effectiveFoundationFacts, filterPlaceFoundationSources, coveredPlaceItemIds } from './place-foundation.js';
 import { validQianchuangMapStyle } from '../qianchuang-display-hints.js';
 
 export const PLACE_WORKSPACE_RECORD_ID = 'v3-place-workspace';
@@ -111,6 +111,7 @@ export function filterPlaceMemory(memory, workspace) {
   if (!workspace) return memory;
   const rows = workspace.placesByEntityId ?? {};
   const projectItem = (item, field) => {
+    if(field==='description'&&coveredPlaceItemIds(workspace,item.placeEntityId,'feature').has(item.itemId))return [];
     const row = rows[item.placeEntityId], scope = own(row, field) ? row.scopes[field] : null;
     if (scope && (field === 'parentEntityId' || scope.coveredItemIds.includes(item.itemId) || (item.replacesItemIds ?? []).some(id => scope.coveredItemIds.includes(id)))) return [];
     const refKey = Array.isArray(item.evidenceRefs) ? 'evidenceRefs' : Array.isArray(item.sourceRefs) ? 'sourceRefs' : null;
@@ -141,8 +142,8 @@ export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),me
       if(fact.kind==='place'&&[null,'city','country','scope'].includes(fact.mapLevel))result.mapLevel=fact.mapLevel;
       if(fact.kind==='place'&&own(fact,'facilities'))result.facilities=copy(fact.facilities);
       if(fact.kind==='place')for(const key of ['mapStyle','mapLayout','mapAssetId'])if(own(fact,key))result[key]=fact[key];
-      if(fact.kind==='feature')result.features.push({itemId:fact.itemId,text:fact.text,kind:'stable',source:fact.source});
-      if(fact.kind==='relation')result.relations.push({itemId:fact.itemId,text:fact.text,kind:'relative',referencePlaceEntityIds:[],source:fact.source});
+      if(fact.kind==='feature'&&fact.text)result.features.push({itemId:fact.itemId,text:fact.text,kind:'stable',source:fact.source});
+      if(fact.kind==='relation'&&fact.text)result.relations.push({itemId:fact.itemId,text:fact.text,kind:'relative',referencePlaceEntityIds:[],source:fact.source});
       if(fact.kind==='containment'){
         const prior=snapshot.containments?.find(edge=>edge.placeEntityId===place.entityId);
         if(!prior||(prior.sourceAssistantSeq??0)<=(floorOrder.get(fact.knownFromFloorId)??0))result.parentEntityId=fact.parentEntityId;

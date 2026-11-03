@@ -75,6 +75,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const panel = { host: { hidden: true }, show() { shows += 1; this.host.hidden = false; return { status: 'ready' }; }, close() { closes += 1; this.host.hidden = true; }, setEnabled() {}, openVectorSettings() { vectorSettingsOpened += 1; }, refresh: async () => ({ status: 'ready' }), syncAppearance: () => dayAppearance };
   const stubView = () => ({ mount() {}, activate: async () => ({ status: 'ready' }), deactivate() {} });
   const current = { fabShow: true };
+  const userAvatarProvider=()=>'/User Avatars/live.png';
   let sessionReads = 0; const sessionStateProvider = () => { sessionReads += 1; return { status: 'preparing' }; };
   const prepareSession = async () => ({ status: 'ready' });
   const isSevenDaysLedgerInjectionEnabled = () => true;
@@ -84,7 +85,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   const instance = bootstrap({
     settings: { isEnabled: () => true, get: () => current }, enableFab: true,
     vectorApi, vectorIndex,
-    sessionStateProvider, prepareSession, backendDiagnosticProvider, isSevenDaysLedgerInjectionEnabled, timeRuntime, v3FoundationRuntime: memoryRuntime, pluginVersion: '0.1.9-test',
+    sessionStateProvider, prepareSession, userAvatarProvider, backendDiagnosticProvider, isSevenDaysLedgerInjectionEnabled, timeRuntime, v3FoundationRuntime: memoryRuntime, pluginVersion: '0.1.9-test',
     v3FoundationViewFactory: options => { foundationOptions = options; return stubView(); }, peopleProfilesViewFactory: options => { peopleOptions = options; return stubView(); }, qianshiTimelineViewFactory: options => { qianshiOptions = options; return stubView(); }, qianchuangViewFactory: options => { windowOptions=options;return stubView(); }, qianchuangWorldInfoProvider: async()=>({chatId:'test',candidates:[]}), peopleWorkspaceRuntime: { getState: () => ({}) },
     documentRef: { activeElement: null, defaultView: {}, getElementById: () => null, createElement: () => ({}), documentElement: { append: node => appended.push(node) }, body: { append: node => bodyAppended.push(node) } },
     inlineRenderer: { setAppearance(value) { inlineAppearances.push(value); } },
@@ -97,6 +98,7 @@ test('bootstrap 只挂载一个悬浮球，点击切换面板且总开关同步�
   assert.equal(peopleOptions.dialog.host, dialogHost, '千人头像裁剪应复用 QQJ 弹窗管理器');
   assert.equal(peopleOptions.sessionStateProvider, sessionStateProvider);
   assert.equal(peopleOptions.prepareSession, prepareSession);
+  assert.equal(windowOptions.userAvatarProvider,userAvatarProvider);
   assert.equal(qianshiOptions.runtime, memoryRuntime, '千事必须直接复用完整 memory runtime 快照与现有订阅');
   assert.equal(Object.hasOwn(qianshiOptions, 'settings'), false, '千事时间线不再接收重要标记设置接口');
   assert.equal(panelOptions.qianshiTimelineView.activate instanceof Function, true);

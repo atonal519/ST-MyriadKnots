@@ -1,3 +1,11 @@
+import {isUuid} from '../identity.js';
+
+export function validatePlaceSource(source) {
+ const valid=ref=>ref&&typeof ref==='object'&&['body','worldbook','characterCard'].includes(ref.kind)&&typeof ref.quote==='string'&&ref.quote.length>0&&(ref.kind!=='body'||isUuid(ref.floorId));
+ if(!valid(source)||source.references!==undefined&&(!Array.isArray(source.references)||source.references.some(ref=>!valid(ref)||ref.references!==undefined))||source.replacesItemIds!==undefined&&(!Array.isArray(source.replacesItemIds)||source.replacesItemIds.some(id=>!isUuid(id)))||source.knownFromFloorId!==undefined&&!isUuid(source.knownFromFloorId))throw new TypeError('地点来源格式无效。');
+ return source;
+}
+
 export function locatePlaceQuote(content, quote, { allowWhitespace = false, allowOmission = false } = {}) {
   if (typeof content !== 'string' || typeof quote !== 'string' || !quote.trim()) return null;
   const offset = content.indexOf(quote);

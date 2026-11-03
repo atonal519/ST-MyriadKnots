@@ -17,7 +17,7 @@ const displayText = value => String(value ?? '').replace(/\s+/gu,' ').trim();
 const defaultPlaceMapRole = ({mapLevel=null,parentRole=null}={}) =>
  ['city','country','scope'].includes(mapLevel)?'area':['site','interior'].includes(parentRole)?'interior':'site';
 
-export function createQianchuangView({ runtime, settings, sessionStateProvider = null, prepareSession = null, dialog = null, moduleUrl, loadCityMap = createCityMapLoader({moduleUrl}), loadGenericMap=createGenericMapLoader({moduleUrl}), documentRef = globalThis.document } = {}) {
+export function createQianchuangView({ runtime, settings, sessionStateProvider = null, prepareSession = null, dialog = null, userAvatarProvider = () => null, moduleUrl, loadCityMap = createCityMapLoader({moduleUrl}), loadGenericMap=createGenericMapLoader({moduleUrl}), documentRef = globalThis.document } = {}) {
   if (!runtime || ['getQianchuangSnapshot','prepareCurrent','subscribe'].some(key => typeof runtime[key] !== 'function')) throw new TypeError('千窗 runtime 无效');
   const operationMenus = createOperationMenuController(documentRef);
   const visitMenus = (node, action) => { if (String(node?.className ?? '').split(/\s+/u).includes('qqj-window-operation-menu')) operationMenus[action](node); for (const child of node?.children ?? []) visitMenus(child, action); };
@@ -36,15 +36,65 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   };
   const el = (tag, cls = '', text = '') => { const node = documentRef.createElement(tag); node.className = cls; if (text) node.textContent = text; return node; };
   const button = (cls, text, action) => { const node = el('button', cls, text); node.type = 'button'; node.addEventListener('click', action); return node; };
+  let userAvatar=null;
+  const svgNode=(tag,attributes={})=>{const node=documentRef.createElementNS('http://www.w3.org/2000/svg',tag);for(const[key,value]of Object.entries(attributes))node.setAttribute(key,String(value));return node;};
+  function paintUserAvatar(state,progress){
+    state.progress=progress;
+    const d=state.small.map((point,i)=>(i?'L':'M')+point.map((n,k)=>(n+(state.large[i][k]-n)*progress).toFixed(3)).join(',')).join('')+'Z';state.outline.setAttribute('d',d);state.clipShape.setAttribute('d',d);
+    state.outline.style.fill=`color-mix(in srgb,var(--panel) ${Math.min(100,progress*140)}%,var(--knot))`;
+    state.outline.style.stroke=`color-mix(in srgb,var(--knot) ${progress*100}%,var(--panel))`;
+    const fade=Math.max(0,Math.min(1,(progress-.35)/.6));
+    state.image.style.opacity=String(state.ready?fade:0);state.fallback.style.opacity=String(state.ready?0:fade);state.hole.style.opacity=String(Math.max(0,1-progress*3));
+    state.layer.hidden=progress===0&&!state.open;state.symbol.style.visibility=state.layer.hidden?'':'hidden';
+  }
+  function animateUserAvatar(state,open,immediate=false){
+    const win=documentRef.defaultView;state.open=open;state.marker.setAttribute('aria-expanded',String(open));state.marker.setAttribute('data-avatar-open',String(open));
+    state.marker.setAttribute('aria-label',`${byId.get(state.marker.getAttribute('data-place-id'))?.displayName??'当前位置'}，${open?'收起':'展开'}当前用户头像`);
+    if(state.frame)win?.cancelAnimationFrame(state.frame);state.frame=0;paintUserAvatar(state,state.progress);
+    if(immediate||!win?.requestAnimationFrame||win.matchMedia?.('(prefers-reduced-motion:reduce)').matches){paintUserAvatar(state,open?1:0);return;}
+    const start=state.progress,end=open?1:0,duration=open?260:240,began=win.performance.now();
+    const tick=now=>{const t=Math.min(1,(now-began)/duration);paintUserAvatar(state,start+(end-start)*(1-Math.pow(1-t,3)));state.frame=t<1?win.requestAnimationFrame(tick):0;};
+    state.frame=win.requestAnimationFrame(tick);
+  }
+  function closeUserAvatar(immediate=false,returnFocus=false){
+    if(!userAvatar)return;animateUserAvatar(userAvatar,false,immediate);if(returnFocus)userAvatar.marker.focus?.({preventScroll:true});
+  }
+  function toggleUserAvatar(marker){
+    if(userAvatar?.marker===marker&&userAvatar.open){closeUserAvatar();return;}
+    if(userAvatar?.marker!==marker)closeUserAvatar(true);
+    const symbol=marker.children[0],pin=symbol.getBoundingClientRect(),frame=map.getBoundingClientRect(),host=marker.getBoundingClientRect(),size=pin.width,anchorX=pin.left+pin.width/2-frame.left,anchorY=pin.top+pin.height*22/24-frame.top;
+    if(userAvatar?.marker!==marker){
+      const layer=el('span','qqj-window-user-avatar'),svg=svgNode('svg',{'aria-hidden':'true'}),outline=svgNode('path',{'class':'qqj-window-user-avatar-outline'}),image=svgNode('image',{'class':'qqj-window-user-avatar-image',width:80,height:80,preserveAspectRatio:'xMidYMid slice'}),fallback=svgNode('svg',{'class':'qqj-window-user-avatar-fallback',width:36,height:36,viewBox:'0 0 24 24'}),hole=svgNode('circle',{cx:0,cy:-12*size/24,r:3*size/24});
+      const defs=svgNode('defs'),clip=svgNode('clipPath',{id:'qqj-window-user-avatar-clip',clipPathUnits:'userSpaceOnUse'}),clipShape=svgNode('path'),portrait=svgNode('g',{'clip-path':'url(#qqj-window-user-avatar-clip)'});clip.append(clipShape);defs.append(clip);
+      fallback.innerHTML=qianchuangIcon('place');portrait.append(image,fallback);svg.append(defs,outline,portrait,hole);layer.append(svg);marker.append(layer);
+      userAvatar={marker,symbol,layer,svg,outline,clipShape,image,fallback,hole,small:[],large:[],open:false,progress:0,frame:0,ready:false,url:null,failed:false};
+      const state=userAvatar;image.addEventListener('load',()=>{state.ready=true;state.failed=false;paintUserAvatar(state,state.progress);});image.addEventListener('error',()=>{state.ready=false;state.failed=true;paintUserAvatar(state,state.progress);});
+    }
+    const state=userAvatar,direction=anchorY>=114?'up':frame.height-anchorY>=114?'down':anchorX<frame.width/2?'right':'left',horizontal=direction==='right'||direction==='left',offset=horizontal?Math.max(52,Math.min(frame.height-52,anchorY))-anchorY:Math.max(52,Math.min(frame.width-52,anchorX))-anchorX,dx=direction==='left'?-offset:offset,tail=Math.max(dx-34,Math.min(dx+34,0));
+    const orient=(x,y)=>direction==='up'?[x,y]:direction==='down'?[x,-y]:direction==='right'?[-y,x]:[y,-x];
+    state.layer.style.left=`${pin.left+pin.width/2-host.left}px`;state.layer.style.top=`${pin.top+pin.height*22/24-host.top}px`;
+    const raw=svgNode('path',{d:'M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0Z'}),large=svgNode('path',{d:`M${dx+48} -62 L${dx+48} -28 Q${dx+48} -14 ${dx+34} -14 L${tail+9} -14 L0 0 L${tail-9} -14 L${dx-34} -14 Q${dx-48} -14 ${dx-48} -28 L${dx-48} -96 Q${dx-48} -110 ${dx-34} -110 L${dx+34} -110 Q${dx+48} -110 ${dx+48} -96 Z`});
+    // 两形沿同向轮廓插值，头像尾尖始终留在原图钉尖端。
+    const sample=(path,convert)=>{const length=path.getTotalLength();return Array.from({length:120},(_,i)=>convert(path.getPointAtLength(length*i/120)));};
+    const align=points=>{let start=0;for(let i=1;i<points.length;i++)if(points[i][0]**2+points[i][1]**2<points[start][0]**2+points[start][1]**2)start=i;const aligned=points.slice(start).concat(points.slice(0,start));aligned[0]=[0,0];return aligned;};
+    state.small=align(sample(raw,p=>[(p.x-12)*size/24,(p.y-22)*size/24]));state.large=align(sample(large,p=>orient(p.x,p.y)));
+    const area=points=>points.reduce((sum,p,i)=>{const q=points[(i+1)%points.length];return sum+p[0]*q[1]-p[1]*q[0];},0);if(Math.sign(area(state.small))!==Math.sign(area(state.large)))state.large=[state.large[0],...state.large.slice(1).reverse()];
+    const bounds=[...state.small,...state.large],left=Math.min(...bounds.map(p=>p[0]))-4,top=Math.min(...bounds.map(p=>p[1]))-4,width=Math.max(...bounds.map(p=>p[0]))-left+4,height=Math.max(...bounds.map(p=>p[1]))-top+4;
+    state.svg.setAttribute('viewBox',`${left} ${top} ${width} ${height}`);for(const[key,value]of Object.entries({left,top,width,height}))state.svg.style[key]=`${value}px`;state.hole.setAttribute('cy',String(-12*size/24));
+    const center=orient(dx,-62);state.image.setAttribute('x',String(center[0]-40));state.image.setAttribute('y',String(center[1]-40));state.fallback.setAttribute('x',String(center[0]-18));state.fallback.setAttribute('y',String(center[1]-18));
+    let url=null;try{url=userAvatarProvider();}catch{}url=typeof url==='string'?url.trim():'';
+    if(url!==state.url||state.failed){state.url=url;state.ready=false;state.failed=false;if(url)state.image.setAttribute('href',url);}
+    animateUserAvatar(state,true);
+  }
   function drawBasemap() {
     if(!currentSheet()){assetDrawKey=null;mapGroup.hidden=true;map.replaceChildren(regions,areas,points);copyright.replaceChildren();copyright.hidden=true;return;}
     mapGroup.hidden=false;
     const real=CITY_MAPS[currentSheet()?.assetId],generic=QIANCHUANG_MAP_ASSETS[basemap],asset=real??generic??QIANCHUANG_BASEMAPS[basemap],key=chatId+':'+activeSheetId+':'+(real?.id??basemap);
     if(assetDrawKey===key)return;assetDrawKey=key;
     const geometry=el('div','qqj-window-geometry');
-    map.style.setProperty('--qqj-window-map-aspect',`${asset.width} / ${asset.height}`);map.setAttribute('data-basemap',real?.id??basemap);map.setAttribute('data-map-mode',real?'real':'generic');
+    map.style.setProperty('--qqj-window-map-aspect',`${asset.width} / ${asset.height}`);map.style.setProperty('--qqj-window-map-width',`${Math.min(1,asset.width/asset.height)*100}%`);map.setAttribute('data-basemap',real?.id??basemap);map.setAttribute('data-map-mode',real?'real':'generic');
     map.setAttribute('data-map-library',String(!real&&!!generic));
-    map.replaceChildren(geometry,regions,areas,points);copyright.replaceChildren();copyright.hidden=!real&&basemap!=='modern'&&generic?.id!=='modern-inland';if(!copyright.hidden)copyright.textContent='© OpenStreetMap contributors · ODbL';
+    map.replaceChildren(geometry,regions,areas,points);copyright.replaceChildren();copyright.hidden=!real&&basemap!=='modern'&&generic?.id!=='modern-inland'&&generic?.id!=='palace-courtyard-honmaru';if(!copyright.hidden)copyright.textContent='© OpenStreetMap contributors · ODbL';
     if(real||generic){
       geometry.setAttribute('aria-busy','true');
       void (real?loadCityMap(real.id):loadGenericMap(generic.id)).then(svg=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.innerHTML=svg;geometry.setAttribute('aria-busy','false');},()=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.textContent=real?'城市底图暂时无法读取，可继续浏览地点资料。':'底图暂时无法读取，可继续浏览地点资料。';geometry.setAttribute('aria-busy','false');});
@@ -52,6 +102,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   }
   function selectSheet(id){
     if(!sheets?.sheets.some(sheet=>sheet.id===id))return;
+    closeUserAvatar(true);
     activeSheetId=id;browseScopeId=undefined;query='';search.value='';highlightedMapRootId=null;localSelections.clear();openIds.clear();unassignedOpen=false;markerKey=null;renderData();update();
   }
   function renderSheets(){
@@ -63,7 +114,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   function resetChat(next) {
     if (chatId === next) return;
     if(active && !(preparing && chatId===null && next!==null)) { epoch++; preparing=false; failure=null; }
-    organizationController?.abort();
+    organizationController?.abort();closeUserAvatar(true);userAvatar=null;
     chatId = next;sheets=null;activeSheetId=null;sheetSnapshot=null;displayById=new Map();assetDrawKey=null;sheetSwitcher=null;sheetScrollLeft=0; highlightedMapRootId = null; renderedRevision = null; openIds = new Set(); localSelections = new Map(); unassignedOpen=false;query='';if(search)search.value='';browseScopeId=undefined;browse=null;mapBrowse=null;markerKey=null;positionKey=null;byId = new Map();
     basemap = QIANCHUANG_BASEMAPS[settings?.get?.()?.qianchuangBasemaps?.[chatId]] ? settings.get().qianchuangBasemaps[chatId] : 'modern';
     drawBasemap();
@@ -185,6 +236,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     filterTree();chooseChild(id);
   }
   function selectRoot(id) {
+    closeUserAvatar();
     if(!byId.has(id))return;
     const sheetId=sheets?.placeSheets.get(id);if(sheetId&&sheetId!==activeSheetId)selectSheet(sheetId);
     openIds.clear();unassignedOpen=false;query='';search.value='';
@@ -192,6 +244,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     expandTo(id);
   }
   function selectScope(id) {
+    closeUserAvatar();
     browseScopeId=id;query='';search.value='';highlightedMapRootId=null;localSelections.clear();openIds.clear();unassignedOpen=false;
     if(browse?.scopeId===browseFor(id).scopeId)filterTree();else renderData();update();
   }
@@ -251,6 +304,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     const user=snapshot.userPosition,userAnchor=mapAnchor(user?.placeEntityId);
     const nextMarkerKey=JSON.stringify([activeSheetId,currentSheet()?.assetId??basemap,mapBrowse.groups.map(group=>[group.entityId,byId.get(group.entityId)?.displayName,group.siteIds.map(id=>[id,byId.get(id)?.displayName])]),user?.isCurrent?userAnchor:null]);
     if(nextMarkerKey!==markerKey){
+      closeUserAvatar(true);userAvatar=null;
       markerKey=nextMarkerKey;markers=new Map();visitMenus(areas,'unregister');areas.replaceChildren();points.replaceChildren();
       const real=CITY_MAPS[currentSheet()?.assetId],layout=real?citySchematicLayout(real.id,mapBrowse.groups):qianchuangMapLayout(basemap,mapBrowse.groups),asset=real??QIANCHUANG_MAP_ASSETS[basemap]??QIANCHUANG_BASEMAPS[basemap];
       regions.innerHTML=`<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${layout.filter(region=>region.contour).map(region=>`<path class="qqj-window-region-outline" d="${region.contours.map(ring=>`M${ring.map(point=>point.join(',')).join('L')}Z`).join('')}" fill-rule="evenodd"/>`).join('')}</svg>`;
@@ -261,15 +315,15 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
           label.setAttribute('data-scope-id',region.entityId);label.style.left=`${safe.x}%`;label.style.top=`${safe.y}%`;label.style.width=`${safe.w}%`;label.style.height=`${safe.h}%`;label.style.setProperty('--qqj-window-area-font',`${fontSize}cqw`);areas.append(label);
         }
         for(const {id,x,y} of region.points){
-          const marker=button('qqj-window-marker','',()=>{const current=snapshot.userPosition;if(current?.isCurrent&&mapAnchor(current.placeEntityId)===id)locate(current.placeEntityId);else selectRoot(id);});
-          marker.setAttribute('aria-label',byId.get(id).displayName);marker.setAttribute('data-place-id',id);marker.setAttribute('data-label-align',x<30?'start':x>70?'end':'center');marker.setAttribute('data-label-above',String(y>70));marker.style.left=`${x}%`;marker.style.top=`${y}%`;const isCurrent=user?.isCurrent&&userAnchor===id,symbol=el('span',isCurrent?'qqj-window-current-pin':'qqj-window-dot');if(isCurrent){symbol.innerHTML=qianchuangIcon('place');symbol.setAttribute('role','img');symbol.setAttribute('aria-label','当前位置');symbol.setAttribute('title','当前位置');}marker.append(symbol,el('span','qqj-window-marker-label',byId.get(id).displayName));points.append(marker);markers.set(id,marker);
+          const marker=button('qqj-window-marker','',()=>{const current=snapshot.userPosition;if(current?.isCurrent&&mapAnchor(current.placeEntityId)===id){if(userAvatar?.marker!==marker||!userAvatar.open)selectRoot(current.placeEntityId);toggleUserAvatar(marker);}else selectRoot(id);});
+          marker.setAttribute('aria-label',byId.get(id).displayName);marker.setAttribute('data-place-id',id);marker.setAttribute('data-label-align',x<30?'start':x>70?'end':'center');marker.setAttribute('data-label-above',String(y>70));marker.style.left=`${x}%`;marker.style.top=`${y}%`;const isCurrent=user?.isCurrent&&userAnchor===id,symbol=el('span',isCurrent?'qqj-window-current-pin':'qqj-window-dot');if(isCurrent){marker.setAttribute('aria-expanded','false');marker.setAttribute('aria-label',`${byId.get(id).displayName}，展开当前用户头像`);symbol.innerHTML=qianchuangIcon('place');symbol.setAttribute('role','img');symbol.setAttribute('aria-label','当前位置');symbol.setAttribute('title','当前位置');}marker.append(symbol,el('span','qqj-window-marker-label',byId.get(id).displayName));points.append(marker);markers.set(id,marker);
         }
       }
       map.classList?.toggle?.('empty',!mapBrowse.pinIds.length);if(!mapBrowse.pinIds.length)points.append(el('p','qqj-window-map-empty',snapshot.places.length?'暂无场地点位，可浏览下方地点资料。':'尚无已记录地点。'));
     }
     const nextPositionKey=JSON.stringify([user,byId.get(user?.placeEntityId)?.displayName]);
     if(nextPositionKey!==positionKey){positionKey=nextPositionKey;position.replaceChildren();
-      if(user?.placeEntityId&&byId.has(user.placeEntityId)&&user.status!=='leftUnknown')position.append(button('qqj-window-position',`${user.isCurrent?'当前位置':'上次位置'} · ${byId.get(user.placeEntityId).displayName}`,()=>locate(user.placeEntityId)));
+      if(user?.placeEntityId&&byId.has(user.placeEntityId)&&user.status!=='leftUnknown')position.append(button('qqj-window-position',`${user.isCurrent?'当前位置':'上次位置'} · ${byId.get(user.placeEntityId).displayName}`,()=>locate(snapshot.userPosition?.placeEntityId)));
       if(user?.status==='leftUnknown')position.append(el('p','settings-hint','已离开，去向未知。'));position.hidden=!position.children.length;
     }
     renderTree();orphanEntries=new Map();
@@ -292,11 +346,11 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     health.textContent=copy;
   }
   function mount(target) {
-    operationMenus.deactivate();container=target;page=el('section','qqj-window-page');health=el('div','qqj-page-health');toolbar=el('div','qqj-window-toolbar');navigation=el('div','qqj-window-navigation');
+    closeUserAvatar(true);userAvatar=null;operationMenus.deactivate();container=target;page=el('section','qqj-window-page');health=el('div','qqj-page-health');toolbar=el('div','qqj-window-toolbar');navigation=el('div','qqj-window-navigation');
     const searchRow=el('div','qqj-history-search');search=el('input','settings-input qqj-history-search-input');search.type='search';search.value=query;search.placeholder='搜索地点、描述或层级';search.setAttribute('aria-label',search.placeholder);
     searchClear=button('secondary-action qqj-history-search-clear','清除',()=>{selectScope(undefined);search.focus?.({preventScroll:true});});searchClear.hidden=!query;
     search.addEventListener('input',()=>{query=search.value;highlightedMapRootId=null;localSelections.clear();openIds.clear();const scope=browseFor(undefined).scopeId;if(browse?.scopeId!==scope){browseScopeId=undefined;renderData();update();}else filterTree();});searchRow.append(search,searchClear);
-    position=el('div','qqj-window-user-position');const actions=el('div','qqj-window-toolbar-actions');toolbar.append(position,actions);page.addEventListener('click',clearOnBlank);
+    position=el('div','qqj-window-user-position');const actions=el('div','qqj-window-toolbar-actions');toolbar.append(position,actions);page.addEventListener('click',clearOnBlank);page.addEventListener('keydown',event=>{if(event.key==='Escape'&&userAvatar?.open){event.preventDefault?.();event.stopPropagation?.();closeUserAvatar(false,true);}});
     if(runtime.organizePlaces&&dialog?.confirm){
       organizeAction=button('secondary-action compact qqj-window-organize',organizationController?'取消整理':'整理',async()=>{
         if(organizationController){organizationController.abort();return;}
@@ -310,7 +364,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     if(dialog?.custom&&runtime.createPlace){const add=button('secondary-action compact qqj-window-add','新增',()=>openPlaceEditor());add.setAttribute('data-place-create','');actions.append(add);}
     map=el('div','qqj-window-map');regions=el('div','qqj-window-regions');areas=el('div','qqj-window-areas');points=el('div','qqj-window-points');copyright=el('small','qqj-window-copyright');contents=el('div','qqj-window-contents');
     markerKey=null;positionKey=null;assetDrawKey=null;rootRegion=el('section','qqj-window-active-place');drawer=el('details','qqj-window-unassigned');drawerHead=el('summary','qqj-window-unassigned-summary');directory=el('div','qqj-window-directory');drawerHead.addEventListener('click',()=>{unassignedOpen=!drawer.open;});drawer.addEventListener('toggle',()=>{unassignedOpen=drawer.open;});drawer.append(drawerHead,directory);contents.append(rootRegion,drawer);
-    mapGroup=el('div','qqj-window-map-group');mapGroup.append(map,copyright);
+    mapGroup=el('div','qqj-window-map-group');const viewport=el('div','qqj-window-map-viewport');viewport.append(map);mapGroup.append(viewport,copyright);
     sheetRow=el('div','qqj-window-sheet-row');page.append(health,searchRow,toolbar,sheetRow,mapGroup,navigation,contents);container.replaceChildren(page);drawBasemap();renderedRevision=null;update();
   }
   async function activate() {
@@ -327,6 +381,6 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     }catch(error){if(active&&mine===epoch)failure=publicErrorMessage(error,{fallback:'地点资料暂时无法读取，请重试。'});return {status:'error'};}
     finally{if(active&&mine===epoch){preparing=false;update();}}
   }
-  function deactivate(){if(sheetSwitcher)sheetScrollLeft=Number(sheetSwitcher.scrollLeft)||0;sheetSwitcher=null;operationMenus.deactivate();active=false;epoch++;unsubscribe?.();unsubscribe=null;unsubscribeCatalog?.();unsubscribeCatalog=null;}
+  function deactivate(){closeUserAvatar(true);if(sheetSwitcher)sheetScrollLeft=Number(sheetSwitcher.scrollLeft)||0;sheetSwitcher=null;operationMenus.deactivate();active=false;epoch++;unsubscribe?.();unsubscribe=null;unsubscribeCatalog?.();unsubscribeCatalog=null;}
   return Object.freeze({mount,activate,deactivate});
 }

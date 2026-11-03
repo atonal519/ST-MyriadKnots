@@ -1,3 +1,4 @@
+import {validatePlaceSource} from './place-evidence.js';
 import { validateIdentityBriefSource, identityFactsText } from './identity-brief.js';
 import { isUuid, sha256 } from '../identity.js';
 import { validateFoundationGraph } from './foundation-schema.js';
@@ -166,29 +167,35 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
     if (spatial.schemaVersion !== 1) fail('V3_FLOORMEMORY_INVALID', 'spatialFacts.schemaVersion');
     const containments = boundedArray(spatial.containments, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.containments', 40);
     const positions = boundedArray(spatial.positions, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.positions', 40);
-    if (Object.hasOwn(spatial, 'features')) boundedArray(spatial.features, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.features', 40).forEach((item, index) => {
+    if (Object.hasOwn(spatial, 'features')) {
+     const rows=array(spatial.features,'V3_FLOORMEMORY_INVALID','spatialFacts.features');if(rows.filter(item=>!Object.hasOwn(item??{},'source')).length>40)fail('V3_FLOORMEMORY_INVALID','spatialFacts.features');
+     rows.forEach((item, index) => {
       const path = `spatialFacts.features[${index}]`;
-      itemCommon(item, ['itemId', 'placeEntityId', ...(Object.hasOwn(item, 'kind') ? ['kind'] : []), 'text', 'replacesItemIds', 'evidenceRefs'], path);
+      itemCommon(item, ['itemId', 'placeEntityId', ...(Object.hasOwn(item, 'kind') ? ['kind'] : []), ...(Object.hasOwn(item,'source')?['source']:[]), 'text', 'replacesItemIds', 'evidenceRefs'], path);
       if (Object.hasOwn(item, 'kind')) enumValue(item.kind, ['stable', 'temporary'], 'V3_FLOORMEMORY_INVALID', `${path}.kind`);
       uuid(item.placeEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`);
-      text(item.text, 'V3_FLOORMEMORY_INVALID', `${path}.text`, { max: 1000 });
+      if(Object.hasOwn(item,'source')){try{validatePlaceSource(item.source);}catch{fail('V3_FLOORMEMORY_INVALID',`${path}.source`);}}
+      if(item.source){if(typeof item.text!=='string')fail('V3_FLOORMEMORY_INVALID',`${path}.text`);}else text(item.text, 'V3_FLOORMEMORY_INVALID', `${path}.text`, { max: 1000 });
       const replaces = uuidList(item.replacesItemIds, `${path}.replacesItemIds`);
       if (replaces.includes(item.itemId) || new Set(replaces).size !== replaces.length) fail('V3_FLOORMEMORY_INVALID', `${path}.replacesItemIds`);
       const refs = evidenceList(item.evidenceRefs, sourceFloorIds, `${path}.evidenceRefs`, { required: true });
       if (refs.some(ref => ref.evidenceMode === 'privateCognition' || ref.evidenceMode === 'interpretation')) fail('V3_FLOORMEMORY_INVALID', `${path}.evidenceRefs`);
-    });
-    if (Object.hasOwn(spatial, 'relations')) boundedArray(spatial.relations, 'V3_FLOORMEMORY_INVALID', 'spatialFacts.relations', 40).forEach((item, index) => {
+    });}
+    if (Object.hasOwn(spatial, 'relations')) {
+     const rows=array(spatial.relations,'V3_FLOORMEMORY_INVALID','spatialFacts.relations');if(rows.filter(item=>!Object.hasOwn(item??{},'source')).length>40)fail('V3_FLOORMEMORY_INVALID','spatialFacts.relations');
+     rows.forEach((item, index) => {
       const path = `spatialFacts.relations[${index}]`;
-      itemCommon(item, ['itemId', 'kind', 'placeEntityId', 'referencePlaceEntityIds', 'text', 'evidenceRefs'], path);
+      itemCommon(item, ['itemId', 'kind', 'placeEntityId', 'referencePlaceEntityIds', ...(Object.hasOwn(item,'source')?['source','replacesItemIds']:[]), 'text', 'evidenceRefs'], path);
+      if(Object.hasOwn(item,'source')){try{validatePlaceSource(item.source);}catch{fail('V3_FLOORMEMORY_INVALID',`${path}.source`);}uuidList(item.replacesItemIds,`${path}.replacesItemIds`);}
       enumValue(item.kind, ['locatedIn', 'onFloor', 'relative'], 'V3_FLOORMEMORY_INVALID', `${path}.kind`);
       uuid(item.placeEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`);
       const refs = uuidList(item.referencePlaceEntityIds, `${path}.referencePlaceEntityIds`);
       if (refs.length > 2 || new Set(refs).size !== refs.length || refs.includes(item.placeEntityId)
         || item.kind === 'locatedIn' && refs.length !== 1 || item.kind === 'onFloor' && refs.length > 1) fail('V3_FLOORMEMORY_INVALID', path);
-      text(item.text, 'V3_FLOORMEMORY_INVALID', `${path}.text`, { max: 1000 });
+      if(item.source){if(typeof item.text!=='string')fail('V3_FLOORMEMORY_INVALID',`${path}.text`);}else text(item.text, 'V3_FLOORMEMORY_INVALID', `${path}.text`, { max: 1000 });
       const evidence = evidenceList(item.evidenceRefs, sourceFloorIds, `${path}.evidenceRefs`, { required: true });
       if (evidence.some(ref => ['privateCognition', 'interpretation'].includes(ref.evidenceMode))) fail('V3_FLOORMEMORY_INVALID', `${path}.evidenceRefs`);
-    });
+    });}
     const parentBySource = new Map();
     for (const [index, item] of containments.entries()) {
       const path = `spatialFacts.containments[${index}]`;
