@@ -278,6 +278,9 @@ test('当前描述重复归并继承旧覆盖，省略和人工空值不解除�
  const workspace=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),first.foundationPatch),omitted=await invoke({mapRole:'interior'},[fact]);assert.deepEqual(foundation.mergePlaceFoundation(workspace,omitted.foundationPatch).foundation.facts.filter(f=>f.kind==='feature'),workspace.foundation.facts.filter(f=>f.kind==='feature'));
  const manual=await invoke({description:'不应反改',relations:['不应反改']},[fact],{description:'',relations:''});assert.equal(manual.foundationPatch.facts.some(f=>['feature','relation'].includes(f.kind)),false);
  const empty=await invoke({description:'',relations:[]},[fact]);assert.ok(empty.foundationPatch.facts.find(f=>f.kind==='feature').replacesItemIds.includes(fact.itemId));
+ const duplicate={itemId:id(421),placeEntityId:id(2),kind:'feature',text:fact.text,source:{kind:'worldbook',sourceName:'客房资料',locator:'entry:2',quote:'床、卫浴和窗帘。'}},independent={...duplicate,itemId:id(422),text:'新增独立书架。'};
+ const consolidated=await invoke({description:fact.text},[fact,duplicate]),merged=consolidated.foundationPatch.facts.find(f=>f.kind==='feature');
+ assert.equal(merged.itemId,fact.itemId);assert.ok(merged.replacesItemIds.includes(duplicate.itemId),'覆盖本次已读的独立同文旧项');assert.equal(merged.replacesItemIds.includes(independent.itemId),false,'未提供给本次请求的新设施不被覆盖');assert.ok(merged.source.references.some(ref=>ref.locator==='entry:2'));
 });
 
 

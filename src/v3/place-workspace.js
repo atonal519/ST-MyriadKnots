@@ -111,7 +111,7 @@ export function filterPlaceMemory(memory, workspace) {
   if (!workspace) return memory;
   const rows = workspace.placesByEntityId ?? {};
   const projectItem = (item, field) => {
-    if(field==='description'&&coveredPlaceItemIds(workspace,item.placeEntityId,'feature').has(item.itemId))return [];
+    if(['description','relations'].includes(field)&&coveredPlaceItemIds(workspace,item.placeEntityId,field==='description'?'feature':'relation').has(item.itemId))return [];
     const row = rows[item.placeEntityId], scope = own(row, field) ? row.scopes[field] : null;
     if (scope && (field === 'parentEntityId' || scope.coveredItemIds.includes(item.itemId) || (item.replacesItemIds ?? []).some(id => scope.coveredItemIds.includes(id)))) return [];
     const refKey = Array.isArray(item.evidenceRefs) ? 'evidenceRefs' : Array.isArray(item.sourceRefs) ? 'sourceRefs' : null;
@@ -173,7 +173,7 @@ export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),me
   return Object.freeze({ ...snapshot, ...(validQianchuangMapStyle(workspace.mapStyle)?{mapStyle:workspace.mapStyle}:{}), places, mapRootIds: places.filter(place => !place.parentEntityId && place.mapRootEntityId === place.entityId).map(place => place.entityId),
     unassignedPlaceIds: places.filter(place => !place.mapRootEntityId).map(place => place.entityId),
     containments: places.filter(place => place.parentEntityId).map(place => ({ placeEntityId: place.entityId, parentEntityId: place.parentEntityId, manual: own(rows[place.entityId], 'parentEntityId') })),
-    userPosition: snapshot.userPosition ? { ...snapshot.userPosition, placeEntityId: user?.entityId ?? null, mapRootEntityId: user?.mapRootEntityId ?? null, isCurrent: Boolean(user?.mapRootEntityId && snapshot.userPosition.isCurrent) } : snapshot.userPosition });
+    userPosition: snapshot.userPosition ? { ...snapshot.userPosition, placeEntityId: user?.entityId ?? null, mapRootEntityId: user?.mapRootEntityId ?? null, isCurrent: Boolean(user?.mapRootEntityId && snapshot.userPosition.status === 'confirmed' && snapshot.userPosition.atSummarizedEnd === true) } : snapshot.userPosition });
 }
 
 export function withCreatedPlaces(entities = [], workspace) {

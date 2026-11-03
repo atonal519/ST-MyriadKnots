@@ -762,10 +762,17 @@ function placeFeatureCandidates(source, queryContext, entityById, queries, memor
       priority: 125, _rankText: `${place} ${feature.text}`, _coreText: feature.text, _entityText: place, _summary: '',
       _subjectKey: feature.placeEntityId, _visibilityKey: currentPlaceConfirmed ? 'placeFeature' : 'placeDescription', _statusKey: feature.itemId, _sourceOrder: 200000 + index, _chronology: [], _poolGroup: 'fact', _contextScore: .5 };
   });
-  for (const [index, fact] of effectiveFoundationFacts(source.placeWorkspace,memories).filter(fact => fact.kind !== 'place' && places.has(fact.placeEntityId)).entries()) {
+  const foundationGroups=new Map();
+  for(const fact of effectiveFoundationFacts(source.placeWorkspace,memories).filter(fact=>fact.kind!=='place'&&places.has(fact.placeEntityId))){
+    const key=JSON.stringify([fact.placeEntityId,fact.kind,fact.kind==='containment'?fact.parentEntityId:fact.text,fact.relationKind??null,fact.referencePlaceEntityIds??[]]);
+    const group=foundationGroups.get(key)??[];group.push(fact);foundationGroups.set(key,group);
+  }
+  for (const [index, group] of [...foundationGroups.values()].entries()) {
+    const fact=group[0],references=[...new Map(group.flatMap(fact=>fact.source?.references??(fact.source?[fact.source]:[])).map(ref=>[JSON.stringify(ref),ref])).values()];
+    const provenance=group.length>1?{itemIds:[...new Set(group.map(fact=>fact.itemId))],source:references.length?{...fact.source,references}:fact.source}:{source:fact.source};
     const place = entityName(fact.placeEntityId, entityById), text = fact.kind === 'containment' ? `所属地点：${entityName(fact.parentEntityId, entityById)}` : fact.text;
     candidates.push({ category: 'objective', kind: 'placeFoundation', placeEntityId: fact.placeEntityId, itemId: fact.itemId,
-      text: `${place}：${text}`, source: fact.source, floorId: null, floorMemoryId: null, assistantSeq: 0, priority: 120,
+      text: `${place}：${text}`, ...provenance, floorId: null, floorMemoryId: null, assistantSeq: 0, priority: 120,
       _rankText: `${place} ${text}`, _coreText: text, _entityText: place, _summary: '', _subjectKey: fact.placeEntityId,
       _visibilityKey: 'placeFoundation', _statusKey: fact.itemId, _sourceOrder: 250000 + index, _chronology: [], _poolGroup: 'fact', _contextScore: .5 });
   }

@@ -81,6 +81,42 @@ test('最新已摘要楼的user confirmed才标当前，且沿真实包含定位
  assert.equal(snapshot.userPosition.sourceAssistantSeq,3);assert.equal(snapshot.userPosition.mapRootEntityId,id(1));
 });
 
+test('人工登记相同父级后，最新室内位置按最终父树保持当前',()=>{
+ const value=graph([memory(1,{containments:[edge(300,2,1)]}),memory(3,{positions:[position(301,2,3)]})],people);
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:id(90),placesByEntityId:{[id(2)]:{parentEntityId:id(1),scopes:{parentEntityId:{knownThroughFloorId:id(102),coveredFloorIds:[id(101),id(102)],coveredItemIds:[id(300)]}}}},deletionsByEntityId:{}};
+ const before=structuredClone({value,workspace});assert.equal(project(value).userPosition.isCurrent,true);
+ const snapshot=project(value,{identityProjection:{placeWorkspace:workspace}});
+ assert.equal(snapshot.places.find(place=>place.entityId===id(2)).parentEntityId,id(1));
+ assert.equal(snapshot.userPosition.placeEntityId,id(2));assert.equal(snapshot.userPosition.mapRootEntityId,id(1));
+ assert.equal(snapshot.userPosition.status,'confirmed');assert.equal(snapshot.userPosition.atSummarizedEnd,true);assert.equal(snapshot.userPosition.isCurrent,true);
+ assert.deepEqual({value,workspace},before);
+});
+
+test('仅整理父树恢复室内归属后，最新确认位置可成为当前',()=>{
+ const value=graph([memory(1),memory(3,{positions:[position(301,2,3)]})],people);
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:id(90),placesByEntityId:{},deletionsByEntityId:{},foundation:{schemaVersion:1,entities:[],facts:[{kind:'containment',itemId:id(302),placeEntityId:id(2),parentEntityId:id(1),knownFromFloorId:id(101),source:{kind:'worldbook',sourceName:'示例地点',locator:'entry:1',quote:'青石馆内设书房。'}}]}};
+ assert.equal(project(value).userPosition.isCurrent,false);
+ const snapshot=project(value,{identityProjection:{placeWorkspace:workspace}});
+ assert.equal(snapshot.userPosition.placeEntityId,id(2));assert.equal(snapshot.userPosition.mapRootEntityId,id(1));assert.equal(snapshot.userPosition.isCurrent,true);
+});
+
+test('最终父树恢复不点亮旧楼、旧位置、未知、歧义、删除或范围外位置',()=>{
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:id(90),placesByEntityId:{[id(2)]:{parentEntityId:id(1),scopes:{parentEntityId:{knownThroughFloorId:id(101),coveredFloorIds:[id(101)],coveredItemIds:[]}}}},deletionsByEntityId:{}};
+ const cases=[
+  {name:'旧楼confirmed',memories:[memory(1,{positions:[position(301,2)]}),memory(3,{features:[feature(302,2,'书桌',3)]})]},
+  {name:'lastSeen',memories:[memory(3,{positions:[position(301,2,3,'lastSeen')]})]},
+  {name:'leftUnknown',memories:[memory(3,{positions:[position(301,null,3,'leftUnknown')]})]},
+  {name:'同楼歧义',memories:[memory(3,{positions:[position(301,2,3),position(302,3,3)]})]},
+  {name:'删除位置',memories:[memory(3,{positions:[position(301,2,3)]})],deletedEntityIds:[id(2)]},
+  {name:'删除父级',memories:[memory(3,{positions:[position(301,2,3)]})],deletedEntityIds:[id(1)]},
+  {name:'有限历史不读未来位置',memories:[memory(1,{features:[feature(300,2,'书桌')]}),memory(3,{positions:[position(301,2,3)]})],throughAssistantSeq:2},
+ ];
+ for(const {name,memories,deletedEntityIds,throughAssistantSeq}of cases){
+  const snapshot=project(graph(memories,people),{identityProjection:{placeWorkspace:workspace,deletedEntityIds},...(throughAssistantSeq?{throughAssistantSeq}:{})});
+  assert.equal(snapshot.userPosition.isCurrent,false,name);
+ }
+});
+
 test('更早user位置仅为上次位置，最新NPC或场景地点不会取代它',()=>{
  const value=graph([memory(1,{positions:[position(300,1)]}),memory(2,{positions:[position(301,3,2,'confirmed',10)]},{locations:[{entityId:id(3),name:'别处',change:'present',participantEntityIds:[id(10)],evidenceRefs:[ref(2)]}]})],people);
  const snapshot=project(value);assert.equal(snapshot.userPosition.placeEntityId,id(1));assert.equal(snapshot.userPosition.isCurrent,false);

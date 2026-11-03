@@ -5,6 +5,12 @@ import * as place from '../src/v3/place-workspace.js';
 const chat='11111111-1111-4111-8111-111111111111',room='22222222-2222-4222-8222-222222222222',parent='33333333-3333-4333-8333-333333333333';
 const floor='44444444-4444-4444-8444-444444444444',next='55555555-5555-4555-8555-555555555555';
 const workspace=()=>({schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:chat,placesByEntityId:{[room]:{scopes:Object.fromEntries(['name','description','relations','parentEntityId'].map(key=>[key,{knownThroughFloorId:floor,coveredFloorIds:[floor],coveredItemIds:['old']}])),name:'校准房间',description:'独立卫浴',relations:'走廊末端',parentEntityId:parent}},deletionsByEntityId:{}});
+test('自动方位覆盖沿共享材料过滤，有限历史仍读旧方位且独立新项保留',()=>{
+ const memory={floorId:floor,spatialFacts:{relations:[{itemId:'old-relation',placeEntityId:room,kind:'relative',text:'旧方位',evidenceRefs:[{floorId:floor}]},{itemId:'independent-relation',placeEntityId:room,kind:'relative',text:'另一个出口',evidenceRefs:[{floorId:floor}]}]}};
+ const data={...workspace(),placesByEntityId:{},foundation:{schemaVersion:1,entities:[],facts:[{itemId:parent,kind:'relation',placeEntityId:room,text:'走廊末端',knownFromFloorId:next,replacesItemIds:['old-relation'],source:{kind:'body',floorId:next,quote:'走廊末端'}}]}};
+ assert.deepEqual(place.filterPlaceMemory(memory,data).spatialFacts.relations.map(r=>r.itemId),['independent-relation']);
+ const historical=place.placeWorkspaceForPrefix(data,new Set([floor]));assert.deepEqual(place.filterPlaceMemory(memory,historical).spatialFacts.relations.map(r=>r.itemId),['old-relation','independent-relation']);assert.equal(memory.spatialFacts.relations.length,2);
+});
 test('地点CAS保存重载与冷读缓存按chat隔离，人工空值保留',async()=>{
  const records=new Map();let reads=0,writes=0;const client={async get(c,id){reads++;if(!records.has(c))throw Object.assign(Error('missing'),{status:404});return structuredClone(records.get(c));},async put(c,id,data,revision){writes++;const old=records.get(c);assert.equal(revision,old?.revision??0);const r={data:structuredClone(data),revision:revision+1};records.set(c,r);return r;}};
  const store=place.createPlaceWorkspaceStore({client});assert.equal((await store.read({chatId:chat})).revision,0);await store.read({chatId:chat});assert.equal(reads,1);
@@ -22,6 +28,11 @@ test('人工描述/方位清空无旧事实，父级调整和删除保留孩子'
  const base={status:'ready',chatId:chat,places:[{entityId:parent,displayName:'楼',features:[],relations:[],parentEntityId:null,childEntityIds:[room]},{entityId:room,displayName:'房',features:[],relations:[],parentEntityId:parent,childEntityIds:[]}],mapRootIds:[parent],unassignedPlaceIds:[],userPosition:{placeEntityId:room}};
  const current=workspace();current.placesByEntityId[room].description='';current.placesByEntityId[room].relations='';current.placesByEntityId[room].parentEntityId=null;current.deletionsByEntityId={[parent]:{coveredFloorIds:[floor]}};base.places=base.places.filter(place=>place.entityId!==parent);const result=place.applyPlaceSnapshot(base,current);
  assert.equal(result.places.length,1);assert.equal(result.places[0].parentEntityId,null);assert.equal(result.places[0].displayName,'校准房间');assert.deepEqual(result.places[0].features,[]);assert.deepEqual(result.places[0].relations,[]);assert.deepEqual(result.mapRootIds,[room]);assert.deepEqual(result.unassignedPlaceIds,[]);
+});
+test('临时位置DTO没有摘要末楼时点时，恢复父树不推为当前',()=>{
+ const base={chatId:chat,places:[{entityId:parent,features:[],relations:[],parentEntityId:null,childEntityIds:[]},{entityId:room,features:[],relations:[],parentEntityId:null,childEntityIds:[]}],userPosition:{status:'confirmed',placeEntityId:room,isCurrent:true}};
+ const result=place.applyPlaceSnapshot(base,workspace());
+ assert.equal(result.userPosition.mapRootEntityId,parent);assert.equal(result.userPosition.isCurrent,false);
 });
 
 test('后续只编辑方位不会推进旧描述覆盖范围',()=>{const current=workspace();current.placesByEntityId[room].scopes.relations={knownThroughFloorId:next,coveredFloorIds:[floor,next],coveredItemIds:['old','new']};const newer={floorId:next,spatialFacts:{features:[{itemId:'new',placeEntityId:room,text:'新增书桌',evidenceRefs:[{floorId:next}]}],relations:[]}};assert.equal(place.filterPlaceMemory(newer,current).spatialFacts.features[0].text,'新增书桌');});

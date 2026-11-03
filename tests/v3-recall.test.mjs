@@ -4721,7 +4721,7 @@ test('schema18 continuity-v19 历史回执按旧签名读取，当前roll仅迁�
 });
 
 test('schema18 continuity-v20 历史回执按原签名读取，当前roll仅迁移重选一次到当前策略', async () => {
-  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v26');
+  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v27');
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
@@ -4738,13 +4738,21 @@ test('schema18 continuity-v20 历史回执按原签名读取，当前roll仅迁�
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   const migrated = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(selectorCalls, 2, 'v20旧冻结回执只触发一次当前选材');
-  assert.equal(migrated.strategyVersion, 'continuity-v26');
+  assert.equal(migrated.strategyVersion, 'continuity-v27');
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, '新策略回执后续roll仍冻结复用');
 });
 
+test('continuity-v26旧选材只读保签名，下一次正常生成重选一次后复用v27',async()=>{
+ assert.equal(RECALL_STRATEGY_VERSION,'continuity-v27');let selections=0;
+ const h=createRuntimeHarness({selector:input=>{selections++;return selectRecall(input);}});await h.runtime.intercept(h.chat,12000,null,'normal');
+ const old=structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);old.strategyVersion='continuity-v26';old.receiptFingerprint=await receiptFingerprint(old);h.userMessage.extra[RECALL_RECEIPT_KEY]=old;h.runtime.invalidate('simulateReload');
+ const restored=await h.runtime.restorePersistedReceipt();assert.equal(restored.lastRecall.legacyReadOnly,true);assert.equal(restored.lastRecall.strategyVersion,'continuity-v26');assert.equal(selections,1,'只读展示不增加选材');assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].receiptFingerprint,old.receiptFingerprint);
+ await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion,'continuity-v27');await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);
+});
+
 test('schema18 continuity-v21 历史回执保留原签名，只迁移重选一次到当前策略', async () => {
-  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v26');
+  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v27');
   let selectorCalls = 0, projectionVersion = 4;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); },
     qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion,
@@ -4766,7 +4774,7 @@ test('schema18 continuity-v21 历史回执保留原签名，只迁移重选一�
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   const migrated = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(selectorCalls, 2, '旧v21回执仅触发一次正常选材');
-  assert.equal(migrated.strategyVersion, 'continuity-v26');
+  assert.equal(migrated.strategyVersion, 'continuity-v27');
   assert.equal(migrated.qianshiProgress.projectionVersion, 5, '一次正常重选采用新投影');
   assert.match(migrated.qianshiProgress.text, /当前投影下的已选事项/u);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
@@ -4774,7 +4782,7 @@ test('schema18 continuity-v21 历史回执保留原签名，只迁移重选一�
 });
 
 test('schema18 continuity-v22 历史回执保留原签名，只迁移重选一次到当前策略', async () => {
-  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v26');
+  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v27');
   let selectorCalls = 0, projectionVersion = 4;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); },
     qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion,
@@ -4796,7 +4804,7 @@ test('schema18 continuity-v22 历史回执保留原签名，只迁移重选一�
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   const migrated = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(selectorCalls, 2, '旧v22回执仅触发一次正常选材');
-  assert.equal(migrated.strategyVersion, 'continuity-v26');
+  assert.equal(migrated.strategyVersion, 'continuity-v27');
   assert.equal(migrated.qianshiProgress.projectionVersion, 5, '一次正常重选采用新投影');
   assert.match(migrated.qianshiProgress.text, /当前投影下的已选事项/u);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
@@ -8423,6 +8431,27 @@ test('地点方位人工一条替换旧三条并进入真实候选/注入，清�
   workspace.placesByEntityId[room].relations = '';
   const cleared = await projectRecallSource(graph, () => new Date(NOW), null, null, {}, false, { placeWorkspace: workspace, placeWorkspaceRevision: 2 });
   assert.equal(buildRecallHistoryCandidatePool({ source: cleared, queryContext }).candidates.some(c => ['manualPlace','spatialRelation'].includes(c.value.kind)), false);
+});
+
+test('当前地点资料同文只占一席并保全部ID来源，异类与不同方位参照不合并',()=>{
+ const room='22223333-2222-4222-8222-222222222222',source=selectorSource(),text='设有床和卫浴。';
+ source.entities.push({entityId:room,displayName:'示例房间',aliases:[],entityType:'place',specialRole:'none'});
+ const facts=[1,2,3].map(n=>({itemId:`same-${n}`,kind:'feature',placeEntityId:room,text,source:{kind:'worldbook',locator:`entry:${n}`,quote:`来源${n}`}}));
+ facts.push({itemId:'direction-a',kind:'relation',placeEntityId:room,text,relationKind:'relative',referencePlaceEntityIds:[PERSON],source:facts[0].source},{itemId:'direction-b',kind:'relation',placeEntityId:room,text,relationKind:'relative',referencePlaceEntityIds:[ITEM],source:facts[1].source});
+ source.placeWorkspace={placesByEntityId:{},foundation:{entities:[],facts}};
+ const rows=historySelectionContext(source,{text:'示例房间',latestUserText:'示例房间'}).facts.filter(f=>f.kind==='placeFoundation');
+ assert.equal(rows.length,3);const merged=rows.find(r=>r.itemIds?.length===3);assert.ok(merged);assert.deepEqual(new Set(merged.itemIds),new Set(['same-1','same-2','same-3']));assert.deepEqual(new Set(merged.source.references.map(s=>s.locator)),new Set(['entry:1','entry:2','entry:3']));
+});
+
+test('自动当前方位覆盖旧五条进入正式召回DTO与候选，显式历史前缀仍可读原五条',async()=>{
+ const room='22223333-2222-4222-8222-222222222222',graph=reachable(),ids=[1,2,3,4,5].map(n=>`0000000${n}-2222-4222-8222-222222222222`);
+ graph.entities.push({...graph.entities[0],id:room,entityType:'place',specialRole:'none',displayName:'示例客房',aliases:[]});
+ graph.floorMemories[0].spatialFacts={schemaVersion:1,features:[],positions:[],containments:[],relations:ids.map((itemId,i)=>({itemId,placeEntityId:room,kind:'relative',referencePlaceEntityIds:[],text:`旧方位${i}`,evidenceRefs:[{floorId:FLOOR1,quotedText:`旧方位${i}`,occurrence:1,evidenceMode:'explicit'}]}))};
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:CHAT,placesByEntityId:{},deletionsByEntityId:{},foundation:{schemaVersion:1,entities:[],facts:[{itemId:ITEM,kind:'relation',placeEntityId:room,text:'走廊末端。',knownFromFloorId:FLOOR2,replacesItemIds:ids,source:{kind:'body',floorId:FLOOR2,quote:'客房在走廊末端。'}}]}};
+ const queryContext={text:'示例客房方位',latestUserText:'示例客房方位'},current=await projectRecallSource(graph,()=>new Date(NOW),null,null,{},false,{placeWorkspace:workspace});
+ assert.equal(current.floorMemories[0].spatialFacts.relations.length,0);const pool=buildRecallHistoryCandidatePool({source:current,queryContext});assert.equal(pool.candidates.filter(c=>c.value.kind==='spatialRelation').length,0);assert.equal(pool.candidates.filter(c=>c.value.kind==='placeFoundation').length,1);
+ const {placeWorkspaceForPrefix}=await import('../src/v3/place-workspace.js'),historical=await projectRecallSource(graph,()=>new Date(NOW),null,null,{},false,{placeWorkspace:placeWorkspaceForPrefix(workspace,new Set([FLOOR1]))});
+ assert.equal(historical.floorMemories[0].spatialFacts.relations.length,5);assert.equal(buildRecallHistoryCandidatePool({source:historical,queryContext}).candidates.filter(c=>c.value.kind==='spatialRelation').length,5);assert.equal(graph.floorMemories[0].spatialFacts.relations.length,5);
 });
 
 test('地点人工修订后再生成拒绝持久旧召回，同Core HEAD也重选', async () => {
