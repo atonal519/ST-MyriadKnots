@@ -66,6 +66,7 @@ async function gzipRequestBody(bytes, signal) {
 function recordTypeFromId(recordId) {
   const value = String(recordId);
   if (value === 'v3-root') return 'root';
+  if (value === 'self-use-memory-transfer-rollback-v1') return 'memoryTransferRollback';
   if (value === 'v3-people-workspace') return 'peopleWorkspace';
   if (value.startsWith('binding-')) return 'binding';
   if (value.startsWith('v3-floor-memory-')) return 'floorMemory';

@@ -1283,6 +1283,7 @@ test('new rollback uses V2 and undo preserves unrelated fields and unselected re
   const f = await fixture(), target = await f.target();
   await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
   const rollback = f.backend.records.get(`chat-${IMPORTED}/self-use-memory-transfer-rollback-v1`).data;
+  assert.equal(rollback.schemaVersion, 2);
   assert.equal(rollback.witnessVersion, 2);
   target.chatMetadata.otherPlugin = { afterImport: true };
   target.chat[1].extra.variables = { afterImport: true };
@@ -1297,12 +1298,75 @@ test('new rollback uses V2 and undo preserves unrelated fields and unselected re
   assert.deepEqual(target.chat[1].swipe_info[1].extra, { pocketPhone: true });
 });
 
-test('existing rollback without witnessVersion remains readable as V1', async () => {
+test('existing full rollback records remain readable with both witness versions', async t => {
+  for (const witnessVersion of [1, 2]) await t.test(String(witnessVersion), async () => {
+    const f = await fixture(), target = await f.target();
+    const previous = structuredClone({ header: { chat_metadata: target.chatMetadata }, messages: target.chat });
+    const anchor = { schemaVersion: 1, chatId: TARGET, floorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+    previous.messages[1].swipe_info = [{ extra: { qianqianjie_floor: anchor } }];
+    await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
+    const rollback = f.backend.records.get(`chat-${IMPORTED}/self-use-memory-transfer-rollback-v1`).data;
+    Object.assign(rollback, previous, { schemaVersion: 1 });
+    if (witnessVersion === 1) delete rollback.witnessVersion;
+    rollback.importedMessages = await transferWitness(target.chat, { version: witnessVersion });
+    target.chat[1].swipe_info = [{ extra: { otherPlugin: true } }];
+    f.api.reloadFromContext();
+    await f.runtime.undo();
+    assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+    assert.deepEqual(target.chat[1].swipe_info[0].extra, { otherPlugin: true, qianqianjie_floor: anchor });
+  });
+});
+
+test('large chat bodies and other-plugin variables never enter the rollback write', async t => {
+  for (const streaming of [false, true]) await t.test(streaming ? 'volumes' : 'ordinary', async t => {
+    const f = await fixture();
+    if (streaming) streamingFixture(f);
+    const files = streaming ? await volumeFiles(f.runtime) : null;
+    const target = await f.target(), largeText = 'old unrelated candidate\n'.repeat(streaming ? 200000 : 931700);
+    target.chat[1].swipes.push(largeText);
+    target.chat[1].swipe_info = [{ extra: {} }, { extra: { variables: { largeText } } }];
+    target.chat[1].extra = { ...target.chat[1].extra, variables: { largeText } };
+    target.chatMetadata.otherPlugin = { largeText };
+    f.api.reloadFromContext();
+    const fullChatBytes = Buffer.byteLength(JSON.stringify({ header: { chat_metadata: target.chatMetadata }, messages: target.chat }));
+    const put = f.backend.client.put;
+    let rollbackBytes = null;
+    f.backend.client.put = async (collection, key, data, revision) => {
+      if (key === 'self-use-memory-transfer-rollback-v1') {
+        rollbackBytes = Buffer.byteLength(JSON.stringify(data));
+        assert.equal(Object.hasOwn(data.header.chat_metadata, 'otherPlugin'), false);
+        assert.ok(data.messages.every(message => !Object.hasOwn(message, 'mes') && !Object.hasOwn(message, 'swipes')));
+        assert.ok(data.messages.every(message => !Object.hasOwn(message.extra, 'variables')));
+        assert.equal(Object.hasOwn(data.messages[1].swipe_info[1].extra, 'variables'), false);
+      }
+      return put(collection, key, data, revision);
+    };
+    const preview = streaming ? await f.runtime.previewVolumes(files) : await f.runtime.preview(f.exported.text);
+    await f.runtime.importPreview(preview);
+    assert.equal(typeof rollbackBytes, 'number');
+    assert.ok(rollbackBytes < fullChatBytes, 'the rollback no longer duplicates full chat data');
+    t.diagnostic(`full chat ${fullChatBytes} bytes; rollback ${rollbackBytes} bytes`);
+    assert.equal(target.chatMetadata.otherPlugin.largeText, largeText);
+    await f.runtime.undo();
+    assert.equal(target.chat[1].swipes[1], largeText);
+    assert.equal(target.chat[1].extra.variables.largeText, largeText);
+    assert.equal(target.chat[1].swipe_info[1].extra.variables.largeText, largeText);
+    assert.equal(target.chatMetadata.otherPlugin.largeText, largeText);
+  });
+});
+
+test('compact rollback restores owned candidate markers when the host has no swipes array', async () => {
   const f = await fixture(), target = await f.target();
+  const anchor = { schemaVersion: 1, chatId: TARGET, floorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+  delete target.chat[1].swipes;
+  delete target.chat[1].swipe_id;
+  target.chat[1].swipe_info = [{ extra: { qianqianjie_floor: anchor } }];
+  f.api.reloadFromContext();
   await f.runtime.importPreview(await f.runtime.preview(f.exported.text));
   const rollback = f.backend.records.get(`chat-${IMPORTED}/self-use-memory-transfer-rollback-v1`).data;
-  delete rollback.witnessVersion; rollback.importedMessages = await transferWitness(target.chat, { version: 1 });
-  await f.runtime.undo(); assert.equal(target.chatMetadata.qianqianjie.chatId, TARGET);
+  assert.equal(rollback.messages[1].swipe_info[0].replyFingerprint, await sha256(target.chat[1].mes));
+  await f.runtime.undo();
+  assert.deepEqual(target.chat[1].swipe_info[0].extra.qianqianjie_floor, anchor);
 });
 
 test('undo rejects an advanced memory root even when story text is unchanged', async () => {

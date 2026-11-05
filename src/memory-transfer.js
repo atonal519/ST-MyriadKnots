@@ -164,6 +164,24 @@ async function volumeWitness(chat) {
   return witnesses;
 }
 
+async function rollbackMessages(chat) {
+  const messages = [];
+  for (const message of chat) {
+    const previous = { extra: mergeOwned({}, message.extra, MESSAGE_KEYS) };
+    if (Array.isArray(message.swipe_info)) {
+      previous.swipe_info = [];
+      for (let index = 0; index < message.swipe_info.length; index++) {
+        const extra = mergeOwned({}, message.swipe_info[index]?.extra, MESSAGE_KEYS);
+        const reply = Array.isArray(message.swipes) ? message.swipes[index] : index === 0 ? message.mes : undefined;
+        previous.swipe_info.push({ extra, ...(Object.keys(extra).length && typeof reply === 'string'
+          ? { replyFingerprint: await sha256(reply) } : {}) });
+      }
+    }
+    messages.push(previous);
+  }
+  return messages;
+}
+
 function memoryClient(records, chatId) {
   const data = new Map(records.map(item => [item.id, clone(item.data)]));
   return {
@@ -636,8 +654,11 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
         swipe.extra = apply(swipe.extra, value.formatVersion === 1 ? value.markers[index].swipes?.[n] : null);
       });
     });
-    await client.put(`chat-${chatId}`, ROLLBACK, { schemaVersion: 1, chatId, previousChatId: captured.identity.chatId,
-      header: initial.header, messages: initial.chat, witnessVersion: 2, ...(streaming ? { streaming: true } : {}),
+    // Undo restores only QQJ-owned metadata. Full chat bodies and unrelated plugin
+    // variables can make this one native write larger than the memory package.
+    await client.put(`chat-${chatId}`, ROLLBACK, { schemaVersion: 2, chatId, previousChatId: captured.identity.chatId,
+      header: { chat_metadata: mergeOwned({}, initial.header.chat_metadata, HEADER_KEYS) }, messages: await rollbackMessages(initial.chat),
+      witnessVersion: 2, ...(streaming ? { streaming: true } : {}),
       importedMessages: streaming ? await volumeWitness(messages) : await transferWitness(messages, { version: 2 }), importedRoot: root,
       importedAuxiliaryRevisions, importedCalendar: clone(captureCalendar(chatId)), importedPrequel: value.prequel }, 0);
     const result = await publish(captured, initial, header, messages, chatId);
@@ -751,7 +772,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     return exclusive(captured, async () => {
       const rollback = (await optionalGet(`chat-${captured.identity.chatId}`, ROLLBACK))?.data;
       settled.streaming = rollback?.streaming === true;
-      check(rollback?.schemaVersion === 1 && rollback.chatId === captured.identity.chatId, '当前聊天没有可撤销的导入。');
+      check([1, 2].includes(rollback?.schemaVersion) && rollback.chatId === captured.identity.chatId, '当前聊天没有可撤销的导入。');
       const witness = rollback.streaming ? await volumeWitness(captured.chat) : await transferWitness(captured.chat, { version: rollback.witnessVersion ?? 1 });
       check(same(witness, rollback.importedMessages), '导入后已继续聊天或修改正文。请先导出当前记忆；本次不覆盖新剧情。');
       const currentRoot = await optionalGet(`chat-${captured.identity.chatId}`, 'v3-root');
@@ -768,19 +789,23 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       header.chat_metadata.qianqianjie = clone(rollback.header.chat_metadata.qianqianjie);
       if (rollback.header.chat_metadata.qianqianjiePrequel === undefined) delete header.chat_metadata.qianqianjiePrequel;
       else header.chat_metadata.qianqianjiePrequel = rollback.header.chat_metadata.qianqianjiePrequel;
-      messages.forEach((message, index) => {
+      for (let index = 0; index < messages.length; index++) {
+        const message = messages[index];
         const restore = (extra, previous) => { const result = { ...extra }; for (const key of [ANCHOR, HIDDEN, RECEIPT, 'qianqianjie_migration_alias', MESSAGE_MEMORY_EXCLUSION_KEY]) {
           delete result[key]; if (previous?.[key] !== undefined) result[key] = clone(previous[key]);
         } return result; };
         const previous = rollback.messages[index];
         message.extra = restore(message.extra, previous.extra);
-        message.swipe_info?.forEach((swipe, n) => {
+        for (let n = 0; n < (message.swipe_info?.length ?? 0); n++) {
+          const swipe = message.swipe_info[n];
           const currentReply = Array.isArray(message.swipes) ? message.swipes[n] : n === 0 ? message.mes : undefined;
           const previousReply = Array.isArray(previous.swipes) ? previous.swipes[n] : n === 0 ? previous.mes : undefined;
-          const sameReply = typeof currentReply === 'string' && currentReply === previousReply;
+          const fingerprint = previous.swipe_info?.[n]?.replyFingerprint;
+          const sameReply = typeof currentReply === 'string' && (rollback.schemaVersion === 2
+            ? typeof fingerprint === 'string' && await sha256(currentReply) === fingerprint : currentReply === previousReply);
           swipe.extra = restore(swipe.extra, sameReply ? previous.swipe_info?.[n]?.extra : undefined);
-        });
-      });
+        }
+      }
       return publish(captured, initial, header, messages, rollback.previousChatId);
     }, settled);
   }
