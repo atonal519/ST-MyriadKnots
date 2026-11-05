@@ -35,3 +35,14 @@ test('首次共享归并在默认补齐前读own字段，后续空值和删项�
   const empty = createSettingsStore({ extensionSettings: {}, save() {} });
   assert.deepEqual(empty.wrappers(), { keepTags: 'content', extraTags: '' });
 });
+
+test('共享默认HTML输入输出逐字沿旧合同，仅QQJ包装启用排版模式', async () => {
+ const { sanitizeStoryBody } = await import('../src/shared-body-wrappers.js');
+ const html = '<!doctype html><html><body><p>她递出钥匙。</p></body></html>';
+ assert.equal(sanitizeStoryBody(html), '<!doctype html>');
+ assert.equal(sanitizeStoryBody('<content><p>旧成对排版块</p>正文</content>'), '正文');
+ assert.equal(sanitizeStoryBody('```html\n<!doctype html>\n```'), '```html\n<!doctype html>\n```');
+ assert.equal(sanitizeMemoryContent(html), '她递出钥匙。');
+ const options = { keepTags: 'content', extraTags: 'think' }, before = JSON.stringify(options);
+ sanitizeMemoryContent(html, options);assert.equal(JSON.stringify(options), before);
+});

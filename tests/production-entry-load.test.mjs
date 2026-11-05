@@ -840,7 +840,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.0.6');
+  assert.equal(manifest.version, '1.1.0');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -1658,7 +1658,7 @@ test('生产 bundle 的原生/Luker × Text/Chat 入口动态调用同一 recall
   }
 });
 
-test('生产 bundle 的 native 与 Luker 入口将未清理正文中的地点标注送入真实召回提示与回执', async () => {
+test('生产 bundle 的 native 与 Luker 入口保地点检索依赖但不独立注入正文地点标注', async () => {
   for (const hostGlobalName of ['SillyTavern', 'Luker']) {
     const result = await isolateBundle(hostGlobalName, {
       enabled: true, locationReferenceChat: true, invokeLocationReference: true,
@@ -1666,16 +1666,17 @@ test('生产 bundle 的 native 与 Luker 入口将未清理正文中的地点标
     assert.equal(result.status, 'evaluated', `${hostGlobalName} bundle 应正常启动`);
     const prompt = result.promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context').at(-1);
     assert.ok(prompt, `${hostGlobalName} 实际入口应调用 QQJ 召回槽`);
-    assert.match(prompt[1], /东区公寓·卧室/u, `${hostGlobalName} 真实提示应包含来源地点参考（result=${JSON.stringify(result.locationReferenceResult)}，warnings=${JSON.stringify(result.startupWarnings.map(item => String(item[1]?.stack ?? item[1])))}，prompt=${JSON.stringify(prompt[1])}，receipt=${JSON.stringify(result.hostChat[1]?.extra?.qqj_v3_recall_receipt)}，backend=${result.backendDataCalls}/${result.backendWriteCalls}）`);
+    assert.doesNotMatch(prompt[1], /东区公寓·卧室|原消息地点标注/u, `${hostGlobalName} 真实提示不再另带正文地点标注`);
     const receipt = result.hostChat[1]?.extra?.qqj_v3_recall_receipt;
     assert.equal(receipt?.schemaVersion, 18, `${hostGlobalName} 应保存新版地点参考回执`);
     assert.equal(receipt.pluginVersion, JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8')).version, `${hostGlobalName} 运行包版本应与发布清单一致`);
     assert.ok(result.chatSaveCalls > 0, `${hostGlobalName} 应通过宿主保存入口持久化回执`);
-    assert.ok(receipt?.selectedLocationReferences?.some(value => value.text === '东区公寓·卧室'), `${hostGlobalName} 回执应记录选中的地点参考`);
+    assert.equal(receipt.strategyVersion, 'continuity-v30', `${hostGlobalName} 应使用新的普通召回策略`);
+    assert.deepEqual(receipt.selectedLocationReferences, [], `${hostGlobalName} 新回执没有独立地点参考`);
+    assert.equal(receipt.stages.locationReferenceCount, 0, `${hostGlobalName} 独立标注不占条目名额`);
     assert.equal(receipt.injectionText, prompt[1], `${hostGlobalName} 已保存回执应与实际提示全文一致`);
-    assert.match(receipt.injectionText, /东区公寓·卧室/u, `${hostGlobalName} 回执正文应与实际注入相符`);
-    assert.equal(receipt.selectedLocationReferences[0].hostLocator.messageIndex, 0, `${hostGlobalName} 应保留真实宿主来源楼号`);
-    assert.equal(Object.hasOwn(receipt.selectedLocationReferences[0], 'floorId'), false, `${hostGlobalName} 未摘要楼不能伪造floorId`);
+    assert.match(receipt.locationReferenceDependency, /东区公寓·卧室/u, `${hostGlobalName} 当前设施检索仍使用真实宿主地点依赖`);
+    assert.match(result.hostChat[0].mes, /<location>东区公寓·卧室<\/location>/u, `${hostGlobalName} 原消息地点数据不改写`);
   }
 });
 
@@ -1753,6 +1754,8 @@ test('生产 bundle 的 native/Luker 历史reader保留旧回执识别与人物�
     assert.doesNotMatch(card.recallUi.events.textContent, /旧版召回原文：这段文本应按纯文本折叠展示/u);
     const backendCallsBeforeTab = result.backendCalls;
     card.recallUi.peopleTab.click();
+    assert.equal(card.recallUi.people.querySelectorAll('.change-entry').length, 0, '人物目录默认不铺开正文');
+    card.recallUi.personEntries[0].trigger.click();
     await new Promise(resolvePromise => setImmediate(resolvePromise));
     const changeRows = card.recallUi.people.querySelectorAll('.change-entry');
     assert.equal(changeRows.length, 1, `${hostGlobalName} 人物页应展示旧回执中的变化`);
@@ -1786,7 +1789,7 @@ async function assertRichCurrentReceiptBundle(hostGlobalName) {
     const message = result.receiptDocument.chat.querySelectorAll('.mes')[1];
     const inlineHost = message?.querySelector('.mes_text')?.querySelector('[data-qqj-inline-host="true"]');
     card = inlineHost?.__qqjInlineCard;
-    if (card?.recallUi?.peopleTab && card.recallUi.current.querySelectorAll('.current-copy').length === 26) break;
+    if (card?.recallUi?.peopleTab && card.projection?.stateItems?.length === 26) break;
     await new Promise(resolvePromise => setImmediate(resolvePromise));
   }
   assert.ok(card, '实际生产inline renderer应挂载回执楼卡');
@@ -1795,17 +1798,22 @@ async function assertRichCurrentReceiptBundle(hostGlobalName) {
   assert.equal(card.projection?.storylineGroups.length, 8, `${hostGlobalName} 生产inline projector应保留全部剧情线`);
   assert.equal(receipt.selectedFloors.length, 1, `${hostGlobalName} 生产封签应保留一个正式格式化的旧事来源楼`);
   assert.equal(card.projection?.historyGroups.length, 1, `${hostGlobalName} 生产inline projector应恢复旧事来源组`);
-  assert.equal(card.recallUi.events.querySelectorAll('.event-pill').length, 1,
+  assert.equal(card.recallUi.eventEntries.length, 1,
     `${hostGlobalName} 生产楼卡应为选中旧楼渲染可交互事件按钮`);
-  card.recallUi.events.querySelector('.event-pill').click();
+  card.recallUi.eventEntries[0].trigger.click();
   assert.equal(card.recallUi.events.querySelectorAll('.event-copy').length, 1,
     `${hostGlobalName} 点击旧楼后应展开其原文`);
   assert.equal(card.recallUi.events.querySelector('.event-copy').textContent, '合成旧事：林岚在门口留下钥匙。',
     `${hostGlobalName} 展开的旧事正文应来自正式formatter与签名回执`);
   card.recallUi.peopleTab.click();
-  assert.equal(card.recallUi.current.querySelectorAll('.current-copy').length, 26,
-    '人物页应显示签名回执的全部状态');
-  assert.equal(card.recallUi.timelines.querySelectorAll('.change-entry').length, 0,
+  assert.ok(card.recallUi.personEntries.every(entry => entry.detail.hidden), '人物目录默认只显示摘录');
+  const currentCopies = card.recallUi.personEntries.flatMap(entry => {
+    entry.trigger.click();
+    return [...entry.detail.querySelectorAll('.current-copy')].map(node => node.textContent);
+  });
+  assert.equal(currentCopies.length, 26, '逐人物原位展开可阅读签名回执的全部状态');
+  assert.ok(currentCopies.some(text => text.includes('当前状态 26')), '末项状态原文完整');
+  assert.equal(card.recallUi.people.querySelectorAll('.change-entry').length, 0,
     '本离线选材夹具没有CSE变化');
   assert.equal(card.projection.qianshiProgressText, '本轮千事进度：离线合同样本。',
     '千事进度仍由正式历史reader投影');
@@ -1818,6 +1826,17 @@ async function assertRichCurrentReceiptBundle(hostGlobalName) {
     '地点参照仍保留在正式签名回执中');
   assert.equal(card.projection.locationReferenceItems.length, 5,
     '地点参照仍由正式历史reader投影');
+  assert.equal(card.recallUi.objectsTab.textContent, '物');
+  const backendCallsBeforeObjects = result.backendCalls;
+  card.recallUi.objectsTab.click();
+  const objectTexts = card.recallUi.objectEntries.map(entry => {
+    entry.trigger.click();
+    return entry.detail ? entry.detail.querySelector('.object-copy').textContent : entry.trigger.querySelector('.recall-entry-title').textContent;
+  });
+  assert.ok(objectTexts.includes(card.projection.qianshiProgressText), '正式封签千事正文可从物目录完整阅读');
+  assert.ok(receipt.selectedLocationReferences.every(reference => objectTexts.includes(reference.text)), '五条当时原消息地点参照完整可读');
+  assert.equal(card.projection.objectCount, objectTexts.length, '生产统计与实际可阅读条目一致');
+  assert.equal(result.backendCalls, backendCallsBeforeObjects, '物目录点击不发额外后端请求');
   assert.doesNotMatch(card.recallUi.events.textContent, /本轮原消息地点参照|合成地点参照/u,
     '正文事页不显示地点参照抽屉或其原文');
   assert.equal(card.projection.qianshiProgressText, '本轮千事进度：离线合同样本。');

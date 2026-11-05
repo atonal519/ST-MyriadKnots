@@ -153,11 +153,11 @@ test('召回只把有效当前进展的matter.status当整线状态，背景动�
   const completedBackgroundOnly = projectQianshiRecall(reachable, { selectedEventIds: [background.id], selectedMatterIds: [] });
   assert.doesNotMatch(completedBackgroundOnly.text, /此后尚未记录完成/u, '固定选择路径不把no-current背景代表状态当整线');
   assert.match(selected.text, /已完成的背景动作/u);
-  assert.match(selected.text, /仍在推进的整线（此后尚未记录完成）/u, '有效当前进展仍可表达整线未完成');
-  assert.doesNotMatch(selected.text, /已完成的背景动作（此后尚未记录完成）/u, '已完成背景动作不能继承代表matter状态');
-  assert.doesNotMatch(selected.text, /仍待处理的背景动作（此后尚未记录完成）/u, 'no-current同matter多条行也不冒称整线');
-  assert.doesNotMatch(selected.text, /终态事项的旧待办动作（此后尚未记录完成）/u, '旧局部待办不能复活人工完成整线');
-  assert.doesNotMatch(selected.text, /已完成的独立动作（此后尚未记录完成）/u, '独立动作只保留自身状态');
+  assert.match(selected.text, /仍在推进的整线（事项状态：进行中）/u, '有效当前进展仍可表达整线未完成');
+  assert.doesNotMatch(selected.text, /已完成的背景动作（事项状态：(?:待办|进行中)）/u, '已完成背景动作不能继承代表matter状态');
+  assert.doesNotMatch(selected.text, /仍待处理的背景动作（事项状态：(?:待办|进行中)）/u, 'no-current同matter多条行也不冒称整线');
+  assert.doesNotMatch(selected.text, /终态事项的旧待办动作（事项状态：(?:待办|进行中)）/u, '旧局部待办不能复活人工完成整线');
+  assert.doesNotMatch(selected.text, /已完成的独立动作（事项状态：(?:待办|进行中)）/u, '独立动作只保留自身状态');
 
   const poolFor = text => prepareQianshiRecallCandidates(reachable, { queryContext: { text, latestUserText: text } });
   const backgroundCandidate = poolFor('中性背景动作').candidates.find(item => item.eventIds.includes(background.id));
@@ -170,7 +170,7 @@ test('召回只把有效当前进展的matter.status当整线状态，背景动�
   assert.ok(liveCandidate);
   assert.equal(liveCandidate.fact.status, 'inProgress', '有效current对应matter仍向候选提供整线状态');
   assert.equal(liveCandidate.fact.events[0].actionStatus, 'completed', '整线进行中不抹去本次动作已完成');
-  assert.match(projectQianshiCandidateSelection([liveCandidate]).text, /仍在推进的整线（此后尚未记录完成）/u);
+  assert.match(projectQianshiCandidateSelection([liveCandidate]).text, /仍在推进的整线（事项状态：进行中）/u);
 
   const terminalCandidate = poolFor('人工确认事项已经完成').candidates.find(item => item.eventIds.includes(terminalCurrent.id));
   assert.ok(terminalCandidate);
@@ -1402,9 +1402,9 @@ test('注入短版随查询选择事项并沿已有 progress 图带入前因、�
     floors: [first, second, third], floorMemories: [memory('dddddddd-dddd-4ddd-8ddd-dddddddddddd', first, d1), memory('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', second, d2), memory('ffffffff-ffff-4fff-8fff-ffffffffffff', third, d3)], entities: [] };
   const bookRecall = projectQianshiRecall(reachable, { queryContext: { text: '蓝皮档案后来还了吗', latestUserText: '蓝皮档案后来还了吗' } });
   assert.match(bookRecall.text, /\[相关时间线\][\s\S]*2026-05-01 09:00：借走蓝皮档案[\s\S]*2026-05-03 11:00：蓝皮档案归还延期[\s\S]*2026-05-04 12:00：蓝皮档案已经归还/u);
-  assert.match(bookRecall.text, /\[相关跟进事项\][\s\S]*准备寄出红蜡信；尚未记录完成。/u);
+  assert.match(bookRecall.text, /\[相关跟进事项\][\s\S]*准备寄出红蜡信；状态：待办；跟进：持续。/u);
   const letterRecall = projectQianshiRecall(reachable, { queryContext: { text: '红蜡信寄出了吗', latestUserText: '红蜡信寄出了吗' } });
-  assert.match(letterRecall.text, /2026-05-02 10:00：准备寄出红蜡信[\s\S]*\[相关跟进事项\][\s\S]*准备寄出红蜡信；尚未记录完成。/u);
+  assert.match(letterRecall.text, /2026-05-02 10:00：准备寄出红蜡信[\s\S]*\[相关跟进事项\][\s\S]*准备寄出红蜡信；状态：待办；跟进：持续。/u);
   assert.doesNotMatch(letterRecall.text, /蓝皮档案/u);
 });
 
@@ -1424,20 +1424,20 @@ test('未竟事项不受当前话题、旧日期、跨月或未知历法筛除�
   const recall = projectQianshiRecall(reachable, { queryContext: { text: '继续现在的场景', latestUserText: '继续现在的场景' }, currentTime,
     recentStoryTimes: [projectTime('2026-06-14 23:45'), currentTime] });
   assert.match(recall.text, /\[相关跟进事项\]/u);
-  for (const title of ['旧宴后归还餐盒', '守住北门钥匙', '前往钟楼换岗', '苍月祭后兑现承诺']) assert.match(recall.text, new RegExp(`${title}[^\n]*尚未记录完成`, 'u'));
-  assert.match(recall.text, /前往钟楼换岗；约定：2026-06-15 00:30；尚未记录完成。/u);
+  for (const title of ['旧宴后归还餐盒', '守住北门钥匙', '前往钟楼换岗', '苍月祭后兑现承诺']) assert.match(recall.text, new RegExp(`${title}[^\n]*状态：(?:待办|进行中)`, 'u'));
+  assert.match(recall.text, /前往钟楼换岗；约定：2026-06-15 00:30；状态：待办；跟进：持续。/u);
   assert.doesNotMatch(recall.text, /交回南门徽章/u);
   assert.doesNotMatch(recall.text, /00:30：前往钟楼换岗/u, 'scheduledTime 不能冒充已经发生的时间');
 
   const old = projectQianshiRecall(reachable, { queryContext: { text: '旧宴后归还餐盒', latestUserText: '旧宴后归还餐盒' }, currentTime,
     recentStoryTimes: [projectTime('2026-06-14 23:45'), currentTime] });
   assert.match(old.text, /2026-05-01 12:00：旧宴后归还餐盒/u);
-  assert.match(old.text, /\[相关跟进事项\][\s\S]*旧宴后归还餐盒；尚未记录完成。/u);
+  assert.match(old.text, /\[相关跟进事项\][\s\S]*旧宴后归还餐盒；状态：待办；跟进：持续。/u);
 
   const unknown = projectQianshiRecall(reachable, { queryContext: { text: '苍月祭承诺', latestUserText: '苍月祭承诺' }, currentTime,
     recentStoryTimes: [projectTime('2026-06-14 23:45'), currentTime] });
   assert.match(unknown.text, /苍月祭后兑现承诺/u);
-  assert.match(unknown.text, /\[相关跟进事项\][\s\S]*苍月祭后兑现承诺；尚未记录完成。/u);
+  assert.match(unknown.text, /\[相关跟进事项\][\s\S]*苍月祭后兑现承诺；状态：待办；跟进：持续。/u);
 
   const originQuestion = prepareQianshiRecallCandidates(reachable, { queryContext: { text: '很久以前答应归还餐盒', latestUserText: '为什么答应归还餐盒' } });
   const causeCandidate = originQuestion.candidates.find(candidate => candidate.kind === 'history' && candidate.eventRows.some(row => row.eventId === delta.events[0].id));
@@ -1479,7 +1479,7 @@ test('召回候选池有界且只把 planned/inProgress 作为未竟，所选 Q 
 
   const retained = projectQianshiCandidateSelection(pool.candidates, { excludedKeys: [pool.candidates[0].key] });
   assert.equal(retained.text.includes(pool.candidates[0].fact.title), false);
-  assert.match(retained.text, /\[相关跟进事项\][\s\S]*尚未记录完成/u);
+  assert.match(retained.text, /\[相关跟进事项\][\s\S]*状态：(?:待办|进行中)/u);
   assert.match(retained.text, /本轮千事资料来源截至：AI #\d+。/u, '正常候选池复投影带入实际选中来源楼范围');
   assert.ok(retained.text.length <= 4000);
   assert.equal(projectQianshiCandidateSelection(pool.candidates, { characterBudget: 1 }).text, '', '预算放不下一条材料时不单独输出范围行');
@@ -1543,7 +1543,7 @@ test('按保存 ID 顺序投影将未完事项标为背景，选中事项终态�
     currentTime: { raw: 'unconsumed-current-time' } }), selected, 'selected-ID投影不读取currentTime，provider可省略该来源准备');
   assert.match(selected.text, /钟楼敲响三声[\s\S]*答应归还旧书/u, '显式 eventIds 顺序必须原样保留');
   assert.match(selected.text, /本轮千事资料来源截至：AI #1/u, '独立千事块也标注本次实际引用材料的最晚来源楼');
-  assert.match(selected.text, /\[相关跟进事项\][\s\S]*答应归还旧书；尚未记录完成/u);
+  assert.match(selected.text, /\[相关跟进事项\][\s\S]*答应归还旧书；状态：(?:待办|进行中)/u);
   assert.doesNotMatch(selected.text, /\[当前待接续\]/u, '未完事项作为检索背景，不作为当前待执行指令');
 
   const extra = floor('22222222-2222-4222-8222-222222222222', 2);
@@ -1697,7 +1697,7 @@ test('多项近期待办和长文本时间线共享总预算时仍保留相关�
   const recall = projectQianshiRecall(reachable, { queryContext: { text: '北境安排', latestUserText: '北境安排' }, currentTime,
     recentStoryTimes: [projectTime('2026-06-14 23:50'), currentTime] });
   assert.match(recall.text, /\[相关时间线\]/u);
-  assert.match(recall.text, /\[相关跟进事项\][\s\S]*尚未记录完成/u);
+  assert.match(recall.text, /\[相关跟进事项\][\s\S]*状态：(?:待办|进行中)/u);
   assert.ok(recall.text.length <= 4000);
 });
 
@@ -1817,8 +1817,8 @@ test('人工停止关注统一影响剧情进度、候选和待接续；恢复�
   const restoredProjection = projectQianshiGraph(restored);
   assert.equal(restoredProjection.matters[0].status, 'completed');
   assert.equal(restoredProjection.matters[0].following, true);
-  assert.match(projectQianshiRecall(restored, { selectedMatterIds: [matterId] }).text, /已记录完成，当前仍继续关注/u);
-  assert.match(projectQianshiRecall(restored, { selectedMatterIds:[matterId] }).text, /\[相关跟进事项\][\s\S]*已记录完成，当前仍继续关注/u);
+  assert.match(projectQianshiRecall(restored, { selectedMatterIds: [matterId] }).text, /状态：已完成；跟进：持续/u);
+  assert.match(projectQianshiRecall(restored, { selectedMatterIds:[matterId] }).text, /\[相关跟进事项\][\s\S]*状态：已完成；跟进：持续/u);
   for (const pendingHeader of ['[相关跟进事项]','[相关未完事项]','[当前待接续]']) {
     assert.ok(projectQianshiRecall(restored, { selectedMatterIds:[matterId],pendingHeader }).text.includes(pendingHeader), '已保存合法标题投影原样保留');
   }

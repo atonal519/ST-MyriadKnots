@@ -259,7 +259,7 @@ test('SSE [DONE] 后代理不关闭连接时仍结束请求并释放忙碌状态
   assert.deepEqual(busy, [true, false]); assert.equal(reads, 1); assert.equal(cancelled, 1);
 });
 
-test('超时会退出不响应 abort 的 fetch、JSON body 和 SSE reader，且不自动重发', async () => {
+test('零次重试时超时会退出不响应 abort 的 fetch、JSON body 和 SSE reader', async () => {
   for (const stage of ['fetch', 'json', 'sse']) {
     const busy = []; let calls = 0;
     const client = createCompactApiClient({ onBusyChange: value => busy.push(value), timeoutMs: () => 10,
@@ -269,7 +269,7 @@ test('超时会退出不响应 abort 的 fetch、JSON body 和 SSE reader，且�
         return { ok: true, status: 200, headers: { get: () => 'text/event-stream' }, body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => new Promise(() => {}), releaseLock() {} }) } };
       },
     });
-    assert.equal(await settlesSoon(client.generateTask({ config: config({ stream: stage === 'sse' }), taskMessages: [] })), 'QQJ_TIMEOUT', stage);
+    assert.equal(await settlesSoon(client.generateTask({ config: config({ stream: stage === 'sse', qqjRetryCount: 0 }), taskMessages: [] })), 'QQJ_TIMEOUT', stage);
     assert.deepEqual(busy, [true, false], stage); assert.equal(calls, 1, 'timeout must not automatically resend');
   }
 });
@@ -700,4 +700,44 @@ test('全局破限文本连接测试取最新值且保留纯文本确认，不�
   }
   assert.deepEqual(await tools.fetchModels(), ['test-model']);
   assert.equal(Object.hasOwn(sent.at(-1), 'messages'), false);
+});
+
+
+test('每连接额外重试次数覆盖网络、超时、空输出和客户端格式，共同限制真实请求', async () => {
+  for (const retryCount of [0, 1, 4]) for (const kind of ['network', 'timeout', 'empty', 'format']) {
+    let calls = 0;
+    const client = createCompactApiClient({ retryWait: async () => {}, timeoutMs: () => 2, fetchImpl: async (_path, options) => {
+      calls++;
+      if (kind === 'network') throw new TypeError('offline');
+      if (kind === 'timeout') return await new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      return jsonResponse({ choices: [{ message: { content: kind === 'empty' ? '' : '不是JSON' } }] });
+    } });
+    await assert.rejects(client.generateTask({ config: config({ qqjRetryCount: retryCount }), taskMessages: [] }));
+    assert.equal(calls, retryCount + 1, `${retryCount}/${kind}`);
+  }
+});
+
+test('网络与客户端格式失败共享次数，成功后下一次正常请求另起预算', async () => {
+  let calls = 0;
+  const client = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => {
+    calls++;
+    if (calls === 1) return jsonResponse({}, 503);
+    return jsonResponse({ choices: [{ message: { content: calls === 2 ? '不是JSON' : calls === 3 ? '' : '{"ok":true}' } }] });
+  } });
+  const request = { config: config({ qqjRetryCount: 3 }), taskMessages: [] };
+  const result = await client.generateTask(request);
+  assert.deepEqual(result.jsonData, { ok: true }); assert.equal(calls, 4); assert.equal(result.taskMetadata.transportAttempts, 4);
+  await client.generateTask(request); assert.equal(calls, 5);
+});
+
+test('不可重试HTTP与主动取消不因高重试次数重复请求，工具也尊重零次', async () => {
+  for (const status of [400, 401, 403, 404, 422]) {
+    let calls = 0; const client = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return jsonResponse({}, status); } });
+    await assert.rejects(client.generateTask({ config: config({ qqjRetryCount: 4 }), taskMessages: [] })); assert.equal(calls, 1);
+  }
+  const controller = new AbortController(); let calls = 0;
+  const client = createCompactApiClient({ retryWait: async () => controller.abort(), fetchImpl: async () => { calls++; throw new TypeError('offline'); } });
+  await assert.rejects(client.generateTask({ config: config({ qqjRetryCount: 4 }), taskMessages: [], signal: controller.signal }), { name: 'AbortError' }); assert.equal(calls, 1);
+  const check = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return jsonResponse({}, 503); } });
+  const before = calls; await assert.rejects(check.testConnection({ config: config({ qqjRetryCount: 0 }) })); assert.equal(calls - before, 1);
 });

@@ -1340,7 +1340,7 @@ test('正文批次在篇末推算并把旧估计作为未确认参考送入下�
   assert.equal(h.calls(), 3, '冷读召回仅读取已保存推算，不调用模型');
   const selected = selectRecall({ source: recall, queryContext: buildRecallQueryContext({ coreChat: [{ is_user: true, mes: '阿岚手腕现在怎么样' }] }), contextSize: 8192 });
   assert.match(selected.injectionText, /当前推测（2026-05-02 12:00）/u);
-  assert.match(selected.injectionText, /尚未获正文确认/u);
+  assert.match(selected.injectionText, /当前推测（2026-05-02 12:00）：仍可能有轻微酸痛，是否减轻尚未确认/u);
   assert.equal(requests.length, 3);
 });
 

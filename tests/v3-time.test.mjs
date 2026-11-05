@@ -155,7 +155,8 @@ test('程序回灌区分观察与发生时间、经过单一单位及预计标�
     timeReminders: [{ ...projection.reminders[0], itemId: 'separate-due' }] });
   assert.equal(injection.includes('现在仍受伤'), false);
   assert.match(injection, /观察\/发生于.*当前推测/u);
-  assert.match(injection, /当前推测及预计\/期限节点尚未获正文确认，不代表已经发生或完成/u);
+  assert.match(injection, /\[时间参考\]/u);
+  assert.doesNotMatch(injection, /当前推测及预计\/期限节点尚未获正文确认，不代表已经发生或完成/u);
   assert.equal(state.text, '现在仍受伤');
   const without = formatRecallInjection({ floors: [], states: [state], coverage: { memoryComplete: true, cseCurrent: true }, entityById: new Map() }); assert.match(without, /现在仍受伤/u);
   const fresh = { ...source, currentState: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [{ stateId: 'new', sourceFloorId: 'floor-2' }] }] };

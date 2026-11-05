@@ -3430,3 +3430,48 @@ test('部分缓存的TT图读取仅对miss批量回源，保留命中、深校�
     } finally { release(); await Promise.allSettled([reading]); beforeRead = null; }
   });
 });
+
+test('HTML正文升级保可靠marker空壳身份，普通旧楼指纹不变', async () => {
+ const { sanitizeStoryBody } = await import('../src/shared-body-wrappers.js');
+ let legacy = true;
+ const chat = [assistant('```html\n<!doctype html>\n```'), user('确认空壳'), assistant('普通旧故事'), user('确认故事')];
+ const h = harness(chat, { modernAnchors: true, scanCandidatesOverride: async (source, options) => {
+  if (!legacy) return scanAssistantCandidates(source, options);
+  const seeded = source.map(message => message.is_user === false ? { ...message, mes: '旧扫描占位', swipes: ['旧扫描占位'] } : message);
+  const candidates = await scanAssistantCandidates(seeded, options);
+  return candidates.map(candidate => { const raw = source[candidate.hostLocator.messageIndex].swipes[0], canonical = sanitizeStoryBody(raw);
+   return { ...candidate, canonicalContent: canonical, rawFingerprint: `sha256:${createHash('sha256').update(raw).digest('hex')}`, canonicalFingerprint: `sha256:${createHash('sha256').update(canonical).digest('hex')}` }; });
+ } });
+ await h.runtime.start();const before = structuredClone(h.runtime.getReachable().floors);assert.equal(before.length, 2);
+ chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: before[0].id };
+ chat[2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: before[1].id };
+ legacy = false;
+ const scanned = await scanAssistantCandidates(chat, { chatId: CHAT });assert.equal(scanned.length, 2);assert.equal(scanned[0].canonicalContent, '');
+ const refreshed = await h.runtime.refreshStatus();assert.equal(refreshed.status, 'ready');
+ const after = h.runtime.getReachable().floors;assert.deepEqual(after.map(f=>f.id), before.map(f=>f.id));assert.deepEqual(after.map(f=>f.content), before.map(f=>f.content));
+ assert.equal((await scanAssistantCandidates([{ ...chat[0], extra: {} }], { chatId: CHAT })).length, 0);
+ assert.equal((await scanAssistantCandidates([{ ...chat[0], extra: { qianqianjie_floor: { schemaVersion: 1, chatId: OTHER_CHAT, floorId: before[0].id } } }], { chatId: CHAT })).length, 0);
+});
+
+test('HTML正文空源手动零请求保旧摘要CSE，正常extractNext跳过未摘要空壳', async () => {
+ for (const saved of [false, true]) {
+  const chat = [assistant('旧正文可用'), user('确认首楼'), assistant('后楼递回钥匙。'), user('确认后楼')];
+  const h = harness(chat, { modernAnchors: true });await h.runtime.start();
+  const ids = h.runtime.getReachable().floors.map(floor=>floor.id);
+  for (const [index,id] of ids.entries()) chat[index*2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: id };
+  const requests=[];
+  const task=async options=>{const request=JSON.parse(options.taskMessages[0].content);requests.push(request);return {jsonData: request.task==='extractFloorSemantics'?{summary:'原有有效摘要'}:{noMaterialChange:true}};};
+  const memory=createV3MemoryRuntime({foundationRuntime:h.runtime,store:h.store,hostAdapter:h.hostAdapter,generateUtilityTask:task,generateAnalysisTask:task,now:()=>new Date('2026-09-02T00:00:00.000Z'),newUuid:uuidFactory(50000),logger:{warn(){}}});
+  await memory.start();if(saved)await memory.extractFloor(ids[0]);
+  const before=await h.store.readReachable({mode:'runtime'}),old=JSON.stringify({memories:before.floorMemories,deltas:before.stateDeltas});
+  chat[0].mes=chat[0].swipes[0]='```html\n<!doctype html>\n```';
+  await memory.refreshStatus();const count=requests.length;
+  await assert.rejects(memory.extractFloor(ids[0]),/没有可提取的正文/u);assert.equal(requests.length,count);
+  const afterDenied=await h.store.readReachable({mode:'runtime'});assert.equal(JSON.stringify({memories:afterDenied.floorMemories,deltas:afterDenied.stateDeltas}),old);
+  await memory.extractNext();const extracts=requests.slice(count).filter(request=>request.task==='extractFloorSemantics');
+  assert.equal(extracts.length,1);assert.equal(extracts[0].payload.canonicalContent,'后楼递回钥匙。');
+  const final=await h.store.readReachable({mode:'runtime'});assert.deepEqual(final.floors.map(f=>f.id),ids);
+  if(saved)assert.deepEqual(final.floorMemories.find(m=>m.floorId===ids[0]),before.floorMemories.find(m=>m.floorId===ids[0]));
+  const done=requests.length;await memory.extractNext();assert.equal(requests.length,done);
+ }
+});

@@ -21,12 +21,13 @@ export async function projectVectorSources(memories, floors, { includeSummaries 
     for (const floorId of sourceFloorIds) {
       const floor = floorById.get(floorId);
       const snapshot = memory.sourceFloorSnapshots?.find(value => value.floorId === floorId);
+      const singleFloor = sourceFloorIds.length === 1 && floorId === memory.floorId;
       // 旧单楼可用同楼已保存原文补缺；聚合楼仍只信各成员的专用快照。
-      const canonicalContent = snapshot?.canonicalContent ?? (floorId === memory.floorId
-        ? memory.sourceCanonicalContent ?? (sourceFloorIds.length === 1 ? floor?.content?.canonicalContent : null)
-        : null);
+      const canonicalContent = snapshot?.canonicalContent ?? (singleFloor ? memory.sourceCanonicalContent ?? floor?.content?.canonicalContent : null);
+      const rawFingerprint = snapshot?.rawFingerprint ?? (singleFloor ? memory.sourceRawFingerprint : null);
+      const sameRaw = /^sha256:[a-f0-9]{64}$/u.test(rawFingerprint ?? '') && rawFingerprint === floor?.content?.rawFingerprint;
       if (!floor || typeof canonicalContent !== 'string' || !canonicalContent.trim()
-        || typeof floor.content?.canonicalContent === 'string' && canonicalContent !== floor.content.canonicalContent) continue;
+        || typeof floor.content?.canonicalContent === 'string' && canonicalContent !== floor.content.canonicalContent && !sameRaw) continue;
       // Store-validated floor fingerprints may be reused only for the exact canonical text; legacy inputs still hash normally.
       const knownFingerprint = floor.content?.canonicalContent === canonicalContent
         && /^sha256:[a-f0-9]{64}$/u.test(floor.content?.canonicalFingerprint ?? '')

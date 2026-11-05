@@ -44,15 +44,20 @@ export function updateSharedBodyWrappers(extensionSettings, patch) {
   return current;
 }
 
-function parseBody(text, keep, extra) {
+const htmlLayout = new Set('html body main article section header footer div p span strong em b i u s small mark blockquote ul ol li dl dt dd table thead tbody tfoot tr td th caption h1 h2 h3 h4 h5 h6 pre code a font center'.split(' '));
+const htmlBlocks = new Set('main article section header footer div p blockquote ul ol li dl dt dd table tr h1 h2 h3 h4 h5 h6 pre center'.split(' '));
+const htmlAttributes = String.raw`(?:\s(?:[^"'<>]|"[^"]*"|'[^']*')*)?`;
+const htmlRawText = `<(script|style)${htmlAttributes}>[\\s\\S]*?(?:<\\/\\1\\s*>|$)`;
+
+function parseBody(text, keep, extra, htmlFormatting = false) {
   const root = { kind: 'root', children: [] }, stack = [root];
   const literals = [...new Set([...keep, ...extra])].flatMap(rule => {
     const pair = literalRule(rule);
     return pair ? [{ ...pair, rule, named: namedPair.test(rule) }] : [];
   });
   const delimiters = [...new Set(literals.flatMap(pair => [pair.start, pair.end]))].sort((a, b) => b.length - a.length);
-  const xml = `<\\/?${TAG_NAME_SOURCE}(?:\\s[^>]*)?\\/?>`;
-  const tokenRx = new RegExp([...delimiters.map(escape), '<!--[\\s\\S]*?-->', xml].join('|'), 'giu');
+  const xml = `<\\/?${TAG_NAME_SOURCE}${htmlFormatting ? htmlAttributes : '(?:\\s[^>]*)?'}\\/?>`;
+  const tokenRx = new RegExp([...delimiters.map(escape), '<!--[\\s\\S]*?-->', ...(htmlFormatting ? [htmlRawText, '<!doctype\\s+html[^>]*>'] : []), xml].join('|'), 'giu');
   let cursor = 0;
   for (const match of text.matchAll(tokenRx)) {
     const parent = stack.at(-1), token = match[0];
@@ -67,6 +72,10 @@ function parseBody(text, keep, extra) {
     } else if (opening) {
       const node = { kind: 'literal', rule: opening.rule, openToken: token, closed: false, children: [] };
       parent.children.push(node); stack.push(node);
+    } else if (htmlFormatting && /^<(?:script|style)(?:\s|>)/iu.test(token)) {
+      parent.children.push({ kind: 'htmlRaw', children: parseBody(token, keep, extra) });
+    } else if (htmlFormatting && /^<!doctype\s+html/iu.test(token)) {
+      parent.children.push({ kind: 'htmlDeclaration', text: token });
     } else if (token.startsWith('<!--')) {
       // Recognize explicit literal markers before dropping ordinary comments.
     } else if (token.startsWith('<')) {
@@ -79,6 +88,8 @@ function parseBody(text, keep, extra) {
       } else if (!/\/\s*>$/u.test(token)) {
         const node = { kind: 'xml', name, closed: false, children: [] };
         parent.children.push(node); stack.push(node);
+      } else if (htmlFormatting && name === 'br') {
+        parent.children.push({ kind: 'xml', name, closed: false, children: [] });
       }
     } else parent.children.push(token);
     cursor = match.index + token.length;
@@ -87,18 +98,28 @@ function parseBody(text, keep, extra) {
   return root.children;
 }
 
-function renderBody(children, keep, extra, rescueOnly = false) {
+function renderBody(children, keep, extra, rescueOnly = false, htmlContext = false, htmlFormatting = false) {
   let result = '';
   for (const node of children) {
     if (typeof node === 'string') { if (!rescueOnly) result += node; continue; }
+    if (node.kind === 'htmlRaw') {
+      if (!htmlContext) result += renderBody(node.children, keep, extra, rescueOnly);
+      continue;
+    }
+    if (node.kind === 'htmlDeclaration') { if (!htmlContext && !rescueOnly) result += node.text; continue; }
     if (node.kind === 'literal') {
-      if (node.closed && keep.has(node.rule)) result += renderBody(node.children, keep, extra);
-      else if (!node.closed) result += (rescueOnly ? '' : node.openToken) + renderBody(node.children, keep, extra, rescueOnly);
+      if (node.closed && keep.has(node.rule)) result += renderBody(node.children, keep, extra, false, htmlFormatting, htmlFormatting);
+      else if (!node.closed) result += (rescueOnly ? '' : node.openToken) + renderBody(node.children, keep, extra, rescueOnly, htmlContext, htmlFormatting);
       // Explicit literal cleaning drops the whole block; inner XML cannot rescue draft content.
       continue;
     }
-    if (node.closed && keep.has(node.name)) result += renderBody(node.children, keep, extra);
-    else result += renderBody(node.children, keep, extra, node.closed || rescueOnly);
+    if (node.closed && keep.has(node.name)) result += renderBody(node.children, keep, extra, false, htmlFormatting, htmlFormatting);
+    else if (htmlContext && !rescueOnly && !extra.has(node.name) && htmlLayout.has(node.name)) {
+      const value = renderBody(node.children, keep, extra, false, true, htmlFormatting);
+      result += htmlBlocks.has(node.name) && value ? `\n${value}\n` : value;
+    } else if (htmlContext && !rescueOnly && node.name === 'br' && !node.closed && !extra.has('br')) {
+      result += '\n' + renderBody(node.children, keep, extra, false, true, htmlFormatting);
+    } else result += renderBody(node.children, keep, extra, node.closed || rescueOnly, htmlContext, htmlFormatting);
   }
   return result;
 }
@@ -107,6 +128,14 @@ export function sanitizeStoryBody(raw, options = {}) {
   if (!raw) return '';
   const keep = new Set(normalizeWrapperRules(options.keepTags ?? 'content'));
   const extra = new Set(normalizeWrapperRules(options.extraTags ?? ''));
-  const text = String(raw);
-  return renderBody(parseBody(text, keep, extra), keep, extra).replace(/\n{3,}/gu, '\n\n').trim();
+  let text = String(raw), htmlContext = false;
+  const htmlFormatting = options.htmlFormatting === true;
+  if (htmlFormatting) {
+    const protectedFence = [...keep, ...extra].some(rule => { const pair = literalRule(rule); return pair && text.trim().startsWith(pair.start) && text.trim().endsWith(pair.end); });
+    const fence = /^\s*(`{3}|~{3})(html)?[^\S\n]*\n([\s\S]*?)\n\1\s*$/iu.exec(text);
+    if (!protectedFence && fence && (fence[2] || /^\s*(?:<!doctype\s+html\b|<html\b)/iu.test(fence[3]))) { text = fence[3]; htmlContext = true; }
+    htmlContext ||= /^\s*(?:<!doctype\s+html[^>]*>\s*)?<html(?:\s[^>]*)?>[\s\S]*<\/html>\s*$/iu.test(text);
+  }
+  const result = renderBody(parseBody(text, keep, extra, htmlFormatting), keep, extra, false, htmlContext, htmlFormatting).replace(/\n{3,}/gu, '\n\n').trim();
+  return htmlFormatting && !result.replace(/<!doctype\s+html[^>]*>/giu, '').replace(/(?:`{3}|~{3})(?:html)?/giu, '').trim() ? '' : result;
 }

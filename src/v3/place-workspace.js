@@ -107,17 +107,18 @@ export function placeWorkspaceForPrefix(workspace, floorIds = null) {
   return filterPlaceFoundationSources(scoped,{floorIds});
 }
 
-export function filterPlaceMemory(memory, workspace) {
+export function filterPlaceMemory(memory, workspace, resolve = id => id) {
   if (!workspace) return memory;
   const rows = workspace.placesByEntityId ?? {};
   const projectItem = (item, field) => {
-    if(['description','relations'].includes(field)&&coveredPlaceItemIds(workspace,item.placeEntityId,field==='description'?'feature':'relation').has(item.itemId))return [];
-    const row = rows[item.placeEntityId], scope = own(row, field) ? row.scopes[field] : null;
-    if (scope && (field === 'parentEntityId' || scope.coveredItemIds.includes(item.itemId) || (item.replacesItemIds ?? []).some(id => scope.coveredItemIds.includes(id)))) return [];
+    const placeIds = [...new Set([item.placeEntityId, resolve(item.placeEntityId)].filter(Boolean))];
+    if (['description','relations'].includes(field) && placeIds.some(id => coveredPlaceItemIds(workspace,id,field==='description'?'feature':'relation').has(item.itemId))) return [];
+    const scopes = placeIds.map(id => rows[id]).filter(row => own(row, field)).map(row => row.scopes[field]).filter(Boolean);
+    if (scopes.some(scope => field === 'parentEntityId' || scope.coveredItemIds.includes(item.itemId) || (item.replacesItemIds ?? []).some(id => scope.coveredItemIds.includes(id)))) return [];
     const refKey = Array.isArray(item.evidenceRefs) ? 'evidenceRefs' : Array.isArray(item.sourceRefs) ? 'sourceRefs' : null;
     const refs = refKey ? item[refKey] : [{ floorId: memory.floorId }];
     const endpoints = [item.entityId, item.placeEntityId, item.parentEntityId, ...(item.referencePlaceEntityIds ?? [])];
-    const kept = refs.filter(ref => !endpoints.some(id => workspace.deletionsByEntityId?.[id]?.coveredFloorIds.includes(ref.floorId)) && !scope?.coveredFloorIds.includes(ref.floorId));
+    const kept = refs.filter(ref => !endpoints.flatMap(id => [id, resolve(id)]).some(id => workspace.deletionsByEntityId?.[id]?.coveredFloorIds.includes(ref.floorId)) && !scopes.some(scope => scope.coveredFloorIds.includes(ref.floorId)));
     if (!kept.length) return [];
     return [{ ...item, ...(refKey ? { [refKey]: kept } : {}) }];
   };

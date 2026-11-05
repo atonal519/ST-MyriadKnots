@@ -178,8 +178,8 @@ const resolvedParticipants = (values, projection) => {
 };
 
 export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
-  memory = filterPlaceMemory(memory, projection.placeWorkspace);
   const resolve = id => resolveIdentityEntityId(id, projection);
+  memory = filterPlaceMemory(memory, projection.placeWorkspace, resolve);
   const spatialFacts = memory?.spatialFacts ? (() => {
     const edges = (memory.spatialFacts.containments ?? []).flatMap(item => {
       const placeEntityId = resolve(item.placeEntityId), parentEntityId = resolve(item.parentEntityId);

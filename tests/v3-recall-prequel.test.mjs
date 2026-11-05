@@ -229,6 +229,8 @@ async function exerciseSharedBudgetSaveMethod(saveMethod, { contextSize = shared
   assert.equal(reusedRecall, prompts.filter(call => call[0] === RECALL_PROMPT_SLOT).at(-1)?.[1] ?? '');
   assert.equal(reusedPrequel, prompts.filter(call => call[0] === PREQUEL_PROMPT_SLOT).at(-1)?.[1] ?? '');
   assert.equal(reusedPrequel.length > 0, true, `${saveMethod}: 保留可用前情片段`);
+  if (initialPrequel === null) assert.ok(reusedPrequel.length < selectPrequel({ text: prequelText, contextSize }).injectionText.length,
+    `${saveMethod}: 冻结普通召回后，前情确实按剩余额度收紧`);
   assert.equal(selectorCalls, 1, `${saveMethod}: 冻结复用不重跑召回选择器`);
   assert.equal(utilityCalls, 0, `${saveMethod}: 不新增模型调用`);
   assert.ok(sourceReads - readsBeforeReuse <= 1, `${saveMethod}: 不因预算收紧增加来源读取`);
@@ -258,7 +260,7 @@ async function exerciseSharedBudgetSaveMethod(saveMethod, { contextSize = shared
 }
 
 test('真实冻结回执复用会在普通召回之后收紧前情，两个宿主保存合同都不越共同预算', async () => {
-  const results = [await exerciseSharedBudgetSaveMethod('saveMetadata'), await exerciseSharedBudgetSaveMethod('saveChatMetadata')];
+  const results = [await exerciseSharedBudgetSaveMethod('saveMetadata', { contextSize: 8500 }), await exerciseSharedBudgetSaveMethod('saveChatMetadata', { contextSize: 8500 })];
   assert.deepEqual(results.map(result => result.saveMethod), ['saveMetadata', 'saveChatMetadata']);
 });
 

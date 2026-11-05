@@ -2654,7 +2654,7 @@ test('空间事实与召回来源保留内部地点身份和来源楼，用户�
   h.context.setExtensionPrompt = () => {};
   const intercepted = await recall.intercept(structuredClone(h.context.chat), 12000, () => {}, 'normal');
   assert.equal(intercepted.lastRecall.status, 'ready');
-  assert.match(intercepted.lastRecall.injectionText, /来源楼当时\(AI #1\)记录林岚已离开原地点钟楼/u);
+  assert.match(intercepted.lastRecall.injectionText, /来源楼当时\(AI #1\)离开记录:林岚已离开原地点钟楼;去向:未知/u);
   assert.deepEqual(floor.memory.locations.map(item => item.name), ['钟楼'], '既有地点 meta 字段保留');
   const ui = viewHarness(h.runtime);
   await ui.view.activate();
@@ -4005,12 +4005,12 @@ test('extractor 超时与空回复可在剩余预算内恢复，Abort 和认证�
     return compactResponse('{"summary":"超时后成功。"}');
   });
   const timed = await runExtractorRequest({ generateUtilityTask: timeoutRouter.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW });
-  assert.equal(timeoutFetches, 2); assert.equal(timed.attempts, 2); assert.equal(timed.transportAttempts, 2);
+  assert.equal(timeoutFetches, 2); assert.equal(timed.attempts, 1); assert.equal(timed.transportAttempts, 2);
 
   let emptyFetches = 0;
   const emptyRouter = taskRouter(async () => compactResponse(++emptyFetches === 1 ? '' : '{"summary":"空回复后成功。"}'));
   const emptied = await runExtractorRequest({ generateUtilityTask: emptyRouter.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW });
-  assert.equal(emptyFetches, 2); assert.equal(emptied.attempts, 2); assert.equal(emptied.transportAttempts, 2);
+  assert.equal(emptyFetches, 2); assert.equal(emptied.attempts, 1); assert.equal(emptied.transportAttempts, 2);
 
   const controller = new AbortController();
   let abortFetches = 0;
@@ -6377,7 +6377,7 @@ test('人工关键原文覆盖关联事实旧文并在再提取后召回最新�
   assert.match(selected.injectionText, /给我的字条/u);
   assert.match(selected.injectionText, /九点在西门/u);
   assert.doesNotMatch(selected.injectionText, /八点在东门/u, '召回不同时输出关联承诺的旧引文');
-  assert.match(selected.injectionText, /该载体以本条人工修订内容为准/u);
+  assert.match(selected.injectionText, /原文载体「给我的字条」（知情：无；不知情：全部人物）/u);
   const reloaded = harness({ sharedBackend: backend, sharedContext: h.context, utility: () => { throw new Error('冷读不应调用 AI'); } });
   await reloaded.runtime.start();
   assert.equal(reloaded.runtime.getState().floors[0].memory.exactAnchors.find(anchor => anchor.manual).exactText, literal);
@@ -10981,7 +10981,7 @@ test('千事历史真实 compact/router 加诊断前后尝试数相同，成功�
     { name: '429-recover', statuses: [429], expectedAttempts: 2, expectedOutcome: 'completed', keepLastAttempt: true },
     { name: '429-exhausted', statuses: [429, 429, 429], expectedAttempts: 3, expectedOutcome: 'failed' },
     { name: '5xx-exhausted', statuses: [503, 503, 503], expectedAttempts: 3, expectedOutcome: 'failed' },
-    { name: 'timeout', timeout: true, expectedAttempts: 1, expectedOutcome: 'failed' },
+    { name: 'timeout', timeout: true, expectedAttempts: 3, expectedOutcome: 'failed' },
   ];
   for (const scenario of scenarios) for (const withBudget of [false, true]) {
     let historyAttempts = 0, statuses = [...(scenario.statuses ?? [])];
@@ -13742,7 +13742,7 @@ test('同次摘要接相关WB并保存统一基础图，一次派发且body房�
  const context=historySelectionContext(recall,{text:'客房 独立浴室',latestUserText:'客房 独立浴室'});
  assert.ok(context.facts.some(x=>x.kind==='placeFoundation'&&x.text.includes('独立浴室')));
  const selected=selectRecall({source:recall,queryContext:{text:'客房 独立浴室',latestUserText:'客房 独立浴室'},contextSize:20000});
- assert.match(selected.injectionText,/地点基础资料/);assert.ok(selected.manualPlaces.some(x=>x.kind==='placeFoundation'&&!Object.hasOwn(x,'sourceAssistantSeq')));
+ assert.match(selected.injectionText,/地点资料/);assert.ok(selected.manualPlaces.some(x=>x.kind==='placeFoundation'&&!Object.hasOwn(x,'sourceAssistantSeq')));
 });
 
 test('基础CAS失败仍保存付费摘要与body引用seed，模型不重发；WB读取失败也继续body',async()=>{
@@ -14156,4 +14156,21 @@ test('整理同文材料只读一份且覆盖保全旧IDs，引文表逐列无�
  await h.placeWorkspaceStore.put({chatId:CHAT},{schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:CHAT,placesByEntityId:{},deletionsByEntityId:{},foundation:{schemaVersion:1,entities:[],facts:legacyIds.map(itemId=>({itemId,kind:'feature',placeEntityId:room.id,text:brief,source:{kind:'body',floorId:source.floors[0].id,quote:text}}))}},0);
  await h.runtime.refreshStatus({preferCached:false});for(let i=0;i<3;i++)await h.runtime.organizePlaces();
  assert.equal(requests.length,3);assert.equal(requests[1],requests[2]);const workspace=await h.placeWorkspaceStore.read({chatId:CHAT}),current=workspace.data.foundation.facts.find(f=>f.kind==='feature');assert.deepEqual(new Set(current.replacesItemIds),new Set([...legacyIds,coreItem.itemId]));assert.equal(h.runtime.getQianchuangSnapshot().places.find(p=>p.entityId===room.id).features.length,1);assert.equal(JSON.stringify((await h.store.readReachable({mode:'runtime'})).floorMemories[0]),oldMemory);
+});
+
+
+test('Extractor业务格式重做沿连接零次及四次重试，共享真实HTTP预算', async () => {
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: '同一份正文。' } };
+  const envelope = await createExtractorEnvelope({ batchId: '32323232-3232-4232-8232-323232323232', chatId: CHAT, narrativeGeneration: GENERATION, floor, userIdentity: { displayName: '甲' } });
+  for (const retryCount of [0, 1, 4]) {
+    let calls = 0;
+    const route = { kind: 'independent', config: { url: 'https://fixture.invalid', key: 'fixture', model: 'fixture', qqjRetryCount: retryCount } };
+    const router = createTaskRouter({ resolver: { resolve: () => route, resolveUtility: () => route }, compactClient: createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return compactResponse(calls <= retryCount ? '{}' : '{"summary":"最终有效摘要。"}'); } }) });
+    const result = await runExtractorRequest({ generateUtilityTask: router.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW });
+    assert.equal(calls, retryCount + 1); assert.equal(result.transportAttempts, calls); assert.equal(result.memory.summary.aiText, '最终有效摘要。');
+    calls = 0;
+    const failure = createTaskRouter({ resolver: { resolve: () => route, resolveUtility: () => route }, compactClient: createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return compactResponse('{}'); } }) });
+    await assert.rejects(runExtractorRequest({ generateUtilityTask: failure.generateUtilityTask, envelope, floor, expectedScope: envelope.scope, now: NOW }));
+    assert.equal(calls, retryCount + 1);
+  }
 });

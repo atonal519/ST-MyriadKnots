@@ -1153,7 +1153,7 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
 export async function runCseRequest({ generateAnalysisTask, envelope, previousCurrentState, now, deltaId, promptGuidance = '', processingPrompt = '', signal, transportBudget = { remaining: 3, used: 0 } }) {
   const systemPrompt = buildCseSystemPrompt(promptGuidance, processingPrompt);
   const taskMessages = [{ role: 'user', content: JSON.stringify(envelope.request) }];
-  for (let attempts = 1; attempts <= 3; attempts += 1) {
+  for (let attempts = 1; attempts <= (transportBudget.totalAttempts ?? 3); attempts += 1) {
     let candidate = null, metadata = sanitizeTaskMetadata(null), receivedResult = false;
     try {
       const result = await generateAnalysisTask({ systemPrompt, taskMessages, maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
@@ -1177,7 +1177,7 @@ export async function runCseRequest({ generateAnalysisTask, envelope, previousCu
         Object.assign(transportBudget.diagnostic, { outcome: 'failed', error: { code: failure.code, name: failure.name, httpStatus: failure.httpStatus, at: failure.at }, endedAt: Date.now() });
       }
       const retryable = receivedResult || error?.retryableRecognitionFormat === true || ['QQJ_TIMEOUT', 'QQJ_EMPTY'].includes(error?.code);
-      if (retryable && attempts < 3 && transportBudget.remaining > 0) continue;
+      if (retryable && attempts < (transportBudget.totalAttempts ?? 3) && transportBudget.remaining > 0) continue;
       const failedAttempts = transportBudget.used || attempts;
       if (failedAttempts > 1) error.message = `已尝试 ${failedAttempts} 次仍失败：${error.message}`;
       const subjectResolution = error?.cseDiagnostics?.subjectResolution ?? projectCseSubjectDiagnostic({

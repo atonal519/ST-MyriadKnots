@@ -129,7 +129,8 @@ export async function scanAssistantCandidates(chat, {
     const selected = selectAssistantMessage(source[messageIndex]);
     if (!selected) continue;
     const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
-    if (!canonicalContent) continue;
+    const messageAnchor = inspectMessageFloorAnchor(source[messageIndex], chatId);
+    if (!canonicalContent && (!chatId || messageAnchor.status !== 'valid' || messageAnchor.anchor.chatId !== chatId)) continue;
     assistantSeq += 1;
     const [rawFingerprint, canonicalFingerprint] = await Promise.all([
       prefixedHash(selected.rawContent),
@@ -145,7 +146,7 @@ export async function scanAssistantCandidates(chat, {
     }) : null;
     candidates.push(Object.freeze({
       assistantSeq,
-      messageAnchor: inspectMessageFloorAnchor(source[messageIndex], chatId),
+      messageAnchor,
       hostLocator: Object.freeze({
         messageIndex,
         swipeId: selected.swipeId,

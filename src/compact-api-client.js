@@ -3,7 +3,7 @@ import { withBaseProcessingPrompt } from './internal-processing-prompt.js';
 import { getSharedProcessingPrompt, prependProcessingPrompt, resolveSharedProcessingPrompt } from './shared-processing-prompt.js';
 import { sha256 } from './identity.js';
 import { normalizeFinishReason, parseJsonWithSymbolRepair, repairJsonWithUniqueMissingObjectClose } from './json-symbol-repair.js';
-import { parseAdditionalParams } from './settings.js';
+import { normalizeRetryCount, parseAdditionalParams } from './settings.js';
 import { stripMemoryTagBlocks } from './memory-content-sanitizer.js';
 
 const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages', 'json_schema']);
@@ -381,8 +381,11 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     if (typeof current !== 'function') throw new Error('fetch 不可用');
     return current;
   };
-  const request = async ({ path, body, config, signal, stream = false, retries = 2, transportBudget = null }) => {
+  const request = async ({ path, body, config, signal, stream = false, retries = null, transportBudget = null }) => {
     if (!config?.url || !config?.key) throw safeError('config');
+    const retryCount = normalizeRetryCount(config.qqjRetryCount) ?? 2;
+    retries = Math.min(retries ?? retryCount, retryCount);
+    transportBudget ??= { remaining: retryCount + 1, used: 0 };
     changeBusy(1);
     try {
       let attempt = 0;
@@ -426,10 +429,10 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
           throwResponseError(data, secrets);
           return data;
         } catch (error) {
-          if (linked.timedOut()) { const timeout = safeError('timeout'); requestFailure(transportBudget, timeout); throw timeout; }
+          if (linked.timedOut()) error = safeError('timeout');
           if (signal?.aborted || error?.name === 'AbortError') { requestFailure(transportBudget, abortError(), true); throw abortError(); }
           requestFailure(transportBudget, error);
-          if (error instanceof TypeError && attempt < retries && retryAvailable()) {
+          if ((error instanceof TypeError || error?.code === 'QQJ_TIMEOUT' || error?.retryableRecognitionFormat === true) && attempt < retries && retryAvailable()) {
             attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
           }
           if (error instanceof TypeError) throw safeError('network');
@@ -442,6 +445,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     }
   };
   const generateTask = async ({ config, taskMessages, jsonSchema, signal, maxTokens = 12000, temperature = 0.2, systemPrompt, transportBudget = null, parseMode = 'strict' } = {}) => {
+    transportBudget ??= { remaining: 1 + (normalizeRetryCount(config?.qqjRetryCount) ?? 2), used: 0 };
     requestProgress(transportBudget, 'preparing', { outcome: 'running', error: null, endedAt: null, attemptStartedAt: null, attemptEndedAt: null, timeoutMs: null });
     const compactMessages = [
       { role: 'system', content: typeof systemPrompt === 'string' && systemPrompt.trim()
@@ -478,18 +482,21 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
       body.custom_include_body = JSON.stringify(additional);
       delete body.reverse_proxy; delete body.proxy_password;
     }
-    let response;
-    try {
-      response = await request({ path: '/api/backends/chat-completions/generate', body, config, signal, stream: body.stream === true, transportBudget });
-    } catch (error) {
-      if (error && (typeof error === 'object' || typeof error === 'function') && transportBudget) error.transportAttempts = transportBudget.used;
-      throw error;
+    for (;;) {
+      try {
+        const response = await request({ path: '/api/backends/chat-completions/generate', body, config, signal, stream: body.stream === true, transportBudget });
+        const completion = body.stream === true && typeof response?.text === 'string' ? response : completionDetails(response);
+        const payload = parseMode === 'semantic'
+          ? { textData: completion.text }
+          : { jsonData: parseJsonOutput(completion.text, { finishReason: completion.finishReason }) };
+        return { ...payload, taskMetadata: { processingPromptFingerprint, systemPromptFingerprint, ...(completion.finishReason ? { finishReason: completion.finishReason } : {}), transportAttempts: transportBudget.used } };
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw abortError();
+        if ((error?.code === 'QQJ_EMPTY' || error?.retryableRecognitionFormat === true) && transportBudget.remaining > 0) continue;
+        if (error && (typeof error === 'object' || typeof error === 'function')) error.transportAttempts = transportBudget.used;
+        throw error;
+      }
     }
-    const completion = body.stream === true && typeof response?.text === 'string' ? response : completionDetails(response);
-    const payload = parseMode === 'semantic'
-      ? { textData: completion.text }
-      : { jsonData: parseJsonOutput(completion.text, { finishReason: completion.finishReason }) };
-    return { ...payload, taskMetadata: { processingPromptFingerprint, systemPromptFingerprint, ...(completion.finishReason ? { finishReason: completion.finishReason } : {}), ...(transportBudget ? { transportAttempts: transportBudget.used } : {}) } };
   };
   const testConnection = async ({ config, signal, processingPrompt = '' } = {}) => {
     await generateTask({ config, systemPrompt: withBaseProcessingPrompt('This is a plain-text connection check. Reply with a short confirmation.', processingPrompt), taskMessages: [{ role: 'user', content: 'Reply with OK.' }], signal, temperature: 0, parseMode: 'semantic' });

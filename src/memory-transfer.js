@@ -237,7 +237,7 @@ function validateMarkers(value, graph) {
 }
 
 async function verifyConversation(graph, chat, sanitizerOptions) {
-  const scanned = await scanAssistantCandidates(chat, { chatId: graph.root.chatId, sanitizerOptions });
+  const scanned = (await scanAssistantCandidates(chat, { chatId: graph.root.chatId, sanitizerOptions })).filter(candidate => candidate.canonicalContent);
   const candidates = partitionScannedCandidates(graph, chat, graph.root.chatId, scanned).all;
   const bindings = matchFloorCandidates(graph.floors, candidates);
   const missing = graph.floors.findIndex((_, index) => !bindings.floorMatches.has(index));

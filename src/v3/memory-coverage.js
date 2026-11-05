@@ -112,7 +112,7 @@ function hostCoverageProof(reachable, snapshot, hostCandidates) {
 export function assessMemoryCoverage({ reachable, snapshot, hostCandidates, realtimeOrigin = false } = {}) {
   const hostProof = reachable?.root && Array.isArray(reachable.floors) ? hostCoverageProof(reachable, snapshot, hostCandidates) : null;
   const partition = migrationPartition(reachable);
-  const floors = partition.liveFloors.filter(floor => !isMemoryExcludedFloor(floor, snapshot?.chat, reachable?.checkpoint, {
+  const floors = partition.liveFloors.filter(floor => hostProof?.candidateByFloorId.get(floor.id)?.canonicalContent !== '' && !isMemoryExcludedFloor(floor, snapshot?.chat, reachable?.checkpoint, {
     frozen: partition.isFrozenFloor(floor.id),
   }));
   if (!hostProof) {

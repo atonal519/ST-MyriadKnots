@@ -73,3 +73,14 @@ test('189人工地点类型覆盖自动类别，null恢复自动且按前缀作�
  data.placesByEntityId[room].mapRole=null;place.validatePlaceWorkspace(data,chat);const auto=place.applyPlaceSnapshot(base,data).places[0];assert.equal(auto.mapRole,'interior');assert.equal(auto.manualMapRole,false);
  data.placesByEntityId[room].mapRole='room';assert.throws(()=>place.validatePlaceWorkspace(data,chat));
 });
+
+test('地点合并身份后的自动覆盖、人工空清和删除沿声明redirect生效，原记录不变',()=>{
+ const old='99999999-9999-4999-8999-999999999999',resolve=id=>id===old?room:id;
+ const memory={floorId:floor,spatialFacts:{features:[{itemId:'old-feature',kind:'stable',placeEntityId:old,text:'旧设施',evidenceRefs:[{floorId:floor}]}],relations:[{itemId:'old-relation',placeEntityId:old,text:'旧方位',referencePlaceEntityIds:[],evidenceRefs:[{floorId:floor}]}],containments:[],positions:[]}};
+ const original=JSON.stringify(memory),ws={...workspace(),placesByEntityId:{},foundation:{facts:[{itemId:'new',kind:'feature',placeEntityId:room,text:'归并设施',replacesItemIds:['old-feature'],source:{kind:'body',floorId:next,quote:'归并设施'}}]}};
+ assert.equal(place.filterPlaceMemory(memory,ws,resolve).spatialFacts.features.length,0);
+ const manual=workspace();manual.placesByEntityId[room].description='';manual.placesByEntityId[room].relations='';assert.equal(place.filterPlaceMemory(memory,manual,resolve).spatialFacts.features.length,0);assert.equal(place.filterPlaceMemory(memory,manual,resolve).spatialFacts.relations.length,0);
+ const deleted={...ws,foundation:{facts:[]},deletionsByEntityId:{[room]:{coveredFloorIds:[floor]}}};assert.equal(place.filterPlaceMemory(memory,deleted,resolve).spatialFacts.features.length,0);
+ const oldManual={...manual,placesByEntityId:{[old]:manual.placesByEntityId[room]}};assert.equal(place.filterPlaceMemory(memory,oldManual,resolve).spatialFacts.features.length,0);
+ assert.equal(place.filterPlaceMemory(memory,ws).spatialFacts.features.length,1,'不提供redirect时仍按原身份合同');assert.equal(JSON.stringify(memory),original);
+});

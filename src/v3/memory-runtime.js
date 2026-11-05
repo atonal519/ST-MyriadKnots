@@ -2320,14 +2320,20 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const hostSnapshot = hostAdapter.snapshot();
       const memoryMap = currentMemoryMap(source);
       const liveFloors = liveFloorsFor(source);
-      const eligibleFloorIds = new Set(liveFloors.map(item => item.id));
+      const eligibleFloorIds = new Set(liveFloors.filter(item => {
+        const selected = rawSelectionFromSnapshot(hostSnapshot, item);
+        return !selected || sanitizeMemoryContent(selected.rawContent, sanitizerOptions()).trim();
+      }).map(item => item.id));
+      if (!selectNext && !floorIds?.length && floorId && liveFloors.some(item => item.id === floorId) && !eligibleFloorIds.has(floorId)) {
+        throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '这一楼清洗后没有可提取的正文。');
+      }
       const requestedFloors = Array.isArray(floorIds) && floorIds.length
         ? floorIds.map(id => source?.floors?.find(item => item.id === id))
         : null;
       if (requestedFloors?.some(item => !item || !eligibleFloorIds.has(item.id)) || requestedFloors?.length > 10) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '高楼压缩只接受当前连续范围内最多 10 个稳定 AI 楼。');
       if (requestedFloors?.some((item, index) => index > 0 && source.floors.indexOf(item) !== source.floors.indexOf(requestedFloors[index - 1]) + 1)) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '高楼压缩范围必须是连续的稳定 AI 楼。');
       const floor = requestedFloors?.at(-1) ?? (selectNext
-        ? liveFloors.find(item => memoryMap.get(item.id)?.recordStatus !== 'active')
+        ? liveFloors.find(item => eligibleFloorIds.has(item.id) && memoryMap.get(item.id)?.recordStatus !== 'active')
         : source?.floors?.find(item => item.id === floorId && eligibleFloorIds.has(item.id)));
       if (!floor) return selectNext ? null : (() => { throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '只允许提取当前后端快照中可用的稳定 AI 楼。'); })();
       const aggregateFloors = requestedFloors ?? [floor];

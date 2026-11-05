@@ -776,3 +776,51 @@ test('API保存失败只撤回本次字段或新增项，不覆盖期间其它�
   mode='new';await assert.rejects(async()=>settings.upsertSharedPreset('本轮新增',{url:'https://new.test',key:'key',model:'new'},'',{observeSaveFailure:true}),/保存失败/);
   assert.deepEqual(data['schedule-planner'].apiPresets.map(p=>p.id),['p','other-edit','other-new']);
 });
+
+
+test('连接重试配置缺省不回写，零值贯通主配置、共享用途与失败回滚', async () => {
+  const data = {}, { settings } = setup(data);
+  settings.saveMainConfig(configured('主', 'main'));
+  const before = structuredClone(data); settings.mainConfig(); settings.sharedPresets();
+  assert.deepEqual(data, before); assert.equal(Object.hasOwn(settings.get(), 'apiQianqianjieRetryCount'), false);
+  settings.saveMainConfig({ ...settings.mainConfig(), qqjRetryCount: 0 });
+  assert.equal(settings.mainConfig().qqjRetryCount, 0);
+  const id = settings.upsertSharedPreset('连接', { ...configured('连接', 'p'), qqjRetryCount: 4 }, 'p');
+  data['schedule-planner'].apiPresets[0].unknown = { keep: true };
+  settings.update({ apiMode: 'seven-preset', selectedSevenDaysPresetId: id, summaryPresetId: id, recallPresetId: id });
+  const resolver = createApiResolver({ settings });
+  for (const route of [resolver.resolve(), resolver.resolveUtility(), resolver.resolveRecall()]) assert.equal(route.config.qqjRetryCount, 4);
+  settings.upsertSharedPreset('连接', { ...settings.sharedPresets()[0], qqjRetryCount: 0 }, id);
+  assert.equal(resolver.resolveRecall().config.qqjRetryCount, 0); assert.deepEqual(settings.sharedPresets()[0].unknown, { keep: true });
+  const original = structuredClone(data);
+  const failing = createSettingsStore({ extensionSettings: data, save: () => { throw Error('save failed'); } });
+  assert.throws(() => failing.upsertSharedPreset('连接', { ...failing.sharedPresets()[0], qqjRetryCount: 2 }, id, { observeSaveFailure: true }));
+  assert.deepEqual(data, original);
+});
+
+test('同一逻辑预算固定连接与次数，后续正常任务读新连接', async () => {
+  const data = {}, { settings } = setup(data);
+  settings.saveMainConfig({ ...configured('主', 'main'), qqjRetryCount: 4 });
+  const { createCompactApiClient } = await import('../src/compact-api-client.js'); const bodies = [];
+  const client = createCompactApiClient({ fetchImpl: async (_path, options) => { bodies.push(JSON.parse(options.body)); return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '尚待编译' } }] }) }; } });
+  const router = createTaskRouter({ resolver: createApiResolver({ settings }), compactClient: client });
+  const budget = { remaining: 3, used: 0 };
+  await router.generateAnalysisTask({ taskMessages: [], parseMode: 'semantic', transportBudget: budget });
+  settings.saveMainConfig({ ...settings.mainConfig(), model: 'new-model', qqjRetryCount: 0 });
+  for (let i = 0; i < 4; i++) await router.generateAnalysisTask({ taskMessages: [], parseMode: 'semantic', transportBudget: budget });
+  assert.deepEqual(bodies.map(body => body.model), Array(5).fill('test-model')); assert.equal(budget.remaining, 0); assert.equal(budget.used, 5);
+  await assert.rejects(router.generateAnalysisTask({ taskMessages: [], transportBudget: budget })); assert.equal(bodies.length, 5);
+  await router.generateAnalysisTask({ taskMessages: [], parseMode: 'semantic' }); assert.equal(bodies.at(-1).model, 'new-model');
+});
+
+test('并发正常任务各自使用连接重试额度，缺省字段的失败保存恢复缺省身份', async () => {
+ let save=()=>{};const data={};const settings=createSettingsStore({extensionSettings:data,save:()=>save()});
+ settings.saveMainConfig(configured('主','main'));const before=structuredClone(data);save=()=>{throw Error('save failed');};
+ assert.throws(()=>settings.saveMainConfig({...settings.mainConfig(),qqjRetryCount:0},{observeSaveFailure:true}));assert.deepEqual(data,before);assert.equal(Object.hasOwn(settings.get(),'apiQianqianjieRetryCount'),false);save=()=>{};
+ settings.saveMainConfig({...settings.mainConfig(),qqjRetryCount:2});
+ const {createCompactApiClient}=await import('../src/compact-api-client.js');let release,started;const gate=new Promise(r=>{release=r;}),ready=new Promise(r=>{started=r;}),calls=[];
+ const client=createCompactApiClient({retryWait:async()=>{},fetchImpl:async(_path,options)=>{const body=JSON.parse(options.body);calls.push(body.model);if(calls.length===1){started();await gate;return{ok:false,status:503,text:async()=>''};}if(body.model==='new-model')return{ok:false,status:503,text:async()=>''};return{ok:true,status:200,json:async()=>({choices:[{message:{content:'{"ok":true}'}}]})};}});
+ const router=createTaskRouter({resolver:createApiResolver({settings}),compactClient:client});const first=router.generateAnalysisTask({taskMessages:[]});await ready;
+ settings.saveMainConfig({...settings.mainConfig(),model:'new-model',qqjRetryCount:0});await assert.rejects(router.generateAnalysisTask({taskMessages:[]}));release();await first;
+ assert.deepEqual(calls,['test-model','new-model','test-model']);
+});

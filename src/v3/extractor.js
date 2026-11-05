@@ -2040,7 +2040,7 @@ export async function runExtractorRequest({ generateUtilityTask, envelope, floor
   const validationErrors = [];
   const systemPrompt = aggregate ? buildHighFloorExtractorSystemPrompt(promptGuidance, processingPrompt) : buildExtractorSystemPrompt(promptGuidance, processingPrompt);
   const taskMessages = [{ role: 'user', content: JSON.stringify(envelope.request) }];
-  for (let attempts = 1; attempts <= 3; attempts += 1) {
+  for (let attempts = 1; attempts <= (transportBudget.totalAttempts ?? 3); attempts += 1) {
     let candidate = null, metadata = sanitizeTaskMetadata(null), responseFingerprint = null, receivedResult = false;
     try {
       const result = await generateUtilityTask({ systemPrompt, taskMessages, maxTokens: 30000, temperature: 0, signal, includeCharacterCard: false, worldInfoSource: 'none', transportBudget, parseMode: 'semantic' });
@@ -2068,7 +2068,7 @@ export async function runExtractorRequest({ generateUtilityTask, envelope, floor
       const formatStage = error?.formatStage ?? null;
       validationErrors.push({ code: String(error?.code ?? 'V3_EXTRACTOR_REQUEST_FAILED').slice(0, 120), path: String(error?.validationPath ?? '').slice(0, 500), formatStage: formatStage ? String(formatStage).slice(0, 120) : null });
       const retryable = receivedResult || error?.retryableRecognitionFormat === true || ['QQJ_TIMEOUT', 'QQJ_EMPTY'].includes(error?.code);
-      if (retryable && attempts < 3 && transportBudget.remaining > 0) continue;
+      if (retryable && attempts < (transportBudget.totalAttempts ?? 3) && transportBudget.remaining > 0) continue;
       let sessionCandidate = null;
       if (candidate !== null) {
         try { sessionCandidate = JSON.stringify(candidate).slice(0, 24000); } catch { sessionCandidate = '[候选无法序列化]'; }

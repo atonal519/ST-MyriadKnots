@@ -304,7 +304,7 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   const placeGuide = helpSections.find(node => node.children[0].textContent === '千窗：地点与地图');
   assert.ok(placeGuide);
   const placeGuideCopy = flatten(placeGuide).map(node => node.textContent).join('|');
-  assert.match(placeGuideCopy, /添加子地点.*未归属地点.*18张通用图/u);
+  assert.match(placeGuideCopy, /添加子地点.*未归属地点.*21张通用图/u);
   assert.match(placeGuideCopy, /每次调用一次摘要 API.*不需要先补完逐楼摘要/u);
   assert.equal(helpSections.at(-1).children[0].textContent, '排障手册');
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /保留包裹符.*清洗包裹符.*人物状态重构/);

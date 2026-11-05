@@ -1,4 +1,6 @@
-export { normalizeWrapperRules as normalizeMemoryTagList, sanitizeStoryBody as sanitizeMemoryContent } from './shared-body-wrappers.js';
+import { sanitizeStoryBody } from './shared-body-wrappers.js';
+export { normalizeWrapperRules as normalizeMemoryTagList } from './shared-body-wrappers.js';
+export const sanitizeMemoryContent = (raw, options = {}) => sanitizeStoryBody(raw, { ...options, htmlFormatting: true });
 
 const TAG_NAME_PATTERN = /^[\p{L}][\p{L}\p{N}_-]*~?$/u;
 const LITERAL_WRAPPER_SEPARATOR = '...';

@@ -909,7 +909,7 @@ function recallSelection(projection, queryContext) {
 const eventRecallRow = (event, matterStatus = null, order = 0) => frozen({ eventId: event.id, matterId: event.matterId,
   assistantSeq: event.assistantSeq, matterStatus, order, line: `- ${formatStoryTime(event.parsedStoryTime, event.storyTime)}：${event.title}` });
 const pendingRecallRow = (matter, assistantSeq = matter.sourceAssistantSeq) => frozen({ matterId: matter.matterId, assistantSeq,
-  line: `- ${matter.title}${matter.object ? `（${matter.object}）` : ''}${matter.scheduledTime ? `；约定：${matter.scheduledTime}` : ''}；${matter.status === 'completed' ? '已记录完成，当前仍继续关注后续变化。' : '尚未记录完成。'}` });
+  line: `- ${matter.title}${matter.object ? `（${matter.object}）` : ''}${matter.scheduledTime ? `；约定：${matter.scheduledTime}` : ''}；状态：${({ planned: '待办', inProgress: '进行中', completed: '已完成' })[matter.status] ?? '未知'}；跟进：持续。` });
 
 function recallCurrentMatterStatuses(projection, events) {
   return new Map(projection.matters.filter(hasTrackableCurrent).flatMap(matter => {
@@ -926,7 +926,7 @@ function renderQianshiRows(eventRows, pendingRows, characterBudget, pendingHeade
   for (const row of eventRows) if (row.matterId) lastEventByMatter.set(row.matterId, row.eventId);
   const timelineSource = eventRows.map(row => ({ ...row,
     line: `${row.line}${row.matterId && ['planned', 'inProgress'].includes(row.matterStatus) && !pendingMatterIds.has(row.matterId)
-      && lastEventByMatter.get(row.matterId) === row.eventId ? '（此后尚未记录完成）' : ''}` }));
+      && lastEventByMatter.get(row.matterId) === row.eventId ? `（事项状态：${row.matterStatus === 'planned' ? '待办' : '进行中'}）` : ''}` }));
   const takeRows = (title, rows, limit, selected = []) => {
     for (const row of rows.slice(selected.length)) {
       const candidate = [title, ...selected.map(item => item.line), row.line].join('\n');

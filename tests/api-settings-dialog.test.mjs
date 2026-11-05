@@ -94,3 +94,90 @@ test('副本名称Enter只保存副本，保原预设/用途/编辑窗',async()=
  await copy.fire('keydown',{key:'Enter',preventDefault(){},stopPropagation(){stopped=true;}});await flush();if(!stopped)await h.dialogs.save();
  assert.ok(h.settings.sharedPresets().some(p=>p.name==='Enter副本'));assert.deepEqual(h.settings.sharedPresets().find(p=>p.id==='p'),original);assert.deepEqual(h.settings.get(),refs);assert.equal(h.dialogs.active.content,form);h.dialogs.cancel();
 });
+
+test('另存区展开后底部保存创建新ID副本，保原预设和用途并继承空Key', async () => {
+ const h = setup(), form = await h.open('summary');
+ const original = structuredClone(h.settings.sharedPresets()[0]);
+ const refs = structuredClone(h.settings.get());
+ const sharedRefs = { active: h.data['schedule-planner'].apiPresetActiveId, utility: h.data['schedule-planner'].utilityPresetId };
+ const writes = h.saves;
+ field(form, 'URL').value = 'https://footer-copy.invalid/v1';
+ field(form, '模型').children[0].value = 'copy-model';
+ await button(form, '另存为').fire('click');
+ field(form, '副本名称').value = ' 底部保存副本 ';
+ assert.equal(field(form, 'Key').value, '');
+ assert.equal(await h.dialogs.save(), true);
+ assert.equal(h.saves, writes + 1);
+ assert.equal(h.settings.sharedPresets().length, 2);
+ const copy = h.settings.sharedPresets().find(preset => preset.id !== original.id);
+ assert.ok(copy?.id);
+ assert.equal(copy.name, '底部保存副本');
+ assert.equal(copy.url, 'https://footer-copy.invalid/v1');
+ assert.equal(copy.model, 'copy-model');
+ assert.equal(copy.key, original.key);
+ assert.deepEqual(h.settings.sharedPresets().find(preset => preset.id === original.id), original);
+ assert.deepEqual(h.settings.get(), refs);
+ assert.deepEqual({ active: h.data['schedule-planner'].apiPresetActiveId, utility: h.data['schedule-planner'].utilityPresetId }, sharedRefs);
+ assert.equal(h.dialogs.active, null);
+ assert.equal(h.calls.length, 0);
+});
+
+test('取消另存后底部保存更新原预设，取消整个编辑零写入', async () => {
+ const h = setup(), form = await h.open(), writes = h.saves;
+ const refs = structuredClone(h.settings.get());
+ await button(form, '另存为').fire('click');
+ field(form, '副本名称').value = '取消的副本';
+ await button(form, '取消另存').fire('click');
+ field(form, '预设名称').value = '原项更新';
+ field(form, 'URL').value = 'https://updated.invalid/v1';
+ assert.equal(await h.dialogs.save(), true);
+ assert.equal(h.saves, writes + 1);
+ assert.equal(h.settings.sharedPresets().length, 1);
+ assert.equal(h.settings.sharedPresets()[0].id, 'p');
+ assert.equal(h.settings.sharedPresets()[0].name, '原项更新');
+ assert.deepEqual(h.settings.get(), refs);
+ const before = structuredClone(h.data), savedWrites = h.saves, next = await h.open();
+ await button(next, '另存为').fire('click');
+ field(next, '副本名称').value = '不保存';
+ h.dialogs.cancel();
+ assert.deepEqual(h.data, before);
+ assert.equal(h.saves, savedWrites);
+});
+
+test('底部另存失败保副本草稿与原项，重试只新增一份', async () => {
+ const h = setup(), form = await h.open();
+ const original = structuredClone(h.settings.sharedPresets()[0]);
+ const refs = structuredClone(h.settings.get());
+ field(form, 'URL').value = 'https://retry-copy.invalid/v1';
+ await button(form, '另存为').fire('click');
+ field(form, '副本名称').value = '重试副本';
+ h.setSave(() => Promise.reject(Error('模拟保存失败')));
+ assert.equal(await h.dialogs.save(), false);
+ assert.equal(h.dialogs.active.content, form);
+ assert.equal(field(form, '副本名称').parentNode.parentNode.hidden, false);
+ assert.equal(field(form, '副本名称').value, '重试副本');
+ assert.equal(field(form, 'URL').value, 'https://retry-copy.invalid/v1');
+ assert.deepEqual(h.settings.sharedPresets(), [original]);
+ h.setSave(() => {});
+ assert.equal(await h.dialogs.save(), true);
+ assert.equal(h.settings.sharedPresets().length, 2);
+ assert.equal(h.settings.sharedPresets().filter(preset => preset.name === '重试副本').length, 1);
+ assert.deepEqual(h.settings.sharedPresets().find(preset => preset.id === original.id), original);
+ assert.deepEqual(h.settings.get(), refs);
+});
+
+
+test('失败重试次数高级输入保零、校验草稿，取消与无关编辑不补写旧缺省', async () => {
+  const h = setup(); let form = await h.open(); const retry = field(form, '失败重试次数');
+  assert.ok(retry); assert.equal(retry.value, '2'); assert.equal(retry.min, '0'); assert.equal(retry.step, '1');
+  const original = structuredClone(h.data); h.dialogs.cancel(); assert.deepEqual(h.data, original);
+  form = await h.open(); field(form, '预设名称').value = '改名'; assert.equal(await h.dialogs.save(), true);
+  assert.equal(Object.hasOwn(h.settings.sharedPresets()[0], 'qqjRetryCount'), false);
+  form = await h.open();
+  for (const invalid of ['', '-1', '0.5', String(Number.MAX_SAFE_INTEGER), 'Infinity']) {
+    field(form, '失败重试次数').value = invalid; assert.equal(await h.dialogs.save(), false, invalid);
+  }
+  field(form, '失败重试次数').value = '0'; assert.equal(await h.dialogs.save(), true); assert.equal(h.settings.sharedPresets()[0].qqjRetryCount, 0);
+  form = await h.open(); await button(form, '另存为').fire('click'); field(form, '副本名称').value = '零重试副本'; assert.equal(await h.dialogs.save(), true);
+  assert.equal(h.settings.sharedPresets().find(p => p.name === '零重试副本').qqjRetryCount, 0);
+});

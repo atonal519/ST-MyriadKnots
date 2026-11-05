@@ -147,3 +147,17 @@ test('实体首见边界跨代迁移时只投影视图代次，无引用时保�
   });
   assert.deepEqual(projectEntityFloorBounds([referenced], [], [], [])[0], referenced, '无存活引用时只清边界规则生效，不改原始代次');
 });
+
+test('HTML正文空壳先绑定身份再排出待处理，后楼可继续且旧记忆不变', async () => {
+ const later = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+ const message = { is_user: false, is_system: false, mes: '```html\n<!doctype html>\n```', extra: anchor(FLOOR) };
+ const story = { is_user: false, is_system: false, mes: '他递回钥匙。', extra: anchor(later) };
+ const reachable = { root: { chatId: CHAT }, floors: [floor(FLOOR, 1), floor(later, 2)], floorMemories: [], stateDeltas: [] };
+ const snapshot = { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: [message, { is_user: true, mes: '继续' }, story] };
+ const coverage = await assessMemoryCoverageFromHost({ reachable, snapshot, captureGuard: true });
+ assert.notEqual(coverage.status, 'unknown');assert.deepEqual(coverage.summaryPendingFloorIds, [later]);assert.equal(coverage.summaryNextAssistantSeq, 2);
+ const memory = { id: MEMORY, floorId: FLOOR, recordStatus: 'active', summary: { aiText: '原摘要' } };
+ const delta = { id: DELTA, floorId: FLOOR, floorMemoryId: MEMORY, recordStatus: 'active', subjectSnapshots: [] };
+ reachable.floorMemories = [memory];reachable.stateDeltas = [delta];const before = JSON.stringify(reachable);
+ await assessMemoryCoverageFromHost({ reachable, snapshot });assert.equal(JSON.stringify(reachable), before);
+});

@@ -82,6 +82,12 @@ export function normalizeTimeout(value) {
   return Number.isInteger(number) && number >= 5 && number <= 600 ? number : 180;
 }
 
+export function normalizeRetryCount(value) {
+  if (!['number', 'string'].includes(typeof value) || typeof value === 'string' && !value.trim()) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 && Number.isSafeInteger(number + 1) ? number : null;
+}
+
 export function normalizeTemperature(value) {
   if (value === null || value === undefined || typeof value === 'string' && value.trim() === '') return null;
   if (!['number', 'string'].includes(typeof value)) return null;
@@ -128,6 +134,8 @@ export function normalizePreset(value = {}) {
     timeoutSec: normalizeTimeout(value.timeoutSec),
     stream: value.stream === true,
   };
+  const qqjRetryCount = normalizeRetryCount(value.qqjRetryCount);
+  if (qqjRetryCount !== null) normalized.qqjRetryCount = qqjRetryCount;
   const qqjTemperature = normalizeTemperature(value.qqjTemperature);
   if (qqjTemperature !== null) normalized.qqjTemperature = qqjTemperature;
   if (text(value.qqjAdditionalParams).trim()) normalized.qqjAdditionalParams = text(value.qqjAdditionalParams).trim();
@@ -249,6 +257,10 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     if (own(patch, 'apiModel')) settings.apiModel = text(patch.apiModel).trim();
     if (own(patch, 'apiExcludeParams')) settings.apiExcludeParams = parseExcludeParams(patch.apiExcludeParams);
     if (own(patch, 'apiAdditionalParams')) settings.apiAdditionalParams = text(patch.apiAdditionalParams).trim();
+    if (own(patch, 'apiQianqianjieRetryCount')) {
+      const value = normalizeRetryCount(patch.apiQianqianjieRetryCount);
+      if (value === null) delete settings.apiQianqianjieRetryCount; else settings.apiQianqianjieRetryCount = value;
+    }
     if (own(patch, 'apiQianqianjieTemperature')) settings.apiQianqianjieTemperature = normalizeTemperature(patch.apiQianqianjieTemperature);
     if (own(patch, 'apiTimeoutSec')) settings.apiTimeoutSec = normalizeTimeout(patch.apiTimeoutSec);
     if (own(patch, 'apiStream')) settings.apiStream = patch.apiStream === true;
@@ -282,6 +294,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       timeoutSec: settings.apiTimeoutSec,
       stream: settings.apiStream,
       qqjTemperature: settings.apiQianqianjieTemperature,
+      qqjRetryCount: settings.apiQianqianjieRetryCount,
     });
   };
   const mainConfig = () => ({ ...localConfig(), name: '主配置' });
@@ -366,14 +379,16 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       if (!value || typeof value !== 'object') return null;
       const normalized = normalizePreset(value), preset = { ...value, ...normalized };
       if (normalized.qqjTemperature === undefined) delete preset.qqjTemperature;
+      if (normalized.qqjRetryCount === undefined) delete preset.qqjRetryCount;
       return preset;
     }).filter(value => value?.id);
   };
   const saveMainConfig = (config, options = {}) => {
     parseAdditionalParams(config?.qqjAdditionalParams);
     const current = get(), normalized = normalizePreset(config);
-    const keys = ['apiUrl', 'apiKey', 'apiModel', 'apiExcludeParams', 'apiAdditionalParams', 'apiTimeoutSec', 'apiStream', 'apiQianqianjieTemperature'];
+    const keys = ['apiUrl', 'apiKey', 'apiModel', 'apiExcludeParams', 'apiAdditionalParams', 'apiTimeoutSec', 'apiStream', 'apiQianqianjieTemperature', 'apiQianqianjieRetryCount'];
     const before = Object.fromEntries(keys.map(key => [key, current[key]]));
+    const hadRetryCount = own(current, 'apiQianqianjieRetryCount');
     current.apiUrl = normalized.url;
     current.apiKey = normalized.key;
     current.apiModel = normalized.model;
@@ -382,8 +397,12 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     current.apiTimeoutSec = normalized.timeoutSec;
     current.apiStream = normalized.stream;
     current.apiQianqianjieTemperature = normalized.qqjTemperature ?? null;
+    if (normalized.qqjRetryCount === undefined) delete current.apiQianqianjieRetryCount; else current.apiQianqianjieRetryCount = normalized.qqjRetryCount;
     const result = mainConfig(), applied = Object.fromEntries(keys.map(key => [key, current[key]]));
-    return persistApiEdit(result, options, () => restoreApiFields(current, before, applied));
+    return persistApiEdit(result, options, () => {
+      restoreApiFields(current, before, applied);
+      if (!hadRetryCount && current.apiQianqianjieRetryCount === undefined) delete current.apiQianqianjieRetryCount;
+    });
   };
   const upsertSharedPreset = (name, config, id = '', options = {}) => {
     parseAdditionalParams(config?.qqjAdditionalParams);
@@ -406,6 +425,11 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
       timeoutSec: normalized.timeoutSec,
       stream: normalized.stream,
     };
+    if (normalized.qqjRetryCount !== undefined) snapshot.qqjRetryCount = normalized.qqjRetryCount;
+    else if (index >= 0 && list[index] && typeof list[index] === 'object') {
+      list[index] = { ...list[index] };
+      delete list[index].qqjRetryCount;
+    }
     if (normalized.qqjTemperature !== undefined) snapshot.qqjTemperature = normalized.qqjTemperature;
     else if (index >= 0 && list[index] && typeof list[index] === 'object') {
       list[index] = { ...list[index] };
@@ -420,7 +444,7 @@ export function createSettingsStore({ extensionSettings, save = () => {}, now, r
     else list.push({ ...snapshot, id: presetId });
     shared.apiPresets = list;
     const appliedRecord = list[index >= 0 ? index : list.length - 1];
-    const fields = ['name', 'url', 'key', 'model', 'excludeParams', 'timeoutSec', 'stream', 'qqjTemperature', 'qqjAdditionalParams'];
+    const fields = ['name', 'url', 'key', 'model', 'excludeParams', 'timeoutSec', 'stream', 'qqjTemperature', 'qqjAdditionalParams', 'qqjRetryCount'];
     const appliedValues = options.observeSaveFailure ? Object.fromEntries(fields.map(field => [field, JSON.stringify(appliedRecord[field])])) : {};
     const createdSnapshot = options.observeSaveFailure && !priorRecord ? JSON.stringify(appliedRecord) : '';
     return persistApiEdit(presetId, options, () => {

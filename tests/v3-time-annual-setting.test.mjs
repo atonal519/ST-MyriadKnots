@@ -175,7 +175,7 @@ test('普通互动的人名匹配只送年度候选，同次选材不保留时�
     assert.equal(payload.annualCandidates.length, 1);
     assert.match(payload.annualCandidates[0].fact, /阿岚.*日期关系不明确/u);
     assert.equal(payload.candidates.length, 0);
-    assert.equal(options.transportBudget.remaining, 1);
+    assert.equal(options.transportBudget.remaining, 3);
     return { jsonData: { history_exclude_keys: [], state_exclude_keys: [], annual_retain_keys: [] } };
   } });
   assert.equal(calls, 1, '年度判断复用本次选材而非追加请求');

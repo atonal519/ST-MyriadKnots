@@ -2537,3 +2537,29 @@ test('连续普通分支复制各用本次目标原文，保持有效行次序',
   assert.deepEqual(allRows[1][0], allRows[0][1], '有效片段的见证、向量与原次序保持');
   assert.equal(embeds, 1, '只有准备源索引的模拟embedding，复制不生成向量');
 });
+
+test('HTML正文同raw已保存快照可替旧清洗文本，chunks新指纹且旧见证失效', async () => {
+ const raw = await hash('<html><body><p>她递回钥匙。</p></body></html>');
+ const oldText = '<!doctype html>', text = '她递回钥匙。';
+ const floor = { id: 'html-floor', assistantSeq: 1, content: { canonicalContent: oldText, canonicalFingerprint: await hash(oldText), rawFingerprint: raw } };
+ const memory = { id: 'html-memory', floorId: floor.id, sourceFloorIds: [floor.id], sourceCanonicalContent: text, sourceRawFingerprint: raw };
+ const projection = await projectVectorSources([memory], [floor]);assert.equal(projection.rawSources.length, 1);assert.equal(projection.rawSources[0].canonicalContent, text);assert.equal(projection.rawSources[0].fingerprint, await hash(text));
+ const chunk = rawSourceChunks(projection)[0];assert.equal(chunk.text, text);chunk.witness.textFingerprint = await hash(text);
+ assert.equal(await rawWitnessValid(chunk.witness, projection), true);
+ const old = { ...chunk.witness, fingerprint: floor.content.canonicalFingerprint, length: oldText.length, textFingerprint: await hash(oldText) };
+ assert.equal(await rawWitnessValid(old, projection), false);
+ for (const value of [undefined, 'sha256:invalid', await hash('different raw')]) assert.equal((await projectVectorSources([{ ...memory, sourceRawFingerprint: value }], [floor])).rawSources.length, 0);
+ const legacy = await projectVectorSources([{ id: memory.id, floorId: floor.id }], [floor]);assert.equal(legacy.rawSources[0].canonicalContent, oldText);
+});
+
+test('HTML正文聚合只凭每个成员snapshot自己的raw，不借anchor或整段聚合正文', async () => {
+ const rawA = await hash('raw A'), rawB = await hash('raw B');
+ const floors = [{ id: 'member-a', assistantSeq: 1, content: { canonicalContent: '<!doctype html>', rawFingerprint: rawA } },
+  { id: 'member-b', assistantSeq: 2, content: { canonicalContent: '<!doctype html>', rawFingerprint: rawB } }];
+ const memory = { id: 'aggregate', floorId: 'member-b', sourceFloorIds: ['member-a', 'member-b'], sourceCanonicalContent: '整段聚合不能借给锚楼', sourceRawFingerprint: rawB,
+  sourceFloorSnapshots: [{ floorId: 'member-a', canonicalContent: '第一楼故事', rawFingerprint: rawA }, { floorId: 'member-b', canonicalContent: '第二楼故事', rawFingerprint: rawA }] };
+ let result = await projectVectorSources([memory], floors);assert.deepEqual(result.rawSources.map(s=>s.floorId), ['member-a']);
+ memory.sourceFloorSnapshots.pop();result = await projectVectorSources([memory], floors);assert.deepEqual(result.rawSources.map(s=>s.floorId), ['member-a']);
+ memory.sourceFloorSnapshots.push({ floorId: 'member-b', canonicalContent: '第二楼故事', rawFingerprint: rawB });result = await projectVectorSources([memory], floors);assert.deepEqual(result.rawSources.map(s=>s.canonicalContent), ['第一楼故事','第二楼故事']);
+ assert.equal(rawSourceChunks(result).map(chunk=>chunk.text).join('|'), '第一楼故事|第二楼故事');
+});

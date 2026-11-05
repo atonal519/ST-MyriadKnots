@@ -4560,3 +4560,15 @@ test('关系历史：identity legacy正式依据及规范化别名不能遮住�
     assert.deepEqual(result.identityBriefUpdates,[]);assert.ok(result.isolated.some(item=>item.field==='identityBriefUpdates'));
   }
 });
+
+
+test('CSE业务格式重做沿连接零次及四次重试，共享真实HTTP预算', async () => {
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲今天状态平稳。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
+  for (const retryCount of [0, 1, 4]) {
+    let calls = 0;
+    const route = { kind: 'independent', config: { url: 'https://fixture.invalid', key: 'fixture', model: 'fixture', qqjRetryCount: retryCount } };
+    const router = createTaskRouter({ resolver: { resolve: () => route }, compactClient: createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return compactResponse(calls <= retryCount ? '{}' : '{"subjects":[]}'); } }) });
+    const result = await runCseRequest({ generateAnalysisTask: router.generateAnalysisTask, envelope, previousCurrentState: null, now: NOW, deltaId: '26252525-2525-4252-8252-252525252525' });
+    assert.equal(calls, retryCount + 1); assert.equal(result.transportAttempts, calls); assert.equal(result.delta.noMaterialChange, true);
+  }
+});

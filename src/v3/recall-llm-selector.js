@@ -158,6 +158,7 @@ export async function selectRecallWithLlm({
   generateUtilityTask,
   processingPrompt = '',
   signal,
+  transportBudget = { remaining: 3, used: 0 },
   semanticProvider = null,
   onProgress = null,
 } = {}) {
@@ -266,8 +267,7 @@ export async function selectRecallWithLlm({
   let result = null;
   const utilityStarted = Date.now();
   try {
-    // This selector makes one transport attempt; the runtime owns the single full recall retry with fresh sources.
-    const transportBudget = { remaining: 1, used: 0 };
+    // The runtime and transport share this logical selection budget.
     const taskMessages = [{ role: 'user', content: serializedTaskInput }];
     updateStep('utilityTask');
     result = await generateUtilityTask({
