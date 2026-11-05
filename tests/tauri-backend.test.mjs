@@ -87,6 +87,42 @@ test('TT health checks native IO; read/put/list survive a new client/runtime', a
   await assert.rejects(f.client.health(), /read failure/);
 });
 
+test('TT native responses retain nested JSON isolation without copying complete records again', async t => {
+  const f = await fixture(t);
+  const input = { z: { text: '手改摘要', rows: [1, { value: '原值' }] }, a: '保留字段顺序' };
+  const expected = structuredClone(input);
+  const pending = f.client.put('c', 'r', input, 0);
+  input.z.text = '调用者后续草稿';
+  const saved = await pending;
+  assert.deepEqual(saved.data, expected, '请求已经序列化，不借用调用者的可变对象');
+  saved.data.z.rows[1].value = '修改写入响应';
+  assert.deepEqual((await f.client.get('c', 'r')).data, expected);
+
+  const direct = await f.client.get('c', 'r');
+  direct.data.z.text = '修改单条响应';
+  const batch = await f.client.getMany('c', ['r', 'r']);
+  assert.deepEqual(batch[0].envelope.data, expected);
+  batch[0].envelope.data.z.rows[1].value = '修改批读响应';
+  assert.deepEqual(batch[1].envelope.data, expected, '重复ID的两次原生读取互不共享数据');
+
+  const listed = await f.client.list('c');
+  assert.deepEqual(listed[0].data, expected);
+  listed[0].data.z.text = '修改集合响应';
+  const iterator = f.client.iterRecords('c', { requireStreaming: true });
+  const first = await iterator.next();
+  assert.deepEqual(first.value.data, expected);
+  first.value.data.z.rows.push('修改流式响应');
+  await iterator.return();
+  assert.deepEqual((await f.client.get('c', 'r')).data, expected);
+  assert.deepEqual(Object.keys((await f.client.get('c', 'r')).data), ['z', 'a']);
+
+  const deleted = await f.client.remove('c', 'r', 1);
+  const restoredResponse = await f.request(`trash/qianqianjie/${deleted.trashId}/restore`, 'POST');
+  const restored = await restoredResponse.json();
+  restored.data.z.text = '修改还原响应';
+  assert.deepEqual((await f.client.get('c', 'r')).data, expected, '响应修改不影响已还原的记录');
+});
+
 test('TT批量读取固定最多8条native并发，保持顺序、重复ID与逐项200/404/500', async t => {
   const f = await fixture(t);
   assert.equal((await f.client.health()).capabilities.recordBatchRead, true);

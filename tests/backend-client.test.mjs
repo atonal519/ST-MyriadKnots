@@ -303,7 +303,8 @@ test('backend 诊断按 client 生命周期统计 records 请求并只暴露固�
     ['v3-run-private', 'run'], ['v3-checkpoint-private', 'checkpoint'], ['v3-entity-private', 'entity'],
     ['v3-baseline-private', 'baseline'], ['v3-state-delta-private', 'stateDelta'],
     ['v3-current-state-private', 'currentState'], ['v3-index-private', 'index'],
-    ['binding-private', 'binding'], ['v3-people-workspace', 'peopleWorkspace'], ['private-record-id', 'unknown'],
+    ['binding-private', 'binding'], ['v3-people-workspace', 'peopleWorkspace'],
+    ['self-use-memory-transfer-rollback-v1', 'memoryTransferRollback'], ['private-record-id', 'unknown'],
   ];
   for (const [recordId, recordType] of cases) {
     await client.get(privateCollection, recordId);

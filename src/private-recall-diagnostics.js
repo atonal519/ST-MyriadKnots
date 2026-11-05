@@ -177,7 +177,7 @@ function memoryDiagnostic(value) {
 }
 function backendDiagnostic(value) {
   const entry = row => row ? { sequence: number(row.sequence), method: choose(row.method, ['GET', 'POST', 'PUT', 'DELETE']),
-    recordType: choose(row.recordType, ['root', 'floor', 'floorMemory', 'run', 'checkpoint', 'entity', 'baseline', 'stateDelta', 'currentState', 'index', 'peopleWorkspace', 'binding', 'collection', 'unknown']),
+    recordType: choose(row.recordType, ['root', 'floor', 'floorMemory', 'run', 'checkpoint', 'entity', 'baseline', 'stateDelta', 'currentState', 'index', 'peopleWorkspace', 'binding', 'collection', 'memoryTransferRollback', 'unknown']),
     outcome: choose(row.outcome, ['success', 'timeout', 'httpError', 'aborted', 'failure']), elapsedMs: number(row.elapsedMs), completedAt: stamp(row.completedAt), code: code(row.code), httpStatus: httpStatus(row.httpStatus),
     bodyBytes: number(row.bodyBytes), encodedBodyBytes: number(row.encodedBodyBytes), contentEncoding: choose(row.contentEncoding, ['gzip', 'identity']) } : null;
   return { sinceClientCreatedRequestCounts: counts(value?.sinceClientCreatedRequestCounts, ['get', 'put', 'delete']), latestRead: entry(value?.latestRead), latestWrite: entry(value?.latestWrite), lastFailure: entry(value?.lastFailure) };
