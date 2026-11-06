@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { classifyStorageRecords, createStorageManagement, STORAGE_AUTO_BYTE_THRESHOLD, STORAGE_AUTO_RECORD_THRESHOLD } from '../src/storage-management.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { buildFoundationIndexes } from '../src/v3/foundation-runtime.js';
+import { createSettingsStore } from '../src/settings.js';
 
 const CHAT = '123e4567-e89b-42d3-a456-426614174000';
 const HOST = 'host-chat';
@@ -85,7 +86,7 @@ function recordsWithOld(oldCount = 3) {
 function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null, warmCache = false,
   cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null,
   trashGcSupport = undefined, pluginEnabled = true, trashGcCompletedAt = '', trashGcPages = null, streamRecords = false,
-  extraRecords = [], reachableOverride = null, rootHeadCheckpointId = null } = {}) {
+  extraRecords = [], reachableOverride = null, rootHeadCheckpointId = null, settingsStore = null } = {}) {
   let items = [...recordsWithOld(oldCount), ...extraRecords], memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
   const removes = [], ordinaryRemoves = [], listeners = new Set(), sessionCalls = [];
   let listCalls = 0, rootReads = 0, fullReads = 0, listFailure = null, rootReadFailure = null, maintenanceRootFailure = null;
@@ -105,8 +106,8 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     async prepare() { sessionCalls.push('prepare'); sessionState = { status: 'ready', identity }; return sessionState; },
     getState: () => sessionState,
   };
-  const settingsValue = { storageAutoCleanupEnabled: autoEnabled, storageAutoCleanupProgress: autoEnabled ? { [CHAT]: stableCount - 10 } : {}, storageTrashGcLastCompletedAt: trashGcCompletedAt };
-  const settings = { get: () => settingsValue, update(patch) { Object.assign(settingsValue, structuredClone(patch)); } };
+  const settingsValue = settingsStore?.get() ?? { storageAutoCleanupEnabled: autoEnabled, storageAutoCleanupProgress: autoEnabled ? { [CHAT]: stableCount - 10 } : {}, storageTrashGcLastCompletedAt: trashGcCompletedAt };
+  const settings = settingsStore ?? { get: () => settingsValue, update(patch) { Object.assign(settingsValue, structuredClone(patch)); } };
   let trashHealthCalls = 0, trashCollectCalls = 0, trashPageIndex = 0, trashGcOnCall = null;
   const client = {
     async list() { listCalls += 1; if (listFailure) { const failure = listFailure; listFailure = null; throw failure; } return structuredClone(items); },
@@ -660,7 +661,7 @@ test('旧后端对永久路径全量 404 时零删除并明确要求更新白鳥
   assert.deepEqual(legacy.ordinaryRemoves, []);
 });
 
-test('自动清理默认关闭；显式开启后每新增10个稳定楼检查，忙碌顺延且达到100条才删', async () => {
+test('已显式关闭的自动清理可开启，每新增10个稳定楼检查，忙碌顺延且达到100条才删', async () => {
   const f = fixture({ oldCount: STORAGE_AUTO_RECORD_THRESHOLD });
   assert.equal(f.manager.getState().autoEnabled, false);
   await f.manager.scan();
@@ -673,6 +674,33 @@ test('自动清理默认关闭；显式开启后每新增10个稳定楼检查，
   assert.equal(f.removes.length, STORAGE_AUTO_RECORD_THRESHOLD);
   assert.equal(f.manager.getState().stats.cleanup.count, 0);
   assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 20);
+});
+
+test('真实设置默认开启后无需手动开关，首见只记基线，新增十楼按原阈值清理；显式关闭不清', async t => {
+  for (const [label, extensionSettings] of [
+    ['新建', {}], ['旧缺字段', { qianqianjie: {} }], ['已关闭', { qianqianjie: { storageAutoCleanupEnabled: false } }],
+  ]) await t.test(label, async () => {
+    const enabled = extensionSettings.qianqianjie?.storageAutoCleanupEnabled !== false;
+    const settings = createSettingsStore({ extensionSettings, save() {} });
+    const f = fixture({ oldCount: STORAGE_AUTO_RECORD_THRESHOLD, stableCount: 50, settingsStore: settings });
+    try {
+      await tick();
+      assert.equal(f.manager.getState().autoEnabled, enabled);
+      assert.equal(f.removes.length, 0, '首见不会立即删除');
+      assert.equal(f.counts().fullReads, 0, '首见不会扫描旧版本');
+      assert.equal(settings.get().storageAutoCleanupProgress[CHAT], enabled ? 50 : undefined);
+      f.setStableCount(59); await tick();
+      assert.equal(f.removes.length, 0);
+      f.setStableCount(60);
+      for (let index = 0; index < 200 && enabled && settings.get().storageAutoCleanupProgress[CHAT] !== 60; index += 1) await tick();
+      if (!enabled) await tick();
+      assert.equal(f.removes.length, enabled ? STORAGE_AUTO_RECORD_THRESHOLD : 0);
+      assert.equal(settings.get().storageAutoCleanupProgress[CHAT], enabled ? 60 : undefined);
+      const oldRecords = new Set(Array.from({ length: STORAGE_AUTO_RECORD_THRESHOLD }, (_, index) => `v3-run-${oldId(index)}`));
+      assert.ok(f.removes.every(([recordId]) => oldRecords.has(recordId)), '仅删除无引用旧版本');
+      if (!enabled) assert.equal(f.counts().fullReads, 0);
+    } finally { f.manager.dispose(); }
+  });
 });
 
 test('手动扫描结果只在同稳定楼节点经root复核后供自动决策复用', async () => {

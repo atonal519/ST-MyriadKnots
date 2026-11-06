@@ -151,7 +151,7 @@ test('楼层召回与记忆卡片默认显示，分别持久化且旧设置继�
 test('存储维护进度只保存合法的逐聊天楼号与完整回收站检查时间', () => {
   const extensionSettings = {};
   const { settings, saves } = setup(extensionSettings);
-  assert.equal(settings.get().storageAutoCleanupEnabled, false);
+  assert.equal(settings.get().storageAutoCleanupEnabled, true);
   assert.deepEqual(settings.get().storageAutoCleanupProgress, {});
   assert.equal(settings.get().storageTrashGcLastCompletedAt, '');
   settings.update({ storageAutoCleanupEnabled: true, storageAutoCleanupProgress: {
@@ -165,6 +165,22 @@ test('存储维护进度只保存合法的逐聊天楼号与完整回收站检�
   settings.update({ storageTrashGcLastCompletedAt: 'invalid' });
   assert.equal(settings.get().storageTrashGcLastCompletedAt, '');
   assert.equal(saves(), 2);
+});
+
+test('自动清理新建及旧缺字段默认开启，已保存关闭在重载后保持，读取不另存设置', () => {
+  for (const extensionSettings of [{}, { qianqianjie: {} }, { qianqianjie: { storageAutoCleanupEnabled: false } }]) {
+    const expected = extensionSettings.qianqianjie?.storageAutoCleanupEnabled !== false;
+    const { settings, saves } = setup(extensionSettings);
+    assert.equal(settings.get().storageAutoCleanupEnabled, expected);
+    assert.equal(settings.get().storageAutoCleanupEnabled, expected);
+    assert.equal(saves(), 0, '补缺默认值和读取不会额外保存');
+  }
+  const extensionSettings = {}, { settings, saves } = setup(extensionSettings);
+  settings.update({ storageAutoCleanupEnabled: false });
+  assert.equal(saves(), 1);
+  const reloaded = setup(extensionSettings);
+  assert.equal(reloaded.settings.get().storageAutoCleanupEnabled, false);
+  assert.equal(reloaded.saves(), 0);
 });
 
 test('旧千事重要覆盖设置读取时保持原样，但不再进入默认值或更新接口', () => {

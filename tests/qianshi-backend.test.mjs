@@ -2340,3 +2340,74 @@ test('古法事件真实投影 current与全页召回同序，普通纯时辰可
   graph=projectQianshiGraph(reachable);
   assert.equal(graph.events.find(row=>row.id===deltas[2].events[0].id).parsedStoryTime.date,null);
 });
+
+test('自动停止跟进与事实状态分开保存，合法接续全量和增量一致且人工选择优先', async () => {
+  const sources = [floor('11111111-1111-4111-8111-111111111111', 1), floor('22222222-2222-4222-8222-222222222222', 2)];
+  const first = await compileQianshiDelta({ floor: sources[0], now: NOW, packet: { qianshi: { events: [
+    { key: 'event-1', title: '院内散步', description: '约定散步。', status: 'planned', matter: true },
+  ], order: [] } } });
+  const base = { root: { chatId: CHAT, narrativeGeneration: GENERATION }, rootRevision: 1, floors: [sources[0]],
+    floorMemories: [memory('44444444-4444-4444-8444-444444444444', sources[0], first)], entities: [] };
+  const candidates = prepareQianshiCandidates(base);
+  const second = await compileQianshiDelta({ floor: sources[1], now: NOW, candidateBindings: candidates.bindings, packet: { qianshi: { events: [
+    { key: 'event-1', title: '院内散步', description: '叙事已越过这段日常安排，后续没有需要继续跟进的目标。', status: 'planned', following: false,
+      links: [{ candidateKey: candidates.request[0].key, kind: 'progress' }] },
+  ], order: [] } } });
+  assert.equal(second.events[0].following, false);
+  const value = { ...base, rootRevision: 2, floors: sources,
+    floorMemories: [...base.floorMemories, memory('55555555-5555-4555-8555-555555555555', sources[1], second)] };
+  const matterId = first.events[0].matterId;
+  const projection = projectQianshiGraph(value);
+  assert.equal(projection.matters[0].status, 'planned');
+  assert.equal(projection.matters[0].following, false);
+  assert.equal(projection.currentProgress.text, '');
+  assert.deepEqual(prepareQianshiCandidates(value, { canonicalContent: '另一位人物去了办公室。' }).request, []);
+  assert.equal(prepareQianshiCandidates(value, { precedingUserInput: { messages: [{ content: '院内散步要重新安排。' }] } }).request.length, 1);
+  const hot = createQianshiCandidateIndex();
+  hot.prepare(base);
+  assert.deepEqual(hot.prepare(value, { canonicalContent: '另一位人物去了办公室。' }), prepareQianshiCandidates(value, { canonicalContent: '另一位人物去了办公室。' }));
+  assert.deepEqual(hot.prepare(value, { canonicalContent: '院内散步要重新安排。' }), prepareQianshiCandidates(value, { canonicalContent: '院内散步要重新安排。' }));
+  for (const following of [true, false]) {
+    const changed = structuredClone(value);
+    changed.floorMemories[0].qianshiDelta.trackingOverrides = [{ matterId, following }];
+    assert.equal(projectQianshiGraph(changed).matters[0].following, following);
+    assert.equal(createQianshiCandidateIndex().prepare(changed, { canonicalContent: '院内散步' }).request.length, following ? 1 : 0);
+  }
+  const manualTerminal = structuredClone(value);
+  manualTerminal.floorMemories[0].qianshiDelta.trackingOverrides = [{ matterId, following: true }];
+  manualTerminal.floorMemories[0].qianshiDelta.manualMatterStatusOverrides = [{ matterId, status: 'completed' }];
+  assert.equal(projectQianshiGraph(manualTerminal).matters[0].following, false);
+  assert.deepEqual(createQianshiCandidateIndex().prepare(manualTerminal, { canonicalContent: '院内散步' }).request, []);
+  assert.equal(projectQianshiGraph(base).matters[0].following, true, '旧事件缺following沿原默认');
+  const source3 = floor('33333333-3333-4333-8333-333333333333', 3);
+  const prior = prepareQianshiCandidates(value, { canonicalContent: '院内散步' });
+  for (const following of [undefined, true]) {
+    const delta = await compileQianshiDelta({ floor: source3, now: NOW, candidateBindings: prior.bindings, packet: { qianshi: { events: [
+      { key: 'event-1', title: '院内散步', description: following ? '重新约定今晚散步。' : '只补充先前散步安排的背景。', status: 'planned',
+        ...(following === undefined ? {} : { following }), links: [{ candidateKey: prior.request[0].key, kind: 'progress' }] },
+    ], order: [] } } });
+    const next = { ...value, floors: [...sources, source3], floorMemories: [...value.floorMemories,
+      memory('66666666-6666-4666-8666-666666666666', source3, delta)] };
+    assert.equal(projectQianshiGraph(next).matters[0].following, following ?? true, '合法当前缺省沿旧terminal默认，不从其它事件借值');
+    assert.deepEqual(createQianshiCandidateIndex().prepare(next), prepareQianshiCandidates(next));
+  }
+
+});
+
+test('following只由合法当前接续事件控制，背景和旧时进展不覆盖当前判断', async () => {
+  const sources = [floor('11111111-1111-4111-8111-111111111111', 1), floor('22222222-2222-4222-8222-222222222222', 2)];
+  const first = await compileQianshiDelta({ floor: sources[0], now: NOW, packet: { qianshi: { events: [
+    { key: 'event-1', title: '归还钥匙', description: '尚需归还钥匙。', status: 'inProgress', matter: true, following: true, storyTime: '2026-09-16' },
+  ], order: [] } } });
+  const base = { root: { chatId: CHAT, narrativeGeneration: GENERATION }, floors: [sources[0]], entities: [],
+    floorMemories: [memory('44444444-4444-4444-8444-444444444444', sources[0], first)] };
+  const candidates = prepareQianshiCandidates(base);
+  const second = await compileQianshiDelta({ floor: sources[1], now: NOW, candidateBindings: candidates.bindings, packet: { qianshi: { events: [
+    { key: 'event-1', title: '旧时提过钥匙', description: '回忆先前没有追踪这件事。', status: 'planned', following: false,
+      storyTime: '2026-09-15', links: [{ candidateKey: candidates.request[0].key, kind: 'context' }] },
+  ], order: [] } } });
+  const value = { ...base, floors: sources, floorMemories: [...base.floorMemories, memory('55555555-5555-4555-8555-555555555555', sources[1], second)] };
+  assert.equal(projectQianshiGraph(value).matters[0].following, true);
+  assert.equal(projectQianshiGraph(value).matters[0].status, 'inProgress');
+  assert.throws(() => validateQianshiDelta({ ...first, events: [{ ...first.events[0], following: 'false' }] }), /QIANSHI_DELTA_INVALID/u);
+});

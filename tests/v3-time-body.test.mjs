@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { scanAssistantCandidates, createFloorRecord } from '../src/v3/foundation-domain.js';
 import { readTimeBody, readRecentBodyStoryTimes, planTimeBody, timeBodyStart, resolveTimeStart, clockContentFingerprint } from '../src/v3/time-body.js';
+import { compileQianshiDelta } from '../src/v3/qianshi-domain.js';
 import { createExtractorEnvelope, normalizeExtractorResponse } from '../src/v3/extractor.js';
 import { createTimeRuntime, createTimeStore, prepareTimeRequest } from '../src/v3/time-runtime.js';
 import { compileTimeResponse, compileTimeEdit, compileTimeEdits, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, timeBodyReads, timeItemFailures, projectTime, timeFingerprint, validTimeProjection, timeRecallProjection, normalizeTimeKeywords, TIME_INPUT_TOKENS, TIME_SYSTEM_PROMPT, TIME_CURRENT_REVIEW_PROMPT } from '../src/v3/time-engine.js';
@@ -57,6 +58,46 @@ async function harness({ count=2, unstable=false, generate=()=>({changes:[]}), s
 }
 const reviewModel = (request,patch={}) => ({changes:request.trackedItems.map(item=>({itemId:item.id,progression:'截至当前可能仍有轻微不适，未确认恢复。',assessmentReason:'',...patch}))});
 const bodyModel = (request,patch={}) => request.currentReview ? reviewModel(request,patch) : ({changes:[{itemId:null,subjectEntityId:null,subjectName:'阿岚',type:'body',label:'手腕擦伤',observation:'手腕擦伤仍疼痛',occurrenceTime:'昨天',dueTime:'',periodDays:null,status:'active',stateRefs:[],progression:'疼痛可能逐渐减轻，仍待新观察确认',sourceKeys:[request.observations[0].sourceKey],...patch}]});
+
+test('时间人物目录归并明确redirect，保同名不同人和人工别名', async () => {
+  const h=await harness({count:1}), old='cccccccc-cccc-4ccc-8ccc-cccccccccccc', other='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  h.source.entities=[
+    {id:PERSON,entityType:'person',displayName:'阿岚',aliases:[],status:'established',recordStatus:'active'},
+    {id:old,entityType:'person',displayName:'阿岚',aliases:[],status:'merged',mergedIntoEntityId:PERSON,recordStatus:'active'},
+    {id:other,entityType:'person',displayName:'阿岚',aliases:[],status:'established',recordStatus:'active'},
+  ];
+  h.source.identityProjection={manualAliasesByEntityId:{[PERSON]:['岚同学']}};
+  const source=await h.body(),fragments=planTimeBody(source,[],{history:true}).groups.flat();
+  const prepared=await prepareTimeRequest(source,[],{fragments});
+  assert.deepEqual(prepared.request.people.map(p=>p.entityId),[PERSON,other]);
+  assert.deepEqual(prepared.request.people[0].aliases,['岚同学']);
+  h.source.identityProjection={manualAliasesByEntityId:{[PERSON]:['岚老师']}};
+  const renamed=await prepareTimeRequest(await h.body(),[],{fragments});
+  assert.notEqual(renamed.signature,prepared.signature,'人物目录变化应改变请求签名，不能沿用旧失败或评估资格');
+  assert.deepEqual(renamed.sourceKeys,prepared.sourceKeys,'正文来源见证不随身份目录修改');
+  await assert.rejects(compileTimeResponse(bodyModel(prepared.request),prepared),error=>error.itemErrors?.some(x=>x.reason==='时间事项人物归属不明确。'));
+  const exact=await compileTimeResponse(bodyModel(prepared.request,{subjectEntityId:old}),prepared);
+  assert.equal(exact.changes[0].subjectEntityId,PERSON,'明确旧ID可解析到同一现人物，不能因同名另一人而失效');
+});
+
+test('时间旧人物ID事项沿同一item继续更新，删除人物不再进入新候选', async () => {
+  const h=await harness({count:1}), old='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  h.source.entities=[{id:old,entityType:'person',displayName:'阿岚',aliases:[],status:'established',recordStatus:'active'}];
+  let source=await h.body(),fragments=planTimeBody(source,[],{history:true}).groups.flat();
+  let prepared=await prepareTimeRequest(source,[],{fragments});
+  const batch=await compileTimeResponse(bodyModel(prepared.request,{subjectEntityId:old}),prepared);
+  const original=JSON.stringify(batch), item=batch.changes[0];
+  h.source.entities=[{...h.source.entities[0],status:'merged',mergedIntoEntityId:PERSON},
+    {id:PERSON,entityType:'person',displayName:'阿岚',aliases:[],status:'established',recordStatus:'active'}];
+  source=await h.body();prepared=await prepareTimeRequest(source,[batch],{fragments});
+  assert.equal(prepared.request.trackedItems[0].subjectEntityId,PERSON);
+  const updated=await compileTimeResponse(bodyModel(prepared.request,{itemId:item.id,subjectEntityId:old}),prepared,[batch]);
+  assert.equal(updated.changes[0].id,item.id);assert.equal(updated.changes[0].subjectEntityId,PERSON);
+  assert.equal(JSON.stringify(batch),original,'旧批次与见证不回写');
+  h.source.identityProjection={deletedEntityIds:[PERSON]};source=await h.body();
+  prepared=await prepareTimeRequest(source,[batch],{fragments});
+  assert.equal(prepared.request.people.length,0);assert.equal(prepared.request.trackedItems.length,0);
+});
 
 test('TT后台慢批读期间，千事模型返回后的来源核验仍能读取root并保存本批', { timeout: 5000 }, async () => {
   const slots = new Map(), slowGroups = Array.from({ length: 8 }, () => {
@@ -878,7 +919,7 @@ test('60000完整输入预算优先整楼合批，辅助长材料按剩余空间
   for(const row of plan.groups[0]) {assert.equal(row.from,0);assert.equal(row.to,row.totalCharacters);}
   const prepared=await prepareTimeRequest(source,[],{fragments:plan.groups[0]});
   assert.ok(estimateRecallTokens(TIME_SYSTEM_PROMPT+JSON.stringify(prepared.request))<=TIME_INPUT_TOKENS);
-  assert.deepEqual(prepared.request.observations.map(row=>row.description),source.bodyFloors.map(row=>row.content));
+  assert.deepEqual(prepared.request.observations.map(row=>row.description), source.bodyFloors.map((row,index)=>index === 0 ? row.content : `前置USER[0]：\n继续\nAI正文：\n${row.content.slice('继续\n'.length)}`));
   const ascii=await harness({count:1});ascii.chat[0].mes=raw(0,'A'.repeat(90000));await ascii.seal();
   const asciiSource=await ascii.body(),asciiPlan=planTimeBody(asciiSource,[],{history:true});assert.equal(asciiPlan.batchCount,1);assert.equal(asciiPlan.groups[0][0].to,90000);
   const asciiRequest=await prepareTimeRequest(asciiSource,[],{fragments:asciiPlan.groups[0]});assert.ok(JSON.stringify(asciiRequest.request).length>24000);assert.ok(estimateRecallTokens(TIME_SYSTEM_PROMPT+JSON.stringify(asciiRequest.request))<=TIME_INPUT_TOKENS);
@@ -2037,4 +2078,177 @@ test('190人工新建在空时间头保存独立身份，冷读和下一正文�
 test('190同内容人工新建仍有不同身份和观察键',async()=>{
  const h=await harness({count:1});h.source.entities.push({id:PERSON,displayName:'阿岚',aliases:[],entityType:'person',recordStatus:'active',status:'active'});const fields={subjectEntityId:PERSON,type:'body',label:'人工观察',observation:'人工登记的当前状态'};
  await h.runtime.createItem(fields);await h.runtime.createItem(fields);const items=h.runtime.getState().trackedItems;assert.equal(items.length,2);assert.notEqual(items[0].id,items[1].id);assert.notEqual(items[0].observationKey,items[1].observationKey);assert.equal(h.calls(),0);
+});
+
+test('time正式请求读取配对USER与AI，USER-only新人物事实能编译而后置USER不借入', async () => {
+  const h = await harness({ count: 1 });
+  const userText = '程宁说今晚20:00要交还钥匙。';
+  h.chat.unshift({ is_user: true, mes: userText }); await h.seal();
+  const source = await h.body(), plan = planTimeBody(source, [], { history: true });
+  const prepared = await prepareTimeRequest(source, [], { fragments: plan.groups[0] });
+  assert.ok(prepared.request.observations.some(item => item.description.includes(userText)));
+  assert.ok(prepared.request.observations.every(item => !item.description.includes('继续')));
+  assert.ok(plan.groups.flat().some(item => item.sourceParts?.some(part => part.sourceType === 'precedingUserInput' && part.sourceSnapshotIndex === 0)));
+  const response = { changes: [{ itemId: null, subjectEntityId: null, subjectName: '程宁', type: 'deadline', label: '交还钥匙',
+    observation: '程宁约定今晚20:00交还钥匙', occurrenceTime: '', dueTime: '今晚20:00', periodDays: null,
+    status: 'active', stateRefs: [], progression: '', sourceKeys: [prepared.request.observations[0].sourceKey] }] };
+  const batch = await compileTimeResponse(response, prepared);
+  assert.equal(batch.changes.length, 1);
+  assert.equal(batch.changes[0].subjectName, '程宁');
+  assert.equal(batch.itemErrors?.length ?? 0, 0);
+  assert.ok(batch.bodyReads[0].userInputFingerprint);
+  const legacyMemory = { id: 'legacy', floorId: source.floors[0].id, recordStatus: 'active', summary: { aiText: '旧摘要' } };
+  h.source.floorMemories = [legacyMemory];
+  const legacy = await h.body();
+  assert.equal(legacy.bodyFloors[0].userInputFingerprint, undefined, '已有旧memory缺快照不借当前host输入');
+});
+
+test('time长USER沿原区间规划只读一次且带来源角色，完整旧版及partial不自动重读', async () => {
+  const h = await harness({ count: 1 });
+  const baseline = await h.body();
+  const oldPlan = planTimeBody(baseline, [], { history: true });
+  const oldPrepared = await prepareTimeRequest(baseline, [], { fragments: oldPlan.groups[0] });
+  const oldBatch = await compileTimeResponse(bodyModel(oldPrepared.request), oldPrepared);
+  const floorId = h.source.floors[0].id;
+  const longText = Array.from({ length: 1000 }, (_, index) => `第${index}项行程已交代。`).join('\n');
+  h.source.floorMemories = [{ id: 'memory-with-user', floorId, recordStatus: 'active', sourceUserInputSnapshot: { messages: [
+    { content: longText, messageIndex: 0, swipeId: null, selectedSwipeIndex: null },
+  ] } }];
+  const source = await h.body();
+  const newPlan = planTimeBody(source, [], { history: true, inputTokens: 6000 });
+  assert.ok(newPlan.groups.length > 1);
+  const ranges = newPlan.groups.flat().flatMap(row => row.sourceParts ?? []).filter(part => part.sourceType === 'precedingUserInput');
+  assert.equal(ranges.reduce((sum, part) => sum + part.to - part.from, 0), longText.length);
+  assert.equal(ranges[0].from, 0); assert.equal(ranges.at(-1).to, longText.length);
+  for (let index = 1; index < ranges.length; index += 1) assert.equal(ranges[index].from, ranges[index - 1].to);
+  assert.equal(replayTimeBatches([oldBatch], source).length, 1, '旧完整batch的合法观察保留');
+  assert.equal(planTimeBody(source, [oldBatch], { history: false }).groups.length, 0, '升级不自动重读旧完整楼');
+  const partial = { ...oldBatch, id: 'old-partial', bodyReads: oldBatch.bodyReads.map(row => ({ ...row, to: Math.ceil(row.to / 2) })) };
+  assert.equal(planTimeBody(source, [partial], { history: false }).groups.length, 0);
+  assert.equal(planTimeBody(source, [oldBatch], { history: true }).groups[0][0].from, 0);
+});
+
+test('time在途配对USER变化拒旧提交，正常一次请求不借后楼输入', async () => {
+  const h = await harness({ count: 1, generate: () => {
+    h.chat[0].mes = '程宁改约明晚归还钥匙。';
+    return { changes: [] };
+  } });
+  h.chat.unshift({ is_user: true, mes: '程宁约今晚归还钥匙。' }); await h.seal();
+  await h.runtime.organize(await h.runtime.prepareHistoryPlan());
+  assert.equal(h.calls(), 1);
+  const stored = await h.store.read(CHAT);
+  assert.equal(stored.batches.length, 0);
+  assert.equal(h.runtime.getState().last.failure.phase, 'sourceValidation');
+});
+
+test('time聚合成员USER严格按源楼取快照，更新USER版本有新sourceKey且不借聚合锚时间', async () => {
+  const h = await harness({ count: 2 });
+  const [first, second] = h.source.floors;
+  h.source.floorMemories = [{ id: 'aggregate', floorId: second.id, sourceFloorIds: [first.id, second.id], recordStatus: 'active',
+    sourceFloorSnapshots: [
+      { floorId: first.id, sourceUserInputSnapshot: { messages: [{ content: '程宁已交还钥匙。', messageIndex: 0, swipeId: null, selectedSwipeIndex: null }] } },
+      { floorId: second.id, sourceUserInputSnapshot: { messages: [{ content: '另有归还清单尚待核对。', messageIndex: 2, swipeId: null, selectedSwipeIndex: null }] } },
+    ], sourceUserInputSnapshot: { messages: [{ content: '锚快照不借其它成员' }] } }];
+  const source = await h.body();
+  const firstPlan = planTimeBody(source, [], { history: true }).groups.flat().filter(row => row.floorId === first.id);
+  const prepared = await prepareTimeRequest(source, [], { fragments: firstPlan });
+  assert.match(prepared.request.observations[0].description, /程宁已交还钥匙/u);
+  assert.equal(JSON.stringify(prepared.request).includes('另有归还清单'), false);
+  assert.equal(JSON.stringify(prepared.request).includes('锚快照'), false);
+  h.source.floorMemories[0].sourceFloorSnapshots[0].sourceUserInputSnapshot.messages[0].content = '程宁未交还钥匙。';
+  const changed = await h.body();
+  const next = await prepareTimeRequest(changed, [], { fragments: planTimeBody(changed, [], { history: true }).groups.flat().filter(row => row.floorId === first.id) });
+  assert.equal(changed.bodyFloors[0].canonicalFingerprint, source.bodyFloors[0].canonicalFingerprint);
+  assert.notEqual(next.sourceKeys[0], prepared.sourceKeys[0]);
+  assert.notEqual(next.signature, prepared.signature);
+});
+
+
+test('关联待办自动停跟只改变近期有效跟进与列表，不改time事实状态或提供无效恢复动作', async () => {
+  const h = await harness({ count: 1 });
+  h.source.floors[0].id = '11111111-1111-4111-8111-111111111111';
+  const qianshiDelta = await compileQianshiDelta({ floor: h.source.floors[0], packet: { qianshi: { events: [
+    { key: 'event-1', title: '交还钥匙', description: '约定今晚交还钥匙。', status: 'planned', matter: true, following: true },
+  ], order: [] } } });
+  h.source.floorMemories = [{ id: '44444444-4444-4444-8444-444444444444', floorId: h.source.floors[0].id, recordStatus: 'active', qianshiDelta }];
+  const source = await h.body();
+  const prepared = await prepareTimeRequest(source, [], { fragments: planTimeBody(source, [], { history: true }).groups[0] });
+  const batch = await compileTimeResponse({ changes: [{ itemId: null, sourceKeys: ['S1'], subjectName: '阿岚', subjectEntityId: null, type: 'deadline',
+    label: '交还钥匙', observation: '约定今晚交还钥匙', occurrenceTime: '', dueTime: '今晚20:00', periodDays: null, status: 'active', stateRefs: [], progression: '',
+    qianshiCandidateKey: prepared.request.qianshiCandidates[0].key }] }, prepared);
+  await h.store.putHead(CHAT, { schemaVersion: 1, chatId: CHAT, batchIds: [] }, 0);
+  await saveTimeBatch(h, batch); await h.runtime.refreshStatus({ force: true });
+  assert.equal(h.runtime.getState().trackedItems.length, 1);
+  h.source.floorMemories[0] = { ...h.source.floorMemories[0], id: '55555555-5555-4555-8555-555555555555',
+    qianshiDelta: { ...qianshiDelta, events: qianshiDelta.events.map(event => ({ ...event, following: false })) } };
+  await h.runtime.refreshStatus({ force: true });
+  const state = h.runtime.getState();
+  assert.equal(state.trackedItems.length, 0);
+  assert.equal(state.stoppedItems[0].status, 'active');
+  assert.equal(state.stoppedItems[0].following, false);
+  assert.equal((await h.store.read(CHAT)).batches[0].changes[0].status, 'active');
+  const review = await prepareTimeRequest(await h.body(), [batch], { currentReview: true, allowInitialProjection: true });
+  assert.deepEqual(review.request.trackedItems, []);
+  assert.equal(review.shouldRequest, false);
+  const foundationState = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', memoryWorkBusy: false, memoryEntities: [], floors: [] };
+  const foundationRuntime = { getState: () => foundationState, refreshStatus: async () => foundationState, confirmLatest: async () => foundationState };
+  const container = new UiNode('main'); let editor;
+  const view = createV3FoundationView({ runtime: foundationRuntime, timeRuntime: h.runtime, documentRef: uiDocument(), customImpl: async options => { editor = options.content; return null; } });
+  view.setPage('memories'); view.mount(container);
+  await uiFlatten(container).find(node => node.textContent === '近期事项（0）').click();
+  await uiFlatten(editor).find(node => node.textContent === '已停止').click();
+  assert.ok(uiFlatten(editor).some(node => node.textContent.includes('随关联待办停止跟进')));
+  assert.equal(uiFlatten(editor).some(node => node.textContent === '恢复追踪'), false);
+  view.deactivate(); await h.runtime.runBatch(); assert.equal(h.calls(), 0, '停跟后当前复核不再发送此项');
+  for (const [status, label] of [['completed', '已完成'], ['paused', '已暂停']]) {
+    const old = h.runtime.getState().stoppedItems[0];
+    await h.runtime.editItem(old.id, { status }, old.observationKey);
+    const stopped = h.runtime.getState().stoppedItems[0];
+    assert.equal(stopped.status, status);
+    assert.equal(stopped.following, undefined, '本体已完成或人工暂停保自己的标签与恢复操作');
+    const nextView = createV3FoundationView({ runtime: foundationRuntime, timeRuntime: h.runtime, documentRef: uiDocument(), customImpl: async options => { editor = options.content; return null; } });
+    nextView.setPage('memories'); nextView.mount(container);
+    await uiFlatten(container).find(node => node.textContent === '近期事项（0）').click();
+    await uiFlatten(editor).find(node => node.textContent === '已停止').click();
+    assert.ok(uiFlatten(editor).some(node => node.className.includes('qqj-recent-item-title') && node.textContent.includes(label)));
+    assert.ok(uiFlatten(editor).some(node => node.textContent === '恢复追踪'));
+    nextView.deactivate();
+  }
+
+  let stopped = h.runtime.getState().stoppedItems[0];
+  await h.runtime.editItem(stopped.id, { status: 'active' }, stopped.observationKey);
+  stopped = h.runtime.getState().stoppedItems[0];
+  const selection = [{ itemId: stopped.id, observationKey: stopped.observationKey }];
+  const stoppedMemory = structuredClone(h.source.floorMemories[0]);
+  h.source.floorMemories = [{ ...stoppedMemory, id: '66666666-6666-4666-8666-666666666666',
+    qianshiDelta: { ...stoppedMemory.qianshiDelta, events: stoppedMemory.qianshiDelta.events.map(event => ({ ...event, following: true })) } }];
+  let before = JSON.stringify([...h.back.records]);
+  await assert.rejects(h.runtime.deleteItems(selection), /停止事项/u, '关联已恢复时拒绝旧停追选择');
+  assert.equal(JSON.stringify([...h.back.records]), before);
+  h.source.floorMemories = [];
+  await assert.rejects(h.runtime.deleteItems(selection), /停止事项/u, '普通active没有有效停追关联仍拒删除');
+  assert.equal(JSON.stringify([...h.back.records]), before);
+  h.source.floorMemories = [stoppedMemory];
+  const qianshiBefore = JSON.stringify(h.source.floorMemories);
+  await h.runtime.deleteItems(selection);
+  assert.deepEqual(replayTimeBatches((await h.store.read(CHAT)).batches, await h.body()), []);
+  assert.equal(JSON.stringify(h.source.floorMemories), qianshiBefore, '只删time记录，千事未改');
+  assert.equal(h.calls(), 0);
+
+});
+
+test('关联图不可用不阻断普通停止项删除，也不授权删除active时间项', async () => {
+  const h = await harness({ count: 2 }), seed = await seedDeletionHistory(h);
+  const event = id => ({ id, matterId: 'matter-bad', updatesMatter: true, title: id, description: id, status: 'inProgress', storyTime: '2026-05-01', scheduledTime: null, people: [], object: null, sourceFloorId: 'floor-1', continuesFromEventIds: [] });
+  h.source.floorMemories = [{ id: 'memory-bad', floorId: 'floor-1', recordStatus: 'active', chronology: [], qianshiDelta: { status: 'ready', events: [event('event-a'), event('event-b')], relations: [
+    { id: 'duplicate', type: 'before', fromEventId: 'event-a', toEventId: 'event-b', certainty: 'explicit' },
+    { id: 'duplicate', type: 'before', fromEventId: 'event-b', toEventId: 'event-a', certainty: 'explicit' },
+  ] } }];
+  const before = JSON.stringify([...h.back.records]), qianshiBefore = JSON.stringify(h.source.floorMemories);
+  await assert.rejects(h.runtime.deleteItems([{ itemId: seed.survivor.id, observationKey: seed.survivor.observationKey }]), /停止事项/u);
+  assert.equal(JSON.stringify([...h.back.records]), before);
+  await h.runtime.deleteItems([{ itemId: seed.removed.id, observationKey: seed.removed.observationKey }]);
+  assert.deepEqual(replayTimeBatches((await h.store.read(CHAT)).batches, await h.body()).map(item => item.id), [seed.survivor.id]);
+  assert.equal(JSON.stringify(h.source.floorMemories), qianshiBefore);
+  assert.equal(h.calls(), 0);
 });

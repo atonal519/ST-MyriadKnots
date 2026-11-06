@@ -59,7 +59,7 @@ export function recallBudget(contextSize = 8192, reserved = {}) {
   return boundedRecallBudget(contextSize, reserved, { maxTokens: MAX_RECALL_TOKENS, maxCharacters: MAX_RECALL_CHARACTERS });
 }
 
-export function buildRecallQueryFrame({ coreChat = [], assistantTurns = 1 } = {}) {
+export function buildRecallQueryFrame({ coreChat = [], assistantTurns = 1, canonicalAssistantByCoreIndex = null } = {}) {
   const chat = Array.isArray(coreChat) ? coreChat : [];
   let latestUser = null;
   for (let index = chat.length - 1; index >= 0; index -= 1) {
@@ -85,7 +85,7 @@ export function buildRecallQueryFrame({ coreChat = [], assistantTurns = 1 } = {}
       }
     }
   }
-  const messages = Object.freeze(selected.map(({ message, index }) => Object.freeze({ role: message.is_user ? 'user' : 'assistant', text: clean(message.mes, 4000), index })));
+  const messages = Object.freeze(selected.map(({ message, index }) => Object.freeze({ role: message.is_user ? 'user' : 'assistant', text: clean(!message.is_user && canonicalAssistantByCoreIndex instanceof Map ? canonicalAssistantByCoreIndex.get(index) ?? '' : message.mes, 4000), index })));
   return Object.freeze({
     messages,
     latestUserText: clean(latestUser.message.mes, 4000),
@@ -94,8 +94,8 @@ export function buildRecallQueryFrame({ coreChat = [], assistantTurns = 1 } = {}
   });
 }
 
-export function buildRecallQueryContext({ coreChat = [], assistantTurns = 1 } = {}) {
-  const frame = buildRecallQueryFrame({ coreChat, assistantTurns });
+export function buildRecallQueryContext({ coreChat = [], assistantTurns = 1, canonicalAssistantByCoreIndex = null } = {}) {
+  const frame = buildRecallQueryFrame({ coreChat, assistantTurns, canonicalAssistantByCoreIndex });
   const parts = frame.messages.map(message => `${message.role === 'user' ? '用户' : 'AI'}：${message.text}`).filter(value => value.length > 3);
   const beforeLatest = frame.messages.filter(message => message.index !== frame.latestUserCoreIndex);
   const previousUser = [...beforeLatest].reverse().find(message => message.role === 'user');
@@ -205,7 +205,7 @@ function historyFacts(memory, entityById) {
   }
   const placeName = id => entityLabels(entityById.get(id) ?? {}).find(label => !genericAlias(label)) ?? '地点未知';
   const sourceTag = ref => `来源楼当时${Number.isSafeInteger(ref.assistantSeq) ? `（AI #${ref.assistantSeq}）` : ''}`;
-  for (const value of memory.spatialFacts?.containments ?? []) for (const ref of value.sourceRefs ?? []) {
+  for (const value of (memory.spatialFacts?.containments ?? []).filter(value=>value.parentEntityId)) for (const ref of value.sourceRefs ?? []) {
     const child = placeName(value.placeEntityId), parent = placeName(value.parentEntityId);
     const quote = ref.quotedText ? `；原句「${ref.quotedText}」` : '';
     add(item('objective', `${sourceTag(ref)}地点包含：${child} 属于 ${parent}${quote}`, 100, { kind: 'spatialContainment', placeEntityId: value.placeEntityId, parentEntityId: value.parentEntityId, sourceFloorId: ref.floorId, sourceAssistantSeq: ref.assistantSeq }), `${child} ${parent} ${ref.quotedText ?? ''}`, [value.placeEntityId, value.parentEntityId], `${ref.floorId}|containment`);
@@ -413,7 +413,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
       if (value._timeDependency) timeDependencies?.corrections.push(value._timeDependency);
       const target = value.toward ? `，态度对象：${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
-        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}[当前] 主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}（依据：${value.reason}${source}）`);
+        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}[${value.layer === 'situational' ? '已保存场景快照' : '当前'}] 主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}（依据：${value.reason}${source}）`);
     }
   }
   if (!coverage.memoryComplete || !coverage.cseCurrent) {
@@ -442,23 +442,32 @@ export function groupRecallPlaces(places = []) {
   return [...groups.values()];
 }
 
-export function placeRecallText(places) {
+export function placeRecallText(places, deduplicate = true) {
   const first = places[0]?.text ?? '', colon = first.indexOf('：');
   const prefix = colon >= 0 ? first.slice(0, colon + 1) : '';
   const sharedPrefix = prefix && places.every(place => place.text.startsWith(prefix)) ? prefix : '';
+  const clause = text => text.trim().replace(/[，,；;。.]+$/u, '').trim();
+  const entries = places.map(place => ({ place, text: sharedPrefix ? place.text.slice(sharedPrefix.length) : place.text,
+    sourceKey: place.kind === 'placeFoundation' && place.manual !== true && !place.manualArtifact && place.source?.manual !== true && place.source?.kind !== 'manual'
+      && place.placeEntityId && place.source?.kind && typeof place.source.quote === 'string' && place.source.quote.trim()
+      ? JSON.stringify([place.placeEntityId, place.source]) : null }));
   const sections = new Map();
-  for (const place of places) {
+  for (const [index, entry] of entries.entries()) {
+    const { place, text, sourceKey } = entry;
+    if (deduplicate && sourceKey && entries.some((other, otherIndex) => other !== entry && other.sourceKey === sourceKey
+      && (clause(other.text).length > clause(text).length || otherIndex < index && clause(other.text) === clause(text))
+      && other.text.split(/[，,；;。\n]/u).some(part => clause(part) === clause(text)))) continue;
     const label = place.kind === 'manualPlace' ? '人工修订优先' : place.source?.kind === 'worldbook'
       ? `世界书设定：${place.source.locator}` : place.source?.kind === 'characterCard' ? '角色卡设定' : '已存正文地点资料';
     const texts = sections.get(label) ?? [];
-    texts.push(sharedPrefix ? place.text.slice(sharedPrefix.length) : place.text);
+    texts.push(text);
     sections.set(label, texts);
   }
   return sharedPrefix + [...sections].map(([label, texts]) => `${texts.join('；')}（${label}）`).join('；');
 }
 
-export function placeRecallBlocks(places = [], legacy = false, grouped = !legacy) {
- if(grouped)return places.length?['[地点资料]\n'+groupRecallPlaces(places).map(group=>`- ${placeRecallText(group)}`).join('\n')]:[];
+export function placeRecallBlocks(places = [], legacy = false, grouped = !legacy, deduplicate = true) {
+ if(grouped)return places.length?['[地点资料]\n'+groupRecallPlaces(places).map(group=>`- ${placeRecallText(group, deduplicate)}`).join('\n')]:[];
  const blocks=[],manual=places.filter(value=>value.kind!=='placeFoundation').map(value=>`- ${value.text}`).join('\n');
  if(manual)blocks.push(`${legacy ? '[人工校准的当前地点事实（优先于旧地点记录，未赋予人物知识）]' : '[当前地点事实·人工修订优先]'}\n${manual}`);
  const base=places.filter(value=>value.kind==='placeFoundation').map(value=>`- ${value.text}（${value.source?.kind==='worldbook'?`世界书设定：${value.source.locator}`:'已存正文地点资料'}）`).join('\n');
@@ -474,7 +483,7 @@ export function formatRecallInjection(input) {
   });
   const timeDependencies = input.timeDependencies ?? { corrections: [], reminders: [] };
   let base = formatBaseRecallInjection({ ...input, states, timeDependencies });
-  for (const block of placeRecallBlocks(input.manualPlaces ?? [], false, input.groupPlaces !== false)) base = base ? base.replace('</qqj_recalled_context>', `${block}\n</qqj_recalled_context>`) : `<qqj_recalled_context>\n${block}\n</qqj_recalled_context>`;
+  for (const block of placeRecallBlocks(input.manualPlaces ?? [], false, input.groupPlaces !== false, input.deduplicatePlaces !== false)) base = base ? base.replace('</qqj_recalled_context>', `${block}\n</qqj_recalled_context>`) : `<qqj_recalled_context>\n${block}\n</qqj_recalled_context>`;
   const correctedIds = new Set(timeDependencies.corrections.map(value => value.itemId));
   const reminders = (input.timeReminders ?? []).filter(value => !correctedIds.has(value.itemId));
   const references = Array.isArray(input.locationReferences) ? input.locationReferences : [];
@@ -551,7 +560,7 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
       if (value._timeDependency) timeDependencies?.corrections.push(value._timeDependency);
       const target = value.toward ? `，态度对象：${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
-        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}（依据：${value.reason}${source}）`);
+        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}${value.layer === 'situational' ? '[已保存场景快照] ' : ''}主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}（依据：${value.reason}${source}）`);
     }
   }
   if (cseChanges.length) {
@@ -790,7 +799,7 @@ function placeFeatureCandidates(source, queryContext, entityById, queries, memor
   }
   const retained = candidates.filter(candidate => candidate.kind !== 'placeFeature');
   const foundationGroups=new Map();
-  for(const fact of effectiveFoundationFacts(source.placeWorkspace,memories).filter(fact=>fact.kind!=='place'&&places.has(fact.placeEntityId))){
+  for(const fact of effectiveFoundationFacts(source.placeWorkspace,memories).filter(fact=>fact.kind!=='place'&&places.has(fact.placeEntityId)&&(fact.kind!=='containment'||fact.parentEntityId))){
     const key=JSON.stringify([fact.placeEntityId,fact.kind,fact.kind==='containment'?fact.parentEntityId:fact.text,fact.relationKind??null,fact.referencePlaceEntityIds??[]]);
     const group=foundationGroups.get(key)??[];group.push(fact);foundationGroups.set(key,group);
   }

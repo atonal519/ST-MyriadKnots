@@ -5,7 +5,6 @@ import { API_BASE } from './constants.js';
 const STORAGE_NAMESPACE = 'qqj-bainiao-v1';
 const LOCKS = Symbol.for('qqj.bainiao.tt.locks.v1');
 const error = (status, message) => Object.assign(new Error(message), { status });
-const copy = value => JSON.parse(JSON.stringify(value));
 const abort = signal => { if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError'); };
 const encoder = new TextEncoder();
 const compareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
@@ -351,7 +350,9 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
     try {
       // Native writes already submitted cannot be cancelled. Keep their lock
       // until completion even if the caller times out, as with an HTTP write.
-      const value = copy(await abortable(() => dispatch(url, init), init.signal));
+      // Native reads and request bodies are freshly parsed JSON; their values
+      // already belong to this request, without another full serialization.
+      const value = await abortable(() => dispatch(url, init), init.signal);
       return { ok: true, status: 200, json: async () => value };
     } catch (cause) {
       if (!Number.isInteger(cause?.status)) throw cause;
@@ -385,7 +386,7 @@ export function createTauriBackendFetch({ globalRef = globalThis } = {}) {
               const slot = await read(store, table, key, namespace, collection);
               abort(outerSignal); abort(signal);
               if (!slot || key !== await keyFor(slot.recordId) || table !== await tableFor(namespace, slot.collection)) throw error(500, 'Stored record identity mismatch');
-              return slot.current ? copy({ recordId: slot.recordId, ...slot.current }) : null;
+              return slot.current ? { recordId: slot.recordId, ...slot.current } : null;
             });
             if (record) return { done: false, value: record };
           }

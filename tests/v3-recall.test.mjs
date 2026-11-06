@@ -3,7 +3,7 @@ import test from 'node:test';
 import { processingTransport } from './fixtures/processing-transport.mjs';
 import assert from 'node:assert/strict';
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from '../src/v3/recall-source.js';
-import { buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, buildRecallQueryContext, buildRecallQueryFrame, cseSelectionContext, estimateRecallTokens, formatRecallInjection, placeRecallBlocks, historySelectionContext, recallBudget, selectRecall } from '../src/v3/recall-selector.js';
+import { buildRecallCseCandidatePool, buildRecallHistoryCandidatePool, buildRecallQueryContext, buildRecallQueryFrame, cseSelectionContext, estimateRecallTokens, formatRecallInjection, placeRecallBlocks, placeRecallText, historySelectionContext, recallBudget, selectRecall } from '../src/v3/recall-selector.js';
 import { RECALL_LLM_SYSTEM_PROMPT, removeExactQianshiDuplicates, selectRecallWithLlm } from '../src/v3/recall-llm-selector.js';
 import { captureCoreBodyWitness, createV3RecallRuntime, projectHistoricalRecallReceipt, renderedQianshiProgressText, RECALL_PROMPT_SLOT, RECALL_RECEIPT_KEY, RECALL_RECEIPT_SCHEMA_VERSION, RECALL_STRATEGY_VERSION } from '../src/v3/recall-runtime.js';
 import { PREQUEL_PROMPT_SLOT } from '../src/v3/recall-prequel.js';
@@ -2741,6 +2741,61 @@ async function runtimeSourceWithBodyRef(text = '街上已经安静。', locator 
   return source;
 }
 
+test('同次召回以冻结清洗正文建近期对照，前置长审核不挤掉真实剧情',async()=>{
+ let captured=null;const h=createRuntimeHarness({selector:input=>{captured=input;return selectRecall(input);}});
+ const body='林岚已经递出铅芯、拒绝交出整盒，现在数学课上被踢椅。';
+ h.chat[0].mes=`<think>${'审核与重写草稿。'.repeat(1000)}</think><content>${body}</content>`;
+ const raw=h.chat[0].mes;h.userMessage.mes='她刚才给过铅芯了，现在继续上课。';
+ const result=await h.runtime.intercept(h.chat,20000,null,'normal');
+ assert.equal(result.lastRecall.status,'ready');assert.ok(captured.queryContext.recentAssistantText.includes(body.normalize('NFKC')));
+ assert.equal(captured.queryContext.recentAssistantText.includes('审核'),false);assert.equal(h.chat[0].mes,raw);
+ assert.equal(captured.queryContext.latestUserText,h.userMessage.mes.normalize('NFKC'));
+});
+
+test('只有思考的尾AI不回退审核，query仍保原最近轮边界',async()=>{
+ let captured=null;const h=createRuntimeHarness({selector:input=>{captured=input;return selectRecall(input);}});
+ h.chat.splice(0,h.chat.length,{is_user:true,mes:'不应拉回的第一轮用户资料'},
+  {is_user:false,mes:'更早故事'}, {is_user:true,mes:'不应拉回的第二轮用户资料'},
+  {is_user:false,mes:'前一轮真实故事'}, {is_user:true,mes:'紧邻空AI的用户输入'},
+  {is_user:false,mes:`<think>${'只有审核。'.repeat(1000)}</think>`},h.userMessage);
+ const result=await h.runtime.intercept(h.chat,20000,null,'normal');
+ assert.equal(result.lastRecall.status,'ready');assert.equal(captured.queryContext.recentAssistantText,'');
+ assert.equal(captured.queryContext.previousUserText,'紧邻空AI的用户输入');
+ assert.equal(captured.queryContext.text.includes('不应拉回'),false);assert.equal(captured.queryContext.text.includes('只有审核'),false);
+});
+
+test('同源原文与关联摘要在同次R键中可比较，明确排除摘要后本地不复活',async()=>{
+ const source=runtimeFixture(),m=source.floorMemories.find(x=>x.floorId==='floor-2');
+ m.summary='曾因一项未完成的约定外出，后来回到门前。';
+ const raw='蓝色钥匙塞在松砖后，林岚为此暗自烦躁，但没有告诉任何人。';
+ const witness={floorId:m.floorId,floorMemoryId:m.floorMemoryId,memoryFloorId:m.floorId,memoryAssistantSeq:m.assistantSeq,assistantSeq:m.assistantSeq,
+  offset:0,length:raw.length,fingerprint:await fingerprintText(raw),textFingerprint:await fingerprintText(raw)};
+ for(const keepMode of ['raw','summary']){
+ let payload,calls=0;
+ const selected=await selectRecallWithLlm({source,queryContext:buildRecallQueryContext({coreChat:[{is_user:true,mes:'蓝色钥匙在哪里？'}]}),contextSize:20000,
+  semanticProvider:async()=>({candidates:[{text:raw,witness}]}),generateUtilityTask:async request=>{
+   calls++;payload=JSON.parse(request.taskMessages[0].content);
+   const group=payload.sourceGroups?.find(g=>g.rawKeys?.length&&g.summaryKeys?.length);
+   assert.ok(group,'关联摘要必须和原文一起成为本次可见R/P对照');
+   assert.ok(group.summaryKeys.every(key=>payload.candidates.some(c=>c.key===key&&c.fact.includes(m.summary.normalize('NFKC')))));
+   const keep=keepMode==='raw'?group.rawKeys:group.summaryKeys;
+   return {jsonData:{history_exclude_keys:payload.candidates.filter(c=>!keep.includes(c.key)).map(c=>c.key),state_exclude_keys:[]}};
+  }});
+ assert.equal(calls,1);const items=selected.floors.flatMap(x=>x.items);
+ assert.equal(items.some(x=>x.rawWitness),keepMode==='raw');
+ assert.equal(selected.floors.some(f=>f.floorId===m.floorId&&f.items.some(x=>x.kind==='summary')),keepMode==='summary');
+ assert.equal(selected.injectionText.includes(m.summary.normalize('NFKC')),keepMode==='summary','明确保留的摘要必须入选，排除后不能本地补回');
+ }
+});
+
+test('已保存情境状态注入写来源快照，长期Core和Adaptive仍参与',()=>{
+ const item=(layer,text)=>({stateId:layer,subjectEntityId:PERSON,subject:'裴晚生',layer,text,visibility:'private',reason:'有据',sourceAssistantSeq:1});
+ const output=formatRecallInjection({coverage:selectorSource().coverage,floors:[],cseChanges:[],entityById:new Map(),states:[item('core','稳定身份'),item('adaptive','稳定模式'),item('situational','此前等人')],
+  storylines:[]});
+ // The ordinary formatter is also used when a time rerender has no storyline plan.
+ assert.match(output,/\[已保存场景快照\].*situational/u);assert.ok(output.includes('稳定身份'));assert.ok(output.includes('稳定模式'));
+});
+
 test('实际召回保最新swipe地点用于检索，但不独立注入并签空参考列表', async () => {
   const source = runtimeFixture();
   let selectorInput = null;
@@ -4725,7 +4780,7 @@ test('schema18 continuity-v19 历史回执按旧签名读取，当前roll仅迁�
 });
 
 test('schema18 continuity-v20 历史回执按原签名读取，当前roll仅迁移重选一次到当前策略', async () => {
-  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v30');
+  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v32');
   let selectorCalls = 0;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
@@ -4742,29 +4797,29 @@ test('schema18 continuity-v20 历史回执按原签名读取，当前roll仅迁�
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   const migrated = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(selectorCalls, 2, 'v20旧冻结回执只触发一次当前选材');
-  assert.equal(migrated.strategyVersion, 'continuity-v30');
+  assert.equal(migrated.strategyVersion, 'continuity-v32');
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   assert.equal(selectorCalls, 2, '新策略回执后续roll仍冻结复用');
 });
 
-test('continuity-v26旧选材只读保签名，下一次正常生成重选一次后复用v30',async()=>{
- assert.equal(RECALL_STRATEGY_VERSION,'continuity-v30');let selections=0;
+test('continuity-v26旧选材只读保签名，下一次正常生成重选一次后复用当前策略',async()=>{
+ assert.equal(RECALL_STRATEGY_VERSION,'continuity-v32');let selections=0;
  const h=createRuntimeHarness({selector:input=>{selections++;return selectRecall(input);}});await h.runtime.intercept(h.chat,12000,null,'normal');
  const old=structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);old.strategyVersion='continuity-v26';old.receiptFingerprint=await receiptFingerprint(old);h.userMessage.extra[RECALL_RECEIPT_KEY]=old;h.runtime.invalidate('simulateReload');
  const restored=await h.runtime.restorePersistedReceipt();assert.equal(restored.lastRecall.legacyReadOnly,true);assert.equal(restored.lastRecall.strategyVersion,'continuity-v26');assert.equal(selections,1,'只读展示不增加选材');assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].receiptFingerprint,old.receiptFingerprint);
- await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion,'continuity-v30');await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);
+ await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion,'continuity-v32');await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);
 });
 
-test('continuity-v27旧选材只读保签名，下一次正常生成重选一次后复用v30',async()=>{
- assert.equal(RECALL_STRATEGY_VERSION,'continuity-v30');let selections=0;
+test('continuity-v27旧选材只读保签名，下一次正常生成重选一次后复用当前策略',async()=>{
+ assert.equal(RECALL_STRATEGY_VERSION,'continuity-v32');let selections=0;
  const h=createRuntimeHarness({selector:input=>{selections++;return selectRecall(input);}});await h.runtime.intercept(h.chat,12000,null,'normal');
  const old=structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);old.strategyVersion='continuity-v27';old.receiptFingerprint=await receiptFingerprint(old);h.userMessage.extra[RECALL_RECEIPT_KEY]=old;h.runtime.invalidate('simulateReload');
  const restored=await h.runtime.restorePersistedReceipt();assert.equal(restored.lastRecall.legacyReadOnly,true);assert.equal(restored.lastRecall.strategyVersion,'continuity-v27');assert.equal(selections,1,'只读展示不增加选材');assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].receiptFingerprint,old.receiptFingerprint);
- await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion,'continuity-v30');await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);
+ await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion,'continuity-v32');await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);
 });
 
 test('schema18 continuity-v21 历史回执保留原签名，只迁移重选一次到当前策略', async () => {
-  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v30');
+  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v32');
   let selectorCalls = 0, projectionVersion = 4;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); },
     qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion,
@@ -4786,7 +4841,7 @@ test('schema18 continuity-v21 历史回执保留原签名，只迁移重选一�
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   const migrated = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(selectorCalls, 2, '旧v21回执仅触发一次正常选材');
-  assert.equal(migrated.strategyVersion, 'continuity-v30');
+  assert.equal(migrated.strategyVersion, 'continuity-v32');
   assert.equal(migrated.qianshiProgress.projectionVersion, 5, '一次正常重选采用新投影');
   assert.match(migrated.qianshiProgress.text, /当前投影下的已选事项/u);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
@@ -4794,7 +4849,7 @@ test('schema18 continuity-v21 历史回执保留原签名，只迁移重选一�
 });
 
 test('schema18 continuity-v22 历史回执保留原签名，只迁移重选一次到当前策略', async () => {
-  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v30');
+  assert.equal(RECALL_STRATEGY_VERSION, 'continuity-v32');
   let selectorCalls = 0, projectionVersion = 4;
   const harness = createRuntimeHarness({ selector: input => { selectorCalls += 1; return selectRecall(input); },
     qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion,
@@ -4816,7 +4871,7 @@ test('schema18 continuity-v22 历史回执保留原签名，只迁移重选一�
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
   const migrated = harness.userMessage.extra[RECALL_RECEIPT_KEY];
   assert.equal(selectorCalls, 2, '旧v22回执仅触发一次正常选材');
-  assert.equal(migrated.strategyVersion, 'continuity-v30');
+  assert.equal(migrated.strategyVersion, 'continuity-v32');
   assert.equal(migrated.qianshiProgress.projectionVersion, 5, '一次正常重选采用新投影');
   assert.match(migrated.qianshiProgress.text, /当前投影下的已选事项/u);
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
@@ -8533,6 +8588,18 @@ function bundledPlaceSource({ long = false } = {}) {
  return { source, room, parent, queryContext: { text: '示例客房', latestUserText: '示例客房', messageCount: 1 } };
 }
 
+test('自动清父是结构修订，不生成当前或历史未知父地点候选和注入', () => {
+  const {source,room,queryContext}=bundledPlaceSource();
+  source.placeWorkspace.foundation.facts=source.placeWorkspace.foundation.facts.map(fact=>fact.kind==='containment'?{...fact,parentEntityId:null,identityChange:'ownershipChanged',replacesItemIds:[]}:fact);
+  source.floorMemories[0].spatialFacts={containments:[{itemId:'clear-1',placeEntityId:room,parentEntityId:null,identityChange:'ownershipChanged',replacesItemIds:[],sourceRefs:[{floorId:'floor-1',assistantSeq:1}]}],positions:[]};
+  const context=historySelectionContext(source,queryContext);
+  assert.equal(context.facts.some(item=>item.kind==='spatialContainment'),false);
+  const pool=buildRecallHistoryCandidatePool({source,queryContext});
+  const result=selectRecall({source,queryContext,selectedHistoryCandidates:pool.candidates,contextSize:12000});
+  assert.doesNotMatch(result.injectionText,/未知人物|地点未知|所属地点/u);
+  assert.match(result.injectionText,/有床和卫浴/u);
+});
+
 test('地点整包按稳定ID占一候选一名额，逐段来源与全部itemIds保留', () => {
  const { source, room, queryContext } = bundledPlaceSource();
  const context = historySelectionContext(source, queryContext);
@@ -8627,7 +8694,7 @@ test('地点整包时间失效重渲染按地点计数，紧预算整组撤回�
  }
 });
 
-test('地点整包v28旧回执只读保签名，正常生成到v30只重选一次', async () => {
+test('地点整包v28旧回执只读保签名，正常生成到当前策略只重选一次', async () => {
  let selections = 0;
  const h = createRuntimeHarness({ selector: input => { selections++;return selectRecall(input); } });
  await h.runtime.intercept(h.chat, 12000, null, 'normal');
@@ -8635,7 +8702,7 @@ test('地点整包v28旧回执只读保签名，正常生成到v30只重选一�
  h.userMessage.extra[RECALL_RECEIPT_KEY] = old;h.runtime.invalidate('cold-read');
  const restored = await h.runtime.restorePersistedReceipt();assert.equal(restored.lastRecall.legacyReadOnly, true);assert.equal(restored.lastRecall.strategyVersion, 'continuity-v28');
  assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY], old);assert.equal(selections, 1);
- await h.runtime.intercept(h.chat, 12000, null, 'regenerate');assert.equal(selections, 2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v30');
+ await h.runtime.intercept(h.chat, 12000, null, 'regenerate');assert.equal(selections, 2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion, 'continuity-v32');
  await h.runtime.intercept(h.chat, 12000, null, 'regenerate');assert.equal(selections, 2);
 });
 
@@ -8702,7 +8769,7 @@ test('普通召回不独立追加正文与已选旧楼地点标注，不占名�
  assert.equal(JSON.stringify(source),original);
 });
 
-test('v29旧活动票据不复用，历史签名仍保地点整包与当时标注，新v30封签后正常复用',async()=>{
+test('v29旧活动票据不复用，历史签名仍保地点整包与当时标注，新策略封签后正常复用',async()=>{
  const {source,queryContext}=bundledPlaceSource();let selections=0;
  const h=createRuntimeHarness({sourceReader:async()=>structuredClone(source),reachableReader:async()=>rawReachableFromSource(source),queryBuilder:()=>queryContext,
  selector:input=>{selections++;return selectRecall(input);}});
@@ -8719,8 +8786,24 @@ test('v29旧活动票据不复用，历史签名仍保地点整包与当时标�
  const shown=projectInlineRecallReceipt(historical);assert.equal(shown.protocolRecognized,true);assert.equal(shown.objectItems.filter(item=>item.id.startsWith('place:')).length,1);assert.equal(shown.objectItems.filter(item=>item.id.startsWith('location:')).length,1);
  assert.equal(JSON.stringify(h.userMessage.extra[RECALL_RECEIPT_KEY]),before);assert.equal(selections,1);
  await h.runtime.intercept(h.chat,12000,null,'regenerate');const fresh=h.userMessage.extra[RECALL_RECEIPT_KEY];
- assert.equal(selections,2);assert.equal(fresh.strategyVersion,'continuity-v30');assert.deepEqual(fresh.selectedLocationReferences,[]);assert.equal(fresh.stages.locationReferenceCount,0);assert.equal(fresh.receiptFingerprint,await receiptFingerprint(fresh));
+ assert.equal(selections,2);assert.equal(fresh.strategyVersion,'continuity-v32');assert.deepEqual(fresh.selectedLocationReferences,[]);assert.equal(fresh.stages.locationReferenceCount,0);assert.equal(fresh.receiptFingerprint,await receiptFingerprint(fresh));
  await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);assert.equal(h.runtime.getState().lastRecall.reusedReceipt,true);
+});
+
+test('v30签名旧回执保持原注入与地点分组，下一正常生成切新策略后复用',async()=>{
+ const {source,queryContext}=bundledPlaceSource();let calls=0;
+ source.identityProjection={placeWorkspaceRevision:1,placeWorkspace:source.placeWorkspace};source.placeWorkspaceDependency=`${CHAT}:1`;
+ const h=createRuntimeHarness({sourceReader:async()=>structuredClone(source),reachableReader:async()=>rawReachableFromSource(source),queryBuilder:()=>queryContext,placeWorkspaceDependencyProvider:()=>source.placeWorkspaceDependency,
+  selector:input=>{calls++;return selectRecall(input);}});
+ await h.runtime.intercept(h.chat,12000,null,'normal');
+ const old=structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);assert.equal(old.selectedPlaces.length,3);old.strategyVersion='continuity-v30';
+ old.injectionText=old.injectionText.replaceAll('[已保存场景快照]','[当前]');old.receiptFingerprint=await receiptFingerprint(old);
+ h.userMessage.extra[RECALL_RECEIPT_KEY]=old;const before=JSON.stringify(old);h.runtime.invalidate('cold-v30');
+ const historical=await projectHistoricalRecallReceipt(h.userMessage,{chatId:source.chatId,userMessageIndex:1});
+ assert.ok(historical);assert.equal(historical.injectionText,old.injectionText);assert.deepEqual(historical.selectedPlaces,old.selectedPlaces);
+ assert.equal(projectInlineRecallReceipt(historical).protocolRecognized,true);assert.equal(JSON.stringify(h.userMessage.extra[RECALL_RECEIPT_KEY]),before);
+ await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(calls,2);assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].strategyVersion,'continuity-v32');
+ await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(calls,2);assert.equal(h.runtime.getState().lastRecall.reusedReceipt,true);
 });
 
 
@@ -8759,4 +8842,55 @@ const queryContext = { text: '示例东屋的独立卫生间', latestUserText: '
   if(scenario==='redirect')assert.equal(source.floorMemories[0].spatialFacts.features.length,0);
   assert.equal(JSON.stringify(raw),before);
  }
+});
+
+function exactPlaceClauseSource(){
+ const value=bundledPlaceSource(),{source,room,parent}=value;
+ const ref={kind:'worldbook',sourceName:'院落',locator:'院落:3',fingerprint:'sha256:place-fixture',quote:'客房位于本馆走廊末端，配有书架。'};
+ source.placeWorkspace.foundation.facts=[
+  {itemId:'parent-exact',kind:'containment',placeEntityId:room,parentEntityId:parent,source:structuredClone(ref)},
+  {itemId:'long-exact',kind:'feature',placeEntityId:room,text:'位于本馆走廊末端，配有书架。',source:structuredClone(ref)},
+  {itemId:'short-exact',kind:'relation',placeEntityId:room,text:'位于本馆走廊末端',referencePlaceEntityIds:[],source:structuredClone(ref)},
+ ];return value;
+}
+
+test('地点同源完整短分句只输出一次，候选预算与注入共用且原成员来源全保',()=>{
+ const {source,room,queryContext}=exactPlaceClauseSource(),before=structuredClone(source);
+ const pool=buildRecallHistoryCandidatePool({source,queryContext});const row=pool.candidates.find(c=>c.value.placeEntityId===room);
+ assert.ok(row);assert.equal(row.value.text.split('位于本馆走廊末端').length-1,1);
+ const selected=selectRecall({source,queryContext,selectedHistoryCandidates:[row],maxItems:1,contextSize:12000});
+ assert.equal(selected.injectionText.split('位于本馆走廊末端').length-1,1);assert.match(selected.injectionText,/位于本馆走廊末端，配有书架。/u);assert.match(selected.injectionText,/所属地点：东院/u);
+ assert.equal(selected.manualPlaces.length,3);assert.deepEqual(new Set(selected.manualPlaces.map(x=>x.itemId)),new Set(['parent-exact','long-exact','short-exact']));assert.deepEqual(selected.manualPlaces.map(x=>x.source),before.placeWorkspace.foundation.facts.map(x=>x.source));
+ assert.equal(selected.stages.finalInjectionItemCount,1);assert.equal(selected.limits.actualCharacters,selected.injectionText.length);assert.ok(row.value.text.length<placeRecallText(row.value._placeMembers,false).length);assert.deepEqual(source,before);
+});
+
+test('地点短分句不跨实体来源或人工折叠，否定可能及未完分句保持',()=>{
+ const source={kind:'worldbook',locator:'地图:3',fingerprint:'sha256:fixture',quote:'原始资料。'};
+ const short={kind:'placeFoundation',placeEntityId:'room',text:'客房：位于走廊末端',source};
+ for(const text of ['不位于走廊末端，配有书架。','可能位于走廊末端，配有书架。','位于走廊末端但尚待核实。','位于走廊末端外侧，配有书架。']){
+  const out=placeRecallText([short,{...short,text:'客房：'+text}]);assert.ok(out.includes('位于走廊末端；'+text),out);
+ }
+ for(const patch of [{placeEntityId:'other'},{kind:'manualPlace'},{source:{...source,locator:'地图:4'}},{source:{...source,quote:'另一段资料。'}},{source:{kind:'body',floorId:'floor-2',sourceType:'precedingUser',snapshotIndex:0,quote:'原始资料。'}}]){
+  const out=placeRecallText([short,{...short,...patch,text:'客房：位于走廊末端，配有书架。'}]);assert.equal(out.split('位于走廊末端').length-1,2);
+ }
+ const body={kind:'body',floorId:'floor-2',sourceType:'precedingUser',snapshotIndex:0,quote:'原始资料。'};
+ for(const patch of [{floorId:'floor-3'},{sourceType:'assistant'},{snapshotIndex:1}])assert.equal(placeRecallText([{...short,source:body},{...short,text:'客房：位于走廊末端，配有书架。',source:{...body,...patch}}]).split('位于走廊末端').length-1,2);
+ for(const patch of [{manual:true},{manualArtifact:{exactText:'保留原文'}},{source:{...source,kind:'manual'}},{source:{...source,manual:true}}])for(const side of ['short','long']){
+  const long={...short,text:'客房：位于走廊末端，配有书架。'},items=side==='short'?[{...short,...patch},long]:[short,{...long,...patch}];assert.equal(placeRecallText(items).split('位于走廊末端').length-1,2);
+ }
+ for(const text of ['位于走廊末端？','位于走廊末端?需核对','位于走廊末端！','位于走廊末端!再看一下']){const out=placeRecallText([short,{...short,text:'客房：'+text}]);assert.ok(out.includes('位于走廊末端；'+text),out);}
+ for(const [small,long] of [['James 大楼','入口在 St. James 大楼'],['5米','高1.5米']])assert.equal(placeRecallText([{...short,text:'客房：'+small},{...short,text:'客房：'+long}]).split(small).length-1,2);
+ const literal={...short,kind:'manualPlace',text:'客房：位于走廊末端；原文中的标点。'};assert.ok(placeRecallText([literal,{...short,text:'客房：位于走廊末端，配有书架。'}]).includes('位于走廊末端；原文中的标点。'));
+});
+
+test('v31同源重复旧票历史逐字读，新v32重新选材一次并完整封签复用',async()=>{
+ const {source,queryContext}=exactPlaceClauseSource();source.identityProjection={placeWorkspaceRevision:1};source.placeWorkspaceDependency=CHAT+':1';let calls=0;
+ const h=createRuntimeHarness({sourceReader:async()=>structuredClone(source),reachableReader:async()=>rawReachableFromSource(source),queryBuilder:()=>queryContext,placeWorkspaceDependencyProvider:()=>CHAT+':1',identityProjectionProvider:()=>({placeWorkspaceRevision:1}),selector:input=>{calls++;return selectRecall(input);}});
+ await h.runtime.intercept(h.chat,12000,null,'normal');await flushReceiptSave();const old=structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);
+ old.strategyVersion='continuity-v31';old.injectionText=formatRecallInjection({coverage:old.coverage,floors:[],states:[],cseChanges:[],manualPlaces:old.selectedPlaces,entityById:new Map(),deduplicatePlaces:false});old.stages.estimatedTokenCount=estimateRecallTokens(old.injectionText);old.receiptFingerprint=await receiptFingerprint(old);
+ h.userMessage.extra[RECALL_RECEIPT_KEY]=old;h.runtime.invalidate('old-v31');const before=structuredClone(old);
+ const historical=await projectHistoricalRecallReceipt(h.userMessage,{chatId:CHAT,userMessageIndex:1});assert.ok(historical);assert.equal(historical.injectionText,old.injectionText);assert.equal(old.injectionText.split('位于本馆走廊末端').length-1,2);
+ const inline=projectInlineRecallReceipt(historical);assert.equal(inline.protocolRecognized,true);assert.equal(inline.objectItems.find(x=>x.placeEntityId).text.split('位于本馆走廊末端').length-1,2);assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY],before);
+ await h.runtime.restorePersistedReceipt();assert.equal(h.runtime.getState().lastRecall.legacyReadOnly,true);await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(calls,2);const fresh=h.userMessage.extra[RECALL_RECEIPT_KEY];assert.equal(fresh.strategyVersion,'continuity-v32');assert.equal(fresh.injectionText.split('位于本馆走廊末端').length-1,1);assert.equal(fresh.receiptFingerprint,await receiptFingerprint(fresh));assert.ok(await projectHistoricalRecallReceipt(h.userMessage,{chatId:CHAT,userMessageIndex:1}));
+ await h.runtime.intercept(h.chat,12000,null,'continue');assert.equal(calls,2);assert.equal(h.runtime.getState().lastRecall.reusedReceipt,true);
 });

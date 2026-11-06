@@ -1,3 +1,4 @@
+import { capturePrecedingUserInputFromSnapshot, memoriesBySourceFloor, storedSourceUserInput } from './user-input-source.js';
 import { scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 import { matchFloorCandidates } from './floor-binding.js';
 import { floorProvenanceForReachable, migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
@@ -95,6 +96,16 @@ export async function readRecentBodyStoryTimes(host, { reachable = null, sanitiz
 
 // Private projection: current selected body witnesses never rewrite foundation records.
 export async function readTimeBody(reachable, host, { sanitizerOptions = {}, storyClockReferenceTags = '', calendar = null } = {}) {
+  host = { ...host, chat: (host.chat ?? []).map(message => {
+    if (!message || typeof message !== 'object') return message;
+    const selectedIndex = Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0;
+    const swipes = Array.isArray(message.swipes) ? [] : null;
+    if (swipes) swipes[selectedIndex] = message.swipes[selectedIndex];
+    const extra = Object.fromEntries(['type', 'qianqianjie_floor', 'qianqianjie_memory_excluded', 'qianqianjieAutoHide', 'qianqianjie_migration_alias']
+      .filter(key => Object.hasOwn(message.extra ?? {}, key)).map(key => [key, structuredClone(message.extra[key])]));
+    return { is_user: message.is_user, is_system: message.is_system, is_hidden: message.is_hidden, hidden: message.hidden,
+      mes: message.mes, swipe_id: message.swipe_id, send_date: message.send_date, name: message.name, ...(swipes ? { swipes } : {}), extra };
+  }), context: { chatMetadata: { qianqianjie: { chatId: host.context?.chatMetadata?.qianqianjie?.chatId } } } };
   const partition = migrationPartition(reachable);
   const frozenFloors = partition.frozenFloors;
   const scanned = await scanAssistantCandidates(host.chat ?? [], { sanitizerOptions, chatId: reachable.root.chatId, captureRawContent: true });
@@ -106,6 +117,7 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
   const provenance = floorProvenanceForReachable(reachable);
   const manualTime = floorId => Boolean(floorId && provenance[floorId]?.timeEdited === true);
   const memoryByFloor = new Map((reachable.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
+  const memoryBySource = memoriesBySourceFloor(reachable.floorMemories);
   const bodies = [], floors = [];
   let previousHistory = null, previousVisible = null, previousHistorySource = null, previousVisibleSource = null;
   for (const [index, candidate] of candidates.entries()) {
@@ -135,9 +147,27 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
     const timeSourceFingerprint = await timeFingerprint(manual ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : sourceTime.raw]
       : sourceClock?.status === 'ambiguous' ? ['ambiguous-body-time', sourceClock.signature]
         : sourceTimeRaw ? [sourceTime.date, sourceTime.clock, sourceTime.date ? null : sourceTimeRaw] : ['no-body-time']);
+    const memory = memoryBySource.get(match?.floor.id);
+    const precedingUserInput = memory ? storedSourceUserInput(memory, match.floor.id)
+      : capturePrecedingUserInputFromSnapshot(host, { chatId: reachable.root.chatId, hostLocator: candidate.hostLocator }, sanitizerOptions);
+    const messages = precedingUserInput?.messages ?? [];
+    const userInputFingerprint = messages.length ? await timeFingerprint(['time-user-source-v1', precedingUserInput]) : null;
+    let content = candidate.canonicalContent;
+    let sourceParts = null;
+    if (messages.length) {
+      sourceParts = []; content = '';
+      const append = (text, source) => {
+        if (content) content += '\n';
+        const from = content.length; content += text;
+        sourceParts.push({ ...source, from, to: content.length });
+      };
+      messages.forEach((message, sourceSnapshotIndex) => append(message.content,
+        { sourceType: 'precedingUserInput', sourceSnapshotIndex, messageIndex: message.messageIndex }));
+      append(candidate.canonicalContent, { sourceType: 'canonicalContent' });
+    }
     const clockFingerprint = await clockContentFingerprint(candidate.rawContent, storyClockReferenceTags);
     const body = { stable: Boolean(candidate.stabilityProof), timeSourceKind: manual ? 'manual' : summaryRaw ? 'summary' : raw || ambiguous ? 'body' : 'unknown', timeSourceFingerprint, floorId: match?.floor.id ?? null, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint,
-      rawFingerprint: candidate.rawFingerprint, clockContentFingerprint: clockFingerprint, rawContent: candidate.rawContent, hostLocator: candidate.hostLocator, content: candidate.canonicalContent, observationTime: time };
+      rawFingerprint: candidate.rawFingerprint, clockContentFingerprint: clockFingerprint, rawContent: candidate.rawContent, hostLocator: candidate.hostLocator, content, observationTime: time, ...(userInputFingerprint ? { userInputFingerprint, sourceParts } : {}) };
     bodies.push(body);
     if (match) floors.push({ ...match.floor, assistantSeq: candidate.assistantSeq, canonicalFingerprint: candidate.canonicalFingerprint, timeSourceFingerprint, content: candidate.canonicalContent });
   }
@@ -145,7 +175,7 @@ export async function readTimeBody(reachable, host, { sanitizerOptions = {}, sto
   // never rebound to same-number B messages or reparsed from B's live chat.
   const allFloors = [...frozenFloors, ...floors];
   return { ...reachable, ...(calendar ? { calendar } : {}), floors: allFloors, liveFloors: floors, bodyFloors: bodies, bodyTimes: new Map(bodies.filter(body => body.floorId).map(body => [body.floorId, body.observationTime])),
-    bodySignature: await timeFingerprint(bodies.map(body => [body.floorId, body.hostLocator, body.rawFingerprint, body.canonicalFingerprint])) };
+    bodySignature: await timeFingerprint(bodies.map(body => [body.floorId, body.hostLocator, body.rawFingerprint, body.canonicalFingerprint, ...(body.userInputFingerprint ? [body.userInputFingerprint] : [])])) };
 }
 
 export function timeBodyStart(source) {
@@ -195,15 +225,24 @@ export function planTimeBody(source, batches, { start = null, history = false, i
   const fragments = [], groups = [];
   const fits = rows => new Set(rows.map(row => row.floorId)).size <= 20
     && estimateRecallTokens(JSON.stringify(createTimeBodyRequest(source, rows, rows.at(-1))) + TIME_SYSTEM_PROMPT) <= inputTokens - TIME_BODY_AUXILIARY_TOKENS;
-  const fragment = (body, from, to) => ({ floorId: body.floorId, assistantSeq: body.assistantSeq,
-    canonicalFingerprint: body.canonicalFingerprint, rawFingerprint: body.rawFingerprint, timeSourceFingerprint: body.timeSourceFingerprint, clockContentFingerprint: body.clockContentFingerprint,
-    from, to, totalCharacters: body.content.length, observationTime: body.observationTime, description: body.content.slice(from, to) });
+  const fragment = (body, from, to) => {
+    const parts = body.sourceParts?.filter(part => part.to > from && part.from < to).map(part => {
+      const start = Math.max(from, part.from), end = Math.min(to, part.to);
+      return { sourceType: part.sourceType, ...(part.sourceSnapshotIndex === undefined ? {} : { sourceSnapshotIndex: part.sourceSnapshotIndex, messageIndex: part.messageIndex }),
+        from: start - part.from, to: end - part.from, text: body.content.slice(start, end) };
+    });
+    return { floorId: body.floorId, assistantSeq: body.assistantSeq,
+      canonicalFingerprint: body.canonicalFingerprint, rawFingerprint: body.rawFingerprint, timeSourceFingerprint: body.timeSourceFingerprint, clockContentFingerprint: body.clockContentFingerprint,
+      ...(body.userInputFingerprint ? { userInputFingerprint: body.userInputFingerprint, sourceParts: parts.map(({ text, ...part }) => part) } : {}),
+      from, to, totalCharacters: body.content.length, observationTime: body.observationTime,
+      description: parts ? parts.map(part => `${part.sourceType === 'precedingUserInput' ? `前置USER[${part.sourceSnapshotIndex}]` : 'AI正文'}：\n${part.text}`).join('\n') : body.content.slice(from, to) };
+  };
   const add = row => { let group = groups.at(-1); if (!group || !fits([...group, row])) { group = []; groups.push(group); } group.push(row); fragments.push(row); };
   for (const body of eligible) {
     const versions = reads.get(body.floorId) ?? [];
     const isCurrentVersion = read => read.canonicalFingerprint === body.canonicalFingerprint
-      && read.timeSourceFingerprint === body.timeSourceFingerprint && read.totalCharacters === body.content.length;
-    const versionKey = read => JSON.stringify([read.canonicalFingerprint, read.timeSourceFingerprint, read.totalCharacters]);
+      && read.timeSourceFingerprint === body.timeSourceFingerprint && (read.userInputFingerprint ?? null) === (body.userInputFingerprint ?? null) && read.totalCharacters === body.content.length;
+    const versionKey = read => JSON.stringify([read.canonicalFingerprint, read.timeSourceFingerprint, read.userInputFingerprint ?? null, read.totalCharacters]);
     const byVersion = new Map();
     for (const read of versions) { const key = versionKey(read); byVersion.set(key, [...(byVersion.get(key) ?? []), read]); }
     const isCovered = ranges => ranges.sort((a, b) => a.from - b.from).reduce((end, range) => range.from <= end ? Math.max(end, range.to) : end, 0);
@@ -236,7 +275,7 @@ export function planTimeBody(source, batches, { start = null, history = false, i
   }
   const fullyRead = body => body.floorId && (reads.get(body.floorId) ?? []).some(read => {
     const sameVersion = (reads.get(body.floorId) ?? []).filter(value => value.canonicalFingerprint === read.canonicalFingerprint
-      && value.timeSourceFingerprint === read.timeSourceFingerprint && value.totalCharacters === read.totalCharacters);
+      && value.timeSourceFingerprint === read.timeSourceFingerprint && (value.userInputFingerprint ?? null) === (read.userInputFingerprint ?? null) && value.totalCharacters === read.totalCharacters);
     return sameVersion.sort((a, b) => a.from - b.from).reduce((end, range) => range.from <= end ? Math.max(end, range.to) : end, 0) >= read.totalCharacters;
   });
   const checked = source.bodyFloors.filter(fullyRead).length;

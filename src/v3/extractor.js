@@ -19,8 +19,8 @@ import { normalizeLocationReference } from './location-reference.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-57';
-export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-28`;
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-62';
+export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-34`;
 export const QIANSHI_OUTPUT_CAPACITY_GUIDANCE = '每个千事保存单元最多输出 160 条事件、320 条不同有效关系，每条事件最多 40 位人物；order 不要重复关系。';
 const PERSON_ALIAS_DESCRIPTION = '人物只收可长期复用的姓名、昵称或稳定称谓；不收代词、指示词及一次性外貌或身份描述。';
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
@@ -69,6 +69,7 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
     mapStyle: {type:'string',enum:[...QIANCHUANG_MAP_STYLES.map(style=>style.id),'town']},
     placePaths: { type: 'array', maxItems: 40, items: { type: 'object', required: ['path'], properties: {
       path: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, sameAsPlaceKey: { type: 'string' }, mapRole: { type: 'string', enum: ['area','site','interior'] }, mapLevel: { type: ['string','null'], enum: ['city','country','scope',null] }, mapStyle:{type:'string',enum:[...QIANCHUANG_MAP_STYLES.map(style=>style.id),'town']}, mapLayout:{type:'string'}, facilities: {type:'array',items:{type:'object',properties:{icon:{type:'string'},label:{type:'string'}}}}, description: { type: 'string' }, relations: { type: 'array', items: { type: 'string' } } } } },
+      identityChange:{type:'string',enum:['ownershipChanged']},parentPlaceKey:{type:'null'},
       evidence: { type: 'array', items: { type: 'object', properties: { source: { type: 'string', enum: ['canonicalContent','precedingUserInput','worldbook'] }, sourceFloorKey: { type: 'string' }, sourceSnapshotIndex: { type: 'integer' }, sourceKey: { type: 'string' }, exactQuote: { type: 'string' } } } },
       placeKey: { type: 'string', description: '路径叶与本次spatialFacts.places为同一地点时，复制其place-mention-N；所有来源都填写此关联。' }, source: { type: 'string', enum: ['canonicalContent','precedingUserInput','worldbook'] }, sourceFloorKey: { type: 'string' }, sourceSnapshotIndex: { type: 'integer' }, sourceKey: { type: 'string' }, exactQuote: { type: 'string' }, description: { type: 'string' }, relations: { type: 'array', items: { type: 'string' } },
     } } },
@@ -77,7 +78,7 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
     locations: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, change: { type: 'string', enum: ['present', 'entered', 'left', 'movedThrough', 'mentioned'] }, people: { type: 'array', items: { type: 'string' } } } } },
     spatialFacts: { type: 'object', required: ['places', 'containments', 'positions'], properties: {
       places: responseItemArray(['key', 'name', 'identity', 'exactQuote', 'source', 'sourceFloorKey'], { key: { type: 'string' }, name: { type: 'string' }, aliases: { type: 'array', maxItems: 20, items: { type: 'string' } }, identity: { type: 'string', enum: ['existing', 'new', 'uncertain'] }, sameAsPlaceKey: { type: 'string' }, identityChange: { type: 'string', enum: ['ownershipChanged'] }, identityBasis: { type: 'string', enum: ['explicitSamePlace'] }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
-      containments: responseItemArray(['placeKey', 'parentPlaceKey', 'exactQuote', 'source', 'sourceFloorKey'], { placeKey: { type: 'string' }, parentPlaceKey: { type: 'string' }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
+      containments: responseItemArray(['placeKey', 'parentPlaceKey', 'exactQuote', 'source', 'sourceFloorKey'], { placeKey: { type: 'string' }, parentPlaceKey: { type: ['string','null'] }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
       relations: responseItemArray(['kind', 'placeKey', 'referencePlaceKeys', 'text', 'exactQuote', 'source', 'sourceFloorKey'], { kind: { type: 'string', enum: ['locatedIn', 'onFloor', 'relative'] }, placeKey: { type: 'string' }, referencePlaceKeys: { type: 'array', maxItems: 2, items: { type: 'string' } }, text: { type: 'string', maxLength: 1000 }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
       positions: responseItemArray(['subject', 'placeKey', 'status', 'exactQuote', 'source', 'sourceFloorKey'], { subject: { type: 'string' }, placeKey: { type: ['string', 'null'] }, status: { type: 'string', enum: ['confirmed', 'lastSeen', 'leftUnknown'] }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
       features: responseItemArray(['key', 'placeKey', 'kind', 'text', 'replacesKeys', 'exactQuote', 'source', 'sourceFloorKey'], { key: { type: 'string' }, placeKey: { type: 'string' }, kind: { type: 'string', enum: ['stable', 'temporary'] }, text: { type: 'string', maxLength: 1000 }, replacesKeys: { type: 'array', maxItems: 40, items: { type: 'string' } }, exactQuote: { type: 'string' }, source: { type: 'string', enum: ['canonicalContent', 'precedingUserInput'] }, sourceFloorKey: { type: 'string' } }),
@@ -102,6 +103,7 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
         actionStatus: { type: 'string', enum: ['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown'] },
         storyTime: { type: ['string', 'null'] }, scheduledTime: { type: ['string', 'null'] },
         people: { type: 'array', maxItems: 40, items: { type: 'string' } }, object: { type: ['string', 'null'] },
+        following: { type: 'boolean', description: '是否继续跟进这条持续事项，与整线事实状态分别判断；停止跟进为false' },
         matter: { type: 'boolean', description: '只有计划、持续推进或需要跟踪状态的事项实例才为 true' },
         links: { type: 'array', items: { type: 'object', properties: {
           candidateKey: { type: 'string', description: '只可复制 payload.qianshiCandidates 中的 candidate-N' },
@@ -124,8 +126,8 @@ export const DEFAULT_EXTRACTOR_GUIDANCE = `你是“千千结”的剧情语义�
 const SINGLE_FLOOR_SUMMARY_GUIDANCE = `普通单楼 summary 通常以 200–300 字、3–5 句为目标；内容少可更短，复杂且必要事实较多时可适当超出，不凑数、不截断。先记影响后续的关键推进和明确完成/取消结果，再记篇末实际停留点；必要时补有据且影响后续的未决。保留必要主体、对象、期限、后果、条件、关键数字与归属；合并连续微动作和同义对话，略去无后续作用的材质、姿势和逐句争执。`;
 
 export const QIANSHI_LIFECYCLE_GUIDANCE = `【千事事项生命周期】
-matter=true 仅用于有具体计划、未兑现承诺或未解决目标需要跟踪的事项；不能只因人物、关系、物品或场景仍出现，就新建或保留进行中事项。status 表示整线目标状态，actionStatus 表示本楼局部动作状态。局部动作 completed 本身不关闭整线；旧候选仍有未完成目标且本楼没有结论时，保留其状态，不因时间流逝、换场景或未提及而推断完成或取消。
-结合正文与候选逐项判断：正文明确表明某旧事项目标已实现或取消时，必须链接对应候选并将整线 status 更新为 completed 或 cancelled，在千事中记录该 progress 与终态；不能只把结果写进摘要。若局部动作已完成而材料明确支持整线还有具体剩余目标，整线仍可为 planned 或 inProgress。分别判断各事项；一局游戏或一段互动结束，不等于另一项独立债务、承诺或目标已清偿。用户明确修订过的状态是权威材料，不得被旧状态覆盖。`;
+matter=true 用于具体计划、承诺或待解决目标；status 表示整线事实状态，actionStatus 表示本楼局部动作状态，following 表示是否仍值得跟进。并读 AI 正文与对应 USER 叙述，按已发生动作、结果、后续上下文判断，过程被省略也可支持目标已完成；未来要求、写作指令与假设保其原义。
+逐项检查旧候选：上下文足够表明目标已达成或取消时，必须链接对应候选，记录 progress 并更新整线 completed/cancelled，结果同时记入摘要与千事；仍有具体剩余目标时保 planned/inProgress、following:true。日常活动已被叙事自然带过或后续已无追踪价值时，可记录 progress、following:false，保留有据的事实状态；无需为了停追虚构完成。已停止的事项仅历史提及不重新关注，出现新的具体推进或待解决目标才 following:true。单纯时间推移不能替债务、交付等独立未决目标结案；局部动作结束也不关闭另一个剩余目标。人工修订的状态与跟进选择优先。`;
 
 export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 1. canonicalContent 是目标 AI 楼正文；precedingUserInput 是该 AI 楼紧邻前方、按时间正序冻结的连续用户输入，也是本轮剧情事实来源。用户输入中实际写出的动作、台词、已经发生的剧情和承诺即使未被 AI 复述，也要纳入 summary 与对应结构字段。作者纠正仍按作者纠正理解；未来要求、写作指令或计划不能写成已经发生；括号内容按语义判断，不机械删除。payload.storyClock 若存在，是同一楼原始正文中的隐藏时间线索；标准 start/end 与 canonicalContent 中的明确时间是本楼最高时间锚。referenceText 来自目标楼原文的时间参考标签，可包含架空纪年、范围或不确定表达，必须保留原语义，不能擅自拆成精确 start/end。payload.previousStoryClock 是目标楼之前最近一楼的正文时间参照；它的 referenceText 也只属于前楼。payload.previousFloorContext 是已保存前楼的时间、摘要末段与有限地点身份参照。placeBindings 和 knownPlaces.parentPlaceKeys 只表示历史地点身份与已存包含关系，不代表本楼发生、当前位置或人物在场。locationReference 与 sourceFloors[].locationReference 是对应来源原消息明确地点标签的补充参照；保留其来源语义，不推断父级、当前位置或人物在场，且正文与人工修订优先。所有前楼信息都只是衔接参照，不能直接冒充本楼事实。已知人物和用户身份只用于判断称谓，不证明本楼发生、人物在场或知情；knownPeople.identityBrief 仅是身份对照，不是本楼新证据。people[].identityFacts 是可选的完整当前稳定身份列表：每项 {kind:"identity"|"occupation"|"relation",text,evidence:[...]}，分别只写稳定身份、职业/职责、用于识别的稳定关系，并把该条依据独立放在 evidence，沿现有 quoteSegments/sourceFloorKey/sourceType/sourceSnapshotIndex 合同引用原文。临时行为、病情、评价、位置、衣着和活动过程留在原事件/状态，不由单次行为推职业。每份最多20条身份、合计20条引用，拼成简介总长不超过400字；没有更新就省略，空列表不清旧简介。knownPeople.identityFacts 已保存有依据的条目可用 {existingKey:"该目标提供的原key"} 保留，不重抄旧引文；只能复用该目标本轮提供的key。新列表必须保留仍有效旧身份，纠正的条目由当前原文支持；任一条目依据无效整份简介更新跳过，其它摘要仍保存。只有旧裸简介时，有本轮明确稳定身份依据即可重建列表，即使身份未改变；旧简介只作对照，不是证据。兼容旧 people[].identityBrief 返回须配独立 identityBriefEvidence，人物出现的通用 evidence 不证明整份简介。临时信息照常写入 summary 与对应结构字段。
@@ -135,7 +137,7 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 5. summary 按正文顺序记关键经过、明确结果和篇末实际状态；不补因果、不复述无关前情、不自行推测后续。正文已给出的条件、可能或预计若影响后续，须保留原口径，不能写成确定事实；明确结束或取消的安排也要记结果。插话、暂时停手或后文未提及均不证明原活动结束；篇末仍在进行的活动不得写成已完成。相关条件也要写进对应动作表述。最多 4000 字符。actions 按实际执行证据区分意图、尝试和完成；发出命令或请求只证明指令已发，受令任务须有执行依据才记完成，未知结果写 null。events 可合并连续微动作。openLoops 仅列正文支持、未解决且影响后续的具体事项；未写后续不自动算未决，真实未执行安排仍须记录。people、time、locations 有依据时填写，无依据可留空，不要猜人地点或拿现实日期补故事日期。time/chronology 只记录本篇主线实际发生的时间或范围，按剧情顺序输出，最后一条表示篇末时间；回忆、未来约定等时间仍写入对应摘要或事项字段，不混作本篇当前时间。正文或可靠故事时间锚已有故事年份或纪年时，summary、time，以及 qianshi 的 storyTime 与 scheduledTime 中相关的时间表达都必须保留该年份或纪年；跨年只按故事依据记录。回忆、约定日期和年份未知的时间不得无依据套用当前故事年或现实年份，只有月日或相对时间时原样保留。时间是唯一允许合理推定的例外：本楼没有明确时间锚时，可结合 previousFloorContext、previousStoryClock 与本楼叙事，推定“同日稍后”“次日清晨”等相对时间，或在线索足够时推定合理的具体故事时间；必须标明合适的 kind 与 precision。但遇到特殊命名月份跨月，或只有月日且先后需要跨年才能成立时，只保留原文与明确先后语义，不推算或补写具体日期。没有足够线索时可留空或写“时间未明确”。推定时间不能附带正文没有的事件、人物、因果或结果。
 
 【固定输出边界】
-1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。允许以下本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；spatialFacts.places[].sameAsPlaceKey 只可逐字复制 payload.knownPlaces 中确认同一地点的 place-N，spatialFacts.places[].key 使用本次 place-mention-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中可用的 candidate-N。聚合请求还须在 evidence、exactQuotes、spatialFacts 和 qianshi.events 中填写 sourceFloorKey，逐字复制 payload.sourceFloors 中对应成员的 floorKey；这只是来源标记，不是数据库楼层 ID。不得自造、猜测或输出其他内部键。
+1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。允许以下本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；spatialFacts.places[].sameAsPlaceKey 只可逐字复制 payload.knownPlaces 中确认同一地点的 place-N，spatialFacts.places[].key 使用本次 place-mention-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中可用的 candidate-N。单楼与聚合请求的 spatialFacts 各项均填写 sourceFloorKey；单楼逐字复制 payload.sourceFloorKey，聚合逐字复制 payload.sourceFloors 中对应成员的 floorKey，聚合 evidence、exactQuotes 和 qianshi.events 也带对应 sourceFloorKey；这只是来源标记，不是数据库楼层 ID。不得自造、猜测或输出其他内部键。
 2. payload.userIdentity.displayName 非空时，summary 及其他语义描述必须使用这个实际显示名；{{user}} 只可作为 canonicalContent、precedingUserInput 或 aliases 中的输入别名，不得原样写入生成的语义文本。exactQuotes.exactText、承诺原话及证据引文必须逐字照抄相应来源，不得因这条规则改写。原句来自用户输入时，可在相应条目或 exactQuotes 对象中写 source:"precedingUserInput"；来自 AI 正文时可写 source:"canonicalContent"。只提示来源类别，不要输出消息序号或证据坐标。
 3. people 只写人能读懂的姓名、别名和角色。aliases 只收可长期复用的姓名、昵称或稳定称谓，不收代词、指示词及一次性外貌或身份描述；临时称呼只用于本轮识别。无实名的新人物仍以当前明确称呼作为 name 建档。entityKind=individual 表示单人，entityKind=group 表示正文暂时只能整体辨认的多人集合；缺省按 individual 兼容。已知同一身份时优先填写 sameAsEntityKey；否则只可依据同类型的完整姓名或有效别名唯一精确对应，不得用相似、包含或模糊匹配。群体 aliases 只收整体称谓，不能把成员姓名塞成群体别名；成员能分别辨认时分别列 individual，无法辨认时不要编造个体。“别人”“客户”等泛称通常不是稳定人物别名。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
 4. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
@@ -148,15 +150,15 @@ export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
 
 ${QIANSHI_LIFECYCLE_GUIDANCE}
 
-11. 每次依次检查地点身份、明确包含关系、每个人物楼末位置；有据填写，无据用空数组，不能因 summary 或 locations 已写就跳过。每项填 exactQuote、source（canonicalContent 或 precedingUserInput）和 sourceFloorKey。同地不表示人物彼此知情。locations 与 spatialFacts 中需单独追踪的地点默认按房间或有独立意义的区域为粒度；房间内的窗边、沙发旁、桌边等落点通常保留在 summary，不单独建地点或强迫 positions 细化，室外独立区域照常记录；不要把没有依据的房内落点绑定到 knownPlaces。地点身份：优先使用正文、前楼或用户输入中直接出现的完整名称/具体别名；目录中其他有效地点也可作为有限身份参照。knownPlaces 的 parentPlaceKeys/ownershipStatus 是有来源的历史所属提示，未知不代表异地；同地完整名与明确返回可复用，旧泛名不得跨新场地复用。knownPlaces.sourceLocationReference 是该实体曾出现的来源楼原地点标注；一楼可能跨多个场景，标注不等于实体所属或当前位置，归属仍按有据父链判断。完整标注的细节变化、车辆移动或来源楼跨场景本身不证明异地。根据本次正文/USER和这些线索判断同地、异地或未定：有据existing身份正常承接，不要求额外identityBasis；该可选字段仅保兼容，不能绕过已知父级矛盾。只有正文或USER明确纠正/改变同一地点的所属时，才可在该existing地点填写可选identityChange="ownershipChanged"并给出对应逐字引文及新父级；换场景、抵达另一同名房间不算归属变更，不填写此字段。先理解本次有原句的 containments/locatedIn 所属，父级可以与子地点同次新建；若原消息地点标注与正文或前置USER冲突，以可定位剧情为准并保未定，不能靠全库唯一同名证明同地。onFloor/relative 不作场地身份父链。knownPlaces 只是最多40项的候选子集，不是完整地点名册；identityAmbiguous=true 表示完整有效目录中名称或别名有多处归属，只有当前场景、明确地址或所属场所等证据足以指向该行时才选其key，单靠同名用uncertain。只有叙事明确承接同一处地点时才复制 knownPlaces 的 sameAsPlaceKey；简称可在上下文明确指向同地时承接旧地点，但名称相似、房间/厨房等泛称或不同地址的同名地点都不能单独证明同一身份。新地点或同名异地标 new，身份不确定时不绑定旧地点。前楼地点名仅作身份参照，不是本楼引文或当前位置。places 用本次 key=place-mention-N。containments 只写明确物理包含，不能把一般场所归属、所在楼层或相对位置都作父子。其它空间关系写 relations：kind=locatedIn（场所归属，须一个明确参照地点）、onFloor（所在楼层，可没有明确建筑参照但text保原楼层）、relative（尽头/方位/相邻/之间等相对关系）；每条用placeKey、referencePlaceKeys（0–2个本次place key）、text和相同逐字来源。两处之间须保两个不同参照；不把相邻/以北/走廊尽头变成包含，不推绝对坐标或道路。containments 只在正文明确说明一处在另一处内部时填写；引文必须是连续原文并同时覆盖子地点、父地点和明确关系，必要时可用连续上下句；例如“西区公寓内有独立卧室”支持卧室属于公寓，而“卧室里有木床”或“林岚走进公寓”都不证明卧室属于公寓。不得只摘陈设或行走路线，不从相邻或同地推断，也不拼接引文或补出父地点。positions 逐人判断楼末位置并先辨认实际行动者：向某人告别不表示被告别者离开。confirmed=有依据确认楼末在该地，lastSeen=最后见于该地但楼末位置未确认，leftUnknown=该人物明确离开且终点未知；楼末已明确处于离开原房间后的行动中时，不得沿用原房间的 confirmed；正在前往目的地但尚未到达时，不得 confirmed 在目的地。leftUnknown 的 placeKey 若填写只表示离开前的地点，不代表当前位置。只提及、计划、回忆或未离开的人物不标 leftUnknown；无法确定时可用 lastSeen 或省略。例：林向周告别后，林离开并到达新公寓，应记录林到新公寓；周未离开，不记为离开。只隔离无法定位、身份不明或冲突的空间项，保留合法 summary 与旧 locations；缺少空间字段仍兼容旧响应。
+11. 每次依次检查地点身份、明确包含关系、每个人物楼末位置；有据填写，无据用空数组，不能因 summary 或 locations 已写就跳过。每项填 exactQuote、source（canonicalContent 或 precedingUserInput）和 sourceFloorKey。同地不表示人物彼此知情。locations 与 spatialFacts 中需单独追踪的地点默认按房间或有独立意义的区域为粒度；房间内的窗边、沙发旁、桌边等落点通常保留在 summary，不单独建地点或强迫 positions 细化，室外独立区域照常记录；不要把没有依据的房内落点绑定到 knownPlaces。地点身份：优先使用正文、前楼或用户输入中直接出现的完整名称/具体别名；目录中其他有效地点也可作为有限身份参照。knownPlaces 的 parentPlaceKeys/ownershipStatus 是有来源的历史所属提示，未知不代表异地；同地完整名与明确返回可复用，旧泛名不得跨新场地复用。knownPlaces.sourceLocationReference 是该实体曾出现的来源楼原地点标注；一楼可能跨多个场景，标注不等于实体所属或当前位置，归属仍按有据父链判断。完整标注的细节变化、车辆移动或来源楼跨场景本身不证明异地。根据本次正文/USER和这些线索判断同地、异地或未定：有据existing身份正常承接，不要求额外identityBasis；该可选字段仅保兼容，不能绕过已知父级矛盾。只有正文或USER明确纠正/改变同一地点的所属时，才可在该existing地点填写可选identityChange="ownershipChanged"并给出对应逐字引文及新父级；明确撤销旧父而暂无新父时，containments给parentPlaceKey:null，仍须existing身份、ownershipChanged和原句。这表示归属待确认，后楼有据新父可继续补；省略不撤销。换场景、抵达另一同名房间不算归属变更，不填写此字段。先理解本次有原句的 containments/locatedIn 所属，父级可以与子地点同次新建；若原消息地点标注与正文或前置USER冲突，以可定位剧情为准并保未定，不能靠全库唯一同名证明同地。onFloor/relative 不作场地身份父链。knownPlaces 只是最多40项的候选子集，不是完整地点名册；identityAmbiguous=true 表示完整有效目录中名称或别名有多处归属，只有当前场景、明确地址或所属场所等证据足以指向该行时才选其key，单靠同名用uncertain。只有叙事明确承接同一处地点时才复制 knownPlaces 的 sameAsPlaceKey；简称可在上下文明确指向同地时承接旧地点，但名称相似、房间/厨房等泛称或不同地址的同名地点都不能单独证明同一身份。新地点或同名异地标 new，身份不确定时不绑定旧地点。前楼地点名仅作身份参照，不是本楼引文或当前位置。places 用本次 key=place-mention-N。containments 只写明确物理包含；原文明示建筑与具体楼层时，必须登记有据楼层并写建筑→楼层→房间完整链，同一建筑同一层共用节点。只明确在建筑内部时可直接写房间→建筑。onFloor另记楼层，不代替包含父链；缺具体建筑或仅楼上、建筑外/上方/附近不造包含。其它空间关系写 relations：kind=locatedIn（场所归属，须一个明确参照地点）、onFloor（所在楼层，可没有明确建筑参照但text保原楼层）、relative（尽头/方位/相邻/之间等相对关系）；每条用placeKey、referencePlaceKeys（0–2个本次place key）、text和相同逐字来源。两处之间须保两个不同参照；不把相邻/以北/走廊尽头变成包含，不推绝对坐标或道路。containments 只在正文明确说明一处在另一处内部时填写；引文必须是连续原文并同时覆盖子地点、父地点和明确关系，必要时可用连续上下句；例如“西区公寓内有独立卧室”支持卧室属于公寓，而“卧室里有木床”或“林岚走进公寓”都不证明卧室属于公寓。不得只摘陈设或行走路线，不从相邻或同地推断，也不拼接引文或补出父地点。positions 逐人判断楼末位置并先辨认实际行动者：向某人告别不表示被告别者离开。confirmed=有依据确认楼末在该地，lastSeen=最后见于该地但楼末位置未确认，leftUnknown=该人物明确离开且终点未知；楼末已明确处于离开原房间后的行动中时，不得沿用原房间的 confirmed；正在前往目的地但尚未到达时，不得 confirmed 在目的地。leftUnknown 的 placeKey 若填写只表示离开前的地点，不代表当前位置。只提及、计划、回忆或未离开的人物不标 leftUnknown；无法确定时可用 lastSeen 或省略。例：林向周告别后，林离开并到达新公寓，应记录林到新公寓；周未离开，不记为离开。只隔离无法定位、身份不明或冲突的空间项，保留合法 summary 与旧 locations；缺少空间字段仍兼容旧响应。
 
 12. spatialFacts.features 逐条带kind=stable或temporary，单条不混两类。stable记录当前已经存在、影响后续行动的固定功能设施、主要陈设与稳定布局；本轮已经明确的重要固定事实要进入stable，不能因为summary或knowledge已写就跳过，不要求无据补齐家具清单。temporary只记影响后续行动或解释本楼的重要现场条件，如重要在场者或临时通行条件；普通背景灯光、气味、声响仍留summary，不要求逐条另存；稳定物件与这些感官现场拆开，不用temporary替换stable，不把一次现场写成惯常状态。precedingUserInput 可独立证明，即使 AI 未复述也要记录；每条以 placeKey 绑定本次 places 中已确定的具体地点，填 key=feature-N、kind、text、replacesKeys、连续逐字 exactQuote、source、sourceFloorKey。不要从场景常识补设施；明确作者设定可作为当前事实，猜测、计划、假设或倒叙的过去陈设不能写成当前stable，这些内容留在summary/knowledge。当前事实的引用须覆盖该条所有实质子句。knownPlaces.features 只是先前有来源的当前设施参照，sourceAssistantSeq/sourceTime 标明其原来源，不自证本楼新事实；明确仍相同的事实不重复输出。未提及和空列表不清旧；新书桌不替换卫浴。只有当前材料明确纠正、改造或拆除某条旧事实，才在 replacesKeys 逐字复制该地点给出的 known-feature-N；text 写实际新事实或明确否定事实（如某设施已拆除），不得只写“更新/有差异”。聚合中可引用本批更早来源的 feature-N，不能指向自己、将来来源或其它地点；新增且不替换时用 []。同名房间、泛称“我的房间”等须沿明确身份和上文判断，不全局同名合并；设施存在不表示所有人物都知情。
 
 ${PLACE_CURRENT_GUIDANCE}
 
-13. 地点固定事实尽可能完整地首次登记；同一地点已经记录的设施、布局、包含和方位即使后续换句话复述，也不再次输出或累计多楼佐证。knownPlaces.relations 是已有方位，manualCurrentFacts 是人工校准的当前描述/方位（空值也有效），不能用旧记忆或复述反改人工版本。之后只补真正新增的独立事实或正文明确改动；不遗漏未被人工覆盖的新设施。正文明确建筑、楼层与房间归属时，楼层可作为普通中间地点记录明确包含链，不根据房间名推断楼层。
-14. 本轮涉及地点的明确归属（含资料地址/Location/Zone中的区域、街道、场地、建筑、楼层、房间）输出placePaths。path由大到小，只建资料实际给出的上级，不强填国家/城市，不用行政常识补全；Zone等组织标题须结合具体地点的位置，不能把并列地区都当同一父。每段{name,sameAsPlaceKey?,description?,relations?,mapRole?,mapLevel?,mapStyle?,mapLayout?,facilities?}；description/relations只归该段地点，房屋总述不能挂末端储藏室。已有地点复用knownPlaces.entityKey及pathLabel辨身份，补上级不另建旧房间；有据的新室内节点归属已知建筑时，优先写最近已知父节点sameAsPlaceKey到新节点的短path，不必重抄地区链；若给spatial包含边，先在本次places复用该建筑，再引用它的place-mention-N。家具/柜/沙发等设施写所属空间description，不新造独立地点。mapLevel在原资料明确是城市/国家时给city/country；资料明确独立浏览的大场景（独立地域、巨型设施、星球等）可给scope，普通地点省略，不强补国城，不改父链；已有自动分类有据纠正为普通地点时可显式mapLevel:null，省略保原；人工mapLevel含null优先；人工mapRole非空时优先，null表示自动分类。不填经纬度。mapRole仅是可选地图展示提示：区域/街道area，可独立拜访的场地/建筑site，建筑内楼层/房间interior；不明省略，不改身份或父级。每条完整path用evidence:[{source,sourceKey或sourceFloorKey,sourceSnapshotIndex?,exactQuote}]独立引用各处原文，source为canonicalContent、precedingUserInput或worldbook；不把不同片段拼成一条连续引文。引用须覆盖相应父链、描述和方位，保原文字；仅排版空白差异可本地唯一定位回原文。旧单source/exactQuote及顶层description/relations仍兼容为叶地点字段。USER独有地点设置也记录，不要求AI复述；世界书只写稳定地点设定，不生成剧情事件、人物在场或知情。任何来源的path叶与spatialFacts.places是同一地点时，都用placeKey复制本次place-mention-N关联。exactQuote选用必要的连续原句，不自行插入省略号；依据分散时用多条独立evidence引用。不同建筑同名房间分开，走出、相邻、经由只说明通行或相对位置，不作包含，仅“楼上”不猜具体楼层；人工空描述和顶层所属继续优先。只整理本轮场所及必要上下级，不展开无关整书地图。
-15. 每个city/scope的path段可选mapStyle与mapLayout，从payload.mapStyles给出的题材和布局语义选择；只按该范围的有据环境选择，不根据卡名或固定专名推断，不输出素材编号/mapAssetId。省略保原选择。资料表明本丸、和风御殿或日式生活院落群具有独立范围时，用mapLevel:scope、mapStyle:palace、mapLayout:honmaru。刀剑乱舞/刀剣乱舞/Touken Ranbu只作题材参考，仍按本范围实际环境选图；城镇街市与野外战场分别沿城镇、自然地形类型，不把同题材所有地点都用本丸。顶层mapStyle仍兼容聊天默认。path段facilities可选[{icon,label}]，icon写真实Lucide名称，label写该空间已存在设施短名；只根据本轮有效描述，不能从计划、动作或否定推设施。确已筛读且无设施时用[]，不涉及则省略。人工description含空值优先，不借旧文恢复被删设施。不要输出SVG路径，也不为底图或图标另起请求。
+13. 地点固定事实尽可能完整地首次登记；同一地点已经记录的设施、布局、包含和方位即使后续换句话复述，也不再次输出或累计多楼佐证。knownPlaces.relations 是已有方位，manualCurrentFacts 是人工校准的当前描述/方位（空值也有效），不能用旧记忆或复述反改人工版本。之后只补真正新增的独立事实或正文明确改动；不遗漏未被人工覆盖的新设施。正文明确建筑、楼层与房间归属时，楼层必须作为中间地点登记完整包含链，同建筑同楼层复用同一节点，不根据房间名推断楼层。
+14. 本轮涉及地点的明确归属（含资料地址/Location/Zone中的区域、街道、场地、建筑、楼层、房间）输出placePaths。path由大到小，只建资料实际给出的上级，不强填国家/城市，不用行政常识补全；Zone等组织标题须结合具体地点的位置，不能把并列地区都当同一父。每段{name,sameAsPlaceKey?,description?,relations?,mapRole?,mapLevel?,mapStyle?,mapLayout?,facilities?}；description/relations只归该段地点，房屋总述不能挂末端储藏室。已有地点复用knownPlaces.entityKey及pathLabel辨身份，补上级不另建旧房间；同一父级在本次places中只用一个key，多个新path共享完整上级前缀，不把同一父级分别标new；有据的新室内节点归属已知建筑时，优先写最近已知父节点sameAsPlaceKey到新节点的短path，不必重抄地区链；若给spatial包含边，先在本次places复用该建筑，再引用它的place-mention-N。家具/柜/沙发等设施写所属空间description，不新造独立地点。mapLevel在原资料明确是城市/国家时给city/country；资料明确独立浏览的大场景（独立地域、巨型设施、星球等）可给scope，普通地点省略，不强补国城，不改父链。结合叙事重心和空间组织，判断地点是否需要独立浏览；普通地点随父级地图展示。已有自动分类有据纠正为普通地点时可显式mapLevel:null，省略保原；人工mapLevel含null优先；人工mapRole非空时优先，null表示自动分类。不填经纬度。mapRole仅是可选地图展示提示：区域/街道area，可独立拜访的场地/建筑site，建筑内楼层/房间interior；不明省略，不改身份或父级。每条完整path用evidence:[{source,sourceKey或sourceFloorKey,sourceSnapshotIndex?,exactQuote}]独立引用各处原文，source为canonicalContent、precedingUserInput或worldbook；不把不同片段拼成一条连续引文。引用须覆盖相应父链、描述和方位，保原文字；仅排版空白差异可本地唯一定位回原文。旧单source/exactQuote及顶层description/relations仍兼容为叶地点字段。USER独有地点设置也记录，不要求AI复述；世界书只写稳定地点设定，不生成剧情事件、人物在场或知情。path明确撤销已有叶节点旧父时，仅单节点path同时给identityChange:ownershipChanged和parentPlaceKey:null；普通单节点或省略保旧。任何来源的path叶与spatialFacts.places是同一地点时，都用placeKey复制本次place-mention-N关联。exactQuote选用必要的连续原句，不自行插入省略号；依据分散时用多条独立evidence引用。不同建筑同名房间分开，走出、相邻、经由只说明通行或相对位置，不作包含，仅“楼上”不猜具体楼层；人工空描述和顶层所属继续优先。只整理本轮场所及必要上下级，不展开无关整书地图。
+15. 每个city/scope的path段可选mapStyle与mapLayout，从payload.mapStyles给出的题材和布局语义选择；只按该范围的有据环境选择，不根据卡名或固定专名推断，不输出素材编号/mapAssetId。省略保原选择。资料表明本丸、和风御殿或日式生活院落群具有独立范围时，用mapLevel:scope、mapStyle:palace、mapLayout:honmaru。刀剑乱舞/刀剣乱舞/Touken Ranbu只作题材参考，仍按本范围实际环境选图；城镇街市与野外战场分别沿城镇、自然地形类型，不把同题材所有地点都用本丸。已有独立范围的校园按实际空间选campus及compact/garden/university：紧凑教学与运动场用compact，楼群庭园生活区用garden，多院系宿舍路网用university；高中和小大学可共用前两者，普通学校缺布局信息用compact，私立身份不决定园林或豪华。顶层mapStyle仍兼容聊天默认。path段facilities可选[{icon,label}]，icon写真实Lucide名称，label写该空间已存在设施短名；只根据本轮有效描述，不能从计划、动作或否定推设施。确已筛读且无设施时用[]，不涉及则省略。人工description含空值优先，不借旧文恢复被删设施。不要输出SVG路径，也不为底图或图标另起请求。
 
 ${QIANSHI_OUTPUT_CAPACITY_GUIDANCE}
 
@@ -548,6 +550,7 @@ export async function createExtractorEnvelope({ batchId, chatId, narrativeGenera
     placeIdentityLabels: placeIdentityLabels(directory),
     placeWorldbookSources,
     parentEntityIdsByPlaceId: previousFloorContext?.parentEntityIdsByPlaceId ?? new Map(),
+    placeParentFactBindings:previousFloorContext?.placeParentFactBindings??[],
     placeSourceLocationReferencesById: previousFloorContext?.placeSourceLocationReferencesById ?? new Map(),
     identityProjection: normalizedIdentityProjection,
     floorOrder,
@@ -890,13 +893,17 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
       };
       for (const [index, item] of readSpatialArray('containments').entries()) {
         try {
-          validateItemSchema(item, { type: 'object', required: ['placeMentionKey', 'parentMentionKey', 'evidence'], properties: { placeMentionKey: MENTION_KEY, parentMentionKey: MENTION_KEY, evidence: evidenceArray }, additionalProperties: false }, `spatialFacts.containments[${index}]`);
+          validateItemSchema(item, { type: 'object', required: ['placeMentionKey', 'parentMentionKey', 'evidence'], properties: { placeMentionKey: MENTION_KEY, parentMentionKey: NULLABLE_MENTION_KEY, identityChange:{type:'string',enum:['ownershipChanged']}, evidence: evidenceArray }, additionalProperties: false }, `spatialFacts.containments[${index}]`);
           const placeEntityId = placePointer(item.placeMentionKey, `spatialFacts.containments[${index}].placeMentionKey`);
-          const parentEntityId = placePointer(item.parentMentionKey, `spatialFacts.containments[${index}].parentMentionKey`);
+          const revision=item.identityChange==='ownershipChanged';
+          const parentEntityId = item.parentMentionKey===null&&revision?null:placePointer(item.parentMentionKey, `spatialFacts.containments[${index}].parentMentionKey`);
+          if(revision&&!(envelope.scope.placeCatalogBindings??[]).some(binding=>binding.entityId===placeEntityId))throw extractorError('V3_EXTRACTOR_SPATIAL_PLACE_POINTER_INVALID', `spatialFacts.containments[${index}]`);
           if (placeEntityId === parentEntityId) throw extractorError('V3_EXTRACTOR_SPATIAL_CYCLE', `spatialFacts.containments[${index}]`);
           const evidenceRefs = evidence(item.evidence, `spatialFacts.containments[${index}].evidence`, { required: true, issueField: 'spatialFacts.containments', ownerIndex: index });
           if (!evidenceRefs.length || evidenceRefs.some(ref => ref.evidenceMode === 'privateCognition')) throw extractorError('V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.containments[${index}].evidence`);
-          facts.containments.push({ itemId: await itemId('spatialFacts.containments', item), placeEntityId, parentEntityId, evidenceRefs });
+          const id=await itemId('spatialFacts.containments',item);
+          const prior=(envelope.scope.placeParentFactBindings??[]).filter(fact=>fact.placeEntityId===placeEntityId);
+          facts.containments.push({itemId:id,placeEntityId,parentEntityId,evidenceRefs,...(revision?{identityChange:'ownershipChanged',replacesItemIds:[...new Set(prior.flatMap(fact=>[fact.itemId,...(fact.replacesItemIds??[])]))].filter(value=>value!==id)}:{})});
         } catch (error) { isolate('spatialFacts.containments', index, error, `spatialFacts.containments[${index}]`); }
       }
       const edgesByFloor = new Map();
@@ -1385,7 +1392,8 @@ function semanticPacket(value, { finishReason } = {}) {
   }
 }
 
-function semanticSource(item, quote, floor, envelope, allowPlaceOmission = false) {
+function semanticSource(item, quote, floor, envelope, allowPlaceOmission = false, diagnostic = null) {
+  const unresolved = reason => { if (diagnostic) diagnostic.reason = reason; return null; };
   const bindings = envelope?.scope?.sourceFloorBindings ?? [{ floorKey: 'floor-1', floorId: floor.id, canonicalContent: floor.content.canonicalContent, sourceUserInputSnapshot: envelope?.scope?.sourceUserInputSnapshot ?? null }];
   const sources = bindings.flatMap(binding => [
     { floorKey: binding.floorKey, floorId: binding.floorId, sourceType: 'assistant', sourceSnapshotIndex: null, content: binding.canonicalContent },
@@ -1398,18 +1406,20 @@ function semanticSource(item, quote, floor, envelope, allowPlaceOmission = false
       : null;
   const floorKey = semanticText(field(item, ['sourceFloorKey', 'floorKey', '来源楼']), [], 80);
   const snapshotIndex=field(item,['sourceSnapshotIndex']);
+  if (floorKey && !sources.some(source => source.floorKey === floorKey)) return unresolved('unknownSourceFloorKey');
   const candidates=sources.filter(source => (!floorKey || source.floorKey === floorKey) && (!hintedType || source.sourceType === hintedType) && (!Number.isSafeInteger(snapshotIndex)||source.sourceSnapshotIndex===snapshotIndex));
   const matches=candidates.filter(source=>source.content.includes(quote));
-  if(matches.length)return matches.length===1?matches[0]:null;
-  if(!allowPlaceOmission||!floorKey||!hintedType)return null;
+  if(matches.length)return matches.length===1?matches[0]:unresolved('ambiguousSourceQuote');
+  if(!allowPlaceOmission||!floorKey||!hintedType)return unresolved('sourceQuoteUnlocated');
   const recovered=candidates.flatMap(source=>{const segments=locatePlaceQuote(source.content,quote,{allowOmission:true});return segments?[{...source,quoteSegments:segments.map(segment=>segment.quote)}]:[];});
-  return recovered.length===1?recovered[0]:null;
+  return recovered.length===1?recovered[0]:unresolved(recovered.length>1?'ambiguousSourceQuote':'sourceQuoteUnlocated');
 }
 
-function semanticEvidence(item, floor, envelope, allowPlaceOmission = false) {
-  if (Array.isArray(item?._placePathEvidence)) return item._placePathEvidence.flatMap(ref => semanticEvidence(ref, floor, envelope, allowPlaceOmission));
+function semanticEvidence(item, floor, envelope, allowPlaceOmission = false, diagnostic = null) {
+  if (Array.isArray(item?._placePathEvidence)) return item._placePathEvidence.flatMap(ref => semanticEvidence(ref, floor, envelope, allowPlaceOmission, diagnostic));
   const quote = literalText(item, ['exactQuote', 'quote', 'sourceText', 'originalText', '原句', '引文'], 2000);
-  const source = quote ? semanticSource(item, quote, floor, envelope, allowPlaceOmission) : null;
+  if (!quote && diagnostic) diagnostic.reason = 'exactQuoteMissing';
+  const source = quote ? semanticSource(item, quote, floor, envelope, allowPlaceOmission, diagnostic) : null;
   if (!source) return [];
   return [{ quoteSegments: source.quoteSegments ?? [quote], supports: '本地定位的语义条目', evidenceMode: 'explicit', sourceMentionKey: null, sourceFloorKey: source.floorKey, sourceType: source.sourceType, ...(source.sourceType === 'precedingUser' ? { sourceSnapshotIndex: source.sourceSnapshotIndex } : {}) }];
 }
@@ -1455,8 +1465,8 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
   const pathResult = await expandPlacePaths({ packet, envelope, existingEntities, now });
   packet = pathResult.packet; envelope = pathResult.envelope; existingEntities = pathResult.entities;
   const isolated = [...pathResult.isolated];
-  const issue = (fieldName, index, code, path = fieldName) => {
-    if (isolated.length < 80) isolated.push({ field: fieldName, index, code, path });
+  const issue = (fieldName, index, code, path = fieldName, reason = null) => {
+    if (isolated.length < 80) isolated.push({ field: fieldName, index, code, path, ...(reason ? { reason } : {}) });
   };
   const identity = safeIdentity(envelope?.scope?.userIdentity);
   const userAliases = new Set(identity.aliases.map(identityLabelKey));
@@ -1627,11 +1637,14 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     if (value.length > SPATIAL_FACT_LIMIT) issue(`spatialFacts.${key}`, SPATIAL_FACT_LIMIT, 'V3_EXTRACTOR_ARRAY_TRUNCATED', `spatialFacts.${key}`);
     return value.slice(0, SPATIAL_FACT_LIMIT);
   };
+  const spatialEvidenceReasons = new Map();
   const spatialEvidence = item => {
-    const sourceFloorKey = semanticText(item, ['sourceFloorKey'], 80);
-    if (!sourceFloorKey) return [];
-    return semanticEvidence(item,floor,envelope,true);
+    const diagnostic = {}, evidence = semanticEvidence(item, floor, envelope, true, diagnostic);
+    spatialEvidenceReasons.set(item, diagnostic.reason);
+    return evidence;
   };
+  const spatialFailureReason = (item, placeKey, fallback) => !placeKey ? 'placeKeyMissing'
+    : !spatialPlaces.has(placeKey) ? 'unknownPlaceKey' : spatialEvidenceReasons.get(item) ?? fallback;
   for (const [index, item] of spatialArray('places').entries()) {
     const key = semanticText(item, ['key', 'placeKey'], 80), name = semanticText(item, ['name', 'displayName', '地点'], 500);
     const aliases = [...new Set(list(field(item, ['aliases', '别名'])).map(value => semanticText(value, [], 500)).filter(Boolean))];
@@ -1648,7 +1661,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     if (identityChange !== undefined && (identityChange !== 'ownershipChanged' || identityMode !== 'existing' || !sameAsPlaceKey)) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_PLACE_IDENTITY_UNRESOLVED', 'spatialFacts.places.identityChange'); continue; }
     if (identityBasis !== undefined && (identityBasis !== 'explicitSamePlace' || identityMode !== 'existing' || !sameAsPlaceKey)) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_PLACE_IDENTITY_UNRESOLVED', 'spatialFacts.places.identityBasis'); continue; }
     const evidenceRefs = spatialEvidence(item);
-    if (!evidenceRefs.length) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.places[${index}]`); continue; }
+    if (!evidenceRefs.length) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.places[${index}]`, spatialEvidenceReasons.get(item)); continue; }
     let identity = identityMode, entityKey = null;
     if (identity === 'existing') {
       if (sameAsPlaceKey) {
@@ -1674,7 +1687,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
   // Local parents can themselves be new in this response. Resolve their identity tokens first.
   const localParents = new Map();
   const addParent = (child, parent, item) => {
-    if (!spatialPlaces.has(child) || !spatialPlaces.has(parent) || child === parent || !spatialEvidence(item).length) return;
+    if (!spatialPlaces.has(child) || !(spatialPlaces.has(parent)||parent===null&&spatialPlaces.get(child).identityChange==='ownershipChanged') || child === parent || !spatialEvidence(item).length) return;
     const parents = localParents.get(child) ?? new Set(); parents.add(parent); localParents.set(child, parents);
   };
   for (const item of spatialArray('containments')) addParent(field(item, ['placeKey']), field(item, ['parentPlaceKey']), item);
@@ -1697,7 +1710,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     const parentKey = parents?.size === 1 ? [...parents][0] : null;
     if (parentKey && !check(parentKey)) invalidPlaces.add(key);
     const parent = parentKey && spatialPlaces.get(parentKey);
-    if (mention.identityChange && (!binding || !parent)) invalidPlaces.add(key);
+    if (mention.identityChange && (!binding || !parent&&!(parents?.size===1&&parents.has(null)))) invalidPlaces.add(key);
     if (binding && parent && mention.identityChange !== 'ownershipChanged') {
       const known = oldParents.get(binding.entityId);
       const parentBinding = bindingByKey.get(parent.entityKey);
@@ -1723,12 +1736,12 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
   }
   const normalizedSpatialFacts = { schemaVersion: 1, places: [...spatialPlaces.keys()].map(placeMentionKey => ({ placeMentionKey })), containments: [], positions: [] };
   for (const [index, item] of spatialArray('containments').entries()) {
-    const placeMentionKey = semanticText(item, ['placeKey'], 80), parentMentionKey = semanticText(item, ['parentPlaceKey'], 80);
-    const evidenceRefs = spatialEvidence(item);
-    if (!spatialPlaces.has(placeMentionKey) || !spatialPlaces.has(parentMentionKey) || placeMentionKey === parentMentionKey || !evidenceRefs.length) {
-      issue('spatialFacts.containments', index, 'V3_EXTRACTOR_SPATIAL_FACT_INVALID', `spatialFacts.containments[${index}]`); continue;
+    const placeMentionKey = semanticText(item, ['placeKey'], 80), parentMentionKey = item?.parentPlaceKey===null?null:semanticText(item, ['parentPlaceKey'], 80);
+    const evidenceRefs = spatialEvidence(item),revision=spatialPlaces.get(placeMentionKey)?.identityChange==='ownershipChanged';
+    if (!spatialPlaces.has(placeMentionKey) || !(spatialPlaces.has(parentMentionKey)||parentMentionKey===null&&revision) || placeMentionKey === parentMentionKey || !evidenceRefs.length) {
+      issue('spatialFacts.containments', index, 'V3_EXTRACTOR_SPATIAL_FACT_INVALID', `spatialFacts.containments[${index}]`, !parentMentionKey ? 'parentPlaceKeyMissing' : !spatialPlaces.has(parentMentionKey) ? 'unknownParentPlaceKey' : placeMentionKey === parentMentionKey ? 'selfParent' : spatialFailureReason(item, placeMentionKey, 'invalidContainmentFields')); continue;
     }
-    normalizedSpatialFacts.containments.push({ placeMentionKey, parentMentionKey, evidence: evidenceRefs });
+    normalizedSpatialFacts.containments.push({placeMentionKey,parentMentionKey,evidence:evidenceRefs,...(revision?{identityChange:'ownershipChanged'}:{})});
   }
   for (const [index, item] of spatialArray('positions').entries()) {
     const subjectMentionKey = mentionFor(field(item, ['subject', 'person', 'name', '人物']));
@@ -1737,7 +1750,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     const evidenceRefs = spatialEvidence(item), status = semanticText(item, ['status'], 40);
     if (!subject || !['person', 'group'].includes(subject.entityType) || (placeMentionKey && !spatialPlaces.has(placeMentionKey))
       || !['confirmed', 'lastSeen', 'leftUnknown'].includes(status) || (status !== 'leftUnknown' && !placeMentionKey) || !evidenceRefs.length) {
-      issue('spatialFacts.positions', index, 'V3_EXTRACTOR_SPATIAL_POSITION_INVALID', `spatialFacts.positions[${index}]`); continue;
+      issue('spatialFacts.positions', index, 'V3_EXTRACTOR_SPATIAL_POSITION_INVALID', `spatialFacts.positions[${index}]`, !subject ? 'subjectUnmatched' : spatialFailureReason(item, placeMentionKey, 'invalidPositionFields')); continue;
     }
     normalizedSpatialFacts.positions.push({ subjectMentionKey, placeMentionKey, status, evidence: evidenceRefs });
   }
@@ -1748,7 +1761,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     if (!spatialPlaces.has(placeMentionKey) || !['locatedIn', 'onFloor', 'relative'].includes(kind) || !Array.isArray(referenceMentionKeys)
       || referenceMentionKeys.length > 2 || new Set(referenceMentionKeys).size !== referenceMentionKeys.length || referenceMentionKeys.some(key => !spatialPlaces.has(key) || key === placeMentionKey)
       || kind === 'locatedIn' && referenceMentionKeys.length !== 1 || kind === 'onFloor' && referenceMentionKeys.length > 1 || !text || !evidenceRefs.length) {
-      issue('spatialFacts.relations', index, 'V3_EXTRACTOR_SPATIAL_RELATION_INVALID', `spatialFacts.relations[${index}]`); continue;
+      issue('spatialFacts.relations', index, 'V3_EXTRACTOR_SPATIAL_RELATION_INVALID', `spatialFacts.relations[${index}]`, spatialFailureReason(item, placeMentionKey, 'invalidRelationFields')); continue;
     }
     relations.push({ kind, placeMentionKey, referenceMentionKeys, text, evidence: evidenceRefs });
   }
@@ -1759,7 +1772,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     const text = semanticText(item, ['text'], 1000), evidenceRefs = spatialEvidence(item);
     const replacesKeys = field(item, ['replacesKeys']);
     if (!spatialPlaces.has(placeMentionKey) || !/^feature-[1-9]\d*$/u.test(key) || !text || !evidenceRefs.length || !Array.isArray(replacesKeys) || replacesKeys.length > 40 || replacesKeys.some(key => typeof key !== 'string')) {
-      issue('spatialFacts.features', index, 'V3_EXTRACTOR_SPATIAL_FEATURE_INVALID', `spatialFacts.features[${index}]`); continue;
+      issue('spatialFacts.features', index, 'V3_EXTRACTOR_SPATIAL_FEATURE_INVALID', `spatialFacts.features[${index}]`, spatialFailureReason(item, placeMentionKey, 'invalidFeatureFields')); continue;
     }
     const rawKind = field(item, ['kind']);
     if (rawKind !== undefined && !['stable', 'temporary'].includes(rawKind)) {

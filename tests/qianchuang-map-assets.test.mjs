@@ -3,6 +3,7 @@ import {QIANCHUANG_MAP_ASSETS,qianchuangMapCandidates,selectQianchuangMapAsset}f
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {createGenericMapLoader} from '../src/ui/qianchuang-map-loader.js';
+import {QIANCHUANG_MAP_STYLES,normalizeQianchuangMapLayout,normalizeQianchuangMapStyle,validQianchuangMapLayout} from '../src/qianchuang-display-hints.js';
 test('本地SVG根可直接插入HTML并保SVG命名空间',()=>{
  for(const asset of Object.values(QIANCHUANG_MAP_ASSETS)){
   const svg=readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url),'utf8');
@@ -10,7 +11,7 @@ test('本地SVG根可直接插入HTML并保SVG命名空间',()=>{
  }
 });
 test('现成源素材可用，既有兼容ID优先，未采用手绘草稿',()=>{
- assert.equal(Object.keys(QIANCHUANG_MAP_ASSETS).length,21);assert.equal(qianchuangMapCandidates('terrain').length,6);
+ assert.equal(Object.keys(QIANCHUANG_MAP_ASSETS).length,24);assert.equal(qianchuangMapCandidates('terrain').length,6);
  const first=selectQianchuangMapAsset({entityId:'arbitrary-a',style:'modern'});
  assert.equal(selectQianchuangMapAsset({entityId:'renamed-or-reordered',style:'modern',previousAssetId:first}),first);assert.equal(selectQianchuangMapAsset({entityId:'arbitrary-a',style:'terrain',layout:'snow',previousAssetId:first}),'terrain-snow');assert.ok(qianchuangMapCandidates('town').every(asset=>asset.family==='old-town'));
 });
@@ -59,4 +60,28 @@ test('本丸专用语义布局唯一命中，普通宫苑不随机混入，省�
  assert.equal(selectQianchuangMapAsset({entityId:'scope',style:'palace',layout:'honmaru'}),id);assert.equal(selectQianchuangMapAsset({entityId:'renamed',style:'palace',previousAssetId:id}),id);
  const asset=QIANCHUANG_MAP_ASSETS[id];assert.equal(asset.anchors.all.length,31);assert.deepEqual(asset.anchors.layouts[5].map(a=>a.length),[9,5,5,5,7]);
  assert.equal(createHash('sha256').update(readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url))).digest('hex'),'3497ac3f4aeef2390debf762607595cf03c16ed84f6391738d509c3ebf35da61');
+});
+
+test('校园三布局按实际空间选图且保已验SVG字节与旧图候选',()=>{
+ const expected={compact:'9df73cb508142b44c7a4b707a705340f56e51eb952f9a2ac568fb29313a1269d',garden:'1822119617df62f4d3bb282ecec7762548d16f7e13f4e0e9e139d44a36744dd9',university:'39f454986fb30ba515e0ad1a617761e95b986ee46fd8b0ae758f80f0b3cbe2e0'};
+ for(const[layout,sha]of Object.entries(expected)){
+  const id='campus-'+layout,asset=QIANCHUANG_MAP_ASSETS[id];assert.ok(asset,id);
+  assert.deepEqual(qianchuangMapCandidates('campus',layout).map(a=>a.id),[id]);
+  assert.equal(selectQianchuangMapAsset({entityId:'independent-campus',style:'campus',layout}),id);
+  assert.equal(asset.width,1000);assert.equal(asset.height,1000);assert.equal(asset.sha256,sha);
+  assert.equal(createHash('sha256').update(readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url))).digest('hex'),sha);
+ }
+ assert.equal(qianchuangMapCandidates('modern').length,3);assert.equal(qianchuangMapCandidates('modern-town').length,3);
+ assert.deepEqual(qianchuangMapCandidates('campus').map(a=>a.id),['campus-compact']);
+ assert.deepEqual(qianchuangMapCandidates('campus','unknown').map(a=>a.id),['campus-compact']);
+ assert.equal(selectQianchuangMapAsset({entityId:'school-name-is-not-a-router',style:'modern',previousAssetId:'modern-inland'}),'modern-inland');
+});
+
+test('校园布局仅在mapLayout内归一明确中英文，不按普通学校或私立身份猜版式',()=>{
+ const style=QIANCHUANG_MAP_STYLES.find(row=>row.id==='campus');assert.deepEqual(style.layouts,['compact','garden','university']);
+ for(const[layout,values]of Object.entries({compact:['compact',' Compact ','紧凑校园','紧凑校区'],garden:['garden',' GARDEN ','园林校园','园区型校区'],university:['university',' University ','综合大学','综合大学校园']}))for(const value of values){assert.equal(normalizeQianchuangMapLayout(value,'campus'),layout,value);}
+ for(const value of ['学校','高中','私立学校','公立学校'])assert.equal(normalizeQianchuangMapLayout(value,'campus'),undefined,value);
+ assert.equal(normalizeQianchuangMapLayout('综合大学','modern'),undefined);assert.equal(validQianchuangMapLayout('紧凑校园','campus'),false);
+ for(const value of ['campus',' Campus ','校园','校区','学校','school',' SCHOOL '])assert.equal(normalizeQianchuangMapStyle(value),'campus');
+ for(const value of ['高中','私立学校'])assert.equal(normalizeQianchuangMapStyle(value),undefined);
 });

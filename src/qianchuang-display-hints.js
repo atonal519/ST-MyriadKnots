@@ -7,16 +7,23 @@ export const QIANCHUANG_MAP_STYLES = Object.freeze([
  {id:'old-town',label:'古风城镇',tags:['西幻','江湖','古风','架空城镇'],layouts:['inland','river','mountain','coast'],layoutLabels:{inland:'内陆城镇、平原田镇',river:'河谷聚落、桥与田野',mountain:'山地城镇',coast:'河口港镇、码头街巷'}},
  {id:'terrain',label:'自然地形（西幻、江湖、现代郊野或类地星球）',tags:['西幻','江湖','郊野','地表','类地星球'],layouts:['mountain','forest','forest-river','coast','snow','grassland','desert'],layoutLabels:{mountain:'山谷河流、等高线',forest:'森林山地','forest-river':'林地河谷',coast:'海岸原野、湾岸',snow:'北地湖群、山地',grassland:'平原郊野',desert:'荒漠沟壑'}},
  {id:'palace',label:'宫苑',tags:['宫廷','宫苑'],layouts:['axial','courtyard','honmaru'],layoutLabels:{axial:'中轴宫苑',courtyard:'院落宫苑、园林庄园',honmaru:'本丸、和风御殿、日式生活院落群；刀剑乱舞/刀剣乱舞/Touken Ranbu仅作题材参考，按本范围实际环境选择'}},
+ {id:'campus',label:'校园（按实际空间布局）',tags:['校园','学校','高中','学院','大学'],layouts:['compact','garden','university'],layoutLabels:{compact:'教学楼与运动场相邻的紧凑校园，高中或小学院',garden:'楼群、庭园与生活区组成的园林校园，高中或小大学；私立不等于园林或豪华',university:'多院系、宿舍与校内路网组成的综合大学校区；普通学校不默认此项'}},
  {id:'sci-fi',label:'科幻设施、星舰或基地内部',tags:['科幻','舰内','设施内部'],layouts:['linear','ring'],layoutLabels:{linear:'甲板通道、生活舱',ring:'环状设施、联通舱区'}},
  {id:'alien',label:'特殊异星地表',tags:['科幻','异星','地表'],layouts:['rocky','organic'],layoutLabels:{rocky:'岩质山地、荒漠',organic:'生态地表、森林海岸'}},
 ]);
 export const validQianchuangMapStyle = value => value==='town'||QIANCHUANG_MAP_STYLES.some(style=>style.id===value);
+export function normalizeQianchuangMapStyle(value){
+ if(validQianchuangMapStyle(value))return value;
+ return typeof value==='string'&&['campus','校园','校区','学校','school'].includes(value.trim().toLowerCase())?'campus':undefined;
+}
 export const validQianchuangMapLayout = (value,style=null) => QIANCHUANG_MAP_STYLES.some(row=>(!style||row.id===(style==='town'?'old-town':style))&&row.layouts.includes(value));
 export function normalizeQianchuangMapLayout(value,style=null){
  if(validQianchuangMapLayout(value,style))return value;
  if(typeof value!=='string')return undefined;
  const text=value.trim(),honmaru=text.toLowerCase()==='honmaru'||['本丸','和风院落','和风御殿','日式院落群'].includes(text);
- return honmaru&&validQianchuangMapLayout('honmaru',style)?'honmaru':undefined;
+ if(honmaru&&validQianchuangMapLayout('honmaru',style))return 'honmaru';
+ const campus={compact:['compact','紧凑校园','紧凑校区'],garden:['garden','园林校园','园林校区','园区型校区'],university:['university','综合大学','综合大学校园']};
+ return Object.entries(campus).find(([layout,aliases])=>validQianchuangMapLayout(layout,style)&&aliases.includes(text.toLowerCase()))?.[0];
 }
 const iconNames=new Set(qianchuangIconNames);
 export function normalizePlaceFacilities(value){

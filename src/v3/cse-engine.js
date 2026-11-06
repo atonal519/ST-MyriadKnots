@@ -12,8 +12,8 @@ import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-44';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-20';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-46';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-21';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
@@ -24,13 +24,13 @@ export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解�
 
 export const CSE_FIXED_CONTRACT = `【固定事实与隐私边界】
 trackedSubjects 中每个人都获得同等检查机会，按本楼证据分别检查各人的目标、顾虑、承诺、自身状态及对不同对象的有向关系，不以用户、角色卡主角或历史出场频次决定先后。检查机会不表示人物在场、知情或存在可推断的内心；没有新依据时可不输出该人的更新，不要求人物或关系填满。
-正文 canonicalContent 是本楼事实的最高来源；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时以正文为准。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
+正文 canonicalContent 与对应 currentUserInput 共同提供本楼剧情事实，按发生顺序与明确修订判断；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时按本次AI与USER原文的发生顺序和明确修订判断。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
 
 auxiliaryStateSnapshot 若存在，是目标楼当前分支当时已保存的只读变量快照，只用于辅助理解状态。它可能同时包含多个人物、不完整或过时信息，不能整体归给某一人物，也不能当作用户手动 Core 纠正或可引用的权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
 
 relevantPriorContext 若存在，是用户导入的过去经历资料，仅用于理解人物过去经历和关系背景。它不是本楼证据，不能写入 evidence，也不能仅凭它新增或改写当前 Core/Adaptive，或把过去的短期情绪、伤势、位置照抄成本楼结束状态。当前 canonicalContent、已保存本楼摘要与 previousState 中的明确进展优先；其中的私密信息仍是作者侧资料，不自动变成任何角色已知。
 
-subjectRelevantEvidence 按 tracked subject 汇集角色相关条目；每项只给 floorMemory 同名数组中从 0 开始的 index 和 relationToSubject，请按 index 读取 floorMemory 中的完整条目。这个索引只用于定位结构化背景，不是可填入 evidence.source 的来源标识。relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
+subjectRelevantEvidence 按 tracked subject 汇集角色相关条目；每项只给 floorMemory 同名数组中从 0 开始的 index 和 relationToSubject，请按 index 读取 floorMemory 中的完整条目。这个索引只用于定位结构化背景，不是可填入 evidence.source 的来源标识。relationToSubject 只说明该人物在既有 FloorMemory 条目里的结构角色，不是“此人已知证据”。participant 的 mentioned/privateCognitionOnly 不表示本人在场；行动 target 不表示本人知情，completion 为 intended/attempted/interrupted/uncertain 时尤其不能写成已完成；信息发送者只证明其说出或发出了相应内容，不证明消息内容客观为真，只有正文或实际送达证据才能支持接收者知情；承诺或指令的 target 不自动表示收到、同意或执行，plan 也不能写成已执行；单方邀请、要求或安排只记提出者的意向，接受方须有实际回应才能写成已答应；made 表示提出者已作出，accepted 才表示已接受，不能把前者改成双方同意；cseSignal 的 object 只表示相关对象。远程行为与通信要按正文中的行为主体、对象、消息来源、接收者、渠道和完成状态分别理解，待转告不等于已经转告。不得把正文明确写出的人物认知反写为不知；人物被提及、被计划涉及或从叙述中推断出相关性，也不等于本人在场、参与或知情。
 
 previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态，不代表其他人物已经知道这些状态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。为精简请求，Core/Adaptive 前态不重复传输旧 reason；这不表示原状态没有依据，旧状态仍不是本楼新 evidence。Situational 前态保留原 reason，因为完整情境列表需要用它核对是否发生变化。
 
@@ -350,7 +350,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
     : null;
   const userAdaptiveSources = userAdaptiveReview ? userAdaptiveHistory.map(entry => ({
     source: `userAdaptiveHistory:${entry.floorId}`, kind: 'userAdaptiveHistory',
-    subjectEntityId: baseline.userPersona.entityId, contents: [entry.content],
+    subjectEntityId: baseline.userPersona.entityId, contents: [entry.content, ...(entry.precedingUserInput?.messages ?? []).map(message => message.content)],
   })) : [];
   evidenceSources.push(...userAdaptiveSources);
   const relationHistorySources = relationHistory.map(entry => ({ source: entry.source, kind: 'relationHistory',
@@ -390,6 +390,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       ...(userAdaptiveReview ? { userAdaptiveHistory: userAdaptiveHistory.map(entry => ({
         source: `userAdaptiveHistory:${entry.floorId}`, floorId: entry.floorId,
         assistantSeq: entry.assistantSeq, content: entry.content,
+        ...(entry.precedingUserInput ? { precedingUserInput: entry.precedingUserInput } : {}),
       })) } : {}),
       ...(relationHistory.length ? { relationHistory: relationHistory.map(({ pairEntityIds, ...entry }) => entry) } : {}),
       ...(briefTargets.length ? { identityBriefTargets: briefTargets.map(({ key, name, aliases, identityBrief, identityBriefSource }) => ({ key, name, aliases,

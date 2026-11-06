@@ -136,6 +136,14 @@ const baseline = { id: '88888888-1111-4111-8111-111111111111', userPersona: { en
 const memory = id => ({ id, summary: { effectiveSource: 'ai', aiText: '摘要' }, chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] });
 const floor = (id, content) => ({ id, chatId: CHAT, narrativeGeneration: GEN, content: { canonicalContent: content } });
 
+test('单方明晚邀约在同次CSE材料中保提出者和made，提示不代替接受方答应',()=>{
+  const target=memory(MEMORY1);target.commitments=[{speakerEntityId:A,targetEntityIds:[USER],kind:'plan',content:'明晚一起做饭',status:'made'}];
+  const envelope=createCseEnvelope({floor:floor(FLOOR1,'甲说明晚一起做饭，林岚还没有回应。'),floorMemory:target,baseline,currentState:null,trackedSubjects:entities.slice(0,2),entities});
+  assert.deepEqual(envelope.request.payload.floorMemory.commitments,[{speaker:'甲',targets:['林岚'],kind:'plan',content:'明晚一起做饭',status:'made'}]);
+  assert.match(CSE_SYSTEM_PROMPT,/单方邀请.*接受方.*实际回应/u);
+  assert.match(CSE_SYSTEM_PROMPT,/made.*accepted/u);
+});
+
 test('正常结束别名：CSE共用解析在end_turn后保留台词原文且仅请求一次', async () => {
   const quote = '他说"忍一忍"';
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, quote + '，继续观察。'), floorMemory: memory(MEMORY1), baseline,
@@ -2080,8 +2088,8 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-44');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-20');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-46');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-21');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
   assert.match(CSE_SYSTEM_PROMPT, /旧裸identityBrief只作身份对照，不是证据/);
@@ -4571,4 +4579,26 @@ test('CSE业务格式重做沿连接零次及四次重试，共享真实HTTP预�
     const result = await runCseRequest({ generateAnalysisTask: router.generateAnalysisTask, envelope, previousCurrentState: null, now: NOW, deltaId: '26252525-2525-4252-8252-252525252525' });
     assert.equal(calls, retryCount + 1); assert.equal(result.transportAttempts, calls); assert.equal(result.delta.noMaterialChange, true);
   }
+});
+
+test('USER Adaptive历史带对应保存USER，并同步可引用证据且合计受原预算约束', async () => {
+  const savedUser = '我把备用钥匙交给裴晚生，他当场接收。';
+  const historical = { ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active', sourceFloorIds: [FLOOR1],
+    sourceCanonicalContent: '两人走向门厅。', sourceUserInputSnapshot: { messages: [{ content: savedUser, messageIndex: 0, swipeId: null, selectedSwipeIndex: null }] },
+    actions: [{ actorEntityId: USER }] };
+  const history = selectUserAdaptiveHistory({ floors: [floor(FLOOR1), floor(FLOOR2)], floorMemories: [historical], targetIndex: 1, userEntityId: USER });
+  assert.equal(history[0].precedingUserInput.messages[0].content, savedUser);
+  const entities = [{ id: USER, displayName: '林岚', entityType: 'person', specialRole: 'user' }];
+  const envelope = createCseEnvelope({ floor: floor(FLOOR2, '林岚仍会把物品当面交接。'), floorMemory: memory(MEMORY2), baseline,
+    currentState: null, trackedSubjects: entities, entities, userAdaptiveHistory: history });
+  assert.equal(envelope.request.payload.userAdaptiveHistory[0].precedingUserInput.messages[0].content, savedUser);
+  const source = envelope.scope.evidenceSources.find(item => item.source === `userAdaptiveHistory:${FLOOR1}`);
+  assert.ok(source.contents.includes(savedUser));
+  const result = await compileCseResponse({ response: { subjects: [{ subject: '林岚', additions: { adaptive: [{ text: '习惯当面确认交接', evidence: [
+    { source: `userAdaptiveHistory:${FLOOR1}`, quote: savedUser }, { source: 'canonicalContent', quote: '林岚仍会把物品当面交接。' },
+  ] }] } }] }, envelope, previousCurrentState: null, now: NOW, deltaId: 'abababab-1111-4111-8111-abababababab' });
+  assert.equal(result.delta.subjectSnapshots[0].adaptive[0].text, '习惯当面确认交接');
+
+  const long = { ...historical, sourceUserInputSnapshot: { messages: [{ content: '长输入'.repeat(2500) }] } };
+  assert.deepEqual(selectUserAdaptiveHistory({ floors: [floor(FLOOR1)], floorMemories: [long], targetIndex: 1, userEntityId: USER }), [], '不可只计AI长度再无限追加USER');
 });

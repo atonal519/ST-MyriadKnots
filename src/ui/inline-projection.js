@@ -1,6 +1,6 @@
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
-import { recallReceiptSelectionLimits, renderedQianshiProgressText } from '../v3/recall-runtime.js';
+import { recallReceiptSelectionLimits, renderedQianshiProgressText, RECALL_STRATEGY_VERSION } from '../v3/recall-runtime.js';
 import { qianshiRecallPendingHeader } from '../v3/qianshi-domain.js';
 import { CSE_RECALL_KNOWLEDGE_BOUNDARY, LEGACY_CSE_RECALL_KNOWLEDGE_BOUNDARY, placeRecallBlocks, groupRecallPlaces, placeRecallText } from '../v3/recall-selector.js';
 
@@ -458,6 +458,18 @@ export function classifyInlineMessage(message) {
   return selectAssistantMessage(message) ? 'assistant' : null;
 }
 
+const HEADER_TIME_PLACEHOLDERS = new Set(['', '未提取', '时间未明确', '来源归档']);
+function inlineMemoryHeaderTime(floor, memory) {
+  const manual = floor.manualTime === true;
+  const times = uniqueText((memory?.chronology ?? [])
+    .filter(item => manual || ['explicit', 'relative'].includes(item?.time?.kind))
+    .map(item => String(item?.time?.sourceText ?? '').trim() || item?.time?.normalized))
+    .filter(value => !HEADER_TIME_PLACEHOLDERS.has(value)).join('；');
+  const rawFallback = manual ? '' : String(floor.timeFallback ?? '').trim();
+  const fallback = HEADER_TIME_PLACEHOLDERS.has(rawFallback) || rawFallback === '多个故事时间戳存在冲突' ? '' : rawFallback;
+  return times && fallback && hasInternalTimeFields(times) ? fallback : times || fallback;
+}
+
 export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantSeq = null, { migrationAliasId = null, memoryExcluded = false } = {}) {
   const floors = state?.floors ?? [];
   const inheritedFloor = floors.find(value => value?.frozen !== true && value?.inherited === true && value?.messageIndex === messageIndex) ?? null;
@@ -471,13 +483,13 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
     : Number.isSafeInteger(fallbackAssistantSeq) && fallbackAssistantSeq > 0 ? fallbackAssistantSeq : null;
   if (!floor && (inheritedFloor || aliasHint)) return Object.freeze({
     kind: 'assistant', floorId: null, assistantSeq, messageIndex, status: 'ready', statusText: '继承正文', readOnly: true,
-    time: '来源归档', locations: '来源归档', people: '来源归档',
+    time: '来源归档', headerTime: '', locations: '来源归档', people: '来源归档',
     summary: '这是搬家时携带的正文；原楼摘要请在记忆管理中查看。', error: '', busy: Boolean(state?.memoryWorkBusy), canExtract: false,
   });
   if (memoryExcluded === true || floor?.memoryExcluded === true || waitingCandidate?.memoryExcluded === true) return Object.freeze({
     kind: 'assistant', floorId: floor?.floorId ?? null, assistantSeq, messageIndex, status: 'excluded',
     statusText: '该楼无需计入千千结', memoryExcluded: true, readOnly: floor?.frozen === true || floor?.inherited === true,
-    time: '', locations: '', people: '', summary: '', error: '', busy: Boolean(state?.memoryWorkBusy), canExtract: false,
+    time: '', headerTime: '', locations: '', people: '', summary: '', error: '', busy: Boolean(state?.memoryWorkBusy), canExtract: false,
   });
   if (!floor) {
     const snapshotStatus = state?.memorySnapshotStatus;
@@ -493,7 +505,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
     return Object.freeze({
       kind: 'assistant', floorId: null, assistantSeq, messageIndex, status: failed ? 'error' : syncing ? 'syncing' : pending ? 'pending' : 'unavailable',
       statusText: failed ? '记忆读取失败' : syncing ? '正在读取本楼状态' : pending ? waitingCopy[0] : '尚未读取本楼状态',
-      time: '未提取', locations: '未提取', people: '未提取',
+      time: '未提取', headerTime: '', locations: '未提取', people: '未提取',
       summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? waitingCopy[1] : '当前记忆中没有这楼的已保存状态。',
       error: failed ? publicErrorMessage(state?.lastExtractorError, { fallback: '记忆读取失败，请稍后重试。' }) : '',
       busy: Boolean(state?.memoryWorkBusy || syncing), canExtract: false,
@@ -512,7 +524,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
       : ['error', 'failed'].includes(floor.status) ? '提取失败'
         : floor.status === 'unprocessed' ? '尚未提取' : '等待下一条用户消息';
   return Object.freeze({
-    kind: 'assistant', floorId: floor.floorId, assistantSeq, messageIndex, status: floor.status, statusText, time, locations, people,
+    kind: 'assistant', floorId: floor.floorId, assistantSeq, messageIndex, status: floor.status, statusText, time, headerTime: inlineMemoryHeaderTime(floor, memory), locations, people,
     summary: floor.summary || (floor.status === 'unprocessed' ? '这一楼尚未生成摘要。' : '暂无摘要。'),
     error: ['error', 'failed'].includes(floor.status)
       ? publicErrorMessage(floor.error, { fallback: '摘要提取失败，请重试。' })
@@ -608,7 +620,7 @@ export function projectInlineRecallReceipt(receipt) {
   const manualBlocks = readManualArtifactBlocks(injectionText);
   const matchedPlaces = new Set();
   const placeBlocks = new Map();
-  for (const [legacy, grouped] of [[false, true], [false, false], [true, false]]) for (const block of placeRecallBlocks(receipt.selectedPlaces ?? [], legacy, grouped)) {
+  for (const [legacy, grouped, deduplicate] of [[false, true, true], [false, true, false], [false, false, false], [true, false, false]]) for (const block of placeRecallBlocks(receipt.selectedPlaces ?? [], legacy, grouped, deduplicate)) {
     placeBlocks.set(block, grouped ? receipt.selectedPlaces ?? [] : (receipt.selectedPlaces ?? []).filter(item => (item.kind === 'placeFoundation') === block.startsWith('[地点基础资料')));
   }
   for (const [block, values] of placeBlocks) {
@@ -623,7 +635,7 @@ export function projectInlineRecallReceipt(receipt) {
     const first = values[0], colon = first.text.indexOf('：');
     const caption = values.every(value => value.kind === 'manualPlace') ? '当前地点事实 · 人工修订优先'
       : values.some(value => value.kind === 'manualPlace') ? '地点资料' : '地点基础资料';
-    const title = colon >= 0 ? first.text.slice(0, colon) : '地点资料', text = placeRecallText(values);
+    const title = colon >= 0 ? first.text.slice(0, colon) : '地点资料', text = placeRecallText(values, !receipt.strategyVersion || receipt.strategyVersion === RECALL_STRATEGY_VERSION);
     return Object.freeze({ id: `place:${index}`, group: 'place', placeEntityId: first.placeEntityId, title, text,
       ...(text.startsWith(`${title}：`) ? { bodyText: text.slice(title.length + 1) } : {}), caption });
   });

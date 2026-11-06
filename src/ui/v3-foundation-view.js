@@ -1321,7 +1321,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const message = !Array.isArray(visibleItems) ? state?.status === 'disabled' ? '时间推演已关闭；已有记录保留。' : result?.reason === 'read' ? '时间清单读取失败，请点击“重试读取”。' : '等待当前聊天记忆同步与时间记录读取。' : showStoppedItems ? '当前没有停止的时间事项。' : '当前没有追踪中的时间事项。';
     const displayItems = (Array.isArray(visibleItems) ? visibleItems : []).map(item => {
       const stoppedLabel = { completed: '已完成', paused: '已暂停', cancelled: '已移除' }[item.status];
-      const statusLabel = item.mergedInto ? '已归并' : stoppedLabel;
+      const statusLabel = item.mergedInto ? '已归并' : item.following === false ? '随关联待办停止跟进' : stoppedLabel;
       const times = [];
       if (item.occurrenceTime?.date) times.push(`发生：${formatStoryTime(item.occurrenceTime)}`);
       if (item.dueTime?.date) times.push(`${item.type === 'cycle' ? '预计周期日' : item.type === 'deadline' ? '约定时间' : '预计节点'}：${formatStoryTime(item.dueTime)}`);
@@ -1338,7 +1338,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         keywords,
         results,
         times,
-        readOnly: '',
+        readOnly: item.following === false ? '此项随关联待办的跟进选择显示。' : '',
         issue: item.status === 'active' && Boolean(item.failureReason || item.type !== 'deadline' && item.assessmentReason),
       };
     });
@@ -1390,8 +1390,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       const addAction = (label, callback) => { const button = element('button', `qqj-profile-menu-action${label === '移除' ? ' danger' : ''}`, label); button.type = 'button'; button.setAttribute('role', 'menuitem'); button.disabled = state?.canOrganize !== true || Boolean(recentItemsUi.pendingAction); button.addEventListener('click', () => { if (button.disabled) return; actions.open = false; return callback(); }); menuBody.append(button); recentItemsUi.itemControls.push(button); };
       if (typeof timeRuntime?.editItem === 'function' && !recentBatchMode) {
         addAction('编辑事项', () => startRecentEdit(item));
-        if (item.status === 'active') for (const [label, value] of [['完成', 'completed'], ['暂停', 'paused'], ['移除', 'cancelled']]) addAction(label, () => changeRecentStatus(item, value, actionFeedback));
-        else addAction('恢复追踪', () => changeRecentStatus(item, 'active', actionFeedback));
+        if (item.status === 'active' && item.following !== false) for (const [label, value] of [['完成', 'completed'], ['暂停', 'paused'], ['移除', 'cancelled']]) addAction(label, () => changeRecentStatus(item, value, actionFeedback));
+        else if (item.following !== false) addAction('恢复追踪', () => changeRecentStatus(item, 'active', actionFeedback));
         actions.append(menuToggle, menuBody); head.append(actions); entry.append(actionFeedback);
       }
     }

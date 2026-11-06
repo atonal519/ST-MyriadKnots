@@ -12,6 +12,39 @@ const source={sourceKey:'worldbook-1',locator:'地图:18',fingerprint:'sha256:ab
 const envelope={scope:{chatId:id(90),narrativeGeneration:id(91),batchId:id(92),floorId:id(93),placeCatalogBindings:[{entityKey:'place-1',entityId:id(1),labels:['宿舍']},{entityKey:'place-2',entityId:id(2),labels:['客房']}],parentEntityIdsByPlaceId:new Map([[id(2),new Set([id(1)])]]),placeWorldbookSources:[source]}};
 const path={path:[{name:'宿舍',sameAsPlaceKey:'place-1'},{name:'一楼'},{name:'客房',sameAsPlaceKey:'place-2'}],source:'worldbook',sourceKey:'worldbook-1',exactQuote:'宿舍一楼设有客房。客房内有独立浴室。',description:'内有独立浴室。'};
 
+test('父级显式修订可改回祖先或撤销，普通粗述保细链，finite与人工及后续新父各守范围', () => {
+  const f1=id(81),f2=id(82),f3=id(83),seq=new Map([[f1,1],[f2,2],[f3,3]]);
+  const edge=(n,child,parent,floor)=>({itemId:id(n),placeEntityId:id(child),parentEntityId:id(parent),evidenceRefs:[{floorId:floor}]});
+  const memories=[{floorId:f1,recordStatus:'active',spatialFacts:{containments:[edge(101,2,3,f1),edge(102,3,1,f1)]}}];
+  const parent=(records,ws,through=Infinity)=>foundation.projectPlaceParentLinks(records,ws,seq,through,through).get(id(2));
+  assert.equal([...parent([...memories,{floorId:f2,spatialFacts:{containments:[edge(103,2,1,f2)]}}],null).parents.keys()][0],id(3));
+  const revision={itemId:id(104),kind:'containment',placeEntityId:id(2),parentEntityId:id(1),identityChange:'ownershipChanged',replacesItemIds:[id(101)],knownFromFloorId:f2,source:{kind:'worldbook',locator:'book:1',fingerprint:'sha256:abc',quote:'旧楼层归属有误。'}};
+  const ws={...emptyPlaceWorkspace(id(90)),foundation:{schemaVersion:1,entities:[],facts:[revision]}};
+  assert.equal([...parent(memories,ws).parents.keys()][0],id(1));
+  assert.equal([...parent(memories,ws,1).parents.keys()][0],id(3),'有限历史不提前使用修订');
+  const cleared={...ws,foundation:{...ws.foundation,facts:[{...revision,parentEntityId:null}]}};
+  assert.equal(parent(memories,cleared).parents.size,0);assert.equal(parent(memories,cleared).cleared,true);
+  const later=[...memories,{floorId:f3,spatialFacts:{containments:[edge(105,2,4,f3)]}}];
+  assert.equal([...parent(later,cleared).parents.keys()][0],id(4),'自动未知不锁住后楼新父');
+  const manual={...cleared,placesByEntityId:{[id(2)]:{parentEntityId:null}}};
+  assert.equal(parent(later,manual).parents.size,0,'人工顶层仍优先');
+  const retained=foundation.projectPlaceParentLinks(memories,cleared,new Map([[f1,1]]));
+  assert.equal(retained.get(id(2)).parents.size,0,'当前库knownFrom退出Core时覆盖不复活旧父');
+});
+
+test('单节点path省略保父，明确ownershipChanged加parentPlaceKey:null才撤销并覆盖已读父边', async () => {
+  const old={itemId:id(111),kind:'containment',placeEntityId:id(2),parentEntityId:id(1),knownFromFloorId:id(93),source:{kind:'worldbook',locator:source.locator,fingerprint:source.fingerprint,quote:source.content}};
+  const ws={...emptyPlaceWorkspace(id(90)),foundation:{schemaVersion:1,entities:[seed(1,'宿舍'),seed(2,'客房')],facts:[old]}};
+  const scope={...envelope.scope,identityProjection:{placeWorkspace:ws},placeParentFactBindings:[old]};
+  const run=fields=>foundation.expandPlacePaths({packet:{placePaths:[{path:[{sameAsPlaceKey:'place-2'}],source:'worldbook',sourceKey:source.sourceKey,exactQuote:source.content,...fields}]},envelope:{request:{task:'organizePlaces',payload:{knownPlaces:[]}},scope},existingEntities:ws.foundation.entities,now:'2026-11-05T00:00:00Z',persistBodyPaths:true});
+  const omitted=await run({});assert.equal(omitted.foundationPatch.facts.some(f=>f.kind==='containment'),false);
+  const clear=await run({identityChange:'ownershipChanged',parentPlaceKey:null});assert.deepEqual(clear.isolated,[]);
+  const fact=clear.foundationPatch.facts.find(f=>f.kind==='containment');assert.ok(fact);assert.equal(fact.parentEntityId,null);assert.equal(fact.identityChange,'ownershipChanged');assert.deepEqual(fact.replacesItemIds,[old.itemId]);
+  const merged=foundation.mergePlaceFoundation(ws,clear.foundationPatch);assert.doesNotThrow(()=>validatePlaceWorkspace(merged,id(90)));
+  assert.deepEqual(merged.foundation.facts.filter(f=>f.kind==='containment').map(f=>f.parentEntityId),[null]);
+  const bad=await run({parentPlaceKey:null});assert.equal(bad.isolated.length,1,'空父不能省略修订意图');
+});
+
 test('196已有place key缺省名称沿捕获目录复用，显式空名和未知身份仍隔离',async()=>{
  const invoke=(segments,scope=envelope.scope)=>foundation.expandPlacePaths({packet:{placePaths:[{...path,path:segments}]},envelope:{request:{task:'organizePlaces'},scope},existingEntities:[seed(1,'宿舍'),seed(2,'客房')],now:'2026-11-02T00:00:00Z'});
  const result=await invoke([{sameAsPlaceKey:'place-1'},{name:'一楼'},{sameAsPlaceKey:'place-2'}]);
@@ -296,4 +329,67 @@ test('本丸布局沿同次path兼容确定中文，原merge更正旧图且人�
  }
  assert.equal(foundation.mergePlaceFoundation(old,{entities:[],facts:[]}).foundation.facts[0].mapAssetId,'palace-courtyard-garden');
  const {normalizeQianchuangMapLayout,validQianchuangMapLayout}=await import('../src/qianchuang-display-hints.js');assert.equal(normalizeQianchuangMapLayout('本丸','terrain'),undefined);assert.equal(normalizeQianchuangMapLayout('刀剑乱舞','palace'),undefined);assert.equal(validQianchuangMapLayout('本丸','palace'),false);
+});
+
+test('校园布局经同次path保存冷读，物理城市与楼层房间父链保持且普通学校不自动scope',async()=>{
+ const content='示例市的示例学校有教学楼，教学楼二楼设教室。',entities=[seed(1,'示例市'),seed(2,'示例学校'),seed(3,'教学楼'),seed(4,'二楼'),seed(5,'教室')];
+ const bindings=entities.map((entity,i)=>({entityKey:'place-'+(i+1),entityId:entity.id,labels:[entity.displayName]}));
+ const scope={...envelope.scope,placeCatalogBindings:bindings,parentEntityIdsByPlaceId:new Map([[id(2),new Set([id(1)])],[id(3),new Set([id(2)])],[id(4),new Set([id(3)])],[id(5),new Set([id(4)])]]),placeWorldbookSources:[{...source,content}]};
+ const make=(style,layout,level)=>foundation.expandPlacePaths({packet:{placePaths:[{path:entities.map((entity,i)=>({name:entity.displayName,sameAsPlaceKey:bindings[i].entityKey,...(i===0?{mapLevel:'city'}:i===1?{mapStyle:style,mapLayout:layout,...(level?{mapLevel:level}:{})}:{})})),source:'worldbook',sourceKey:'worldbook-1',exactQuote:content}]},envelope:{request:{task:'organizePlaces'},scope},existingEntities:entities});
+ for(const[style,layout,canonical]of [['campus',' Compact ','compact'],['校园','园林校园','garden'],[' Campus ','综合大学','university'],['学校','compact','compact'],[' SCHOOL ','garden','garden']]){
+  const expanded=await make(style,layout,'scope');assert.deepEqual(expanded.isolated,[]);
+  const saved=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),expanded.foundationPatch),cold=validatePlaceWorkspace(JSON.parse(JSON.stringify(saved)),id(90));
+  const snapshot=applyPlaceSnapshot({chatId:id(90),places:entities.map((e,i)=>({entityId:e.id,displayName:e.displayName,features:[],relations:[],childEntityIds:[],parentEntityId:i?id(i):null})),userPosition:{}},cold);
+  assert.equal(snapshot.places.find(p=>p.entityId===id(2)).mapAssetId,'campus-'+canonical);
+  assert.deepEqual(snapshot.places.map(p=>p.parentEntityId),[null,id(1),id(2),id(3),id(4)]);
+  cold.placesByEntityId[id(2)]={mapLevel:null,scopes:{}};
+  assert.equal(applyPlaceSnapshot(snapshot,cold).places.find(p=>p.entityId===id(2)).mapLevel,null);
+ }
+ const plain=await make('campus',undefined,undefined),saved=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),plain.foundationPatch),school=saved.foundation.facts.find(f=>f.kind==='place'&&f.placeEntityId===id(2));
+ assert.equal(school.mapAssetId,'campus-compact');assert.equal(Object.hasOwn(school,'mapLevel'),false);
+});
+
+test('路径多引用保合法来源，加入错键/越源/不连续引文不改变单合法结果，全部失败仍隔离', async () => {
+  const text = '宿舍内有客房。', entities = [seed(1,'宿舍'),seed(2,'客房')];
+  const book = { ...source, content: text }, otherBook = { ...source, sourceKey: 'worldbook-2', locator: '地图:19', content: '另一所建筑。' };
+  const body = { floorKey: 'floor-1', evidenceKey: 'evidence-1', floorId: id(93), memoryId: id(94), sourceType: 'assistant', rawFingerprint: 'memory-94', canonicalContent: text, requiresExactQuote: true, sourceUserInputSnapshot: { messages: [{ content: text }] } };
+  const card = { sourceKey: 'card-scenario', content: text, field: 'scenario', locator: 'character:fixture:scenario', fingerprint: 'sha256:card' };
+  const scope = { ...envelope.scope, placeWorldbookSources: [book,otherBook], characterCardSources: [card], sourceFloorBindings: [body] };
+  const goodRefs = [
+    { source: 'worldbook', sourceKey: book.sourceKey, exactQuote: text },
+    { source: 'characterCard', sourceKey: card.sourceKey, exactQuote: text },
+    { source: 'storedPlaceEvidence', sourceKey: body.evidenceKey, exactQuote: text },
+    { source: 'canonicalContent', sourceFloorKey: body.floorKey, exactQuote: text },
+    { source: 'precedingUserInput', sourceFloorKey: body.floorKey, sourceSnapshotIndex: 0, exactQuote: text },
+  ];
+  const badRefs = [
+    { source: 'worldbook', sourceKey: 'not-provided', exactQuote: text },
+    { source: 'worldbook', sourceKey: otherBook.sourceKey, exactQuote: text },
+    { source: 'worldbook', sourceKey: book.sourceKey, exactQuote: '宿舍\n客房。' },
+    { source: 'storedPlaceEvidence', sourceKey: body.evidenceKey },
+    { source: 'precedingUserInput', sourceFloorKey: body.floorKey, sourceSnapshotIndex: 1, exactQuote: text },
+    { source: 'knownPlaces', sourceKey: 'place-1', exactQuote: text }, null,
+  ];
+  const run = (refs, task, segments = [{ name:'宿舍',sameAsPlaceKey:'place-1' },{ name:'客房',sameAsPlaceKey:'place-2',mapStyle:'campus',mapLayout:'garden' }]) => foundation.expandPlacePaths({ packet: { placePaths: [{ path: segments, evidence: refs }] }, envelope: { request: { task }, scope }, existingEntities: entities, now: '2026-11-06T00:00:00Z', persistBodyPaths: task === 'organizePlaces' });
+  for (const task of ['organizePlaces','extractFloorSemantics']) for (const good of goodRefs) {
+    const single = await run([good],task), mixed = await run([badRefs[0],good,...badRefs.slice(1)],task);
+    assert.deepEqual(single.isolated, []); assert.deepEqual(mixed.isolated, []);
+    assert.deepEqual(mixed.foundationPatch, single.foundationPatch); assert.deepEqual(mixed.packet, single.packet);
+    assert.deepEqual(mixed.displayMetadataBindings, single.displayMetadataBindings);
+    for (const fact of mixed.foundationPatch.facts) for (const ref of [fact.source,...(fact.source.references ?? [])]) {
+      assert.equal(ref.quote, text); assert.notEqual(ref.locator, otherBook.locator);
+      if (ref.kind === 'body') assert.equal(ref.floorId, body.floorId);
+    }
+  }
+  for (const refs of [[],badRefs,[badRefs[0]],[badRefs[1]]]) {
+    const rejected = await run(refs,'organizePlaces');
+    assert.equal(rejected.isolated[0].code,'QQJ_PLACE_PATH_SOURCE_INVALID'); assert.equal(rejected.foundationPatch.facts.length,0);
+  }
+  for (const [segments,code] of [
+    [[{name:'宿舍',sameAsPlaceKey:'not-known'}],'QQJ_PLACE_PATH_IDENTITY_INVALID'],
+    [[{name:'客房',sameAsPlaceKey:'place-2'},{name:'宿舍',sameAsPlaceKey:'place-1'}],'QQJ_PLACE_PATH_SCOPE_CONFLICT'],
+  ]) {
+    const rejected = await run([goodRefs[0],badRefs[0]],'organizePlaces',segments);
+    assert.equal(rejected.isolated[0].code,code); assert.equal(rejected.foundationPatch.facts.length,0);
+  }
 });

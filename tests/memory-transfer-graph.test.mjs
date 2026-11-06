@@ -12,7 +12,7 @@ import { matchFloorCandidates } from '../src/v3/floor-binding.js';
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NOW = '2026-09-05T00:00:00.000Z';
 const uuidFactory = () => { let id = 2000; return () => `${(++id).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
-async function fixture({ body = '钥匙放在木盒里。' } = {}) {
+async function fixture({ body = '钥匙放在木盒里。', places = false } = {}) {
   const records = new Map(), revisions = new Map();
   const client = {
     async get(_collection, id) {
@@ -41,7 +41,10 @@ async function fixture({ body = '钥匙放在木盒里。' } = {}) {
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: host,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
     generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
-    generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { summary: '钥匙在木盒。' } : { noMaterialChange: true } }) });
+    generateUtilityTask: async options => {
+      const p=JSON.parse(options.taskMessages[0].content).payload,ev={source:'canonicalContent',sourceFloorKey:p.sourceFloorKey,exactQuote:p.canonicalContent};
+      return {jsonData:options.systemPrompt===EXTRACTOR_SYSTEM_PROMPT?(places?{summary:body,spatialFacts:{places:[{key:'place-mention-1',name:'档案室',identity:'new',...ev},{key:'place-mention-2',name:'主楼',identity:'new',...ev}],containments:[{placeKey:'place-mention-1',parentPlaceKey:'place-mention-2',...ev}],positions:[]}}:{summary:'钥匙在木盒。'}):{noMaterialChange:true}};
+    } });
   await memory.start(); await memory.extractFloor(memory.getState().floors[0].floorId, { analyzeState: false }); await memory.analyzeNextState();
   const graph = await store.readReachable({ mode: 'full' });
   assert.ok(graph.stateDeltas.length, JSON.stringify(memory.getState().lastCseError ?? memory.getState().cseFloors));
@@ -228,4 +231,14 @@ test('stream graph validation preserves projected entity bounds and legacy sourc
   f.records.get(`v3-run-${f.graph.run.id}`).inputSnapshotFingerprint = null;
   const expected = await f.store.readReachable({ mode: 'full' }), actual = await f.run();
   assert.deepEqual(actual.floors.map(floor => floor.id), expected.floors.map(floor => floor.id));
+});
+
+
+test('stream transfer接受Core已校验的自动清父，旧实体与真实引用保持',async()=>{
+  const f=await fixture({body:'档案室在主楼内部。',places:true});
+  const record=f.records.get(`v3-floor-memory-${f.graph.floorMemories[0].id}`);
+  record.spatialFacts.containments[0]={...record.spatialFacts.containments[0],parentEntityId:null,identityChange:'ownershipChanged',replacesItemIds:[]};
+  assert.equal((await f.run()).summaryCount,1);
+  delete record.spatialFacts.containments[0].identityChange;
+  await assert.rejects(f.run(),error=>error.code==='V3_FLOORMEMORY_INVALID');
 });

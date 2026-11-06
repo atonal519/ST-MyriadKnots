@@ -175,7 +175,7 @@ export async function validateTransferGraph({ chatId, recordIds, readRecord, rea
     for (const field of ['containments', 'positions']) for (const item of memory.spatialFacts?.[field] ?? []) evidenceRefs.push(...item.evidenceRefs);
     for (const evidence of evidenceRefs) if (!hasOccurrence(await sourceFor(evidence), evidence.quotedText, evidence.occurrence)) fail('V3_MEMORY_GRAPH_EVIDENCE_INVALID');
     for (const item of memory.spatialFacts?.containments ?? []) {
-      if (entities.get(item.placeEntityId)?.entityType !== 'place' || entities.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
+      if (entities.get(item.placeEntityId)?.entityType !== 'place' || item.parentEntityId!==null&&entities.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
     }
     for (const item of memory.spatialFacts?.positions ?? []) {
       if (!['person', 'group'].includes(entities.get(item.subjectEntityId)?.entityType)

@@ -349,6 +349,7 @@ if (globalThis.location?.origin) void privateRecallDiagnostics.start();
 globalThis.addEventListener?.('beforeunload', privateRecallDiagnostics.dispose, { once: true });
 peopleWorkspaceRuntime = createPeopleWorkspaceRuntime({
   store: peopleWorkspaceStore,
+  sanitizerOptions,
   session,
   foundationRuntime,
   foundationStore,

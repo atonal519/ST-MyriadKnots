@@ -657,5 +657,129 @@
       "和风",
       "日式院落"
     ]
+  },
+  {
+    "id": "campus-compact",
+    "family": "campus",
+    "layout": "compact",
+    "label": "紧凑校园",
+    "file": "campus-compact.svg",
+    "width": 1000,
+    "height": 1000,
+    "sha256": "9df73cb508142b44c7a4b707a705340f56e51eb952f9a2ac568fb29313a1269d",
+    "source": "Tokyo Metropolitan High School of Science and Technology",
+    "sourceUrl": "https://www.openstreetmap.org/api/0.6/map?bbox=139.8202,35.6862,139.8234,35.68815",
+    "sourcePage": "https://www.openstreetmap.org/copyright",
+    "license": "ODbL 1.0",
+    "attribution": "© OpenStreetMap contributors",
+    "sourceSha256": "3063c4c5de52a69e6925a7fe9dc4707a5c1fca6438935086d3bead5581116b45",
+    "captureBounds": [
+      139.8202,
+      35.6862,
+      139.8234,
+      35.68815
+    ],
+    "bounds": [
+      139.8206836,
+      35.6865744,
+      139.8230011,
+      35.6877994
+    ],
+    "projection": "Web Mercator, centered square extent with 5% padding; north up",
+    "processing": "Approved source-derived SVG retained byte-for-byte. Mapped campus buildings, routes, green/water and sport footprints; standard lines only inside mapped known sport facilities. No baked place names, perimeter shell, tree symbols or 3D.",
+    "modifications": [
+      "Offline source-road and courtyard partitions; building components remain whole.",
+      "1–4 layouts merge whole adjacent regions. Building/indoor places may use mapped building interiors; known sports prefer matching sport footprints/edges; outdoor/unknown places use non-building, non-sport source ground, excluding water."
+    ],
+    "shortTags": [
+      "校园",
+      "紧凑",
+      "高中",
+      "小学院"
+    ],
+    "displayPlacement": "Offline candidates from approved SVG building interiors, non-sport source ground, and OSM-tagged sport footprints/edges. Existing 1–5 region owners and neutral source area retained. Outdoor/unknown backups exclude all building and sport fills; no place-specific geographic binding or SVG changes."
+  },
+  {
+    "id": "campus-garden",
+    "family": "campus",
+    "layout": "garden",
+    "label": "园林校园",
+    "file": "campus-garden.svg",
+    "width": 1000,
+    "height": 1000,
+    "sha256": "1822119617df62f4d3bb282ecec7762548d16f7e13f4e0e9e139d44a36744dd9",
+    "source": "Gakushuin Mejiro campus",
+    "sourceUrl": "https://www.openstreetmap.org/api/0.6/map?bbox=139.7056,35.716,139.7136,35.7217",
+    "sourcePage": "https://www.openstreetmap.org/copyright",
+    "license": "ODbL 1.0",
+    "attribution": "© OpenStreetMap contributors",
+    "sourceSha256": "0ae291ce0f700aadbaf461ae8403142316e66f23ec12fb45f256924824bebaca",
+    "captureBounds": [
+      139.7056,
+      35.716,
+      139.7136,
+      35.7217
+    ],
+    "bounds": [
+      139.7060389,
+      35.7164098,
+      139.7132117,
+      35.7212861
+    ],
+    "projection": "Web Mercator, centered square extent with 5% padding; north up",
+    "processing": "Approved source-derived SVG retained byte-for-byte. Mapped campus buildings, routes, green/water and sport footprints; standard lines only inside mapped known sport facilities. No baked place names, perimeter shell, tree symbols or 3D.",
+    "modifications": [
+      "Offline source-road and courtyard partitions; building components remain whole.",
+      "1–4 layouts merge whole adjacent regions. Building/indoor places may use mapped building interiors; known sports prefer matching sport footprints/edges; outdoor/unknown places use non-building, non-sport source ground, excluding water."
+    ],
+    "shortTags": [
+      "校园",
+      "庭园",
+      "园区",
+      "生活区"
+    ],
+    "displayPlacement": "Offline candidates from approved SVG building interiors, non-sport source ground, and OSM-tagged sport footprints/edges. Existing 1–5 region owners and neutral source area retained. Outdoor/unknown backups exclude all building and sport fills; no place-specific geographic binding or SVG changes."
+  },
+  {
+    "id": "campus-university",
+    "family": "campus",
+    "layout": "university",
+    "label": "综合大学",
+    "file": "campus-university.svg",
+    "width": 1000,
+    "height": 1000,
+    "sha256": "39f454986fb30ba515e0ad1a617761e95b986ee46fd8b0ae758f80f0b3cbe2e0",
+    "source": "Seoul National University Gwanak teaching and student-life precinct",
+    "sourceUrl": "https://www.openstreetmap.org/api/0.6/map?bbox=126.942,37.448,126.961,37.466",
+    "sourcePage": "https://www.openstreetmap.org/copyright",
+    "license": "ODbL 1.0",
+    "attribution": "© OpenStreetMap contributors",
+    "sourceSha256": "52ee81a0ee36242b64f5e52987d13104f2e4bd310239c0c95d3d2671ddb1bed9",
+    "captureBounds": [
+      126.942,
+      37.448,
+      126.961,
+      37.466
+    ],
+    "bounds": [
+      126.947,
+      37.4573,
+      126.9595,
+      37.466
+    ],
+    "projection": "Web Mercator, centered square extent with 5% padding; north up",
+    "processing": "Approved source-derived SVG retained byte-for-byte. Mapped campus buildings, routes, green/water and sport footprints; standard lines only inside mapped known sport facilities. No baked place names, perimeter shell, tree symbols or 3D.",
+    "modifications": [
+      "Offline source-road and courtyard partitions; building components remain whole.",
+      "1–4 layouts merge whole adjacent regions. Building/indoor places may use mapped building interiors; known sports prefer matching sport footprints/edges; outdoor/unknown places use non-building, non-sport source ground, excluding water."
+    ],
+    "shortTags": [
+      "校园",
+      "综合大学",
+      "多院系",
+      "宿舍",
+      "路网"
+    ],
+    "displayPlacement": "Offline candidates from approved SVG building interiors, non-sport source ground, and OSM-tagged sport footprints/edges. Existing 1–5 region owners and neutral source area retained. Outdoor/unknown backups exclude all building and sport fills; no place-specific geographic binding or SVG changes."
   }
 ]

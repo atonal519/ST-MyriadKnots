@@ -42,12 +42,14 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'setPersonOrderEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = { source: 'read', text: '人物资料状态已显示。', error: state.lastError ?? null };
+  let peopleQuery='',pickerSearchNode=null,pickerComposing=false,pickerRenderDeferred=false;
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
   let switcherNode = null, switcherSignature = null, switcherScrollLeft = 0;
   let renderedState = null, renderedNodes = null, busyControls = [], generationButtons = [];
   const drafts = new Map();
   const archivedHistory = new Map();
   const operationMenus = createOperationMenuController(documentRef);
+  const pickerFocused=()=>pickerSearchNode&&(pickerSearchNode.getRootNode?.()?.activeElement??documentRef.activeElement)===pickerSearchNode;
   const releaseCrop = draft => { draft?.source?.release?.(); if (cropDraft === draft) cropDraft = null; };
   const closeCrop = () => {
     cropLoadId += 1; cropLoadController?.abort(); cropLoadController = null;
@@ -106,7 +108,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   };
   function resetForChat(nextChatId) {
     if (chatId === nextChatId) return;
-    closeCrop(); chatId = nextChatId; drafts.clear(); archivedHistory.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = readFeedback(state);
+    closeCrop(); chatId = nextChatId; peopleQuery='';pickerSearchNode=null;pickerComposing=false;pickerRenderDeferred=false;drafts.clear(); archivedHistory.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = readFeedback(state);
   }
   async function run(label, task, { after = null, generationReport = false } = {}) {
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
@@ -537,7 +539,10 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   function peoplePicker(people) {
     const picker = element('section', 'qqj-profile-picker'), heading = element('header', 'qqj-profile-picker-heading');
     const order = element('button', 'secondary-action qqj-people-order-open', '排序'); order.type = 'button'; order.disabled = Boolean(state.active) || people.length < 2; busyControl(order, () => Boolean(state.active) || people.length < 2); order.addEventListener('click', openOrderDialog);
-    heading.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${people.length} 位已识别人物`), order); picker.append(heading);
+    const search=element('input','settings-input qqj-profile-picker-search'),count=element('span','v3-memory-status qqj-profile-picker-count');
+    search.type='search';search.placeholder='搜索人物';search.value=peopleQuery;search.setAttribute('aria-label','搜索更多人物');
+    pickerSearchNode=search;const pickerChatId=chatId,rows=[];
+    heading.append(element('strong','','更多人物'),search,count,order);picker.append(heading);
     const list = element('div', 'qqj-more-people-list');
     for (const person of people) {
       const row = element('div', 'qqj-more-person-row'), copy = element('div', 'qqj-more-person-copy');
@@ -549,12 +554,32 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       toggle.setAttribute?.('aria-label', `${person.displayName || person.entityDisplayName}人物操作`);
       const menuBody = element('div', 'qqj-profile-menu-pop'); managementButtons(person, menuBody); menu.append(toggle, menuBody); actions.append(menu);
       row.append(copy, actions); list.append(row);
+      rows.push({row,menu,text:[person.displayName,person.entityDisplayName,...(person.aliases??[])].filter(Boolean).join(' ').normalize('NFKC').toLocaleLowerCase()});
     }
-    if (!people.length) list.append(element('p', 'settings-hint', '当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。'));
-    picker.append(list); return picker;
+    const empty=element('p','settings-hint');list.append(empty);
+    const paint=()=>{
+      const query=peopleQuery.normalize('NFKC').trim().toLocaleLowerCase();let matched=0;
+      for(const item of rows){
+        item.row.hidden=Boolean(query&&!item.text.includes(query));
+        if(item.row.hidden)operationMenus.unregister(item.menu);else{matched++;operationMenus.register(item.menu);}
+      }
+      count.textContent=query?`${matched}/${people.length}位`:`${people.length}位`;
+      heading.setAttribute('aria-label',`更多人物，${matched}/${people.length}位`);
+      empty.textContent=people.length?'没有匹配的人物。':'当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。';empty.hidden=matched>0;
+    };
+    const update=()=>{if(chatId!==pickerChatId||pickerSearchNode!==search)return;peopleQuery=search.value;if(!pickerComposing)paint();};
+    search.addEventListener('input',update);search.addEventListener('search',update);
+    search.addEventListener('compositionstart',()=>{if(pickerSearchNode===search)pickerComposing=true;});
+    search.addEventListener('compositionend',()=>{
+      if(chatId!==pickerChatId||pickerSearchNode!==search)return;
+      pickerComposing=false;peopleQuery=search.value;
+      if(pickerRenderDeferred){pickerRenderDeferred=false;render(state);}else paint();
+    });
+    paint();picker.append(list); return picker;
   }
   function render(next = runtime.getState()) {
     state = next; resetForChat(state.chatId ?? null); if (!container) return;
+    if(showMore&&pickerComposing&&pickerFocused()){pickerRenderDeferred=true;return;}
     const visibleFeedback = feedbackCopy(state);
     const active = state.active;
     const draft = currentEntityId ? drafts.get(currentEntityId) : null;
@@ -585,6 +610,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     }
     if (switcherNode) switcherScrollLeft = Number(switcherNode.scrollLeft) || 0;
     const previousChatId = chatId, previousSignature = switcherSignature;
+    const restorePickerFocus=showMore&&pickerFocused();
+    const pickerSelection=restorePickerFocus?[pickerSearchNode.selectionStart,pickerSearchNode.selectionEnd]:null;
     operationMenus.reset(); busyControls = []; generationButtons = [];
     const page = element('section', 'qqj-page qqj-profiles-page'), status = element('div', 'qqj-page-status');
     const health = element('p', healthClass(state), statusCopy(state));
@@ -611,6 +638,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const unavailable = state.selectedEntityIds.length - selected.length;
     if (unavailable > 0) page.append(element('p', 'settings-hint', `${unavailable} 个旧人物暂未匹配，选择与资料仍保留。`));
     container.replaceChildren(page);
+    if(restorePickerFocus&&showMore&&pickerSearchNode){pickerSearchNode.focus?.({preventScroll:true});if(pickerSelection.every(Number.isInteger))pickerSearchNode.setSelectionRange?.(...pickerSelection);}
     nextSwitcher.scrollLeft = preserveSwitcherScroll ? switcherScrollLeft : 0;
     switcherNode = nextSwitcher; switcherSignature = nextSignature; switcherScrollLeft = nextSwitcher.scrollLeft;
     renderedNodes = { health, feedback: feedbackNode };
@@ -658,6 +686,6 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     }
     catch (error) { if (!active || mine !== epoch) return { status: 'stale' }; const next = runtime.getState(); if ((next.chatId ?? null) !== operationChatId) return { status: 'stale' }; state = next; resetForChat(state.chatId ?? null); feedback = { source: preparingIdentity ? 'operation' : 'read', error, text: `${preparingIdentity ? '聊天身份准备失败' : '读取失败'}：${publicErrorMessage(error, { fallback: preparingIdentity ? '当前聊天身份准备失败，请稍后重试。' : '人物资料暂时无法读取，请重试。' })}` }; render(state); return { status: 'error', error }; }
   }
-  function deactivate() { active = false; epoch += 1; closeCrop(); operationMenus.deactivate(); renderedState = null; renderedNodes = null; busyControls = []; generationButtons = []; switcherNode = null; unsubscribe?.(); unsubscribe = null; }
+  function deactivate() { active = false; pickerComposing=false;pickerRenderDeferred=false;epoch += 1; closeCrop(); operationMenus.deactivate(); renderedState = null; renderedNodes = null; busyControls = []; generationButtons = []; switcherNode = null; unsubscribe?.(); unsubscribe = null; }
   return Object.freeze({ mount, activate, deactivate, render });
 }

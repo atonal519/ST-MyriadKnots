@@ -44,7 +44,7 @@ test('存储面板渲染约数、刷新、自动开关和危险清理确认；�
   view.mount(container); await view.activate();
   assert.deepEqual(f.calls, ['scan']);
   let text = container.textContent;
-  for (const copy of ['本聊天', '总记录', '当前有效基础数据', '可清理的旧版本', '约 20.00 MiB', '每新增 10 个稳定 AI 楼', '100 条', '约 8 MiB']) assert.match(text, new RegExp(copy));
+  for (const copy of ['本聊天', '总记录', '当前有效基础数据', '可清理的旧版本', '约 20.00 MiB', '全局默认开启', '每新增 10 个稳定 AI 楼', '100 条', '约 8 MiB']) assert.match(text, new RegExp(copy));
   let nodes = flatten(container), refresh = nodes.find(node => node.tag === 'button' && node.textContent === '刷新统计');
   await refresh.fire('click'); assert.deepEqual(f.calls, ['scan', 'scan']);
   nodes = flatten(container); let clean = nodes.find(node => node.tag === 'button' && node.textContent === '清理旧版本');

@@ -3,14 +3,29 @@ import test from 'node:test';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {qianchuangMapLayout} from '../src/ui/qianchuang-map-layout.js';
+import {QIANCHUANG_MAP_ASSETS} from '../src/qianchuang-map-assets.js';
 const inside=([x,y],poly)=>{let result=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const [ax,ay]=poly[i],[bx,by]=poly[j];if((ay>y)!==(by>y)&&x<(bx-ax)*(y-ay)/(by-ay)+ax)result=!result;}return result;};
 const inRegion=(p,region)=>(region.contours??[region.contour]).reduce((yes,ring)=>yes!==inside(p,ring),false);
 const corners=b=>[[b.x,b.y],[b.x+b.w,b.y],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h]];
+
+for(const layout of ['compact','garden','university'])test(`校园${layout}完整1至5区同坐标，标签/点不越区且增点不重排`,()=>{
+ const id='campus-'+layout,asset=QIANCHUANG_MAP_ASSETS[id];assert.ok(asset);
+ for(let count=1;count<=5;count++){
+  const groups=Array.from({length:count},(_,i)=>({entityId:'area-'+i,siteIds:[i+'-a',i+'-b']}));groups.push({entityId:null,siteIds:['direct-a','direct-b']});
+  const before=structuredClone(groups),out=qianchuangMapLayout(id,groups),named=out.filter(r=>r.contour);
+  assert.deepEqual(groups,before);assert.equal(named.length,count);
+  for(const r of named){for(const p of [...corners(r.inset),...corners(r.labelBox)])assert.ok(inRegion(p,r),`${count} label ${p}`);for(const p of r.points)assert.ok(inRegion([p.x,p.y],r));}
+  for(const p of out.at(-1).points)assert.ok(named.every(r=>!inRegion([p.x,p.y],r)));
+  const points=out.flatMap(r=>r.points);for(let i=0;i<points.length;i++)for(let j=i+1;j<points.length;j++)assert.ok(Math.max(Math.abs(points[i].x-points[j].x),Math.abs(points[i].y-points[j].y))*2.53>22,`${count} ${points[i].id}/${points[j].id}`);
+ }
+ const group={entityId:'area',siteIds:Array.from({length:12},(_,i)=>'site-'+i)},a=qianchuangMapLayout(id,[group])[0],b=qianchuangMapLayout(id,[{...group,siteIds:[...group.siteIds,'site-12']}])[0];
+ assert.deepEqual(b.points.slice(0,12),a.points);assert.ok(asset.anchors.all.length>=24);
+});
 for(const basemap of ['modern','town','palace'])for(const count of [1,2,3,4,5])test(`${basemap} ${count}区：合并现有街区，整个label框与所属点在本区，direct在区外`,()=>{
  const groups=Array.from({length:count},(_,i)=>({entityId:`area-${i}`,siteIds:Array.from({length:i%4},(_,j)=>`site-${i}-${j}`)}));groups.push({entityId:null,siteIds:['direct-a','direct-b']});
  const before=structuredClone(groups),regions=qianchuangMapLayout(basemap,groups),named=regions.filter(r=>r.entityId);
  assert.equal(named.length,count);assert.deepEqual(regions.map(r=>r.entityId),groups.map(g=>g.entityId));assert.deepEqual(groups,before);
- for(const r of named){assert.ok(r.contours?.length,'静态原路轮廓包含全部rings');for(const p of corners(r.labelBox))assert.ok(inRegion(p,r),`${r.entityId} label ${p}`);for(const p of r.points)assert.ok(inRegion([p.x,p.y],r));}
+ for(const r of named){if(!r.contours?.length){assert.ok(named.every(region=>!region.points.length),'只允许全空area不占画面分区');assert.equal(r.contour,null);assert.ok(r.labelBox);continue;}assert.ok(r.contours.length,'静态原路轮廓包含全部rings');for(const p of corners(r.labelBox))assert.ok(inRegion(p,r),`${r.entityId} label ${p}`);for(const p of r.points)assert.ok(inRegion([p.x,p.y],r));}
  for(const p of regions.at(-1).points)assert.ok(named.every(r=>!inRegion([p.x,p.y],r)));
  for(let x=3.71;x<97;x+=3.31)for(let y=3.43;y<97;y+=3.73)assert.ok(named.filter(r=>inRegion([x,y],r)).length<=1);
  assert.deepEqual(qianchuangMapLayout(basemap,groups),regions);
@@ -85,4 +100,66 @@ test('184甲板16场地在253px保持自然点选空间及已有槽位',()=>{
  const regions=qianchuangMapLayout('sci-fi-linear',groups),points=regions.flatMap(r=>r.points);assert.equal(points.length,16);
  for(let i=0;i<points.length;i++)for(let j=i+1;j<points.length;j++)assert.ok(Math.hypot((points[i].x-points[j].x)*2.53,(points[i].y-points[j].y)*2.53*1280/1120)>22);
  const before=qianchuangMapLayout('sci-fi-linear',[{entityId:'area',siteIds:['a','b','c']}])[0],after=qianchuangMapLayout('sci-fi-linear',[{entityId:'area',siteIds:['a','b','c','d']}])[0];assert.deepEqual(after.points.slice(0,3),before.points);
+});
+
+test('空area与直属场地共存时空标签不抢分区，直属点沿全图安全池稳定分散',()=>{
+ for(const basemap of ['campus-compact','campus-garden','campus-university','modern-radial','palace-courtyard-honmaru']){
+  const asset=QIANCHUANG_MAP_ASSETS[basemap];assert.ok(asset,basemap);
+  for(const count of [1,11,20]){
+   const ids=Array.from({length:count},(_,i)=>'direct-'+i),groups=[{entityId:'empty-area',siteIds:[]},{entityId:null,siteIds:ids}],before=structuredClone(groups),out=qianchuangMapLayout(basemap,groups);
+   assert.deepEqual(groups,before);assert.equal(out[0].contour,null);assert.deepEqual(out[0].contours,[]);assert.ok(out[0].labelBox);assert.deepEqual(out[0].points,[]);
+   const b=out[0].labelBox,safe=(asset.anchors.placements?.all.ground??asset.anchors.all).filter(([x,y])=>!(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h));
+   assert.ok(safe.length>=count,basemap+' available anchors');assert.deepEqual(out[1].points,ids.map((id,i)=>({id,x:safe[i][0],y:safe[i][1]})));
+   if(count===11)assert.ok(new Set(out[1].points.map(p=>p.x)).size>2,basemap+' not two-column grid');
+  }
+  const a=qianchuangMapLayout(basemap,[{entityId:'empty-area',siteIds:[]},{entityId:null,siteIds:Array.from({length:11},(_,i)=>'site-'+i)}]);
+  const b=qianchuangMapLayout(basemap,[{entityId:'empty-area',siteIds:[]},{entityId:null,siteIds:Array.from({length:12},(_,i)=>'site-'+i)}]);
+  assert.deepEqual(b[1].points.slice(0,11),a[1].points);
+  const overflow=qianchuangMapLayout(basemap,[{entityId:'empty-area',siteIds:[]},{entityId:null,siteIds:Array.from({length:asset.anchors.all.length+4},(_,i)=>'site-'+i)}]);
+  assert.equal(overflow[1].points.length,asset.anchors.all.length+4);assert.ok(overflow[1].points.every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)));
+ }
+});
+
+test('校园按明确短名称选楼体与同运动用途，室内优先且未知/无对应运动保持非sport安全池',()=>{
+ for(const assetId of ['campus-compact','campus-garden','campus-university']){
+  const asset=QIANCHUANG_MAP_ASSETS[assetId],pool=asset.anchors.placements?.all;assert.ok(pool,assetId);
+  const pick=name=>qianchuangMapLayout(assetId,[{entityId:'area-label',siteIds:[]},{entityId:null,siteIds:['p']}],new Map([['p',{displayName:name}]]))[1].points[0];
+  const contains=(rows,p)=>rows.some(([x,y])=>x===p.x&&y===p.y);
+  for(const name of ['图书馆','体育馆','击剑馆','室内恒温泳池','公共休息室','办公室','实验室','食堂','Library','Indoor basketball court','Office']){
+   const p=pick(name);assert.ok(contains(pool.building,p)||contains(pool.nearBuilding,p),assetId+' building '+name);
+   assert.ok(contains(pool.backup,p),assetId+' building not sport');
+  }
+  const horse=pick('马术训练场');
+  if(pool.sports.equestrian?.length)assert.ok(contains(pool.sports.equestrian,horse));else assert.ok(contains(pool.backup,horse),'no equestrian must not borrow another sport');
+  for(const name of ['未分类场地','室外自习室'])assert.ok(contains(pool.outdoorBackup,pick(name)));
+  for(const name of ['未分类场地','马术训练场']){const ids=Array.from({length:37},(_,i)=>'ground-'+i),byId=new Map(ids.map(id=>[id,{displayName:name}])),points=qianchuangMapLayout(assetId,[{entityId:null,siteIds:ids}],byId)[0].points;assert.equal(points.length,37);assert.ok(points.every(p=>contains(pool.outdoorBackup,p)||name==='马术训练场'&&contains(pool.sports.equestrian??[],p)));}
+  const byId=new Map(Array.from({length:37},(_,i)=>['site-'+i,{displayName:i%3===0?'图书馆':i%3===1?'室内泳池':'未分类场地'}])),ids=[...byId.keys()],out=qianchuangMapLayout(assetId,[{entityId:null,siteIds:ids}],byId)[0];
+  assert.deepEqual(out.points.map(p=>p.id),ids);assert.equal(new Set(out.points.map(p=>p.x+','+p.y)).size,ids.length);
+  assert.ok(out.points.every(p=>contains(pool.backup,p)),assetId+' backup never ordinary grid on sport');
+ }
+});
+
+test('校园一至五分区用途与备用坐标均保原owner，未修改输入或静态池',()=>{
+ const contains=(rows,p)=>rows.some(([x,y])=>x===p.x&&y===p.y);
+ for(const assetId of ['campus-compact','campus-garden','campus-university']){
+  const asset=QIANCHUANG_MAP_ASSETS[assetId],before=JSON.stringify(asset.anchors);
+  for(let count=1;count<=5;count++){
+   const groups=Array.from({length:count},(_,i)=>({entityId:'area-'+i,siteIds:['library-'+i,'horse-'+i,'unknown-'+i]}));
+   const byId=new Map(groups.flatMap(g=>[[g.siteIds[0],{displayName:'图书馆'}],[g.siteIds[1],{displayName:'马术训练场'}],[g.siteIds[2],{displayName:'未分类场地'}]]));
+   const layout=qianchuangMapLayout(assetId,groups,byId);
+   for(const region of layout){
+    const index=asset.regions.layouts[count].findIndex(raw=>JSON.stringify(raw.contours)===JSON.stringify(region.contours)),pool=asset.anchors.placements.layouts[count][index];assert.ok(pool);
+    for(const point of region.points){assert.ok(inRegion([point.x,point.y],region),'owner remains');assert.ok(contains(pool.backup,point)||point.id.startsWith('horse-')&&contains(pool.sports.equestrian??[],point));}
+   }
+  }
+  assert.equal(JSON.stringify(asset.anchors),before);
+ }
+});
+
+test('校园空标签和备用池耗用时仍避全部标签框，不因容量不足越回标签',()=>{
+ for(const id of ['campus-compact','campus-garden','campus-university'])for(let count=1;count<=5;count++){
+  const groups=[...Array.from({length:count},(_,i)=>({entityId:'empty-'+i,siteIds:[]})),{entityId:null,siteIds:Array.from({length:37},(_,i)=>'site-'+i)}];
+  const out=qianchuangMapLayout(id,groups,new Map(groups.at(-1).siteIds.map(id=>[id,{displayName:'未分类场地'}]))),labels=out.map(r=>r.labelBox).filter(Boolean),points=out.at(-1).points;
+  assert.equal(points.length,37);for(const p of points)assert.ok(labels.every(b=>p.x<b.x||p.x>b.x+b.w||p.y<b.y||p.y>b.y+b.h));
+ }
 });

@@ -3,7 +3,7 @@ import { cseWorldInfoKeyMatches } from '../cse-source-selection.js';
 import { deterministicUuid } from './foundation-domain.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { isUuid } from '../identity.js';
-import { normalizePlaceFacilities, validQianchuangMapStyle, validQianchuangMapLayout, normalizeQianchuangMapLayout } from '../qianchuang-display-hints.js';
+import { normalizePlaceFacilities, validQianchuangMapStyle, validQianchuangMapLayout, normalizeQianchuangMapLayout, normalizeQianchuangMapStyle } from '../qianchuang-display-hints.js';
 import {selectQianchuangMapAsset} from '../qianchuang-map-assets.js';
 import { locatePlaceQuote } from './place-evidence.js';
 const label=value=>String(value??'').normalize('NFKC').trim().toLocaleLowerCase();
@@ -42,7 +42,7 @@ function pathEvidence(entry, scope) {
       ...(binding.memoryId ? { memoryId: binding.memoryId } : {}), locator: `floor:${binding.floorId}`, fingerprint: binding.rawFingerprint, quote },
       semantic: { source: binding.sourceType === 'precedingUser' ? 'precedingUserInput' : 'canonicalContent', sourceFloorKey: binding.floorKey,
         ...(binding.sourceType === 'precedingUser' ? { sourceSnapshotIndex: binding.sourceSnapshotIndex } : {}), exactQuote: quote } }));
-  });
+  }).filter(Boolean);
 }
 
 function linkedBodyLeaf(entry, spatial, resolved, scope) {
@@ -94,9 +94,25 @@ export function placeCurrentFactBindings(facts = []) {
 }
 
 export function coveredPlaceItemIds(workspace,placeEntityId,kind) {
- const field=kind==='feature'?'description':'relations';
+ const field=kind==='feature'?'description':kind==='containment'?'parentEntityId':'relations';
  if(Object.hasOwn(workspace?.placesByEntityId?.[placeEntityId]??{},field))return new Set();
  return new Set((workspace?.foundation?.facts??[]).filter(fact=>fact.kind===kind&&fact.placeEntityId===placeEntityId).flatMap(fact=>fact.replacesItemIds??[]));
+}
+
+export function placeParentFactBindings(memories = [], workspace = null, floorIds = null, resolve = id => id) {
+ const rows = memories.flatMap(memory => (memory.spatialFacts?.containments ?? []).filter(edge => !floorIds
+  || (edge.evidenceRefs ?? []).some(ref => floorIds.has(ref.floorId))));
+ // The caller selects current versus prefix-scoped library; raw assertions retain their own floor bound.
+ return [...rows,...effectiveFoundationFacts(workspace,memories).filter(fact=>fact.kind==='containment')]
+  .filter(fact=>isUuid(fact.itemId)).map(fact=>({itemId:fact.itemId,placeEntityId:resolve(fact.placeEntityId),parentEntityId:fact.parentEntityId?resolve(fact.parentEntityId):null,
+   replacesItemIds:fact.replacesItemIds??[]}));
+}
+
+function parentRevision(entityId,itemId,parentEntityId,source,scope) {
+ const prior=(scope.placeParentFactBindings??[]).filter(fact=>fact.placeEntityId===entityId);
+ return {itemId,kind:'containment',placeEntityId:entityId,parentEntityId,identityChange:'ownershipChanged',
+  replacesItemIds:[...new Set(prior.flatMap(fact=>[fact.itemId,...(fact.replacesItemIds??[])]))].filter(id=>id!==itemId),
+  knownFromFloorId:scope.floorId??null,source};
 }
 
 function currentFact(kind,entityId,itemId,text,source,scope,reuse=true) {
@@ -150,8 +166,9 @@ export function selectPlaceWorldbookSources({ candidates = [], macros = {}, text
 export function validatePlaceFoundation(value,chatId){
  if(!value||value.schemaVersion!==1||!Array.isArray(value.entities)||!Array.isArray(value.facts))throw new TypeError('地点索引格式无效。');
  for(const entity of value.entities)if(validateEntityRecord(entity,{expectedChatId:chatId}).entityType!=='place')throw new TypeError('地点索引归属无效。');
- for(const fact of value.facts)if(!isUuid(fact.itemId)||!isUuid(fact.placeEntityId)||!['place','containment','feature','relation'].includes(fact.kind)||fact.kind==='containment'&&!isUuid(fact.parentEntityId))throw new TypeError('地点索引结构无效。');
- for(const fact of value.facts)if(Object.hasOwn(fact,'replacesItemIds')&&(!['feature','relation'].includes(fact.kind)||!Array.isArray(fact.replacesItemIds)||fact.replacesItemIds.some(id=>!isUuid(id)||id===fact.itemId)||new Set(fact.replacesItemIds).size!==fact.replacesItemIds.length))throw new TypeError('地点当前资料覆盖无效。');
+ for(const fact of value.facts)if(!isUuid(fact.itemId)||!isUuid(fact.placeEntityId)||!['place','containment','feature','relation'].includes(fact.kind)||fact.kind==='containment'&&!(isUuid(fact.parentEntityId)||fact.parentEntityId===null&&fact.identityChange==='ownershipChanged')
+  ||Object.hasOwn(fact,'identityChange')&&!(fact.kind==='containment'&&fact.identityChange==='ownershipChanged'))throw new TypeError('地点索引结构无效。');
+ for(const fact of value.facts)if(Object.hasOwn(fact,'replacesItemIds')&&(!(['feature','relation'].includes(fact.kind)||fact.kind==='containment'&&fact.identityChange==='ownershipChanged')||!Array.isArray(fact.replacesItemIds)||fact.replacesItemIds.some(id=>!isUuid(id)||id===fact.itemId)||new Set(fact.replacesItemIds).size!==fact.replacesItemIds.length))throw new TypeError('地点当前资料覆盖无效。');
  return value;
 }
 
@@ -190,7 +207,7 @@ export function filterPlaceFoundationSources(workspace,{filterWorldInfoSources=s
 }
 
 export function effectiveFoundationFacts(workspace,memories=[]){
- const replaced=new Set(memories.flatMap(memory=>(memory.spatialFacts?.features??[]).flatMap(feature=>feature.replacesItemIds??[])));
+ const replaced=new Set(memories.flatMap(memory=>[...(memory.spatialFacts?.features??[]),...(memory.spatialFacts?.containments??[])].flatMap(fact=>fact.replacesItemIds??[])));
  return (workspace?.foundation?.facts??[]).filter(fact=>{
   if(replaced.has(fact.itemId))return false;
   const field=fact.kind==='containment'?'parentEntityId':fact.kind==='feature'?'description':'relations';
@@ -204,13 +221,71 @@ export function placeWorkspaceDependency(chatId,revision,workspace){
  return `${chatId}:${revision??0}${books.length?`:${JSON.stringify(books)}`:''}`;
 }
 
-export function mergeFoundationParents(latest,workspace,seqById,throughAssistantSeq=Infinity){
- const prefix=Number.isFinite(throughAssistantSeq)?filterPlaceFoundationSources(workspace,{floorIds:new Set([...seqById].filter(([,seq])=>seq<=throughAssistantSeq).map(([id])=>id))}):workspace;
- for(const fact of effectiveFoundationFacts(prefix).filter(fact=>fact.kind==='containment')){
-  const seq=seqById.get(fact.knownFromFloorId)??0,prior=latest.get(fact.placeEntityId);
-  if(seq<=throughAssistantSeq&&(!prior||(prior.seq??0)<=seq))latest.set(fact.placeEntityId,{seq,parents:new Set([fact.parentEntityId])});
- }
- return latest;
+// Replay explicit parent assertions together so later coarse ancestry cannot erase a known intermediate place.
+export function projectPlaceParentLinks(memories, workspace, seqById, throughAssistantSeq = Infinity,
+  libraryThroughAssistantSeq = throughAssistantSeq, { includeLocatedIn = false, resolve = id => id, baseIntents = [] } = {}) {
+  const intents = [...baseIntents];
+  for (const memory of memories) {
+    if (memory.recordStatus && memory.recordStatus !== 'active') continue;
+    const edges = [...(memory.spatialFacts?.containments ?? []), ...(includeLocatedIn ? (memory.spatialFacts?.relations ?? [])
+      .filter(edge => edge.kind === 'locatedIn' && edge.referencePlaceEntityIds?.length === 1)
+      .map(edge => ({ ...edge, parentEntityId: edge.referencePlaceEntityIds[0] })) : [])];
+    for (const edge of edges) {
+      const refs = (edge.evidenceRefs ?? edge.sourceRefs ?? []).map(ref => ({ ref,
+        seq: ref.assistantSeq ?? seqById.get(ref.floorId) ?? (ref.floorId === memory.floorId ? memory.assistantSeq : 0) }))
+        .filter(value => value.seq > 0 && value.seq <= throughAssistantSeq);
+      if (!refs.length) continue;
+      const latest = refs.reduce((a,b) => a.seq >= b.seq ? a : b);
+      intents.push({ placeEntityId: resolve(edge.placeEntityId), parentEntityId: resolve(edge.parentEntityId), seq: latest.seq,
+        itemId:edge.itemId,replacesItemIds:edge.replacesItemIds,identityChange:edge.identityChange,
+        authority:edge.identityChange==='ownershipChanged'?1:0,sourceFloorId: latest.ref.floorId, sourceAssistantSeq: latest.seq });
+    }
+  }
+  const prefix = Number.isFinite(libraryThroughAssistantSeq) ? filterPlaceFoundationSources(workspace,
+    { floorIds: new Set([...seqById].filter(([,seq]) => seq <= libraryThroughAssistantSeq).map(([id]) => id)) }) : workspace;
+  for (const fact of effectiveFoundationFacts(prefix).filter(fact => fact.kind === 'containment')) {
+    const seq = seqById.get(fact.knownFromFloorId) ?? 0;
+    if (seq <= libraryThroughAssistantSeq) intents.push({ placeEntityId: resolve(fact.placeEntityId), parentEntityId: resolve(fact.parentEntityId), seq,
+      itemId:fact.itemId,replacesItemIds:fact.replacesItemIds,identityChange:fact.identityChange,
+      sourceFloorId: fact.knownFromFloorId ?? null, sourceAssistantSeq: seq, authority: 1 });
+  }
+  const covered = new Set(intents.flatMap(intent=>intent.replacesItemIds??[]));
+  const bySeq = new Map();
+  for (const intent of intents) {
+    if (!intent.placeEntityId || !intent.parentEntityId && !(intent.parentEntityId===null&&intent.identityChange==='ownershipChanged') || covered.has(intent.itemId)) continue;
+    let atSeq = bySeq.get(intent.seq); if (!atSeq) { atSeq = new Map(); bySeq.set(intent.seq, atSeq); }
+    const authority = intent.authority ?? 0;
+    let group = atSeq.get(intent.placeEntityId);
+    if (!group || group.authority < authority) { group = {authority,parents:new Map(),revision:false}; atSeq.set(intent.placeEntityId,group); }
+    if (group.authority > authority) continue;
+    group.revision ||= intent.identityChange==='ownershipChanged';
+    group.parents.set(intent.parentEntityId, {sourceFloorId:intent.sourceFloorId,sourceAssistantSeq:intent.sourceAssistantSeq});
+  }
+  const manualParents = new Map(Object.entries(workspace?.placesByEntityId ?? {}).filter(([,row]) => Object.hasOwn(row,'parentEntityId'))
+    .map(([id,row]) => [resolve(id),new Map(row.parentEntityId ? [[resolve(row.parentEntityId),{manual:true}]] : [])]));
+  const latest = new Map();
+  for (const [seq, atSeq] of [...bySeq].sort(([a],[b]) => a-b)) {
+    const updates = new Map();
+    for (const [child, {parents,revision}] of atSeq) {
+      const prior = latest.get(child);
+      if (!revision && parents.size === 1 && prior?.parents.size === 1) {
+        const next = parents.keys().next().value, current = prior.parents.keys().next().value;
+        if (next !== current && next !== child) {
+          const seen = new Set([child]); let ancestor = current;
+          while (ancestor && !seen.has(ancestor)) {
+            if (ancestor === next) break;
+            seen.add(ancestor); const links = manualParents.get(ancestor) ?? atSeq.get(ancestor)?.parents ?? latest.get(ancestor)?.parents;
+            ancestor = links?.size === 1 ? links.keys().next().value : null;
+          }
+          if (ancestor === next) continue;
+        }
+      }
+      updates.set(child, parents.size===1&&parents.has(null)?{seq,parents:new Map(),cleared:true}:{seq,parents});
+    }
+    for (const [child, value] of updates) latest.set(child, value);
+  }
+  for (const [id,parents] of manualParents) latest.set(id, {seq:Infinity,parents});
+  return latest;
 }
 
 function makeSeed(id, name, scope, now) {
@@ -223,7 +298,7 @@ function makeSeed(id, name, scope, now) {
 export async function expandPlacePaths({ packet, envelope, existingEntities = [], now, persistBodyPaths = false }) {
   const result = copy(packet), scope = envelope.scope, entities = [...existingEntities], byId = new Map(entities.map(entity => [entity.id, entity]));
   const bindings = [...(scope.placeCatalogBindings ?? [])], byKey = new Map(bindings.map(binding => [binding.entityKey, binding]));
-  const parents = new Map(scope.parentEntityIdsByPlaceId ?? []), seenPaths = new Map(), facts = new Map(), isolated = [], replaceFields = [];
+  const parents = new Map(scope.parentEntityIdsByPlaceId ?? []), seenPaths = new Map(), facts = new Map(), isolated = [], replaceFields = [], displayMetadataBindings = [];
   const input = result.spatialFacts;
   const spatial = input && typeof input === 'object' && !Array.isArray(input) ? input : (result.spatialFacts = { places: [], containments: [], positions: [] });
   if (input !== undefined && spatial !== input) isolated.push({ field: 'spatialFacts', index: -1, code: 'V3_EXTRACTOR_OBJECT_INVALID', path: 'spatialFacts' });
@@ -257,6 +332,10 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       || entry.path.some(segment => !segment || typeof segment.name !== 'string' || !segment.name.trim() || segment.name.length > 500)) {
       isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SOURCE_INVALID', path: `placePaths[${index}]` }); continue;
     }
+    const clearParent=Object.hasOwn(entry,'parentPlaceKey');
+    if(clearParent&&(entry.parentPlaceKey!==null||entry.identityChange!=='ownershipChanged'||entry.path.length!==1||!byKey.has(entry.path[0].sameAsPlaceKey))){
+      isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_SCOPE_CONFLICT',path:`placePaths[${index}]`});continue;
+    }
     const bodySource = resolved.every(ref => ref.body) ? resolved[0].body : null;
     const quote = resolved[0].source.quote;
     const bodyEvidence = bodySource ? { ...resolved[0].semantic,
@@ -266,7 +345,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       ...(resolved.length > 1 ? { references: resolved.map(ref => ref.source) } : {}) } : null;
     let leaf = typeof entry.placeKey === 'string' ? spatial.places.find(place => place?.key === entry.placeKey) : undefined;
     let bridge = null;
-    if (!entry.placeKey && bodySource && !persistBodyPaths) {
+    if (!entry.placeKey && bodySource && !persistBodyPaths && !clearParent) {
       const linked=linkedBodyLeaf(entry,linkedInput,resolved,scope);
       if(linked.conflict){isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_IDENTITY_INVALID',path:`placePaths[${index}]`});continue;}
       leaf=spatial.places.find(place=>place?.key===linked.leaf?.key);bridge=linked;
@@ -307,6 +386,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       pathSeen.set(pathKey, entityId);pathNodes.push({ entityId, name, pathKey });
       if(parentId)pathParents.set(entityId,new Set([parentId]));parentId=entityId;
     }
+    if(clearParent)pathParents.delete(pathNodes[0].entityId);
     const cyclic=pathNodes.some(({entityId})=>{const seen=new Set();let id=entityId;while(id){if(seen.has(id))return true;seen.add(id);const next=pathParents.get(id);id=next?.size===1?[...next][0]:null;}return false;});
     if(cyclic){isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_SCOPE_CONFLICT',path:`placePaths[${index}]`});continue;}
     for(const entity of pathEntities){entities.push(entity);freshEntities.push(entity);byId.set(entity.id,entity);}
@@ -333,7 +413,8 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       const description = typeof segment.description === 'string' ? segment.description : depth === segments.length - 1 ? entry.description : undefined;
       const relations = Array.isArray(segment.relations) ? segment.relations : depth === segments.length - 1 ? entry.relations : undefined;
       const facilities = normalizePlaceFacilities(segment.facilities);
-      const mapStyle=validQianchuangMapStyle(segment.mapStyle)?segment.mapStyle:undefined,mapLayout=normalizeQianchuangMapLayout(segment.mapLayout,mapStyle);
+      const revision=envelope.request?.task==='organizePlaces'||depth===segments.length-1&&entry.identityChange==='ownershipChanged';
+      const mapStyle=normalizeQianchuangMapStyle(segment.mapStyle),mapLayout=normalizeQianchuangMapLayout(segment.mapLayout,mapStyle);
       seenPaths.set(pathKey, entityId);
       const binding = bindings.find(binding => binding.entityId === entityId);
       if (depth === segments.length - 1 && leaf) { leaf.identity = 'existing'; leaf.sameAsPlaceKey = binding.entityKey; }
@@ -341,7 +422,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       if (bodySource && !persistBodyPaths) {
         mention ??= depth === segments.length - 1 && entry.placeKey ? entry.placeKey : `place-mention-${++mentionIndex}`;
         const old = spatial.places.findIndex(place => place?.key === mention), prior = spatial.places[old];
-        const value = { ...(prior?.identityChange ? { identityChange: prior.identityChange } : {}), ...(prior?.identityBasis ? { identityBasis: prior.identityBasis } : {}), ...(Array.isArray(prior?.aliases) ? { aliases: prior.aliases } : {}), key: mention, name, identity: 'existing', sameAsPlaceKey: binding.entityKey, exactQuote: quote, ...bodyEvidence };
+        const value = { ...(revision?{identityChange:'ownershipChanged'}:prior?.identityChange?{identityChange:prior.identityChange}:{}), ...(prior?.identityBasis ? { identityBasis: prior.identityBasis } : {}), ...(Array.isArray(prior?.aliases) ? { aliases: prior.aliases } : {}), key: mention, name, identity: 'existing', sameAsPlaceKey: binding.entityKey, exactQuote: quote, ...bodyEvidence };
         if (old >= 0) spatial.places[old] = value; else spatial.places.push(value);
         mentionById.set(entityId, mention);
       }
@@ -352,10 +433,19 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
         }
         else {
           const itemId = await deterministicUuid(['v3-worldbook-place', autoSource.locator, autoSource.fingerprint, entityId, parentId, 'containment']);
-          facts.set(itemId, { itemId, kind: 'containment', placeEntityId: entityId, parentEntityId: parentId, knownFromFloorId: scope.floorId ?? null,
-            source: autoSource });
+          facts.set(itemId, revision?parentRevision(entityId,itemId,parentId,autoSource,scope):{ itemId, kind: 'containment', placeEntityId: entityId, parentEntityId: parentId, knownFromFloorId: scope.floorId ?? null,source: autoSource });
         }
       }
+      if(clearParent){
+        parents.delete(entityId);
+        if(bodySource&&!persistBodyPaths)spatial.containments.push({placeKey:mention,parentPlaceKey:null,...bodyEvidence});
+        else{
+          const itemId=await deterministicUuid(['v3-worldbook-place',autoSource.locator,autoSource.fingerprint,entityId,null,'containment']);
+          facts.set(itemId,parentRevision(entityId,itemId,null,autoSource,scope));
+          replaceFields.push({entityId,kind:'containment'});
+        }
+      }
+      let displayFactItemId;
       if (autoSource || facilities !== undefined || mapStyle || mapLayout || ['area','site','interior'].includes(segment.mapRole) || [null,'city','country','scope'].includes(segment.mapLevel)) {
         const displaySource = autoSource ?? { ...primary.source, ...(resolved.length > 1 ? { references: resolved.map(ref => ref.source) } : {}) };
         const itemId = await deterministicUuid(['v3-worldbook-place', displaySource.locator, displaySource.fingerprint, entityId, 'place']);
@@ -363,8 +453,11 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
         const existing=scope.identityProjection?.placeWorkspace?.foundation?.facts??[],old=existing.find(fact=>fact.kind==='place'&&fact.placeEntityId===entityId),keys=['mapRole','mapLevel','facilities','mapStyle','mapLayout'].filter(key=>Object.hasOwn(value,key));
         const same=Object.hasOwn(scope,'placeCurrentFactBindings')&&old&&keys.every(key=>JSON.stringify(old[key])===JSON.stringify(value[key]));
         if(same||keys.length||!Object.hasOwn(scope,'placeCurrentFactBindings')||!existing.some(fact=>fact.placeEntityId===entityId)){
-          const fact=same?old:value;replaceFields.push({entityId,kind:'place'});facts.set(fact.itemId,fact);
+          const fact=same?old:value;replaceFields.push({entityId,kind:'place'});facts.set(fact.itemId,fact);displayFactItemId=fact.itemId;
         }
+      }
+      if (envelope.request?.task === 'organizePlaces' && ['mapLevel','mapStyle','mapLayout'].some(key => Object.hasOwn(segment,key))) {
+        displayMetadataBindings.push({pathIndex:index,nodeIndex:depth,entityId,...(displayFactItemId?{itemId:displayFactItemId}:{})});
       }
       const manual=envelope.request?.payload?.knownPlaces?.find(place=>place.entityKey===binding?.entityKey)?.manualCurrentFacts??{};
       if (typeof description === 'string' && !Object.hasOwn(manual,'description')) {
@@ -393,11 +486,11 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     }
   }
   delete result.placePaths;
-  const mapStyle=validQianchuangMapStyle(result.mapStyle)?result.mapStyle:undefined;delete result.mapStyle;
+  const mapStyle=normalizeQianchuangMapStyle(result.mapStyle);delete result.mapStyle;
   const ids = new Set([...facts.values()].flatMap(fact => [fact.placeEntityId, fact.parentEntityId]).filter(Boolean));
   return { packet: result, entities, freshEntities, foundationPatch: { schemaVersion: 1, entities: entities.filter(entity => ids.has(entity.id)), facts: [...facts.values()], replaceFields, ...(mapStyle?{mapStyle}:{}) },
     envelope: { ...envelope, request: { ...envelope.request, payload: { ...envelope.request?.payload,
       knownPlaces: bindings.map(binding => envelope.request?.payload?.knownPlaces?.find(place => place.entityKey === binding.entityKey) ?? { entityKey: binding.entityKey, displayName: byId.get(binding.entityId)?.displayName, entityType: 'place', aliases: [] }) } },
-      scope: { ...scope, placeCatalogBindings: bindings, parentEntityIdsByPlaceId: parents } }, isolated };
+      scope: { ...scope, placeCatalogBindings: bindings, parentEntityIdsByPlaceId: parents } }, isolated, displayMetadataBindings };
 }
 

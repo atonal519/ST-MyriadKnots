@@ -13,6 +13,41 @@ const memory=(n,spatial={},extra={})=>({id:id(200+n),floorId:id(100+n),recordSta
 const graph=(memories,entities=[entity(1,'青石馆'),entity(2,'书房'),entity(3,'内部通道')],count=4)=>({status:'ready',root:{chatId:id(90),narrativeGeneration:id(91),headCheckpointId:id(92)},rootRevision:7,checkpoint:{inputFingerprints:Array.from({length:count},(_,i)=>({floorId:id(101+i),memoryExcluded:false}))},floors:Array.from({length:count},(_,i)=>floor(i+1)),floorMemories:memories,entities});
 const project=(value,options)=>{assert.equal(typeof domain.projectQianchuangSnapshot,'function','千窗应提供纯只读地点投影');return domain.projectQianchuangSnapshot(value,options);};
 
+test('较粗祖先包含保留已明确细父链，真移动与人工父级仍可生效',()=>{
+ const entities=[entity(1,'本馆'),entity(2,'三楼'),entity(3,'教室'),entity(4,'别馆')];
+ const value=graph([memory(1,{containments:[edge(300,3,2),edge(301,2,1)]}),memory(2,{containments:[edge(302,3,1,2)]})],entities);
+ assert.equal(project(value).places.find(p=>p.entityId===id(3)).parentEntityId,id(2));
+ const moved=structuredClone(value);moved.floorMemories.push(memory(3,{containments:[edge(303,3,4,3)]}));
+ assert.equal(project(moved).places.find(p=>p.entityId===id(3)).parentEntityId,id(4));
+ assert.equal(project(moved,{throughAssistantSeq:2}).places.find(p=>p.entityId===id(3)).parentEntityId,id(2));
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:id(90),placesByEntityId:{[id(3)]:{parentEntityId:null,scopes:{}}},deletionsByEntityId:{}};
+ assert.equal(project(value,{identityProjection:{placeWorkspace:workspace}}).places.find(p=>p.entityId===id(3)).parentEntityId,null);
+});
+
+test('旧资料细父链不会被后楼粗包含覆盖，取材与地图共用归属',async()=>{
+ const {projectPlaceOwnership,expandPlaceParents}=await import('../src/v3/spatial-domain.js');
+ const entities=[entity(1,'本馆'),entity(2,'三楼'),entity(3,'教室')];
+ const value=graph([memory(1),memory(2,{containments:[edge(302,3,1,2)]})],entities);
+ const fact=(n,child,parent)=>({itemId:id(n),placeEntityId:id(child),parentEntityId:id(parent),kind:'containment',knownFromFloorId:null,
+   source:{kind:'worldbook',locator:'setting:1',quote:'教室在本馆三楼。'}});
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:id(90),placesByEntityId:{},deletionsByEntityId:{},foundation:{version:1,entities:[],facts:[fact(401,3,2),fact(402,2,1)]}};
+ const snapshot=project(value,{identityProjection:{placeWorkspace:workspace}});
+ assert.equal(snapshot.places.find(p=>p.entityId===id(3)).parentEntityId,id(2));
+ assert.deepEqual([...projectPlaceOwnership(value.floorMemories,Infinity,value.floors,workspace).get(id(3))],[id(2)]);
+ assert.deepEqual([...expandPlaceParents([id(3)],value.floorMemories,Infinity,value.floors,workspace)],[id(3),id(2),id(1)]);
+});
+
+test('同楼补足中间父链时粗包含不缩短，输入次序与人工祖先不改变结果',()=>{
+ const entities=[entity(1,'本馆'),entity(2,'三楼'),entity(3,'教室')];
+ for(const edges of [[edge(302,2,1,2),edge(303,3,1,2)],[edge(303,3,1,2),edge(302,2,1,2)]]){
+  const value=graph([memory(1,{containments:[edge(300,3,2)]}),memory(2,{containments:edges})],entities);
+  assert.equal(project(value).places.find(p=>p.entityId===id(3)).parentEntityId,id(2));
+ }
+ const value=graph([memory(1,{containments:[edge(300,3,2)]}),memory(2,{containments:[edge(303,3,1,2)]})],entities);
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:id(90),placesByEntityId:{[id(2)]:{parentEntityId:id(1),scopes:{}}},deletionsByEntityId:{}};
+ assert.equal(project(value,{identityProjection:{placeWorkspace:workspace}}).places.find(p=>p.entityId===id(3)).parentEntityId,id(2));
+});
+
 test('地图只画有明确下级的根场地，未归属单例完整保留且不按名字猜',()=>{
  const snapshot=project(graph([memory(1,{containments:[edge(300,2,1)]})]));
  assert.deepEqual(snapshot.mapRootIds,[id(1)]);
@@ -129,6 +164,8 @@ test('lastSeen与leftUnknown不复活旧confirmed，user canonical别名可投�
   assert.equal(snapshot.userPosition.status,status);assert.equal(snapshot.userPosition.isCurrent,false);
   if(status==='leftUnknown')assert.equal(snapshot.userPosition.mapRootEntityId,null);
  }
+ const left=project(graph([memory(1,{containments:[edge(310,2,1)]}),memory(2,{positions:[position(311,2,2,'leftUnknown')]})],people));
+ assert.equal(left.userPosition.placeEntityId,id(2),'保留已离开的来源地点');assert.equal(left.userPosition.mapRootEntityId,null,'去向未知不回挂来源地图');
 });
 
 test('无图与已就绪空库区分，DTO不带正文和证据原句且不改输入',()=>{

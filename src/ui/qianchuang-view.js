@@ -27,7 +27,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   let markerKey=null,positionKey=null,browseScopeId=undefined,browse=null,mapBrowse=null,query='';
   let organizationController=null,organizeAction=null;
   let sheets=null,activeSheetId=null,sheetSnapshot=null,displayById=new Map(),sheetRow=null,assetDrawKey=null;
-  let sheetSwitcher=null,sheetScrollLeft=0;
+  let sheetSwitcher=null,sheetScrollLeft=0,lastCurrentSheetId=null;
   const currentSheet=()=>sheets?.sheets.find(sheet=>sheet.id===activeSheetId);
   const browseFor=id=>{
     const source=sheetSnapshot??snapshot,root=currentSheet()?.rootPlaceId??currentSheet()?.cityId;
@@ -94,7 +94,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     const geometry=el('div','qqj-window-geometry');
     map.style.setProperty('--qqj-window-map-aspect',`${asset.width} / ${asset.height}`);map.style.setProperty('--qqj-window-map-width',`${Math.min(1,asset.width/asset.height)*100}%`);map.setAttribute('data-basemap',real?.id??basemap);map.setAttribute('data-map-mode',real?'real':'generic');
     map.setAttribute('data-map-library',String(!real&&!!generic));
-    map.replaceChildren(geometry,regions,areas,points);copyright.replaceChildren();copyright.hidden=!real&&basemap!=='modern'&&generic?.id!=='modern-inland'&&generic?.id!=='palace-courtyard-honmaru';if(!copyright.hidden)copyright.textContent='© OpenStreetMap contributors · ODbL';
+    map.replaceChildren(geometry,regions,areas,points);copyright.replaceChildren();copyright.hidden=!real&&basemap!=='modern'&&generic?.id!=='modern-inland'&&generic?.id!=='palace-courtyard-honmaru'&&!['campus-compact','campus-garden','campus-university'].includes(generic?.id);if(!copyright.hidden)copyright.textContent='© OpenStreetMap contributors · ODbL';
     if(real||generic){
       geometry.setAttribute('aria-busy','true');
       void (real?loadCityMap(real.id):loadGenericMap(generic.id)).then(svg=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.innerHTML=svg;geometry.setAttribute('aria-busy','false');},()=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.textContent=real?'城市底图暂时无法读取，可继续浏览地点资料。':'底图暂时无法读取，可继续浏览地点资料。';geometry.setAttribute('aria-busy','false');});
@@ -107,6 +107,8 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   }
   function renderSheets(){
     if(sheetSwitcher?.parentNode===sheetRow)sheetScrollLeft=Number(sheetSwitcher.scrollLeft)||0;
+    const currentSheetId=snapshot.userPosition?.isCurrent===true?sheets.sheets.find(sheet=>sheet.id===sheets.placeSheets.get(snapshot.userPosition.placeEntityId))?.id:null;
+    if(currentSheetId&&currentSheetId!==lastCurrentSheetId){sheetScrollLeft=0;lastCurrentSheetId=currentSheetId;}
     sheetSwitcher=null;
     sheetRow.replaceChildren();sheetRow.hidden=sheets.sheets.length<2;page.setAttribute('data-city-sheet',activeSheetId??'');
     if(!sheetRow.hidden){const bar=el('nav','qqj-profile-switcher qqj-window-city-switcher');bar.setAttribute('aria-label','地图');for(const sheet of sheets.sheets){const tab=button('qqj-profile-tab qqj-window-city-tab'+(sheet.id===activeSheetId?' active':''),sheet.label,()=>selectSheet(sheet.id));tab.setAttribute('data-city-sheet-target',sheet.id);tab.setAttribute('aria-pressed',String(sheet.id===activeSheetId));bar.append(tab);}sheetRow.append(bar);bar.scrollLeft=sheetScrollLeft;sheetScrollLeft=Number(bar.scrollLeft)||0;sheetSwitcher=bar;bar.addEventListener('scroll',()=>{if(sheetSwitcher===bar)sheetScrollLeft=Number(bar.scrollLeft)||0;});}
@@ -115,7 +117,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     if (chatId === next) return;
     if(active && !(preparing && chatId===null && next!==null)) { epoch++; preparing=false; failure=null; }
     organizationController?.abort();closeUserAvatar(true);userAvatar=null;
-    chatId = next;sheets=null;activeSheetId=null;sheetSnapshot=null;displayById=new Map();assetDrawKey=null;sheetSwitcher=null;sheetScrollLeft=0; highlightedMapRootId = null; renderedRevision = null; openIds = new Set(); localSelections = new Map(); unassignedOpen=false;query='';if(search)search.value='';browseScopeId=undefined;browse=null;mapBrowse=null;markerKey=null;positionKey=null;byId = new Map();
+    chatId = next;sheets=null;activeSheetId=null;sheetSnapshot=null;displayById=new Map();assetDrawKey=null;sheetSwitcher=null;sheetScrollLeft=0;lastCurrentSheetId=null; highlightedMapRootId = null; renderedRevision = null; openIds = new Set(); localSelections = new Map(); unassignedOpen=false;query='';if(search)search.value='';browseScopeId=undefined;browse=null;mapBrowse=null;markerKey=null;positionKey=null;byId = new Map();
     basemap = QIANCHUANG_BASEMAPS[settings?.get?.()?.qianchuangBasemaps?.[chatId]] ? settings.get().qianchuangBasemaps[chatId] : 'modern';
     drawBasemap();
   }
@@ -306,7 +308,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     if(nextMarkerKey!==markerKey){
       closeUserAvatar(true);userAvatar=null;
       markerKey=nextMarkerKey;markers=new Map();visitMenus(areas,'unregister');areas.replaceChildren();points.replaceChildren();
-      const real=CITY_MAPS[currentSheet()?.assetId],layout=real?citySchematicLayout(real.id,mapBrowse.groups):qianchuangMapLayout(basemap,mapBrowse.groups),asset=real??QIANCHUANG_MAP_ASSETS[basemap]??QIANCHUANG_BASEMAPS[basemap];
+      const real=CITY_MAPS[currentSheet()?.assetId],layout=real?citySchematicLayout(real.id,mapBrowse.groups):qianchuangMapLayout(basemap,mapBrowse.groups,byId),asset=real??QIANCHUANG_MAP_ASSETS[basemap]??QIANCHUANG_BASEMAPS[basemap];
       regions.innerHTML=`<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${layout.filter(region=>region.contour).map(region=>`<path class="qqj-window-region-outline" d="${region.contours.map(ring=>`M${ring.map(point=>point.join(',')).join('L')}Z`).join('')}" fill-rule="evenodd"/>`).join('')}</svg>`;
       for(const region of layout){
         if(region.entityId&&region.labelBox){

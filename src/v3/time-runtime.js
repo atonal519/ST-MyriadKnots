@@ -1,7 +1,7 @@
 import { createActivitySignal } from '../plugin-activity.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, compileTimeCreate, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, compileTimeCreate, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures, linkedTimeFollowing } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -172,7 +172,9 @@ export function createTimeStore({ client }) {
 }
 
 export async function prepareTimeRequest(reachable, batches = [], options = {}) {
-  const prepared = await prepareTimeBatch(reachable, batches, options);
+  let qianshiProjection = null;
+  try { qianshiProjection = projectQianshiGraph(reachable, { identityProjection: reachable.identityProjection }); } catch { /* Optional associations keep their existing unbound behavior. */ }
+  const prepared = await prepareTimeBatch(reachable, batches, { ...options, qianshiProjection });
   const recall = await projectRecallSource(reachable, () => new Date());
   const subjects = new Set([...prepared.request.people.map(item => item.entityId), ...prepared.request.trackedItems.map(item => item.subjectEntityId)]);
   const linkFloors = new Set(prepared.request.observations.map(item => item.floorId));
@@ -182,7 +184,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
     const qianshi = prepareQianshiCandidates(reachable, { canonicalContent: [
       ...prepared.request.observations.map(item => item.description),
       ...prepared.request.trackedItems.map(item => `${item.label} ${item.observation}`),
-    ].join('\n'), identityProjection: reachable.identityProjection });
+    ].join('\n'), identityProjection: reachable.identityProjection, ...(qianshiProjection ? { projection: qianshiProjection } : {}) });
     prepared.request.qianshiCandidates = [...qianshi.request];
     prepared.qianshiCandidateBindings = [...qianshi.bindings];
   } catch {
@@ -221,7 +223,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     cutoffFloorId: prepared?.cutoffFloorId ?? fragments.at(-1)?.floorId ?? null,
     cutoffAssistantSeq: prepared?.cutoffAssistantSeq ?? fragments.at(-1)?.assistantSeq ?? 0,
     ...(prepared ? { sourceKeys: prepared.sourceKeys } : {}),
-    fragments: fragments.map(({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters }) => ({ floorId, canonicalFingerprint, timeSourceFingerprint, from, to, totalCharacters })),
+    fragments: fragments.map(({ floorId, canonicalFingerprint, timeSourceFingerprint, userInputFingerprint, from, to, totalCharacters }) => ({ floorId, canonicalFingerprint, timeSourceFingerprint, ...(userInputFingerprint ? { userInputFingerprint } : {}), from, to, totalCharacters })),
   });
   const failureDiagnostic = (error, phase) => {
     const code = /^(?:QQJ|V3|CHAT_SESSION|QIANSHI)_[A-Z0-9_]{1,80}$/.test(error?.code ?? '') || error?.code === 'BACKEND_TIMEOUT' ? error.code : null;
@@ -242,7 +244,8 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   };
   const sourceKey = source => {
     let host; try { host = hostAdapter.snapshot(); } catch { return null; }
-    return JSON.stringify([epoch, storyCalendarProvider(), source?.root?.chatId, source?.root?.narrativeGeneration, (source?.floors ?? []).map(floor => floor.id),
+    return JSON.stringify([epoch, storyCalendarProvider(), source?.root?.chatId, source?.root?.narrativeGeneration, (source?.floors ?? []).map(floor => floor.id), (source?.floorMemories ?? []).map(memory => [memory.id, memory.sourceUserInputSnapshot ?? null,
+        memory.sourceFloorSnapshots?.map(snapshot => [snapshot.floorId, snapshot.sourceUserInputSnapshot ?? null]) ?? null]),
       host.chatId, host.chat.map(message => [message.is_user, message.is_system, message.is_hidden, message.hidden, isMemoryExcludedMessage(message), message.mes, message.swipe_id, message.swipes?.[Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0]])]);
   };
   async function bodySource(base = getReachable()) {
@@ -311,7 +314,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     for (const ref of refs) {
       const body = source.bodyFloors?.find(value => value.floorId === ref?.floorId);
       if (body) witnesses.set(body.floorId, { floorId: body.floorId, canonicalFingerprint: body.canonicalFingerprint,
-        timeSourceFingerprint: body.timeSourceFingerprint, rawFingerprint: body.rawFingerprint, totalCharacters: body.content.length });
+        timeSourceFingerprint: body.timeSourceFingerprint, ...(body.userInputFingerprint ? { userInputFingerprint: body.userInputFingerprint } : {}), rawFingerprint: body.rawFingerprint, totalCharacters: body.content.length });
     }
     return [...witnesses.values()];
   };
@@ -328,11 +331,14 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     // Keep only the narrow association anchors needed to prevent Qianshi rejudge from orphaning reminders.
     qianshiReferences = replayedItems.filter(item => item.qianshiRef?.matterId && item.qianshiRef?.originEventId)
       .map(item => ({ id: item.id, qianshiRef: { ...item.qianshiRef } }));
+    let qianshiProjection = null;
+    try { qianshiProjection = projectQianshiGraph(source); } catch { /* Optional associations keep the ordinary time list available. */ }
     const items = replayedItems.map(item => {
       const projectionIsCurrent = validTimeProjection(item, currentTime);
       const keywords = normalizeTimeKeywords(item.keywords) ?? normalizeTimeKeywords(item.tags);
       return {
         id: item.id, subjectEntityId: item.subjectEntityId, mergedInto: item.mergedInto ?? null, hasMergedMembers: Boolean(item.mergedItemIds?.length), mergeDescription: item.mergeDescription ?? null, retirementReason: item.retirementReason ?? null, observationKey: item.observationKey, status: item.status, person: names.get(item.subjectEntityId) ?? item.subjectName ?? '人物未提供', label: item.label, type: item.type,
+        ...(item.status === 'active' && linkedTimeFollowing(item, qianshiProjection) === false ? { following: false } : {}),
         observation: item.observation, observationTime: effectiveTime(item.observationTime), occurrenceTime: effectiveTime(item.occurrenceTime),
         dueTime: effectiveTime(item.dueTime), periodDays: item.periodDays,
         ...(keywords ? { keywords } : {}),
@@ -343,7 +349,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
         reviewStatus: reviewCurrent && item.status === 'active' ? !selectedIds.has(item.id) ? 'omitted' : !answeredIds.has(item.id) ? 'unanswered' : null : null,
       };
     });
-    trackedItems = items.filter(item => item.status === 'active'); stoppedItems = items.filter(item => item.status !== 'active');
+    trackedItems = items.filter(item => item.status === 'active' && item.following !== false); stoppedItems = items.filter(item => item.status !== 'active' || item.following === false);
     annualItems = projectAnnualSettings(annualRecords, currentTime).items;
     itemsKey = sourceKey(source);
     statusKey = sourceKey(getReachable()) === itemsKey ? itemsKey : null;
@@ -529,9 +535,14 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       if (!pending.length) {
         if (!items.length) throw new Error('请先选择要永久删除的停止事项。');
         const currentItems = new Map(replayTimeBatches(stored.batches, reachable).map(item => [item.id, item]));
+        let qianshiProjection = null;
+        if (items.some(selected => currentItems.get(selected?.itemId)?.status === 'active')) {
+          try { qianshiProjection = projectQianshiGraph(reachable); }
+          catch { /* An unavailable association cannot authorize deleting an active item. */ }
+        }
         for (const selected of items) {
           const item = currentItems.get(selected?.itemId);
-          if (!item || item.status === 'active' || item.observationKey !== selected.observationKey) throw new Error('停止事项已变化或来源已失效，请刷新后重试。');
+          if (!item || item.status === 'active' && linkedTimeFollowing(item, qianshiProjection) !== false || item.observationKey !== selected.observationKey) throw new Error('停止事项已变化或来源已失效，请刷新后重试。');
         }
         const deletedIds = new Set(items.map(item => item.itemId)), replacements = new Map(), preparedBatches = [];
         const frozenBatchIds = new Set(migrationPartition(reachable).descriptor?.recordRefs?.timeBatchIds ?? []);
@@ -604,7 +615,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (!current(operation) || root.data?.chatId !== operation.chatId || root.data?.narrativeGeneration !== source.root.narrativeGeneration) return false;
     const latest = await bodySource();
     return current(operation) && fragments.every(fragment => latest.bodyFloors.some(body => body.floorId === fragment.floorId
-      && body.canonicalFingerprint === fragment.canonicalFingerprint && (!fragment.timeSourceFingerprint || body.timeSourceFingerprint === fragment.timeSourceFingerprint) && (!fragment.rawFingerprint || body.rawFingerprint === fragment.rawFingerprint) && body.content.length === fragment.totalCharacters));
+      && body.canonicalFingerprint === fragment.canonicalFingerprint && (!fragment.timeSourceFingerprint || body.timeSourceFingerprint === fragment.timeSourceFingerprint) && (body.userInputFingerprint ?? null) === (fragment.userInputFingerprint ?? null) && (!fragment.rawFingerprint || body.rawFingerprint === fragment.rawFingerprint) && body.content.length === fragment.totalCharacters));
   }
   async function runAnnualSetting(operation, source, stored, plan) {
     const annual = plan.annualSetting;
@@ -682,7 +693,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           const fragments = planned.filter(fragment => {
             let cursor = fragment.from;
             const sameVersion = (reads.get(fragment.floorId) ?? []).filter(range => range.canonicalFingerprint === fragment.canonicalFingerprint
-              && range.timeSourceFingerprint === fragment.timeSourceFingerprint && range.totalCharacters === fragment.totalCharacters).sort((a,b) => a.from-b.from);
+              && range.timeSourceFingerprint === fragment.timeSourceFingerprint && (range.userInputFingerprint ?? null) === (fragment.userInputFingerprint ?? null) && range.totalCharacters === fragment.totalCharacters).sort((a,b) => a.from-b.from);
             for (const range of sameVersion) if (range.from <= cursor) cursor = Math.max(cursor, range.to);
             return cursor < fragment.to;
           });

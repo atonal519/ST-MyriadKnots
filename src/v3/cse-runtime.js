@@ -1,3 +1,4 @@
+import { memoriesBySourceFloor, storedSourceUserInput } from './user-input-source.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
 import { createCheckpointInputFingerprints, deterministicUuid } from './foundation-domain.js';
@@ -31,7 +32,7 @@ const archivedStoryClockSignature = (value, floorId) => value?.floorMemories?.fi
 
 export function selectUserAdaptiveHistory({ floors = [], floorMemories = [], targetIndex, userEntityId, identityProjection = {} }) {
   const canonicalUserId = resolveIdentityEntityId(userEntityId, identityProjection);
-  const memoryByFloor = new Map(floorMemories.filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
+  const memoryByFloor = memoriesBySourceFloor(floorMemories);
   const candidates = [];
   for (let index = 0; index < Math.min(floors.length, Number(targetIndex) || 0); index += 1) {
     const floor = floors[index], memory = memoryByFloor.get(floor.id);
@@ -51,25 +52,28 @@ export function selectUserAdaptiveHistory({ floors = [], floorMemories = [], tar
         ? (typeof memory.sourceCanonicalContent === 'string' && memory.sourceCanonicalContent.trim()
           ? memory.sourceCanonicalContent : floor.content?.canonicalContent)
         : null;
-    if (typeof content === 'string' && content.trim()) candidates.push({ floorId: floor.id, assistantSeq: floor.assistantSeq, content, index, ordinal: candidates.length });
+    const precedingUserInput = storedSourceUserInput(memory, floor.id);
+    if (typeof content === 'string' && content.trim()) candidates.push({ floorId: floor.id, assistantSeq: floor.assistantSeq, content,
+      ...(precedingUserInput ? { precedingUserInput } : {}), index, ordinal: candidates.length });
   }
   const selected = [];
   let used = 0;
+  const size = candidate => candidate.content.length + (candidate.precedingUserInput?.messages ?? []).reduce((total, message) => total + message.content.length, 0);
   const add = candidate => {
-    if (!candidate || selected.length >= 3 || used + candidate.content.length > 6000) return false;
-    selected.push(candidate); used += candidate.content.length; return true;
+    if (!candidate || selected.length >= 3 || used + size(candidate) > 6000) return false;
+    selected.push(candidate); used += size(candidate); return true;
   };
   for (let index = candidates.length - 1; index >= 0; index -= 1) if (add(candidates[index])) break;
   for (const candidate of candidates) if (!selected.includes(candidate) && add(candidate)) break;
   const midpoint = (candidates.length - 1) / 2;
   let middle = null, middleDistance = Infinity;
   for (const candidate of candidates) {
-    if (selected.includes(candidate) || used + candidate.content.length > 6000) continue;
+    if (selected.includes(candidate) || used + size(candidate) > 6000) continue;
     const distance = Math.abs(candidate.ordinal - midpoint);
     if (distance < middleDistance) { middle = candidate; middleDistance = distance; }
   }
   if (middle) add(middle);
-  return selected.sort((left, right) => left.index - right.index).map(({ floorId, assistantSeq, content }) => ({ floorId, assistantSeq, content }));
+  return selected.sort((left, right) => left.index - right.index).map(({ index, ordinal, ...entry }) => entry);
 }
 
 // These records supplement the same CSE request; they do not create shared character knowledge.

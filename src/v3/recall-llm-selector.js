@@ -19,6 +19,9 @@ export const RECALL_LLM_SYSTEM_PROMPT = `为接下来的剧情续写分别排除
 
 R 中 placeFeature 是当前相关地点有来源的固定设施、主要陈设和行动条件；即使来源楼仍在近期正文、P未复述或用户只说间接行动，也应判断它对行动是否必要。设施存在不代表所有人物已知。其明确替换已由来源图投影，旧摘要/原文中相反陈设只是历史，不恢复成当前条件；无关陈设照常排除。 placeScene只表示来源楼当时的重要临时现场，placeDescription是持续性未标的旧地点描述；两者都不自动作为当前固定设施。spatialRelation保场所归属、楼层或相对位置原意，不能一律改成包含。
 
+alreadyProvided.savedStateThroughAssistantSeq是状态保存截止。按最新USER与最近正文接续；已保存场景快照提供其来源阶段，长期目标和稳定态度继续参考。
+sourceGroups只列明确同源原文R与摘要R/P键供本次比较；摘要R仍是待选项，仅保留它才算覆盖。原文有独立心理、原话、条件或后果可与摘要同时保；没有新增信息时排除重复项。沿原history_exclude_keys明确排除的摘要不会再作为关联背景补入。
+
 C 的 kind=current 表示最后保存的状态快照，不代表此刻已经重新确认；kind=change 记录来源楼当时的 before→after，不要把其中的旧状态当作当前状态，尤其 remove 的 before 只是当时被移除的状态。toward 表示主体对该对象的单向状态，不推导反向关系。
 
 另外输出 priority_keys 数组：从本次被你保留的 R/C 材料中，按重要性列出解释本轮意图所需的最小证据组合，最多 8 个键，不必填满。涉及原因或变化时，优先项应能交代相关起因、对方实际回应及实质转折；不要用同主题的后期现状替代被问及的早期过程。优先选直接提供必要事实的材料，避免对同一阶段重复举证。不得列入任何排除键或不存在的键；没有明确优先项时返回空数组。只输出键，不另写解释；原有排除字段仍按上述规则填写。
@@ -185,8 +188,18 @@ export async function selectRecallWithLlm({
     if (signal?.aborted) throw abortError(signal.reason);
   }
   updateStep('candidateBuild');
-  const nativeHistoryContext = historyContext;
+  let nativeHistoryContext = historyContext;
   if (semantic.candidates?.length) historyContext = addSemanticHistory(historyContext, semantic.candidates);
+  if (historyContext?.semantic?.length) {
+    const linked = historyContext.semantic.flatMap(raw => {
+      const witness = raw.rawWitness;
+      return historyContext.summaries.filter(summary => summary.floorMemoryId === witness.floorMemoryId
+        && summary.floorId === (witness.memoryFloorId ?? witness.floorId))
+        .map(summary => ({...summary, score:Math.max(summary.score ?? 0,raw.score ?? 0)}));
+    });
+    nativeHistoryContext = {...nativeHistoryContext,direct:[...nativeHistoryContext.direct,...linked]};
+    historyContext = {...historyContext,direct:[...historyContext.direct,...linked]};
+  }
   const cseContext = cseSelectionContext(source, queryContext);
   const baseInput = { source, queryContext, historyContext, cseContext, contextSize, maxFloors, maxItems, reservedTokens, reservedCharacters };
   // 原文片段与人工摘要共用最多12个语义位置；命中已有摘要时只替换该候选，不另加重复项。
@@ -237,7 +250,7 @@ export async function selectRecallWithLlm({
   const cseByKeyForPayload = new Map(csePool.candidates.map(candidate => [candidate.key, candidate]));
   const recentContinuation = planned.floors.flatMap(floor => floor.items
     .filter(item => item.recallSection === 'recent')
-    .map(item => ({ floorId:floor.floorId, assistantSeq:floor.assistantSeq, time:formatChronologyAnchor(floor.chronology ?? []) || null, summary:item.text, truncated:item.truncated === true })));
+    .map(item => ({ floorId:floor.floorId, floorMemoryId:floor.floorMemoryId, assistantSeq:floor.assistantSeq, time:formatChronologyAnchor(floor.chronology ?? []) || null, summary:item.text, truncated:item.truncated === true })));
   const recentByKey = new Map(recentContinuation.map((value, index) => [`P${index + 1}`, value]));
   const payload = {
     query: {
@@ -248,6 +261,7 @@ export async function selectRecallWithLlm({
     },
     alreadyProvided: {
       recentContinuation: [...recentByKey].map(([key, value]) => ({ key, assistantSeq:value.assistantSeq, time:value.time, summary:value.summary, truncated:value.truncated })),
+      savedStateThroughAssistantSeq: source?.coverage?.cseThroughAssistantSeq ?? null,
       coreCoveredAssistantSeq: (source?.floorMemories ?? [])
         .filter(memory => (source?.bodyMatch?.coveredFloorIds ?? []).includes(memory.floorId))
         .map(memory => memory.assistantSeq),
@@ -261,6 +275,19 @@ export async function selectRecallWithLlm({
       return { ...item, sourceTime: chronologyByFloor.get(floorId) || null };
     }) })),
   };
+  const sourceGroups = new Map();
+  for (const candidate of historyPool.candidates.filter(row => row.value.rawWitness)) {
+    const witness = candidate.value.rawWitness, floorId = witness.memoryFloorId ?? witness.floorId;
+    const summaryKeys = historyPool.candidates.filter(row => row.value.kind === 'summary'
+      && row.value.floorMemoryId === witness.floorMemoryId && row.value.floorId === floorId).map(row => row.key);
+    summaryKeys.push(...[...recentByKey].filter(([,row]) => row.floorId === floorId
+      && (!row.floorMemoryId || row.floorMemoryId === witness.floorMemoryId)).map(([key]) => key));
+    if (!summaryKeys.length) continue;
+    const groupKey = JSON.stringify([floorId,witness.floorMemoryId]);
+    const group = sourceGroups.get(groupKey) ?? {rawKeys:[],summaryKeys};
+    group.rawKeys.push(candidate.key); sourceGroups.set(groupKey,group);
+  }
+  if (sourceGroups.size) payload.sourceGroups = [...sourceGroups.values()];
   const serializedTaskInput = JSON.stringify(payload);
   const requestCharacters = systemPrompt.length + serializedTaskInput.length;
   const requestEstimatedTokens = estimateRecallTokens(`${systemPrompt}\n${serializedTaskInput}`);

@@ -840,7 +840,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.1.0');
+  assert.equal(manifest.version, '1.1.1');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -849,6 +849,14 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   assert.equal(cacheMatch[5], bundleDigest.slice(0, 16), 'manifest cache key 必须随实际 bundle 内容变化，禁止漏 bump 假通过');
   for (const marker of [manifest.version, 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
     assert.equal(bundleSource.includes(marker), true, `生产 bundle 缺少候选版本或安全准备诊断字段：${marker}`);
+  }
+  for (const [id, sha] of Object.entries({
+    'campus-compact': '9df73cb508142b44c7a4b707a705340f56e51eb952f9a2ac568fb29313a1269d',
+    'campus-garden': '1822119617df62f4d3bb282ecec7762548d16f7e13f4e0e9e139d44a36744dd9',
+    'campus-university': '39f454986fb30ba515e0ad1a617761e95b986ee46fd8b0ae758f80f0b3cbe2e0',
+  })) {
+    assert.ok(bundleSource.includes(id) && bundleSource.includes(sha), `校园内置注册未进入生产bundle：${id}`);
+    assert.equal(createHash('sha256').update(await readFile(resolve(root, 'assets/maps-library/' + id + '.svg'))).digest('hex'), sha);
   }
   await assert.rejects(access(resolve(root, 'dist/index.js')));
   await assert.rejects(access(resolve(root, 'src/ui/v3-floor-cards.js')));
@@ -1671,7 +1679,7 @@ test('生产 bundle 的 native 与 Luker 入口保地点检索依赖但不独立
     assert.equal(receipt?.schemaVersion, 18, `${hostGlobalName} 应保存新版地点参考回执`);
     assert.equal(receipt.pluginVersion, JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8')).version, `${hostGlobalName} 运行包版本应与发布清单一致`);
     assert.ok(result.chatSaveCalls > 0, `${hostGlobalName} 应通过宿主保存入口持久化回执`);
-    assert.equal(receipt.strategyVersion, 'continuity-v30', `${hostGlobalName} 应使用新的普通召回策略`);
+    assert.equal(receipt.strategyVersion, 'continuity-v32', `${hostGlobalName} 应使用新的普通召回策略`);
     assert.deepEqual(receipt.selectedLocationReferences, [], `${hostGlobalName} 新回执没有独立地点参考`);
     assert.equal(receipt.stages.locationReferenceCount, 0, `${hostGlobalName} 独立标注不占条目名额`);
     assert.equal(receipt.injectionText, prompt[1], `${hostGlobalName} 已保存回执应与实际提示全文一致`);

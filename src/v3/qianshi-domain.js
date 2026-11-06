@@ -572,7 +572,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     const currentStatus = manualStatusOverride ?? current?.status ?? representative.status;
     const following = current ? ((manualStatusOverride && TERMINAL_STATUSES.has(manualStatusOverride)
       || current.statusManuallyEdited && TERMINAL_STATUSES.has(current.status))
-      ? false : trackingOverride ?? !TERMINAL_STATUSES.has(currentStatus)) : false;
+      ? false : trackingOverride ?? current.following ?? !TERMINAL_STATUSES.has(currentStatus)) : false;
     matterDtos.push(frozen({ matterId, synthetic, title: representative.title, object: representative.object, status: currentStatus,
       manualStatusOverride, currentStatusManuallyEdited: Boolean(current?.statusManuallyEdited), currentEventId: current?.id ?? null, trackingOverride, following,
       people: frozen(representative.people.map(person => frozen({ ...person }))), latestEventIds: frozen(current ? [current.id] : []),
@@ -1099,12 +1099,12 @@ function prepareQianshiCandidatesFromMatters(matters, { canonicalContent = '', p
   // Following is an attention choice; it cannot reopen a line the user explicitly closed.
   const manuallyClosed = matter => Boolean((matter.manualStatusOverride && TERMINAL_STATUSES.has(matter.manualStatusOverride))
     || (matter.currentStatusManuallyEdited && TERMINAL_STATUSES.has(matter.status)));
-  const documents = matters.filter(matter => !manuallyClosed(matter) && (matter.following === true || !TERMINAL_STATUSES.has(matter.status)))
+  const documents = matters.filter(matter => !manuallyClosed(matter) && matter.following === true)
     .map(matter => ({ id: matter.matterId, text: relevanceText(matter) }));
   const ranked = new Map(rankRecallDocuments({ documents, queries: [{ key: 'targetFloor', text: query, weight: 1 }] }).map(item => [item.id, item]));
   const scored = matters.map(matter => {
     const rank = ranked.get(matter.matterId);
-    const unfinished = matter.following === true || !TERMINAL_STATUSES.has(matter.status);
+    const unfinished = matter.following === true;
     if (matter.trackingOverride === false) return { matter, relevant: false, score: 0 };
     const title = clean(matter.title, 500).toLocaleLowerCase('zh-CN');
     const object = clean(matter.object, 1000).toLocaleLowerCase('zh-CN');
@@ -1113,12 +1113,12 @@ function prepareQianshiCandidatesFromMatters(matters, { canonicalContent = '', p
     return { matter, relevant: unfinished ? (rank?.branchMatchCounts?.targetFloor ?? 0) > 0 : terminalReopen,
       score: Number(unfinished) * 100000 + (rank?.score ?? 0) * 10000 + matter.sourceAssistantSeq };
   }).filter(item => item.matter.trackingOverride !== false && !manuallyClosed(item.matter)
-    && (!TERMINAL_STATUSES.has(item.matter.status) || item.relevant))
+    && (item.matter.following === true || item.relevant))
     .sort((left, right) => right.score - left.score || left.matter.matterId.localeCompare(right.matter.matterId));
   const request = [], bindings = [], lines = [];
   for (const { matter } of scored) {
     const key = `candidate-${request.length + 1}`;
-    const value = { key, candidateType: 'matter', title: matter.title, status: matter.status,
+    const value = { key, candidateType: 'matter', title: matter.title, status: matter.status, following: matter.following,
       ...(matter.trackingOverride === true ? { tracking: 'following' } : {}), people: matter.people.map(person => person.name), object: matter.object,
       origin: { title: matter.origin.title, description: matter.origin.description, storyTime: matter.origin.storyTime,
         scheduledTime: matter.origin.scheduledTime, sourceAssistantSeq: matter.origin.sourceAssistantSeq, ...(matter.origin.manuallyCreated?{source:'manual'}:{}) },
@@ -1153,13 +1153,13 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
   const terminalPhrases = matter => [...new Set([clean(matter.title, 500).toLocaleLowerCase('zh-CN'), clean(matter.object, 1000).toLocaleLowerCase('zh-CN')]
     .filter((phrase, index) => phrase && (index === 0 || phrase.length >= 2)))];
   function updateTerminalIndex(state, matterId, prior, next) {
-    if (prior && TERMINAL_STATUSES.has(prior.status)) for (const phrase of state.terminalPhrasesByMatter.get(matterId) ?? []) {
+    if (prior && !prior.following) for (const phrase of state.terminalPhrasesByMatter.get(matterId) ?? []) {
       const postings = phrase.length === 1 ? state.terminalSingleChar : state.terminalBigrams;
       const grams = phrase.length === 1 ? [phrase] : [...new Set(Array.from({ length: phrase.length - 1 }, (_, index) => phrase.slice(index, index + 2)))];
       for (const gram of grams) { const ids = postings.get(gram); ids?.delete(matterId); if (!ids?.size) postings.delete(gram); }
       state.terminalPhrasesByMatter.delete(matterId);
     }
-    if (hasTrackableCurrent(next) && TERMINAL_STATUSES.has(next.status) && next.trackingOverride !== false
+    if (hasTrackableCurrent(next) && !next.following && next.trackingOverride !== false
       && !(next.manualStatusOverride && TERMINAL_STATUSES.has(next.manualStatusOverride))
       && !(next.currentStatusManuallyEdited && TERMINAL_STATUSES.has(next.status))) {
       const phrases = terminalPhrases(next);
@@ -1228,13 +1228,13 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
         _frontier: current ? [{ id: current.id, assistantSeq: current.assistantSeq }] : [],
         title: representative.title, object: representative.object, status, manualStatusOverride, currentStatusManuallyEdited,
         following: current ? ((currentStatusManuallyEdited && TERMINAL_STATUSES.has(status)
-          || manualStatusOverride && TERMINAL_STATUSES.has(manualStatusOverride)) ? false : prior.trackingOverride ?? !TERMINAL_STATUSES.has(status)) : false,
+          || manualStatusOverride && TERMINAL_STATUSES.has(manualStatusOverride)) ? false : prior.trackingOverride ?? current.following ?? !TERMINAL_STATUSES.has(status)) : false,
         people: (representative.people ?? []).map(person => ({ ...person })), sourceFloorId: representative.sourceFloorId,
         sourceAssistantSeq: representative.assistantSeq, storyTime: representative.storyTime, scheduledTime: representative.scheduledTime,
         description: representative.description, recordIds: records.map(event => event.id), eventIds: records.map(event => event.id) };
       updateTerminalIndex(state, matterId, prior, next);
-      if (!hasTrackableCurrent(prior) || !TERMINAL_STATUSES.has(prior.status) || prior.trackingOverride === true) state.activeMatterIds.delete(matterId);
-      if (hasTrackableCurrent(next) && (!TERMINAL_STATUSES.has(next.status) || next.trackingOverride === true)
+      if (!hasTrackableCurrent(prior) || prior.following === true) state.activeMatterIds.delete(matterId);
+      if (hasTrackableCurrent(next) && next.following === true
         && !(next.currentStatusManuallyEdited && TERMINAL_STATUSES.has(next.status))
         && !(manualStatusOverride && TERMINAL_STATUSES.has(manualStatusOverride))) state.activeMatterIds.add(matterId);
       state.matters.set(matterId, next);
@@ -1281,8 +1281,8 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
           eventsByMatter, sourceOrder, nextSourceOrder: [...sourceOrder.values()].reduce((maximum, value) => Math.max(maximum, value + 1), 0),
           terminalBigrams: new Map(), terminalSingleChar: new Map(), terminalPhrasesByMatter: new Map() };
         for (const matter of matters.values()) {
-          if (TERMINAL_STATUSES.has(matter.status) && matter.trackingOverride !== false) updateTerminalIndex(snapshot, matter.matterId, null, matter);
-          if (hasTrackableCurrent(matter) && (!TERMINAL_STATUSES.has(matter.status) || matter.trackingOverride === true)
+          if (!matter.following && matter.trackingOverride !== false) updateTerminalIndex(snapshot, matter.matterId, null, matter);
+          if (hasTrackableCurrent(matter) && matter.following === true
             && !(matter.manualStatusOverride && TERMINAL_STATUSES.has(matter.manualStatusOverride))
             && !(matter.currentStatusManuallyEdited && TERMINAL_STATUSES.has(matter.status))) snapshot.activeMatterIds.add(matter.matterId);
         }
@@ -1436,7 +1436,7 @@ export async function compileQianshiDelta({ packet, floor, sourceFloorBindings =
             recordBinding ? localKey : clean(raw.object, 1000), title]);
       const people = [...new Set(list(raw.people ?? raw.participants).map(value => clean(typeof value === 'string' ? value : value?.name, 500)).filter(Boolean))]
         .map(name => ({ entityId: resolvePerson(name), name }));
-      const event = { id: eventId, matterId, updatesMatter, title, description, status: lineStatus, ...(actionStatus ? { actionStatus } : {}), storyTime,
+      const event = { id: eventId, matterId, updatesMatter, ...(Object.hasOwn(raw, 'following') ? { following: raw.following } : {}), title, description, status: lineStatus, ...(actionStatus ? { actionStatus } : {}), storyTime,
         scheduledTime: clean(raw.scheduledTime ?? raw.expectedAt ?? raw.dueTime, 500) || null, people, object: clean(raw.object ?? raw.subject, 1000) || null,
         sourceFloorId, continuesFromEventIds: [...new Set((link?.candidate.latestEventIds ?? []).slice(0, 1))] };
       validateQianshiDelta({ schemaVersion: QIANSHI_SCHEMA_VERSION, status: 'ready', reason: null, compiledAt: now,

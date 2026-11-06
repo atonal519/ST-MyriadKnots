@@ -1568,7 +1568,7 @@ test('自动原文粗扫只在可用图建立计数基线，旧楼恢复不当�
     assert.equal(requests.length, 0, '实际新增九楼仍不派发，刷新也不重置已知基线');
     h.setReachable(graph(knownCount + 10)); h.notifyFoundation(); h.notifyFoundation();
     await waitFor(() => requests.length === 1 && h.runtime.getState().active === null);
-    assert.match(requests[0].task, /最近稳定AI楼原文粗扫/);
+    assert.match(requests[0].task, /最近稳定AI楼及其冻结前置USER原文粗扫/);
     assert.deepEqual(requests[0].recentFloors.map(floor => floor.sourceFloor),
       Array.from({ length: 10 }, (_, index) => knownCount + index + 1));
     await h.runtime.refresh({ refreshMemory: false }); h.notifyFoundation(); h.notifyFoundation(); await quiet();
@@ -2694,4 +2694,54 @@ test('旧1/2/3资料读取将新字段补为空且不写盘，旧人工六字段
     assert.equal(profile.notes, '独立旧事实'); assert.equal(JSON.stringify(record), before); assert.equal(h.db.calls.filter(call => call[0] === 'put').length, puts);
     assert.deepEqual(profile.manualFields, schemaVersion === 1 ? ['name', 'aliases', 'background', 'appearance', 'personality', 'notes'] : ['notes']);
   }
+});
+
+test('人物手动资料与自动粗扫读取同楼冻结USER，不将最新输入补入旧来源', async () => {
+  const requests = [];
+  const h = harness({ generate: async options => {
+    const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey, appearance: '褐色眼睛' })) } };
+  } });
+  await h.runtime.refresh({ refreshMemory: false });
+  const person = h.peopleEntities[0];
+  await h.runtime.setSelectedEntityIds([person.id]);
+  const saved = { messages: [{ content: '裴晚生有褐色眼睛。', messageIndex: 0, swipeId: null, selectedSwipeIndex: null }] };
+  const floors = Array.from({ length: 10 }, (_, index) => ({ id: ids[index], assistantSeq: index + 1, content: { canonicalContent: `第${index + 1}楼：他进入院子。` } }));
+  const memories = floors.map((floor, index) => ({ id: `memory-${index}`, floorId: floor.id, recordStatus: 'active',
+    summary: { effectiveSource: 'ai', aiText: '他进入院子。' }, participants: [{ entityId: person.id }],
+    sourceCanonicalContent: floor.content.canonicalContent, ...(index === 9 ? { sourceUserInputSnapshot: saved } : {}) }));
+  h.setReachable({ ...h.reachable, floors, floorMemories: memories });
+  await h.runtime.regenerateProfile(person.id);
+  const manual = requests.at(-1).people[0];
+  const history = manual.history ?? (manual.sourceFragments ?? []).filter(item => item.kind === 'history').map(item => JSON.parse(item.content));
+  assert.equal(history.at(-1).precedingUserInput.messages[0].content, saved.messages[0].content);
+  const auto = harness({ generate: async options => { const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey })) } }; } });
+  await auto.runtime.refresh({ refreshMemory: false });
+  await auto.runtime.setSelectedEntityIds([person.id]); await auto.markProfileInitialized([person.id]); auto.setMainGenerationActive(false);
+  auto.setReachable({ ...auto.reachable, floors, floorMemories: memories }); auto.notifyFoundation();
+  await waitFor(() => requests.some(item => item.recentFloors));
+  const automatic = requests.find(item => item.recentFloors);
+  assert.equal(automatic.recentFloors.at(-1).precedingUserInput.messages[0].content, saved.messages[0].content);
+  assert.equal(automatic.recentFloors[0].precedingUserInput, undefined, 'legacy缺快照保持缺失');
+});
+
+test('人物自动粗扫在新楼未提取时按AI locator冻结前置USER，后置输入不挂回前楼', async () => {
+  const requests = [], h = harness({ generate: async options => { const request = JSON.parse(options.taskMessages[0].content); requests.push(request);
+    return { jsonData: { profiles: request.people.map(person => ({ personKey: person.personKey })) } }; } });
+  await h.runtime.refresh({ refreshMemory: false }); const person = h.peopleEntities[0];
+  await h.runtime.setSelectedEntityIds([person.id]); await h.markProfileInitialized([person.id]); h.setMainGenerationActive(false);
+  const chat = [], floors = [];
+  for (let i = 0; i < 10; i += 1) {
+    chat.push({ is_user: true, mes: `第${i + 1}次USER说明，裴晚生留着短发。` }, { is_user: false, mes: '他走进房间。' });
+    floors.push({ id: ids[i], chatId: CHAT_A, assistantSeq: i + 1, hostLocator: { messageIndex: i * 2 + 1 }, content: { canonicalContent: '他走进房间。' } });
+  }
+  chat.push({ is_user: true, mes: '新输入不得挂回上一AI。' }); h.setHostChat(chat);
+  h.setReachable({ ...h.reachable, floors, floorMemories: [] }); h.notifyFoundation();
+  await waitFor(() => requests.some(request => request.recentFloors));
+  const recent = requests.find(request => request.recentFloors).recentFloors;
+  assert.equal(recent.length, 10);
+  assert.equal(recent[0].precedingUserInput.messages[0].content, chat[0].mes);
+  assert.equal(recent.at(-1).precedingUserInput.messages[0].content, chat[18].mes);
+  assert.equal(JSON.stringify(recent).includes('新输入不得'), false);
 });

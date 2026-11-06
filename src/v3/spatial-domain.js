@@ -1,5 +1,5 @@
 import { manualPlaceFacts } from './place-workspace.js';
-import { mergeFoundationParents } from './place-foundation.js';
+import { projectPlaceParentLinks } from './place-foundation.js';
 import { identityLabelKey } from './entity-identity.js';
 const GENERIC_PLACE_ALIAS_KEYS = new Set(['房间', '卧室', '客厅', '厨房', '浴室', '卫生间', '起居室', '走廊', '宿舍', '我的房间']);
 export const isGenericPlaceAlias = label => GENERIC_PLACE_ALIAS_KEYS.has(identityLabelKey(label));
@@ -69,28 +69,8 @@ export function placeSourceLocationReference(memory, sourceFloorId = memory.floo
 // Ownership is source-bounded identity context; locatedIn does not become a physical containment.
 export function projectPlaceOwnership(floorMemories = [], throughAssistantSeq = Infinity, floors = [], placeWorkspace = null, libraryThroughAssistantSeq = throughAssistantSeq) {
   const seqById = new Map(floors.map(floor => [floor.id ?? floor.floorId, floor.assistantSeq]));
-  const latest = new Map();
-  for (const memory of floorMemories) {
-    if (memory.recordStatus && memory.recordStatus !== 'active') continue;
-    const edges = [...(memory.spatialFacts?.containments ?? []), ...(memory.spatialFacts?.relations ?? [])
-      .filter(edge => edge.kind === 'locatedIn' && edge.referencePlaceEntityIds?.length === 1)
-      .map(edge => ({ ...edge, parentEntityId: edge.referencePlaceEntityIds[0] }))];
-    for (const edge of edges) {
-      if (!edge.placeEntityId || !edge.parentEntityId || edge.placeEntityId === edge.parentEntityId) continue;
-      const refs = refsFor(edge).filter(ref => {
-        const seq = ref.assistantSeq ?? seqById.get(ref.floorId) ?? (ref.floorId === memory.floorId ? memory.assistantSeq : 0);
-        return seq > 0 && seq <= throughAssistantSeq;
-      });
-      if (!refs.length) continue;
-      const seq = Math.max(...refs.map(ref => ref.assistantSeq ?? seqById.get(ref.floorId) ?? memory.assistantSeq));
-      const prior = latest.get(edge.placeEntityId);
-      if (!prior || seq > prior.seq) latest.set(edge.placeEntityId, { seq, parents: new Set([edge.parentEntityId]) });
-      else if (seq === prior.seq) prior.parents.add(edge.parentEntityId);
-    }
-  }
-  mergeFoundationParents(latest, placeWorkspace, seqById, libraryThroughAssistantSeq);
-  const result = new Map([...latest].map(([id, value]) => [id, value.parents]));
-  for (const row of manualPlaceFacts(placeWorkspace)) if (Object.hasOwn(row, 'parentEntityId')) result.set(row.entityId, new Set(row.parentEntityId ? [row.parentEntityId] : []));
+  const latest = projectPlaceParentLinks(floorMemories, placeWorkspace, seqById, throughAssistantSeq, libraryThroughAssistantSeq, { includeLocatedIn: true });
+  const result = new Map([...latest].filter(([,value])=>!value.cleared).map(([id,value]) => [id,new Set(value.parents.keys())]));
   const unresolved = new Set();
   for (const [id, parents] of result) {
     const visited = new Set([id]); let next = parents;
@@ -106,21 +86,11 @@ export function projectPlaceOwnership(floorMemories = [], throughAssistantSeq = 
 
 export function expandPlaceParents(placeIds, floorMemories, throughAssistantSeq = Infinity, floors = [], placeWorkspace = null) {
   const seqById = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
-  const latestParents = new Map();
-  for (const memory of floorMemories) for (const edge of memory.spatialFacts?.containments ?? []) {
-    const refs = refsFor(edge);
-    const seqs = refs.map(ref => ref.assistantSeq ?? seqById.get(ref.floorId) ?? (ref.floorId === memory.floorId ? memory.assistantSeq : 0)).filter(seq => seq > 0 && seq <= throughAssistantSeq);
-    if (!seqs.length) continue;
-    const seq = Math.max(...seqs), prior = latestParents.get(edge.placeEntityId);
-    if (!prior || seq > prior.seq) latestParents.set(edge.placeEntityId, { seq, parents: new Set([edge.parentEntityId]) });
-    else if (seq === prior.seq) prior.parents.add(edge.parentEntityId);
-  }
-  mergeFoundationParents(latestParents, placeWorkspace, seqById, throughAssistantSeq);
-  for (const row of manualPlaceFacts(placeWorkspace)) if (Object.hasOwn(row, 'parentEntityId')) latestParents.set(row.entityId, { parents: new Set(row.parentEntityId ? [row.parentEntityId] : []) });
+  const latestParents = projectPlaceParentLinks(floorMemories, placeWorkspace, seqById, throughAssistantSeq);
   const result = new Set(placeIds);
   for (const id of result) {
     const parents = latestParents.get(id)?.parents;
-    if (parents?.size === 1) result.add(parents.values().next().value);
+    if (parents?.size === 1) result.add(parents.keys().next().value);
   }
   return result;
 }

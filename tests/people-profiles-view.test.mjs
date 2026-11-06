@@ -394,6 +394,21 @@ test('更多人物入口固定在顶部并切换为独立选择视图，零选�
   flatten(container).find(node => node.textContent === '返回资料').click(); assert.match(visible(container), /甲.*别名 · 甲别名/);
 });
 
+test('更多人物同行搜索本地匹配显示名原名别名，输入不重建且刷新保查询、换聊清空', async () => {
+  const h=runtimeHarness({selected:[]}),container=new Node('main'),view=createPeopleProfilesView({runtime:h.runtime,documentRef});view.mount(container);
+  flatten(container).find(node=>node.textContent==='更多人物（2）').click();
+  const search=()=>flatten(container).find(node=>node.className.split(' ').includes('qqj-profile-picker-search'));
+  assert.ok(search());const originalSearch=search(),page=container.children[0];originalSearch.focus();originalSearch.value='甲别名';originalSearch.fire('input');
+  const rows=()=>flatten(container).filter(node=>node.className==='qqj-more-person-row'&&!node.hidden);
+  assert.equal(rows().length,1);assert.match(visible(rows()[0]),/甲/u);assert.equal(container.children[0],page);assert.equal(search(),originalSearch);
+  rows()[0].children[1].children[0].click();await new Promise(resolve=>setImmediate(resolve));assert.equal(search().value,'甲别名');assert.deepEqual(h.calls.select.at(-1),[A]);
+  search().value='不匹配';search().fire('input');assert.equal(rows().length,0);assert.ok(flatten(container).find(node=>node.textContent==='没有匹配的人物。'&&!node.hidden));
+  search().value='';search().fire('input');assert.deepEqual(rows().map(row=>row.children[0].children[0].textContent),['甲','乙']);
+  const composing=search();composing.focus();composing.fire('compositionstart');composing.value='乙';composing.fire('input',{isComposing:true});composing.getRootNode=()=>({activeElement:composing});documentRef.activeElement=new Node('shadow-host');h.emitState({...h.state,revision:2,people:[...h.state.people]});assert.equal(search(),composing,'组合输入中不替换输入框');composing.fire('compositionend');assert.equal(search().value,'乙');assert.equal(rows().length,1);
+  h.emitState({...h.state,chatId:CHAT_B,revision:1});flatten(container).find(node=>node.textContent==='更多人物（1）').click();assert.equal(search().value,'');assert.equal(rows().length,2);
+  assert.equal(h.calls.generate,0);assert.equal(h.calls.save.length,0);
+});
+
 test('更多人物排序复用标准弹窗，拖动保存一次且取消不写', async () => {
   const h = runtimeHarness({ selected: [A, B] }), dialogs = dialogHarness(), container = new Node('main');
   createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);

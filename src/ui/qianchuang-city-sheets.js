@@ -24,7 +24,10 @@ export function projectQianchuangSheets(snapshot){
   if(placeIds.some(id=>!boundaryIds.has(id)&&!countryIds.has(id))||placeMapLevel(p)==='scope'&&content)sheets.push({id:p.entityId,rootPlaceId:p.entityId,cityId:placeMapLevel(p)==='city'?p.entityId:null,label:p.displayName,assetId:placeMapLevel(p)==='city'?cityMapForPlace(p)?.id??null:null,mapAssetId:p.mapAssetId??null,placeIds});
   else placeSheets.set(p.entityId,null);
  }
- return{sheets,placeSheets,countryIds,placeOrder:order.map(p=>p.entityId),defaultSheetId:placeSheets.get(snapshot.userPosition?.placeEntityId)??sheets[0]?.id??null};
+ const defaultSheetId=placeSheets.get(snapshot.userPosition?.placeEntityId)??sheets[0]?.id??null;
+ const currentSheetIndex=snapshot.userPosition?.isCurrent===true?sheets.findIndex(sheet=>sheet.id===placeSheets.get(snapshot.userPosition.placeEntityId)):-1;
+ if(currentSheetIndex>0)sheets.unshift(...sheets.splice(currentSheetIndex,1));
+ return{sheets,placeSheets,countryIds,placeOrder:order.map(p=>p.entityId),defaultSheetId};
 }
 export function snapshotForCitySheet(snapshot,projection,id){
  if(id==='legacy')return snapshot;

@@ -1,6 +1,6 @@
 import { validateEntityRecord } from './memory-schema.js';
 import { isUuid } from '../identity.js';
-import { validatePlaceFoundation, effectiveFoundationFacts, filterPlaceFoundationSources, coveredPlaceItemIds } from './place-foundation.js';
+import { validatePlaceFoundation, effectiveFoundationFacts, filterPlaceFoundationSources, coveredPlaceItemIds, projectPlaceParentLinks } from './place-foundation.js';
 import { validQianchuangMapStyle } from '../qianchuang-display-hints.js';
 
 export const PLACE_WORKSPACE_RECORD_ID = 'v3-place-workspace';
@@ -112,7 +112,7 @@ export function filterPlaceMemory(memory, workspace, resolve = id => id) {
   const rows = workspace.placesByEntityId ?? {};
   const projectItem = (item, field) => {
     const placeIds = [...new Set([item.placeEntityId, resolve(item.placeEntityId)].filter(Boolean))];
-    if (['description','relations'].includes(field) && placeIds.some(id => coveredPlaceItemIds(workspace,id,field==='description'?'feature':'relation').has(item.itemId))) return [];
+    if (['description','relations','parentEntityId'].includes(field) && placeIds.some(id => coveredPlaceItemIds(workspace,id,field==='description'?'feature':field==='parentEntityId'?'containment':'relation').has(item.itemId))) return [];
     const scopes = placeIds.map(id => rows[id]).filter(row => own(row, field)).map(row => row.scopes[field]).filter(Boolean);
     if (scopes.some(scope => field === 'parentEntityId' || scope.coveredItemIds.includes(item.itemId) || (item.replacesItemIds ?? []).some(id => scope.coveredItemIds.includes(id)))) return [];
     const refKey = Array.isArray(item.evidenceRefs) ? 'evidenceRefs' : Array.isArray(item.sourceRefs) ? 'sourceRefs' : null;
@@ -132,10 +132,12 @@ export function manualPlaceFacts(workspace) {
   return Object.entries(workspace?.placesByEntityId ?? {}).map(([entityId, row]) => ({ entityId, ...row }));
 }
 
-export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),memories=[]}={}) {
-  if (!workspace || workspace.chatId !== snapshot.chatId) return snapshot;
-  const rows = workspace.placesByEntityId ?? {};
+export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),memories=[],resolve=id=>id}={}) {
+  workspace=workspace?.chatId===snapshot.chatId?workspace:null;
+  const rows = workspace?.placesByEntityId ?? {};
   const base=effectiveFoundationFacts(workspace,memories);
+  const parentLinks = projectPlaceParentLinks(memories, workspace, floorOrder, Infinity, Infinity,
+    {resolve,baseIntents: (snapshot.containments ?? []).map(edge => ({ ...edge, seq: edge.sourceAssistantSeq ?? 0 })) });
   const places = snapshot.places.map(place => {
     const row = rows[place.entityId], result = { ...place, features: [...place.features], relations: [...place.relations], childEntityIds: [] };
     for(const fact of base.filter(fact=>fact.placeEntityId===place.entityId)){
@@ -145,13 +147,12 @@ export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),me
       if(fact.kind==='place')for(const key of ['mapStyle','mapLayout','mapAssetId'])if(own(fact,key))result[key]=fact[key];
       if(fact.kind==='feature'&&fact.text)result.features.push({itemId:fact.itemId,text:fact.text,kind:'stable',source:fact.source});
       if(fact.kind==='relation'&&fact.text)result.relations.push({itemId:fact.itemId,text:fact.text,kind:'relative',referencePlaceEntityIds:[],source:fact.source});
-      if(fact.kind==='containment'){
-        const prior=snapshot.containments?.find(edge=>edge.placeEntityId===place.entityId);
-        if(!prior||(prior.sourceAssistantSeq??0)<=(floorOrder.get(fact.knownFromFloorId)??0))result.parentEntityId=fact.parentEntityId;
-      }
+
     }
     if (own(row, 'name')) result.displayName = row.name || '未命名地点';
-    if (own(row, 'parentEntityId')) result.parentEntityId = row.parentEntityId;
+    const parent = parentLinks.get(place.entityId)?.parents;
+    if (parent) result.parentEntityId = parent.size === 1 ? parent.keys().next().value : null;
+    if (own(row, 'parentEntityId')) result.parentEntityId = row.parentEntityId?resolve(row.parentEntityId):null;
     if (own(row,'mapLevel'))result.mapLevel=row.mapLevel;
     result.manualMapRole=own(row,'mapRole')&&row.mapRole!==null;
     if(result.manualMapRole)result.mapRole=row.mapRole;
@@ -163,18 +164,23 @@ export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),me
     return result;
   });
   const byId = new Map(places.map(place => [place.entityId, place]));
-  for (const place of places) {
-    if (!byId.has(place.parentEntityId) || place.parentEntityId === place.entityId) place.parentEntityId = null;
-    const seen = new Set([place.entityId]); let parent = byId.get(place.parentEntityId);
-    while (parent) { if (seen.has(parent.entityId)) { place.parentEntityId = null; break; } seen.add(parent.entityId); parent = byId.get(parent.parentEntityId); }
+  for(const place of places)if(!byId.has(place.parentEntityId)||place.parentEntityId===place.entityId)place.parentEntityId=null;
+  const cyclic=new Set();
+  for(const place of places){
+    const path=[],seen=new Set();let current=place;
+    while(current?.parentEntityId){
+      if(seen.has(current.entityId)){for(const id of path)cyclic.add(id);break;}
+      seen.add(current.entityId);path.push(current.entityId);current=byId.get(current.parentEntityId);
+    }
   }
+  for(const id of cyclic)byId.get(id).parentEntityId=null;
   for (const place of places) if (place.parentEntityId) byId.get(place.parentEntityId).childEntityIds.push(place.entityId);
   for (const place of places) { let root = place; while (root.parentEntityId) root = byId.get(root.parentEntityId); place.mapRootEntityId = root.childEntityIds.length || own(rows[root.entityId], 'parentEntityId') && rows[root.entityId].parentEntityId === null ? root.entityId : null; }
   const user = byId.get(snapshot.userPosition?.placeEntityId);
-  return Object.freeze({ ...snapshot, ...(validQianchuangMapStyle(workspace.mapStyle)?{mapStyle:workspace.mapStyle}:{}), places, mapRootIds: places.filter(place => !place.parentEntityId && place.mapRootEntityId === place.entityId).map(place => place.entityId),
+  return Object.freeze({ ...snapshot, ...(validQianchuangMapStyle(workspace?.mapStyle)?{mapStyle:workspace.mapStyle}:{}), places, mapRootIds: places.filter(place => !place.parentEntityId && place.mapRootEntityId === place.entityId).map(place => place.entityId),
     unassignedPlaceIds: places.filter(place => !place.mapRootEntityId).map(place => place.entityId),
-    containments: places.filter(place => place.parentEntityId).map(place => ({ placeEntityId: place.entityId, parentEntityId: place.parentEntityId, manual: own(rows[place.entityId], 'parentEntityId') })),
-    userPosition: snapshot.userPosition ? { ...snapshot.userPosition, placeEntityId: user?.entityId ?? null, mapRootEntityId: user?.mapRootEntityId ?? null, isCurrent: Boolean(user?.mapRootEntityId && snapshot.userPosition.status === 'confirmed' && snapshot.userPosition.atSummarizedEnd === true) } : snapshot.userPosition });
+    containments: places.filter(place => place.parentEntityId).map(place => ({ placeEntityId: place.entityId, parentEntityId: place.parentEntityId,...parentLinks.get(place.entityId)?.parents.get(place.parentEntityId),...(own(rows[place.entityId],'parentEntityId')?{manual:true}:{}) })),
+    userPosition: snapshot.userPosition ? { ...snapshot.userPosition, placeEntityId: user?.entityId ?? null, mapRootEntityId: snapshot.userPosition.status==='leftUnknown'?null:user?.mapRootEntityId??null, isCurrent: Boolean(user?.mapRootEntityId && snapshot.userPosition.status === 'confirmed' && snapshot.userPosition.atSummarizedEnd === true) } : snapshot.userPosition });
 }
 
 export function withCreatedPlaces(entities = [], workspace) {

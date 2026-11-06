@@ -1,3 +1,4 @@
+import { capturePrecedingUserInputFromSnapshot, memoriesBySourceFloor, storedSourceUserInput } from './user-input-source.js';
 import { identityBriefFields } from './identity-brief.js';
 import { collectPeopleHistory, compactPeopleHistory, createPeopleEvidenceProjection, peopleMaterialSignature as materialSignature, splitProfileSource, yieldProfileWork } from './people-profile-material.js';
 import { isUuid } from '../host-context.js';
@@ -32,7 +33,7 @@ const PROFILE_FIELD_GUIDE = PEOPLE_PROFILE_FIELDS
   .join('\n');
 
 export const PROFILE_FIXED_CONTRACT = `【固定人物资料合同】
-1. 只处理输入 people 中的目标人物。characterCard 是共享的作者侧角色卡材料，按明确归属提取，不默认把卡名或卡主当作目标。history 提供已记录的有效 summary、目标相关 facts 和 sources 原句，不含整楼全文。事实的 evidence 与 participantEvidence 用 sourceIndex 引用当前楼材料 sources（从1开始）；各自的 evidenceMode、sourceEntityId、supports 和 occurrence 保留原意，转述、内心和推断不等于客观设定。sourceFloor 指真实来源楼；precedingUser 及其 sourceSnapshotIndex 表示该楼前置用户原文。manual 原句保留人工载体及已明确知情人；知情不等于作者或内容主体，不得把原文中他人的设定归给知情目标。缺引用不表示事实无效，不猜未提供的原文。recentFloors 是自动粗扫的清洗原文，注明片段时并非完整楼。sourceEntityNames 将实际引用的来源人或知情人 ID 对应到确定姓名，people.entityId 表明目标身份；未知名不猜。summarySource 保留有效摘要的 user/ai 来源。CSE Core 仍为分析，manual 仅表示人工纠正，不自动成为作者静态设定；priorContext 是过去背景，不覆盖新事实；人物卡、许可世界书、旧档案和人工字段各按其来源判断归属。
+1. 只处理输入 people 中的目标人物。characterCard 是共享的作者侧角色卡材料，按明确归属提取，不默认把卡名或卡主当作目标。history 提供已记录的有效 summary、目标相关 facts、sources 原句及该来源冻结的 precedingUserInput；聚合来源按 precedingUserInputBySourceFloor 分别标注。事实的 evidence 与 participantEvidence 用 sourceIndex 引用当前楼材料 sources（从1开始）；各自的 evidenceMode、sourceEntityId、supports 和 occurrence 保留原意，转述、内心和推断不等于客观设定。sourceFloor 指真实来源楼；precedingUser 及其 sourceSnapshotIndex 表示该楼前置用户原文。manual 原句保留人工载体及已明确知情人；知情不等于作者或内容主体，不得把原文中他人的设定归给知情目标。缺引用不表示事实无效，不猜未提供的原文。AI与对应USER共同作为剧情事实来源，按已发生行动、对白、作者修订或未来写作要求分别理解；recentFloors 是自动粗扫的清洗原文，注明片段时并非完整楼。sourceEntityNames 将实际引用的来源人或知情人 ID 对应到确定姓名，people.entityId 表明目标身份；未知名不猜。summarySource 保留有效摘要的 user/ai 来源。CSE Core 仍为分析，manual 仅表示人工纠正，不自动成为作者静态设定；priorContext 是过去背景，不覆盖新事实；人物卡、许可世界书、旧档案和人工字段各按其来源判断归属。
 2. history.auxiliaryStateSnapshot 是首份有来源的只读变量快照；后续 auxiliaryStateChanges 基于 fromSourceFloor 的快照，changes 按字符串数组 path 定位，value 替换、delete:true 删除，数组整值替换，空 changes 表示当楼无变化。缺少快照/变化字段不表示清空；按 history 原顺序延续，不把缺楼视作变化。变量只作人物整理辅助。它可能同时包含多个人物、不完整或过时信息，不能整份归给目标人物，也不能当作人工字段或权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
 3. 只返回一个 JSON 对象，根对象必须包含 profiles 数组；profiles 每个输入人物恰好一项，且每项内部的 personKey 必须逐字使用输入中的键，不得新增、遗漏或合并人物。合法形状示例：{"profiles":[{"personKey":"person-1","name":"示例姓名"}]}。
 4. 每项除 personKey 外只返回需要新增或纠正的字段。existingProfile 是待核旧 AI 资料，不是权威；结合本次证据纠错、补齐和整合，未覆盖字段省略并保留，不因缺少整楼原文而删除旧细节。材料明确否定旧值时可替换，明确应删除且没有替代值时返回空值。完整整理中，非人工 aliases 必须返回经本次全部材料核对的稳定别名全集；旧 aliases 仅为待核候选，不照单保留临时叫法，无稳定别名返回 []。自动粗扫的 aliases 只返回新发现的稳定称谓，空字符串或空数组表示无更新。文本字段最多 20000 字符；aliases 可返回字符串或字符串数组，数组每项最多 500 字符、合并后最多 20000 字符。不要返回 null、对象或其他错误类型。
@@ -459,6 +460,9 @@ function* targetHistoryEntries(reachable, entityId, macros, projection = {}, onE
     yield Object.freeze({
       sourceFloor: floorSequence.get(memory.floorId) ?? (Number.isSafeInteger(memory.assistantSeq) ? memory.assistantSeq : index + 1),
       ...(summary ? { summary, summarySource: memory.summary?.effectiveSource } : {}),
+      ...(memory.sourceFloorSnapshots?.length > 1 ? { precedingUserInputBySourceFloor: memory.sourceFloorSnapshots.filter(source => floorSequence.has(source.floorId) && source.sourceUserInputSnapshot)
+        .map(source => ({ sourceFloor: floorSequence.get(source.floorId), precedingUserInput: source.sourceUserInputSnapshot })) }
+        : floorSequence.has(memory.floorId) && storedSourceUserInput(memory) ? { precedingUserInput: storedSourceUserInput(memory) } : {}),
       ...(Object.keys(facts).length ? { facts: Object.freeze(facts) } : {}),
       ...(references.sources.length ? { sources: Object.freeze(references.sources) } : {}),
       ...(participantEvidence.length ? { participantEvidence } : {}),
@@ -599,7 +603,7 @@ function incompleteProfileResult(result) {
 }
 
 export function createPeopleWorkspaceRuntime({
-  store, session, foundationRuntime, foundationStore, hostAdapter, memoryRuntime, generateUtilityTask, sourcePermissions,
+  store, session, foundationRuntime, foundationStore, hostAdapter, sanitizerOptions = () => ({}), memoryRuntime, generateUtilityTask, sourcePermissions,
   contextProvider, scanner = scanWorldInfo, isMainGenerationActive = () => false,
   sourceCandidateFactory = createWorldInfoSourceCandidates, profilePromptGuidance = () => '', processingPrompt = () => '', avatarGenerator = null, avatarPrompt = () => '', avatarImageStore = null, isEnabled = true, now = () => new Date(), logger = console,
 } = {}) {
@@ -1301,15 +1305,23 @@ export function createPeopleWorkspaceRuntime({
     })).slice(-10);
     let remaining = 19000;
     const recentFloors = [];
+    const memoryByFloor = memoriesBySourceFloor(reachable?.floorMemories);
+    const host = hostAdapter?.snapshot?.();
     for (const floor of [...floors].reverse()) {
-      const content = String(floor?.content?.canonicalContent ?? '');
+      const memory = memoryByFloor.get(floor.id);
+      const source = memory?.sourceFloorSnapshots?.find(source => source.floorId === floor.id);
+      const content = String(source?.canonicalContent ?? ((memory?.sourceFloorIds ?? [memory?.floorId]).length === 1 ? memory?.sourceCanonicalContent : null) ?? floor?.content?.canonicalContent ?? '');
+      const precedingUserInput = memory ? storedSourceUserInput(memory, floor.id)
+        : !partition.isFrozenFloor(floor.id) && host ? capturePrecedingUserInputFromSnapshot(host, floor, sanitizerOptions()) : null;
+      const userSize = (precedingUserInput?.messages ?? []).reduce((total, message) => total + message.content.length, 0);
       if (!content.trim()) continue;
-      if (content.length <= remaining) {
-        recentFloors.unshift({ sourceFloor: floor.assistantSeq, floorId: floor.id, content });
-        remaining -= content.length;
+      if (content.length + userSize <= remaining) {
+        recentFloors.unshift({ sourceFloor: floor.assistantSeq, floorId: floor.id, content, ...(precedingUserInput ? { precedingUserInput } : {}) });
+        remaining -= content.length + userSize;
       } else if (recentFloors.length === 0 && remaining > 0) {
+        const material = precedingUserInput ? [...precedingUserInput.messages.map((message, index) => `USER ${index + 1}：${message.content}`), `AI：${content}`].join('\n') : content;
         recentFloors.unshift({ sourceFloor: floor.assistantSeq, floorId: floor.id,
-          excerpt: `仅提供本楼开头 ${remaining} 字符，后文省略`, content: content.slice(0, remaining) });
+          excerpt: `仅提供本楼材料开头 ${remaining} 字符，后文省略`, content: material.slice(0, remaining) });
         remaining = 0;
       }
     }
@@ -1337,7 +1349,7 @@ export function createPeopleWorkspaceRuntime({
       targets,
       sourceSignature: materialSignature(recentFloors),
       selectedSignature: materialSignature([...(workspace?.selectedEntityIds ?? [])].sort()),
-      request: { task: '根据最近稳定AI楼原文粗扫选中人物的长期基础资料；只返回明确新增或重大变化字段，无变化仅返回personKey', recentFloors, people: peopleRequest },
+      request: { task: '根据最近稳定AI楼及其冻结前置USER原文粗扫选中人物的长期基础资料；只返回明确新增或重大变化字段，无变化仅返回personKey', recentFloors, people: peopleRequest },
       keys: new Map(peopleRequest.map((person, index) => [person.personKey, targets[index].entityId])),
     };
   }

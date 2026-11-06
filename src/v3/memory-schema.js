@@ -199,16 +199,18 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
     const parentBySource = new Map();
     for (const [index, item] of containments.entries()) {
       const path = `spatialFacts.containments[${index}]`;
-      exact(item, ['itemId', 'placeEntityId', 'parentEntityId', 'evidenceRefs'], 'V3_FLOORMEMORY_INVALID', path);
+      exact(item, ['itemId', 'placeEntityId', 'parentEntityId', 'evidenceRefs',...(Object.hasOwn(item,'identityChange')?['identityChange']:[]),...(Object.hasOwn(item,'replacesItemIds')?['replacesItemIds']:[])], 'V3_FLOORMEMORY_INVALID', path);
+      if(Object.hasOwn(item,'identityChange')&&item.identityChange!=='ownershipChanged')fail('V3_FLOORMEMORY_INVALID',`${path}.identityChange`);
+      if(Object.hasOwn(item,'replacesItemIds')&&(item.identityChange!=='ownershipChanged'||!Array.isArray(item.replacesItemIds)||item.replacesItemIds.some(value=>!isUuid(value)||value===item.itemId)||new Set(item.replacesItemIds).size!==item.replacesItemIds.length))fail('V3_FLOORMEMORY_INVALID',`${path}.replacesItemIds`);
       uuid(item.itemId, 'V3_FLOORMEMORY_INVALID', `${path}.itemId`);
       const placeId = uuid(item.placeEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.placeEntityId`);
-      const parentId = uuid(item.parentEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
+      const parentId = item.parentEntityId===null&&item.identityChange==='ownershipChanged'?null:uuid(item.parentEntityId, 'V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
       if (placeId === parentId) fail('V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
       const refs = evidenceList(item.evidenceRefs, sourceFloorIds, `${path}.evidenceRefs`, { required: true });
       for (const sourceFloorId of new Set(refs.map(ref => ref.floorId))) {
         const parents = parentBySource.get(sourceFloorId) ?? new Map();
         const priorParent = parents.get(placeId);
-        if (priorParent && priorParent !== parentId) fail('V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
+        if (parents.has(placeId) && priorParent !== parentId) fail('V3_FLOORMEMORY_INVALID', `${path}.parentEntityId`);
         parents.set(placeId, parentId); parentBySource.set(sourceFloorId, parents);
       }
     }
@@ -519,7 +521,7 @@ export async function validateMemoryGraph({ root = null, checkpoint, run = null,
       for (const item of memory.spatialFacts.features ?? []) if (entitiesById.get(item.placeEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
       for (const item of memory.spatialFacts.relations ?? []) for (const id of [item.placeEntityId, ...item.referencePlaceEntityIds]) if (entitiesById.get(id)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
       for (const item of memory.spatialFacts.containments) {
-        if (entitiesById.get(item.placeEntityId)?.entityType !== 'place' || entitiesById.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
+        if (entitiesById.get(item.placeEntityId)?.entityType !== 'place' || item.parentEntityId!==null&&entitiesById.get(item.parentEntityId)?.entityType !== 'place') fail('V3_MEMORY_GRAPH_ENTITY_TYPE_INVALID');
       }
       for (const item of memory.spatialFacts.positions) {
         if (!['person', 'group'].includes(entitiesById.get(item.subjectEntityId)?.entityType)

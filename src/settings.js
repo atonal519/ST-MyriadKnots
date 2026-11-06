@@ -17,7 +17,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoMemoryBatchSize: 1,
   autoHideEnabled: true,
   autoHideKeepAiCount: 3,
-  storageAutoCleanupEnabled: false,
+  storageAutoCleanupEnabled: true,
   storageAutoCleanupProgress: {},
   storageTrashGcLastCompletedAt: '',
   apiMode: 'auto',

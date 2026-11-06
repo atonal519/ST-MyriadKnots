@@ -183,7 +183,7 @@ export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
   const spatialFacts = memory?.spatialFacts ? (() => {
     const edges = (memory.spatialFacts.containments ?? []).flatMap(item => {
       const placeEntityId = resolve(item.placeEntityId), parentEntityId = resolve(item.parentEntityId);
-      return !placeEntityId || !parentEntityId || isIdentityDeleted(placeEntityId, projection) || isIdentityDeleted(parentEntityId, projection)
+      return !placeEntityId || !parentEntityId&&!(item.parentEntityId===null&&item.identityChange==='ownershipChanged') || isIdentityDeleted(placeEntityId, projection) || parentEntityId&&isIdentityDeleted(parentEntityId, projection)
         ? [] : [{ item, placeEntityId, parentEntityId }];
     });
     const edgesBySource = new Map(), invalidChildrenBySource = new Map();

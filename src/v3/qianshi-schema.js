@@ -87,9 +87,10 @@ export function validateQianshiDelta(input, { floorId = null, floorIds = null } 
   const eventIds = new Set();
   for (const [index, event] of value.events.entries()) {
     const path = `qianshiDelta.events[${index}]`;
-    exactKeysWithOptional(event, ['id', 'matterId', 'updatesMatter', 'title', 'description', 'status', 'storyTime', 'scheduledTime', 'people', 'object', 'sourceFloorId', 'continuesFromEventIds'], ['important', 'actionStatus'], path);
+    exactKeysWithOptional(event, ['id', 'matterId', 'updatesMatter', 'title', 'description', 'status', 'storyTime', 'scheduledTime', 'people', 'object', 'sourceFloorId', 'continuesFromEventIds'], ['important', 'actionStatus', 'following'], path);
     if (!uuid(event.id) || eventIds.has(event.id) || event.matterId !== null && !uuid(event.matterId) || typeof event.updatesMatter !== 'boolean') fail(`${path}.id`);
     if (Object.hasOwn(event, 'important') && typeof event.important !== 'boolean') fail(`${path}.important`);
+    if (Object.hasOwn(event, 'following') && typeof event.following !== 'boolean') fail(`${path}.following`);
     if (event.updatesMatter && event.matterId === null) fail(`${path}.updatesMatter`);
     if (Object.hasOwn(event, 'actionStatus') && !STATUSES.has(event.actionStatus)) fail(`${path}.actionStatus`);
     eventIds.add(event.id);

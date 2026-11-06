@@ -70,40 +70,6 @@ export function projectQianchuangSnapshot(source, { identityProjection = null, t
   }
   for (const { entityId, ...row } of relationRows.values()) byId.get(entityId).relations.push(row);
 
-  // Read canonical raw parent intents so a newer ambiguity cannot revive an older parent.
-  const latestParents = new Map();
-  for (const memory of memories.map(value => filterPlaceMemory(value, projection.placeWorkspace))) for (const edge of memory.spatialFacts?.containments ?? []) {
-    const placeEntityId = resolveIdentityEntityId(edge.placeEntityId, projection), parentEntityId = resolveIdentityEntityId(edge.parentEntityId, projection), sourceOrigin = origin(edge);
-    if (!sourceOrigin || !byId.has(placeEntityId)) continue;
-    const prior = latestParents.get(placeEntityId), seq = sourceOrigin.sourceAssistantSeq;
-    if (!prior || seq > prior.seq) latestParents.set(placeEntityId, { seq, parents: new Map([[parentEntityId, sourceOrigin]]) });
-    else if (seq === prior.seq) prior.parents.set(parentEntityId, sourceOrigin);
-  }
-  const parents = new Map([...latestParents].filter(([id, value]) => value.parents.size === 1 && !value.parents.has(id) && byId.has([...value.parents.keys()][0]))
-    .map(([id, value]) => [id, [...value.parents.keys()][0]]));
-  const cyclic = new Set();
-  for (const start of parents.keys()) {
-    const path = [], seen = new Set(); let id = start;
-    while (parents.has(id)) {
-      if (seen.has(id)) { path.forEach(value => cyclic.add(value)); break; }
-      seen.add(id); path.push(id); id = parents.get(id);
-    }
-  }
-  for (const id of cyclic) parents.delete(id);
-  const containments = [];
-  for (const [child, parent] of parents) {
-    byId.get(child).parentEntityId = parent; byId.get(parent).childEntityIds.push(child);
-    containments.push({ placeEntityId: child, parentEntityId: parent, ...latestParents.get(child).parents.get(parent) });
-  }
-  const mapRootIds = places.filter(place => !place.parentEntityId && place.childEntityIds.length).map(place => place.entityId);
-  const rootFor = id => {
-    let current = byId.get(id); if (!current) return null;
-    while (current.parentEntityId) current = byId.get(current.parentEntityId);
-    return current.childEntityIds.length ? current.entityId : null;
-  };
-  for (const place of places) place.mapRootEntityId = rootFor(place.entityId);
-  const unassignedPlaceIds = places.filter(place => !place.mapRootEntityId).map(place => place.entityId);
-
   let userPosition = unknownPosition();
   const userId = projection.userEntityId, userVisible = directory.some(entry => entry.entityId === userId && entry.entityType === 'person');
   if (userVisible) {
@@ -117,7 +83,7 @@ export function projectQianchuangSnapshot(source, { identityProjection = null, t
       candidates.set(JSON.stringify([item.status, placeEntityId]), { status: item.status, placeEntityId: byId.has(placeEntityId) ? placeEntityId : null, ...sourceOrigin });
     }
     if (candidates.size === 1) {
-      const value = [...candidates.values()][0], mapRootEntityId = value.status === 'leftUnknown' ? null : rootFor(value.placeEntityId);
+      const value = [...candidates.values()][0], mapRootEntityId = null;
       if (value.status === 'leftUnknown' || value.placeEntityId) userPosition = Object.freeze({ ...value, mapRootEntityId,
         atSummarizedEnd: value.sourceAssistantSeq === summarizedThroughAssistantSeq,
         isCurrent: value.status === 'confirmed' && value.sourceAssistantSeq === summarizedThroughAssistantSeq && Boolean(mapRootEntityId) });
@@ -126,5 +92,5 @@ export function projectQianchuangSnapshot(source, { identityProjection = null, t
   return applyPlaceSnapshot(Object.freeze({ status: 'ready', chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, rootRevision: source.rootRevision ?? null,
     stableThroughAssistantSeq: Math.max(0, ...floors.map(floor => floor.assistantSeq)), summarizedThroughAssistantSeq,
     places: frozen(places.map(place => ({ ...place, childEntityIds: Object.freeze(place.childEntityIds), features: frozen(place.features), relations: frozen(place.relations) }))),
-    containments: frozen(containments), mapRootIds: Object.freeze(mapRootIds), unassignedPlaceIds: Object.freeze(unassignedPlaceIds), userPosition }), projection.placeWorkspace, { floorOrder: seqById, memories: projected });
+    containments: Object.freeze([]), mapRootIds: Object.freeze([]), unassignedPlaceIds: Object.freeze([]), userPosition }), projection.placeWorkspace, { floorOrder: seqById, memories:memories.map(value=>filterPlaceMemory(value,projection.placeWorkspace,id=>resolveIdentityEntityId(id,projection))),resolve:id=>resolveIdentityEntityId(id,projection) });
 }

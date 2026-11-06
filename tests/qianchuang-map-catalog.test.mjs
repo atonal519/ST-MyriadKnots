@@ -117,7 +117,7 @@ test('packed银行解包支持全部当前新ID，坏轮廓项不挡其余新图
   packed.assets = Object.fromEntries(Object.values(packed.assets).map(row => [row.id + '-packed', { ...row, id: row.id + '-packed', file: row.id + '-packed.svg' }]));
   packed.assets.broken = { ...structuredClone(packed.assets['modern-inland-packed']), id: 'broken', regions: null };
   const h = harness({ rows: packed, timeoutMs: 2000 }); await h.client.prepare();
-  assert.equal(Object.keys(h.assets).filter(id => id.endsWith('-packed')).length, 21); assert.equal(h.assets.broken, undefined);
+  assert.equal(Object.keys(h.assets).filter(id => id.endsWith('-packed')).length, 24); assert.equal(h.assets.broken, undefined);
   for (const asset of Object.values(QIANCHUANG_MAP_ASSETS)) assert.deepEqual(h.assets[asset.id + '-packed'].regions, asset.regions);
 });
 
@@ -130,7 +130,7 @@ test('全部当前原SVG按目录远端读取通过，不触本地降级并保�
     const text = await client.load(kind, asset, async () => { local++; return 'local'; });
     assert.equal(text, readFileSync(new URL('../assets/' + folder + '/' + asset.file, import.meta.url), 'utf8'), asset.id);
   }
-  assert.equal(local, 0); assert.equal(calls.length, 33);
+  assert.equal(local, 0); assert.equal(calls.length, 36);
 });
 
 test('正式两loader外链成功时不预读本地文件，保完整原图与单次下载', async () => {
@@ -151,6 +151,17 @@ test('旧远端目录缺新五图时保内置并读取各自本地SVG',async()=>
  const client=catalogModule.createQianchuangMapCatalog({genericAssets,cityAssets,sanitizeSvg:x=>x,fetchImpl:async url=>{calls.push(url);return url.endsWith('/maps-library/catalog.json')?response(Object.values(QIANCHUANG_MAP_ASSETS).filter(a=>!ids.includes(a.id))):response({cities:Object.values(CITY_MAPS).filter(a=>!ids.includes(a.id))});}});
  await client.prepare();let local=0;for(const id of ids){const kind=id==='chongqing'||id==='hong-kong'||id==='nagoya'?'city':'generic',asset=(kind==='city'?cityAssets:genericAssets)[id];assert.ok(asset,id);const text=await client.load(kind,asset,async()=>{local++;return readFileSync(new URL('../assets/'+(kind==='city'?'maps-real/':'maps-library/')+asset.file,import.meta.url),'utf8');});assert.equal(digest(text),asset.sha256);}
  assert.equal(local,5);assert.equal(calls.length,2);
+});
+
+test('旧线上31图目录缺校园时三张bundled图完整回本地，同ID远端不匹配也不替换',async()=>{
+ const ids=['campus-compact','campus-garden','campus-university'],genericAssets={...QIANCHUANG_MAP_ASSETS},cityAssets={...CITY_MAPS},calls=[];
+ const old=Object.values(QIANCHUANG_MAP_ASSETS).filter(a=>a.family!=='campus');
+ const client=catalogModule.createQianchuangMapCatalog({genericAssets,cityAssets,sanitizeSvg:x=>x,fetchImpl:async url=>{calls.push(url);return url.endsWith('/maps-library/catalog.json')?response(old):response({cities:Object.values(CITY_MAPS)});}});
+ await client.prepare();let local=0;
+ for(const id of ids){const a=genericAssets[id];assert.ok(a,id);const text=await client.load('generic',a,async()=>{local++;return readFileSync(new URL('../assets/maps-library/'+a.file,import.meta.url),'utf8');});assert.equal(digest(text),a.sha256);}
+ assert.equal(local,3);assert.equal(calls.length,2);
+ const first=genericAssets[ids[0]],bad={...first,width:123,sha256:'0'.repeat(64)},other=catalogModule.createQianchuangMapCatalog({genericAssets:{...genericAssets},cityAssets:{},sanitizeSvg:x=>x,fetchImpl:async url=>url.endsWith('/maps-library/catalog.json')?response([bad]):response({cities:[]})});
+ await other.prepare();assert.equal(await other.load('generic',first,async()=>'local-campus'),'local-campus');
 });
 
 

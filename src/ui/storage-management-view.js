@@ -72,7 +72,7 @@ export function createStorageManagementView({
       }
       render(manager.getState());
     });
-    page.append(toggle, element('p', 'settings-hint', '默认关闭；开启后每新增 10 个稳定 AI 楼检查一次。无引用旧文件达到 100 条或约 8 MiB 才清理，忙碌时延后。'));
+    page.append(toggle, element('p', 'settings-hint', '全局默认开启；每新增 10 个稳定 AI 楼检查一次。无引用旧文件达到 100 条或约 8 MiB 才清理，忙碌时延后。'));
     if (state.autoPending) page.append(element('p', 'settings-result', '已到检查节点；当前有千千结任务在运行，自动检查会在空闲后继续。'));
     const trashGc = state.trashGc ?? {};
     const trashCopy = trashGc.status === 'unsupported' ? '尚未清理回收站；请更新白鳥数据后端并重启酒馆。'
