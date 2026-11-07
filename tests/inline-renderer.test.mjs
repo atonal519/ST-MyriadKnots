@@ -1452,6 +1452,19 @@ test('重新提取按钮与折叠按钮互不影响，同次点击只调用一�
   assert.equal(view.extract.disabled, false); assert.equal(view.root, host.shadowRoot); assert.equal(view.expanded, open);
 });
 
+test('楼内重新提取点击当刻捕获真实DOM消息，并原样传目标见证', async () => {
+  const state = readyState(), chat = [{ is_user: false, is_system: false, mes: '当前AI正文' }];
+  const h = createHarness({ chat, memoryState: state });
+  state.floors[0].messageIndex = 0;
+  const captured = { message: chat[0], witness: 'click-time' }, calls = [];
+  h.memoryRuntime.captureExtractionTarget = (id, options) => { calls.push([id, options]); return captured; };
+  h.chatRoot.append(messageElement(0)); h.renderer.start(); await h.flushMicrotasks();
+  h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard.extract.emit('click');
+  assert.deepEqual(calls, [['floor-1', { messageIndex: 0 }]]);
+  assert.deepEqual(h.extractionCalls, [['floor-1', { extractionTarget: captured }]]);
+  await h.flushMicrotasks();
+});
+
 test('BME式挂载在DOM未就绪时临时观察，成功即停止；USER_MESSAGE_RENDERED可补挂新用户楼', async () => {
   const chat = [{ is_user: true, is_system: false, mes: '用户正文' }], h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, projectReceipt: async () => null });
   h.renderer.start(); await h.flushMicrotasks();

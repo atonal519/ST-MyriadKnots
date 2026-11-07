@@ -840,7 +840,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.1.1');
+  assert.equal(manifest.version, '1.1.2');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -1501,6 +1501,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
 
   assert.ok(v3RecallOptions.store);
   assert.ok(v3RecallOptions.hostAdapter);
+  assert.equal(v3RecallOptions.manualMemorySnapshot(), productionReachable, '人工修订复用读取已载入图，不增加来源或模型请求');
   assert.equal(v3RecallOptions.generateUtilityTask, recallTask);
   assert.deepEqual(await v3RecallOptions.qianshiProgressProvider(), { text: '' }, '初始候选仍从同一 memory runtime 读取千事进度');
   assert.equal(currentStoryContextReads, 1, '普通候选召回应保留当前故事时刻提取');

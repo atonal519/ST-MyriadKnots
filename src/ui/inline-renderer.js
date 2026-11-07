@@ -274,7 +274,12 @@ export function createInlineRenderer({
     const projection = view.projection;
     if (!active || view.extracting || projection?.kind !== 'assistant' || !projection.canExtract || !projection.floorId) return;
     view.extracting = true; view.extract.disabled = true;
-    Promise.resolve(memoryRuntime.extractFloor(projection.floorId)).catch(error => {
+    let extraction;
+    try {
+      const extractionTarget = memoryRuntime.captureExtractionTarget?.(projection.floorId, { messageIndex: view.messageIndex });
+      extraction = extractionTarget ? memoryRuntime.extractFloor(projection.floorId, { extractionTarget }) : memoryRuntime.extractFloor(projection.floorId);
+    } catch (error) { extraction = Promise.reject(error); }
+    Promise.resolve(extraction).catch(error => {
       logger?.warn?.('[qianqianjie] 楼内重新提取失败', { code: String(error?.code ?? error?.name ?? 'V3_INLINE_EXTRACT_FAILED').slice(0, 120) });
     }).finally(() => { view.extracting = false; schedule(); });
   };

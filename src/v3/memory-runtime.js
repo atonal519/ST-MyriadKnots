@@ -28,7 +28,7 @@ import { parseJsonOutput } from '../compact-api-client.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 import { buildEntityIdentityDirectory, deriveUserIdentityProjection, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection, projectFloorMemoryIdentityReferences, resolveIdentityEntityId, reuseIdentityProjection } from './entity-identity.js';
 import { matchFloorCandidates } from './floor-binding.js';
-import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
+import { inspectMessageFloorAnchor, messageFloorAnchorCandidateSnapshot } from './message-floor-anchor.js';
 import { captureFloorVariableReference } from './floor-variable-reference.js';
 import { readLocationReference } from './location-reference.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -894,6 +894,88 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }));
   };
   const isFrozenFloor = (floorId, value = reachable) => migrationPartition(value).isFrozenFloor(floorId);
+  // Capture before confirmation/queued work: an old floor locator must not silently select a replacement message.
+  function captureExtractionTarget(floorId, { messageIndex = null } = {}) {
+    const snapshot = hostAdapter.snapshot();
+    const source = reachable ?? foundationRuntime.getReachable?.();
+    const floor = source?.floors?.find(item => item.id === floorId);
+    if (!floor || isFrozenFloor(floorId, source)) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '这一楼没有可重新提取的当前消息。');
+    if (!Number.isSafeInteger(messageIndex)) {
+      const marked = (snapshot.chat ?? []).flatMap((message, index) => {
+        const anchor = inspectMessageFloorAnchor(message, source.root.chatId);
+        return anchor.status === 'valid' && anchor.anchor.floorId === floorId ? [index] : [];
+      });
+      messageIndex = marked.length === 1 ? marked[0] : floor.hostLocator.messageIndex;
+    }
+    const message = snapshot.chat?.[messageIndex], selected = selectAssistantMessage(message);
+    if (!selected) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '当前消息没有可提取的 AI 正文。');
+    return Object.freeze({ floorId, chatId: source.root.chatId, hostChatId: snapshot.chatId, identity: captureTargetIdentity(),
+      epoch, chat: snapshot.chat, message, hostLocator: Object.freeze({ messageIndex, swipeId: selected.swipeId, selectedSwipeIndex: selected.selectedSwipeIndex }),
+      candidateSnapshot: messageFloorAnchorCandidateSnapshot(message) });
+  }
+  function assertExtractionTarget(target) {
+    const snapshot = hostAdapter.snapshot(), message = snapshot.chat?.[target?.hostLocator?.messageIndex];
+    const selected = selectAssistantMessage(message);
+    if (!target || target.epoch !== epoch || target.chatId !== currentHostChatId() || snapshot.chatId !== target.hostChatId
+      || snapshot.chat !== target.chat || message !== target.message || !selected
+      || target.identity && !sameTargetIdentity(target.identity, captureTargetIdentity())
+      || !sameHostLocator(target.hostLocator, { messageIndex: target.hostLocator.messageIndex, swipeId: selected.swipeId, selectedSwipeIndex: selected.selectedSwipeIndex })
+      || messageFloorAnchorCandidateSnapshot(message) !== target.candidateSnapshot) {
+      throw errorWith('V3_MEMORY_EXTRACTION_TARGET_CHANGED', '所选 AI 消息、正文、回复分支或聊天已变化，请重新点击本楼的重新提取。');
+    }
+    return { snapshot, selected };
+  }
+  async function confirmedExtractionCandidates(value, snapshot) {
+    const scanned = await scanAssistantCandidates(snapshot.chat, { chatId: value.root.chatId, sanitizerOptions: sanitizerOptions() });
+    const candidates = partitionScannedCandidates(value, snapshot.chat, value.root.chatId, scanned).live;
+    const duplicateIds = new Set(), seen = new Set();
+    for (const candidate of candidates) if (candidate.messageAnchor?.status === 'valid') {
+      const id = candidate.messageAnchor.anchor.floorId;
+      if (seen.has(id)) duplicateIds.add(id);
+      seen.add(id);
+    }
+    const matches = matchFloorCandidates(migrationPartition(value).liveFloors, candidates);
+    return new Map(matches.matches.filter(match => !duplicateIds.has(match.floor.id)).map(match => [match.floor.id, match.candidate]));
+  }
+  async function anchorExtractionTarget(target) {
+    const { snapshot } = assertExtractionTarget(target);
+    const source = await latestReachableForCommit({ epoch, pinnedTarget: true });
+    assertExtractionTarget(target);
+    if (source.root.chatId !== target.chatId) throw errorWith('V3_MEMORY_EXTRACTION_TARGET_CHANGED', '当前聊天已变化，请重新点击本楼的重新提取。');
+    const scanned = await scanAssistantCandidates(snapshot.chat, { chatId: target.chatId, sanitizerOptions: sanitizerOptions() });
+    assertExtractionTarget(target);
+    const candidates = partitionScannedCandidates(source, snapshot.chat, target.chatId, scanned).live;
+    const floors = migrationPartition(source).liveFloors;
+    const index = candidates.findIndex(candidate => sameHostLocator(candidate.hostLocator, target.hostLocator));
+    if (index < 0 || candidates[index].memoryExcluded) throw errorWith('V3_MEMORY_FLOOR_UNAVAILABLE', '这一楼已排除或清洗后没有可提取的正文。');
+    const counts = new Map();
+    for (const candidate of candidates) if (candidate.messageAnchor?.status === 'valid') {
+      const id = candidate.messageAnchor.anchor.floorId; counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    // The explicit current message may correct its own marker. First preserve any exact independent identity proof.
+    const withoutTargetMarker = candidates.map((candidate, candidateIndex) => candidateIndex === index
+      || counts.get(candidate.messageAnchor?.anchor?.floorId) > 1
+      ? { ...candidate, messageAnchor: { status: 'none', anchor: null } } : candidate);
+    const matched = matchFloorCandidates(floors, withoutTargetMarker);
+    const normal = matchFloorCandidates(floors, candidates);
+    let floor = matched.candidateMatches.get(index)?.floor;
+    if (!floor && counts.get(candidates[index].messageAnchor?.anchor?.floorId) === 1) floor = normal.candidateMatches.get(index)?.floor;
+    if (!floor) {
+      const floorIndex = floors.findIndex(item => item.id === target.floorId);
+      const otherMatch = matched.floorMatches.get(floorIndex) ?? normal.floorMatches.get(floorIndex);
+      const hinted = floors[floorIndex];
+      if (hinted && hinted.hostLocator.messageIndex === target.hostLocator.messageIndex && (!otherMatch || otherMatch.candidateIndex === index)) floor = hinted;
+    }
+    if (!floor || isFrozenFloor(floor.id, source)) throw errorWith('V3_MEMORY_EXTRACTION_TARGET_UNBOUND', '当前 AI 消息无法对应到可重新提取的本楼，请从当前消息的本楼入口重试。');
+    const memory = coveredMemoryMap(source).get(floor.id);
+    if (memorySourceFloorIds(memory).length > 1) return { floorId: memory.floorId, target: null };
+    if (typeof persistAnchors !== 'function') throw errorWith('V3_MESSAGE_ANCHOR_SAVE_UNAVAILABLE', '当前宿主不能保存本楼消息标记，尚未发送摘要请求。');
+    await persistAnchors({ hostAdapter, chatId: target.chatId, bindings: [{ floorId: floor.id,
+      messageIndex: target.hostLocator.messageIndex, expectedMessage: target.message,
+      expectedCandidateSnapshot: target.candidateSnapshot, replaceExisting: true }] });
+    assertExtractionTarget(target);
+    return { floorId: floor.id, target: Object.freeze({ ...target, floorId: floor.id }) };
+  }
   async function ensureSavedAnchors(value, expectedEpoch = epoch) {
     if (!value?.root || typeof persistAnchors !== 'function' || expectedEpoch !== epoch) return true;
     try {
@@ -1600,18 +1682,26 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     ? hostAdapter.getUserIdentity()
     : hostAdapter?.snapshot?.().userIdentity ?? null;
   async function extractorDependencySnapshot(value, floorId, { userIdentity, promptGuidance, identityProjectionSnapshot = null,
-    referenceTags = currentReferenceTags(), hostSnapshot = null, onUnavailable = null } = {}) {
+    referenceTags = currentReferenceTags(), hostSnapshot = null, onUnavailable = null, extractionTarget = null } = {}) {
     const frozenReferenceTags = normalizeStoryClockReferenceTags(referenceTags);
     const targetIndex = value?.floors?.findIndex(floor => floor.id === floorId) ?? -1;
     if (targetIndex < 0 || !value?.root || !value?.checkpoint) { onUnavailable?.({ kind: 'snapshotUnavailable' }); return null; }
     const partition = migrationPartition(value);
     const prefix = value.floors.slice(0, targetIndex + 1);
     const floorDependencies = [];
+    let confirmed = null;
+    if (extractionTarget) {
+      assertExtractionTarget(extractionTarget);
+      const snapshot = hostSnapshot ?? hostAdapter.snapshot();
+      confirmed = await confirmedExtractionCandidates(value, snapshot);
+    }
     let frozenProvenance = null;
     for (const floor of prefix) {
-      const frozen = partition.isFrozenFloor(floor.id);
+      const frozen = partition.isFrozenFloor(floor.id) || confirmed && !confirmed.has(floor.id) && floor.id !== extractionTarget.floorId;
       if (frozen && !frozenProvenance) frozenProvenance = floorProvenance(value);
-      const selected = frozen ? null : hostSnapshot ? rawSelectionFromSnapshot(hostSnapshot, floor) : currentRawSelection(hostAdapter, floor);
+      const currentFloor = extractionTarget?.floorId === floor.id ? { ...floor, hostLocator: extractionTarget.hostLocator }
+        : confirmed?.has(floor.id) ? { ...floor, hostLocator: confirmed.get(floor.id).hostLocator } : floor;
+      const selected = frozen ? null : hostSnapshot ? rawSelectionFromSnapshot(hostSnapshot, currentFloor) : currentRawSelection(hostAdapter, currentFloor);
       if (!frozen && !selected) { onUnavailable?.({ kind: 'sourceUnavailable', assistantSeq: floor.assistantSeq }); return null; }
       floorDependencies.push({
         id: floor.id,
@@ -1619,7 +1709,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         narrativeGeneration: floor.narrativeGeneration,
         assistantSeq: floor.assistantSeq,
         predecessorFloorId: floor.predecessorFloorId,
-        hostLocator: floor.hostLocator,
+        hostLocator: currentFloor.hostLocator,
         rawFingerprint: floor.content.rawFingerprint,
         canonicalFingerprint: floor.content.canonicalFingerprint,
         liveRawFingerprint: frozen ? floor.content.rawFingerprint : `sha256:${await sha256(selected.rawContent)}`,
@@ -1740,6 +1830,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       identityProjectionSnapshot: await readIdentityProjection(null, current),
       referenceTags: operation.dependencySnapshot?.storyClockReferenceTags,
       onUnavailable: value => { unavailable = value; },
+      extractionTarget: operation.extractionTarget,
     });
     if (!sameExtractorDependency(operation.dependencySnapshot, dependency, operation.identityResult)) {
       throw Object.assign(errorWith('V3_MEMORY_PREFIX_CHANGED', '目标楼或其依赖前文已经变化，迟到摘要不会写入。'), {
@@ -1912,7 +2003,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     const floor = current.floors.find(item => item.id === replacement.floorId);
     const liveTarget = operation.manualRevision && sameTargetIdentity(operation.targetIdentity, captureTargetIdentity());
-    const selected = !operation.qianshiHistory && !operation.qianshiRejudge && floor
+    const selected = operation.extractionTarget ? assertExtractionTarget(operation.extractionTarget).selected
+      : !operation.qianshiHistory && !operation.qianshiRejudge && floor
       && (!operation.manualRevision || liveTarget) ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
     // Historical completion is based on the archived floor snapshot. Live edits/swipes do not invalidate that evidence.
@@ -2185,11 +2277,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const live=currentRawSelection(hostAdapter,current.floors.find(f=>f.id===operation.floorId));
       if(current.root.chatId!==currentHostChatId()||!live||`sha256:${await sha256(live.rawContent)}`!==operation.floorRawFingerprint)throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED','登记位置已变化，请刷新后重试。');
     }
+    if (operation.extractionTarget) assertExtractionTarget(operation.extractionTarget);
     let committed;
     operation.rootCommitAttempted = true;
     try { committed = await operationStore.commitRoot(root, current.rootRevision, { signal: operation.controller.signal }); }
     catch (error) {
-      if (action !== 'qianshiHistory' && action !== 'qianshiTextEdit' && action !== 'qianshiRejudge') throw error;
+      if (action !== 'qianshiHistory' && action !== 'qianshiTextEdit' && action !== 'qianshiRejudge' && !operation.extractionTarget) throw error;
       try {
         const cold = await operationStore.readReachable({ mode: 'runtime' });
         const coldMemories = currentMemoryMap(cold);
@@ -2204,8 +2297,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         committed = { status: 'saved', revision: cold.rootRevision, reachable: cold };
       } catch {
         const code = action === 'qianshiTextEdit' ? 'QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS'
-          : action === 'qianshiRejudge' ? 'QIANSHI_REJUDGE_COMMIT_AMBIGUOUS' : 'QIANSHI_HISTORY_COMMIT_AMBIGUOUS';
-        throw errorWith(code, '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
+          : action === 'qianshiRejudge' ? 'QIANSHI_REJUDGE_COMMIT_AMBIGUOUS'
+          : operation.extractionTarget ? 'V3_MEMORY_COMMIT_AMBIGUOUS' : 'QIANSHI_HISTORY_COMMIT_AMBIGUOUS';
+        throw errorWith(code, operation.extractionTarget ? '摘要保存状态待核对，请刷新状态确认。' : '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
       }
     }
     operation.rootCommitReturned = committed.status;
@@ -2246,7 +2340,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (targetVisible) {
       lastFailure = null;
       await cseRuntime.load(committedReachable);
-      if (!operation.pinnedTarget) await ensureSavedAnchors(committedReachable, operation.epoch);
+      if (!operation.pinnedTarget && !operation.extractionTarget) await ensureSavedAnchors(committedReachable, operation.epoch);
       await refreshCoverage(operation.epoch);
     }
     if (operation.qianshiRejected) try {
@@ -2298,7 +2392,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       && lastFailure?.phase !== 'anchor';
   }
 
-  async function prepareExtractorInput({ floorId = null, floorIds = null, selectNext = false, intent, manualWork }) {
+  async function prepareExtractorInput({ floorId = null, floorIds = null, selectNext = false, intent, manualWork, extractionTarget = null }) {
     let rootChecks = 0;
     let prepareStep = 'synchronizing';
     try { for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -2306,15 +2400,20 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在提取准备期间已经变化，本次请求未发送。');
       const foundation = await foundationRuntime.refreshStatus();
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在后端数据同步期间已经变化，本次请求未发送。');
-      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能提取。');
+      if (foundation.status !== 'ready' && !extractionTarget) throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能提取。');
+      if (extractionTarget) assertExtractionTarget(extractionTarget);
       const preparedReachable = foundationRuntime.getReachable?.() ?? null;
-      if (!await canReuseSynchronizedReachable(intent.epoch, preparedReachable)) await load(intent.epoch, preparedReachable?.root ? preparedReachable : null);
+      if (!await canReuseSynchronizedReachable(intent.epoch, preparedReachable)) await load(intent.epoch, preparedReachable?.root ? preparedReachable : null, { readOnlyReview: foundation.status !== 'ready', skipSavedAnchors: Boolean(extractionTarget) });
       const settlement = backgroundSync;
       if (settlement) await settlement;
       if (!extractionIntentCurrent(intent)) throw errorWith('V3_MEMORY_STALE', '聊天在记忆读取期间已经变化，本次请求未发送。');
       prepareStep = 'sourceSelection';
-      const source = reachable ? { ...reachable } : null;
       const hostSnapshot = hostAdapter.snapshot();
+      const confirmed = extractionTarget ? await confirmedExtractionCandidates(reachable, hostSnapshot) : null;
+      const source = reachable ? { ...reachable, ...(extractionTarget ? { floors: reachable.floors.map(floor => floor.id === floorId
+        ? { ...floor, hostLocator: extractionTarget.hostLocator }
+        : confirmed.has(floor.id) ? { ...floor, hostLocator: confirmed.get(floor.id).hostLocator } : floor) } : {}) } : null;
+      const isArchivedInput = id => isFrozenFloor(id, source) || Boolean(confirmed && !confirmed.has(id) && id !== floorId);
       const memoryMap = currentMemoryMap(source);
       const liveFloors = liveFloorsFor(source);
       const eligibleFloorIds = new Set(liveFloors.filter(item => {
@@ -2386,7 +2485,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       let previousStoryClock = null;
       prepareStep = 'timeSources';
       for (let index = floorIndex - 1; index >= 0 && !previousStoryClock; index -= 1) {
-        if (isFrozenFloor(source.floors[index].id, source)) continue;
+        if (isArchivedInput(source.floors[index].id)) continue;
         if (isMemoryExcludedFloor(source.floors[index], hostSnapshot.chat, source.checkpoint)) continue;
         previousStoryClock = clockEvidence(rawSelectionFromSnapshot(hostSnapshot, source.floors[index]), referenceTagsSnapshot).clock;
       }
@@ -2396,7 +2495,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       // Story context stops before this batch; ordinary extraction still sees the latest place library.
       const libraryThroughAssistantSeq = historicalTarget ? (source.floors[firstFloorIndex - 1]?.assistantSeq ?? 0) : Infinity;
       const previousPlaceIdentity = previousPlaceIdentityContext(source, firstFloorIndex, qianshiPrefixFloorIds, memoryMap, withCreatedPlaces(source.entities, extractorProjection.placeWorkspace), extractorProjection, libraryThroughAssistantSeq);
-      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, previousPlaceIdentity, firstFloorIndex, hostSnapshot.chat, isFrozenFloor);
+      const previousMemoryContext = previousFloorContext(source, floorIndex, memoryMap, previousPlaceIdentity, firstFloorIndex, hostSnapshot.chat, isArchivedInput);
       prepareStep = 'qianshiCandidates';
       const candidateSource = { ...source, calendar: storyCalendarProvider(source.root?.chatId), floors: source.floors.slice(0, firstFloorIndex),
         floorMemories: source.floorMemories.filter(memory => qianshiPrefixFloorIds.has(memory.floorId)), entities: scopedEntities };
@@ -2421,7 +2520,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const verifiedUserIdentity = currentUserIdentity();
       prepareStep = 'dependencySnapshot';
       const dependencySnapshot = await extractorDependencySnapshot(source, floor.id, { userIdentity: verifiedUserIdentity,
-        promptGuidance: promptGuidanceSnapshot, identityProjectionSnapshot, referenceTags: referenceTagsSnapshot, hostSnapshot });
+        promptGuidance: promptGuidanceSnapshot, identityProjectionSnapshot, referenceTags: referenceTagsSnapshot, hostSnapshot, extractionTarget });
       if (typeof store.readRoot === 'function') {
         prepareStep = 'rootCheck';
         const rootResult = await store.readRoot();
@@ -2455,7 +2554,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     catch (error) { throw markPreparationFailure(error, prepareStep); }
   }
 
-  async function extractFloorInternal(floorId, { analyzeState = true, preparedInput = null, manualWork, aggregate = false, floorIds = null } = {}) {
+  async function extractFloorInternal(floorId, { analyzeState = true, preparedInput = null, manualWork, aggregate = false, floorIds = null, extractionTarget = null } = {}) {
     if (!enabled()) return notify();
     if (isFrozenFloor(floorId)) throw errorWith('V3_MIGRATION_FLOOR_READ_ONLY', '来源聊天的已迁移楼只读，不能重新提取。');
     if (active) return getState();
@@ -2463,7 +2562,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     try {
     const timingWork = manualWork ?? { startedAt: nowIso(now), startedMonotonic: monotonicNow() };
     const intent = preparedInput?.intent ?? { epoch, chatId: currentHostChatId() };
-    const prepared = preparedInput ?? await prepareExtractorInput({ floorId, floorIds, intent, manualWork: timingWork });
+    const prepared = preparedInput ?? await prepareExtractorInput({ floorId, floorIds, intent, manualWork: timingWork, extractionTarget });
     if (!prepared) return getState();
     const { source, floor, oldMemory, sourceRawFingerprint, sourceClock, userIdentity, promptGuidanceSnapshot, processingPromptSnapshot, dependencySnapshot, expectedScope, scopedEntities, envelope, semanticInputFingerprint: preparedSemanticInputFingerprint, qianshiDependency } = prepared;
     aggregate ||= prepared.aggregate === true;
@@ -2479,12 +2578,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     const runId = pending?.runId ?? prepared.runId;
     const semanticInputFingerprint = pending?.semanticInputFingerprint ?? preparedSemanticInputFingerprint;
-    const preparedStillCurrent = () => extractionIntentCurrent(intent)
+    const preparedStillCurrent = () => (!extractionTarget || Boolean(assertExtractionTarget(extractionTarget))) && extractionIntentCurrent(intent)
       && source.root.chatId === intent.chatId
       && prepared.sourceSelections.every(item => currentRawSelection(hostAdapter, source.floors.find(candidate => candidate.id === item.floorId))?.rawContent === item.rawContent)
       && JSON.stringify(currentUserIdentity() ?? null) === JSON.stringify(userIdentity ?? null);
     if (!preparedStillCurrent()) throw errorWith('V3_MEMORY_PREFIX_CHANGED', '聊天、目标楼或身份在请求前已经变化，本次请求未发送。');
-    const operation = { floorId: floor.id, floorIds: [...prepared.sourceFloorIds], aggregate, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: pending?.startedAt ?? timingWork.startedAt, commitTimestamp: pending?.commitTimestamp ?? null, commitTimestampVersionKey: pending?.commitTimestampVersionKey ?? null, phase: pending ? 'committing' : 'extracting', dependencySnapshot, qianshiDependency, semanticInputFingerprint, preflightTiming: pending?.preflightTiming ?? Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
+    const operation = { floorId: floor.id, floorIds: [...prepared.sourceFloorIds], aggregate, extractionTarget, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: sourceRawFingerprint, storyClockSignature: sourceClock.signature, epoch: intent.epoch, controller: new AbortController(), runId, startedAt: pending?.startedAt ?? timingWork.startedAt, commitTimestamp: pending?.commitTimestamp ?? null, commitTimestampVersionKey: pending?.commitTimestampVersionKey ?? null, phase: pending ? 'committing' : 'extracting', dependencySnapshot, qianshiDependency, semanticInputFingerprint, preflightTiming: pending?.preflightTiming ?? Object.freeze({ ...prepared.preflightTiming, requestDispatchMs: elapsedMs(timingWork.startedMonotonic) }) };
     lastExtractorRequest = null;
     if (!pending) operation.transportBudget = { remaining: 3, used: 0, diagnostic: {
       phase: 'preparing', startedAt: Date.now(), phaseStartedAt: Date.now(), outcome: 'running',
@@ -2505,7 +2604,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       operation.phase = 'validating'; notify();
       if (operation.transportBudget) Object.assign(operation.transportBudget.diagnostic, { phase: 'validating', phaseStartedAt: Date.now() });
       const foundationAfter = await foundationRuntime.refreshStatus();
-      if (foundationAfter.status !== 'ready') throw errorWith('V3_MEMORY_STALE', '后端数据在提取期间发生变化，本次结果已作废。');
+      if (foundationAfter.status !== 'ready' && !extractionTarget) throw errorWith('V3_MEMORY_STALE', '后端数据在提取期间发生变化，本次结果已作废。');
+      if (extractionTarget) assertExtractionTarget(extractionTarget);
       if (operation.epoch !== epoch || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '聊天或正文已变化，迟到响应已丢弃。');
       operation.phase = 'committing'; notify();
       if (operation.transportBudget) Object.assign(operation.transportBudget.diagnostic, { phase: 'saving', phaseStartedAt: Date.now() });
@@ -2525,9 +2625,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         await cseRuntime.analyzeFloor(floor.id);
       }
     } catch (error) {
-      if (result && !summaryCommitted && error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) {
+      if (extractionTarget) {
+        summaryCommitted ||= Boolean(operation.committedReachable);
+        if (error?.name !== 'AbortError') {
+          const stage = summaryCommitted ? '摘要已保存，后续刷新未完成'
+            : operation.rootCommitAttempted && !operation.rootCommitConflict ? '摘要保存结果待核对' : '摘要未更新';
+          error.message = `本楼消息标记已保存，${stage}：${error.message}`;
+        }
+      }
+      if (result && !summaryCommitted && (!extractionTarget || !operation.rootCommitAttempted || operation.rootCommitConflict)
+        && error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) {
         rememberPendingResult(floor.id, { chatId: source.root.chatId, narrativeGeneration: source.root.narrativeGeneration, sourceRawFingerprint, processingPromptFingerprint: result.metadata?.processingPromptFingerprint ?? currentProcessingFingerprint, dependencySnapshot, runId: operation.runId, startedAt: operation.startedAt, commitTimestamp: operation.commitTimestamp, commitTimestampVersionKey: operation.commitTimestampVersionKey, preflightTiming: operation.preflightTiming, semanticInputFingerprint: operation.semanticInputFingerprint, result });
-      } else if (error?.name === 'AbortError' || STALE_MEMORY_CODES.has(error?.code)) pendingResults.delete(floor.id);
+      } else if (summaryCommitted || extractionTarget && operation.rootCommitAttempted || error?.name === 'AbortError' || STALE_MEMORY_CODES.has(error?.code)) pendingResults.delete(floor.id);
       if (error?.name !== 'AbortError' && !STALE_MEMORY_CODES.has(error?.code)) await persistFailure(operation, error, source);
       else {
         const prefixDifference = error?.code === 'V3_MEMORY_PREFIX_CHANGED' ? safePrefixDifference(error.prefixDifference) : null;
@@ -2801,11 +2910,23 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return notify();
     } finally { if (targetIdentity) releaseIdentityStore(targetStore); }
   }
-  const extractFloor = (floorId, options) => runManualWork('extracting', manualWork => {
-    const memory = currentMemoryMap(reachable).get(floorId);
-    const sourceFloorIds = memorySourceFloorIds(memory);
-    return extractFloorInternal(floorId, { ...options, manualWork, aggregate: sourceFloorIds.length > 1, floorIds: sourceFloorIds.length > 1 ? sourceFloorIds : null });
-  });
+  const extractFloor = (floorId, options = {}) => {
+    let extractionTarget;
+    try { extractionTarget = options.extractionTarget ?? (typeof persistAnchors === 'function' && memorySourceFloorIds(currentMemoryMap(reachable).get(floorId)).length <= 1
+      ? captureExtractionTarget(floorId) : null); }
+    catch (error) { return Promise.reject(error); }
+    return runManualWork('extracting', async manualWork => {
+      if (extractionTarget) {
+        const anchored = await anchorExtractionTarget(extractionTarget);
+        floorId = anchored.floorId;
+        options = { ...options, extractionTarget: anchored.target };
+      }
+      const memory = currentMemoryMap(reachable).get(floorId);
+      const sourceFloorIds = memorySourceFloorIds(memory);
+      const result = await extractFloorInternal(floorId, { ...options, manualWork, aggregate: sourceFloorIds.length > 1, floorIds: sourceFloorIds.length > 1 ? sourceFloorIds : null });
+      return { ...result, extractionFloorId: floorId };
+    });
+  };
   const extractNext = () => runManualWork('extracting', manualWork => extractNextInternal(manualWork));
   const editSummary = (floorId, userText, revisionNote = '') => runManualWork('revising', () => reviseInternal(floorId, 'edit', { userText, revisionNote }));
   const editMemory = (floorId, metadata) => runManualWork('revising', () => reviseInternal(floorId, 'editMetadata', { metadata }));
@@ -5061,7 +5182,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return task;
   }
 
-  return Object.freeze({ subscribeActivity: activity.subscribeActivity, bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, setMemoryExcluded, extractNext, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
+  return Object.freeze({ subscribeActivity: activity.subscribeActivity, bind, start, setEnabled, refreshAutomation, startHistoricalRebuild, resetLiveMigrationMemoriesForRebuild, pauseHistoricalRebuild, retryAutomation, rebuildCse, resumeCseRebuild, pauseCseRebuild, invalidate, refreshStatus, prepareCurrent, confirmLatest, confirmConsecutiveAssistants, setMemoryExcluded, extractNext, captureExtractionTarget, extractFloor, analyzeNextState, retryStateAnalysis, correctSubjectState, editSummary, editMemory, restoreAi, markError, copySafeDiagnostic, copyFullDiagnostic, shouldBlockMainGeneration, allowsRealtimeTailFromEmpty, setIdentityProjection, captureBusinessIdentity: captureTargetIdentity,
     getCurrentSubjectStates: entityIds => cseRuntime.getCurrentSubjectStates(entityIds),
     getQianchuangSnapshot, getPlaceEditContext, savePlace, attachPlaceChildren, createPlace, organizePlaces, deletePlace: (entityId, context) => savePlace(entityId, {}, context, { remove: true }),
     getQianshiSnapshot: () => structuredClone(qianshiSnapshot()), getQianshiStatus: qianshiStatus,

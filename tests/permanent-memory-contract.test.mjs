@@ -37,7 +37,7 @@ test('已挂标摘要在正文变化后coverage仍确认，最终guard按marker�
   assert.equal(coverageHostGuardCurrent(coverage, snapshot), true);
 });
 
-test('未摘要楼可用严格正文启动coverage，外来marker与正文漂移仍返回unknown', async () => {
+test('未摘要楼可用严格正文启动coverage，外来marker与正文漂移记为局部未确认', async () => {
   const raw = '等待摘要正文';
   const crypto = await import('../src/identity.js');
   const fingerprint = `sha256:${await crypto.sha256(raw)}`;
@@ -46,9 +46,9 @@ test('未摘要楼可用严格正文启动coverage，外来marker与正文漂移
   const snapshot = { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: [{ is_user: false, is_system: false, mes: raw, extra: {} }] };
   assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot })).status, 'historicalDebt');
   snapshot.chat[0].mes = '漂移';
-  assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot })).status, 'unknown');
+  assert.deepEqual((await assessMemoryCoverageFromHost({ reachable, snapshot })).unmatchedFloorIds, [FLOOR]);
   snapshot.chat[0].extra = anchor(FLOOR); snapshot.chat[0].extra.qianqianjie_floor.chatId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-  assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot })).status, 'unknown');
+  assert.deepEqual((await assessMemoryCoverageFromHost({ reachable, snapshot })).unmatchedFloorIds, [FLOOR]);
 });
 
 test('无 marker 时同位置 canonical 相同可跨包装确认，移动位置则要求唯一原始指纹', async () => {
@@ -72,7 +72,7 @@ test('无 marker 时同位置 canonical 相同可跨包装确认，移动位置�
   assert.equal(coverageHostGuardCurrent(movedCoverage, moved), true);
 });
 
-test('重复或冲突 marker 不得取得 coverage 证明', async () => {
+test('重复或冲突 marker 的对应楼保持未确认，不撤销其他楼的证明', async () => {
   const crypto = await import('../src/identity.js');
   const firstId = '11111111-1111-4111-8111-111111111111';
   const secondId = '22222222-2222-4222-8222-222222222222';
@@ -86,9 +86,9 @@ test('重复或冲突 marker 不得取得 coverage 证明', async () => {
     { is_user: false, is_system: false, mes: '正文', extra: anchor(firstId) },
     { is_user: false, is_system: false, mes: '正文', extra: anchor(firstId) },
   ] };
-  assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).status, 'unknown');
+  assert.deepEqual((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).unmatchedFloorIds, [firstId, secondId]);
   duplicate.chat[1].extra = anchor('33333333-3333-4333-8333-333333333333');
-  assert.equal((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).status, 'unknown');
+  assert.deepEqual((await assessMemoryCoverageFromHost({ reachable, snapshot: duplicate })).unmatchedFloorIds, [secondId]);
 });
 
 test('迁移coverage在完整归档图上证明冻结前缀，只计算B真实活动段并沿完整assistantSeq续号', async () => {

@@ -1,5 +1,5 @@
 import { sha256 } from '../identity.js';
-import { rawWitnessShape, rawWitnessValid, summaryWitnessShape, summaryWitnessValid } from './vector-source.js';
+import { rawWitnessShape, rawWitnessValid, summaryCandidateText, summaryWitnessShape, summaryWitnessValid } from './vector-source.js';
 import { sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { projectRecallSource, readRecallSource } from './recall-source.js';
 import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens, recallBudget, groupRecallPlaces } from './recall-selector.js';
@@ -206,6 +206,8 @@ async function captureSelectedSourceGuards(receipt, source, snapshot) {
   const partition = migrationPartition(source);
   const guards = [];
   for (const floorId of expectedFloorIds) {
+    // Unbound manual summaries are checked against their saved memory revision.
+    if (source.readiness.unmatchedFloorIds?.includes(floorId)) continue;
     const ref = sourceRefs.get(floorId);
     if (partition.isFrozenFloor(floorId)) {
       // The frozen record is verified against the immutable reachable graph;
@@ -384,7 +386,7 @@ const removeQianshiProgress = (text, value, timeDependencies = null) => {
 const qianshiProgressCurrent = (saved, current) => !saved || Boolean(current && saved.fingerprint === current.fingerprint);
 
 // Re-render only the saved selection. A lost time estimate restores the saved CSE.
-function withoutStaleTime(receipt, source, projection) {
+function withoutStaleTime(receipt, source, projection, changeReason = 'optionalTimeChanged') {
   const saved = receipt.timeDependencies;
   if (saved.mode !== 'selected' || !saved.renderPlan) return null;
   const same = (item, live) => live && item.itemId === live.itemId && item.text === live.text && item.sourceSignature === (live.sourceSignature ?? null);
@@ -424,7 +426,7 @@ function withoutStaleTime(receipt, source, projection) {
     render();
   }
   render();
-  dependencies.renderPlan = { floors, limits };
+  dependencies.renderPlan = { ...saved.renderPlan, floors, limits };
   const history = floors.flatMap(floor => floor.items);
   const originalHistory = saved.renderPlan.floors.flatMap(floor => floor.items);
   const recentDropped = originalHistory.filter(item => item.recallSection === 'recent').length - history.filter(item => item.recallSection === 'recent').length;
@@ -443,7 +445,63 @@ function withoutStaleTime(receipt, source, projection) {
   return { ...receipt, selectedPlaces: places, selectedFloors: floors.map(receiptFloorRef), selectedStates: states, selectedLocationReferences: locationReferences,
     selectedCseChanges: changes, storylines, timeDependencies: dependencies, injectionText: text, completionStatus: text ? 'ready' : 'empty', stages,
     selectorDiagnostic: receipt.selectorDiagnostic ? { ...receipt.selectorDiagnostic, historyRetainedCount: history.length + placeCount(), stateRetainedCount: states.length + changes.length } : null,
-    skipReasons: [...new Set([...receipt.skipReasons, 'optionalTimeChanged'])] };
+    skipReasons: [...new Set([...receipt.skipReasons, ...(changeReason ? [changeReason] : [])])] };
+}
+
+function refreshFrozenManualSummaries(receipt, snapshot) {
+  const plan = receipt.timeDependencies?.renderPlan;
+  if (snapshot?.root?.chatId !== receipt.chatId || snapshot.root.narrativeGeneration !== receipt.narrativeGeneration) return receipt;
+  const memories = new Map();
+  for (const memory of snapshot.floorMemories ?? []) {
+    if (memory.recordStatus !== 'active' || memory.summary?.effectiveSource !== 'user') continue;
+    memories.set(memory.floorId, memories.has(memory.floorId) ? null : memory);
+  }
+  if (!plan) {
+    // Older signed receipts have no render plan. Update only their explicit
+    // narrative summary lines, retaining the rest of the frozen text verbatim.
+    const targets = new Map(receipt.selectedFloors.filter(floor => memories.get(floor.floorId)
+      && memories.get(floor.floorId).id !== floor.floorMemoryId).map(floor => [floor.assistantSeq, memories.get(floor.floorId)]));
+    const rawSequences = new Set(receipt.selectedFloors.filter(floor => floor.rawWitnesses?.length).map(floor => floor.assistantSeq));
+    if (!targets.size) return receipt;
+    const pattern = /^\[来源 AI #(\d+)(?:（[^\n]*）)?\]$|^- (?:AI #[^\n]+：|\[旧事\] )\[人工原文｜(\d+)字符\]$|^\[(?:剧情线[^\n]*|已保存人物状态依据)\]$|^- \[旧事\] \[叙事回顾\] (?:邻近背景：|同人物与主题：|来源关联：)?[^\n]*$/gmu;
+    let currentSeq = null, literalEnd = 0, end = 0, injectionText = '';
+    const changed = new Set();
+    for (const match of receipt.injectionText.matchAll(pattern)) {
+      if (match.index < literalEnd) continue;
+      if (match[2]) { literalEnd = match.index + match[0].length + 1 + Number(match[2]); continue; }
+      if (match[1]) { currentSeq = Number(match[1]); continue; }
+      if (!match[0].startsWith('- ')) { currentSeq = null; continue; }
+      const memory = targets.get(currentSeq);
+      if (!memory) continue;
+      if (rawSequences.has(currentSeq) && /^- \[旧事\] \[叙事回顾\] (?:邻近背景：|同人物与主题：|来源关联：)?\[历史原文；时间未标注\] /u.test(match[0])) continue;
+      const text = summaryCandidateText(memory.summary.userText ?? '');
+      injectionText += receipt.injectionText.slice(end, match.index) + (text ? `- [旧事] [叙事回顾] ${text}` : '');
+      end = match.index + match[0].length;
+      changed.add(memory.floorId);
+    }
+    if (!changed.size) return receipt;
+    injectionText += receipt.injectionText.slice(end);
+    return { ...receipt, injectionText, selectedFloors: receipt.selectedFloors.map(floor => changed.has(floor.floorId)
+      ? { ...floor, floorMemoryId: memories.get(floor.floorId).id, summaryWitnesses: [],
+        ...(floor.rawWitnesses?.length ? { rawWitnesses: floor.rawWitnesses.map(witness => ({ ...witness, floorMemoryId: memories.get(floor.floorId).id })) } : {}) } : floor),
+      stages: receipt.stages ? { ...receipt.stages, estimatedTokenCount: estimateRecallTokens(injectionText) } : null };
+  }
+  let changed = false;
+  const floors = plan.floors.flatMap(floor => {
+    const memory = memories.get(floor.floorId);
+    const summary = floor.items.find(item => item.kind === 'summary');
+    const text = memory ? summaryCandidateText(memory.summary.userText ?? '') : null;
+    if (!summary || !memory || summary.text === text) return [floor];
+    changed = true;
+    const items = floor.items.flatMap(item => item.kind === 'summary' ? text ? [{ ...item, text, floorMemoryId: memory.id }] : []
+      : [{ ...item, ...(item.rawWitness ? { rawWitness: { ...item.rawWitness, floorMemoryId: memory.id } } : {}) }]);
+    return items.length ? [{ ...floor, floorMemoryId: memory.id, items }] : [];
+  });
+  if (!changed) return receipt;
+  const updated = { ...receipt, timeDependencies: { ...receipt.timeDependencies, renderPlan: { ...plan, floors } } };
+  const source = { entities: (plan.entityNames ?? []).map(([entityId, displayName]) => ({ entityId, displayName })) };
+  const corrections = Object.fromEntries((receipt.timeDependencies.corrections ?? []).map(item => [item.key, item]));
+  return withoutStaleTime(updated, source, { corrections, reminders: receipt.timeDependencies.reminders ?? [] }, null) ?? receipt;
 }
 const selectorDiagnosticSnapshot = value => {
   const api = sanitizeTaskMetadata(value);
@@ -550,7 +608,11 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
   if (receipt?.schemaVersion >= 14 && !timeDependenciesValid(receipt.timeDependencies, { correctionLimit: receiptStateLimit })) return false;
   const plan = receipt?.timeDependencies?.renderPlan;
   if (plan && (!Array.isArray(plan.floors) || plan.floors.length > receiptFloorLimit
-    || !plan.floors.every(floor => Array.isArray(floor.items) && floor.items.every(item => item && boundedString(item.text, 4000)))
+    || (plan.entityNames !== undefined && (!Array.isArray(plan.entityNames) || plan.entityNames.length > 10000
+      || !plan.entityNames.every(value => Array.isArray(value) && value.length === 2 && value.every(text => boundedString(text, 500)))))
+    || !plan.floors.every(floor => Array.isArray(floor.items) && floor.items.every(item => item && (item.kind === 'manualArtifact'
+      ? boundedString(item.exactText, 32000) && boundedString(item.carrier, 500) && Array.isArray(item.knownEntityIds) && item.knownEntityIds.every(id => boundedString(id, 500))
+      : boundedString(item.text, 4000))))
     || !nonNegativeInteger(plan.limits?.maxCharacters) || plan.limits.maxCharacters > (expandedSelection ? 32000 : 20000)
     || !nonNegativeInteger(plan.limits?.estimatedTokenBudget) || plan.limits.estimatedTokenBudget > (expandedSelection ? 8000 : receipt.schemaVersion >= 15 ? 4000 : 5000)
     || (receipt.schemaVersion === 14 && (!nonNegativeInteger(plan.limits?.ordinaryMaxCharacters) || plan.limits.ordinaryMaxCharacters > 16000
@@ -1084,7 +1146,7 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
   });
 }
 
-export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, processingPrompt = () => '', isEnabled = true, memoryStatus = () => null, prepareMemory = null, preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, placeWorkspaceDependencyProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
+export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask = null, processingPrompt = () => '', isEnabled = true, memoryStatus = () => null, manualMemorySnapshot = null, prepareMemory = null, preparationTimeoutMs = DEFAULT_PREPARATION_TIMEOUT_MS, realtimeOrigin = () => false, recentBodyFloorLimit = () => 3, notifyUser = null, sourceReader = readRecallSource, selector = null, semanticProvider = null, queryBuilder = buildRecallQueryContext, fingerprint = hashText, sanitizerOptions = () => ({}), identityProjectionProvider = null, placeWorkspaceDependencyProvider = null, timeProjectionProvider = null, qianshiProgressProvider = null, qianshiDeletionProvider = null, now = () => new Date(), pluginVersion, logger = console } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall store 无效');
   if (!hostAdapter || typeof hostAdapter.snapshot !== 'function') throw new TypeError('V3 recall host adapter 无效');
   if (typeof fingerprint !== 'function') throw new TypeError('V3 recall fingerprint 无效');
@@ -1101,6 +1163,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     : input => selectRecallWithLlm({ ...input, generateUtilityTask, processingPrompt, semanticProvider, signal: input.signal });
   const readinessReasons = source => {
     if (!source?.readiness || source.readiness.status === 'caughtUp') return [];
+    if (source.readiness.unmatchedFloorIds?.length && !source.readiness.summaryMissingFloorIds?.length) return [];
     if (source.readiness.status === 'unknown' && source.readiness.hostConfirmed !== true) return ['memoryNotReady', 'coverageUnconfirmed'];
     const pendingSummaryFloorIds = source.readiness.summaryMissingFloorIds
       ?? (source.readiness.summaryPendingFloorIds ?? []).filter(floorId => !source.floorMemories?.some(memory => memory.floorId === floorId));
@@ -1865,6 +1928,14 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           }
         }
       }
+      let manualReceiptChanged = false;
+      if (candidate && typeof manualMemorySnapshot === 'function') {
+        const updated = refreshFrozenManualSummaries(candidate, manualMemorySnapshot());
+        if (updated !== candidate) {
+          candidate = { ...updated, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(updated))) };
+          manualReceiptChanged = true;
+        }
+      }
       if (candidate?.selectedFloors.some(value => value.rawWitnesses?.length || value.summaryWitnesses?.length)) {
         // 冻结复用不查询向量；原文见证及旧摘要回执仍按各自来源重新核验。
         advanceOperation(operation, 'receiptSourceVerification');
@@ -1917,6 +1988,19 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         operation.phase = diagnostic.phase = 'commit'; advanceOperation(operation, 'commitVerification');
         const committed = commitFrozenReceiptIfCurrent({ operation, receipt: candidate, userIndex: user.index, hostGuard });
         if (!committed.ok) return stopForFinalSafety(committed.reason);
+        if (manualReceiptChanged) {
+          const owner = Object.freeze({ chatId: operation.chatId, hostChatId: operation.hostChatId, userMessage: committed.user.message, userText: operation.userText });
+          const receiptPersistence = typeof committed.snapshot.context?.saveChat === 'function' ? 'saving' : 'sessionOnly';
+          candidate = Object.freeze({ ...candidate, receiptPersistence });
+          sessionReceipt = Object.freeze({ userMessage: committed.user.message, owner, receipt: candidate });
+          candidateOwner = owner;
+          if (receiptPersistence === 'saving') {
+            const receiptStarted = Date.now();
+            void persistReceipt(committed.snapshot, committed.user, candidate, (step, errorCode) => updateReceiptSave(owner, receiptStarted, step, errorCode))
+              .then(persistence => finishReceiptPersistence(owner, persistence, Date.now() - receiptStarted, sessionReceipt?.owner === owner ? sessionReceipt.receiptSaveDiagnostic : null))
+              .catch(error => logger?.warn?.('[qianqianjie] manual recall receipt save failed', { code: error?.code ?? error?.name }));
+          }
+        }
         timings.commitMs = Date.now() - commitStarted;
         timings.totalMs = Date.now() - operation.started;
         // 保存可能在复用核验的 await 中完成；读取同一 owner 的最新保存状态，避免重新显示 saving。
@@ -2083,8 +2167,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         skipReasons: [...new Set([...(selection.skipReasons ?? []), ...partialReasons])],
         createdAt: nowIso(now),
       };
-      if (receiptBase.timeDependencies.mode === 'selected' && (receiptBase.timeDependencies.corrections.length || receiptBase.timeDependencies.reminders.length) && selection.limits) {
-        receiptBase.timeDependencies.renderPlan = { floors: selection.floors.map(({ floorId, floorMemoryId, assistantSeq, reasons, chronology, items }) => ({ floorId, floorMemoryId, assistantSeq, reasons: [...reasons], chronology: clone(chronology),
+      if (receiptBase.timeDependencies.mode === 'selected' && selection.limits && (typeof manualMemorySnapshot === 'function'
+        || receiptBase.timeDependencies.corrections.length || receiptBase.timeDependencies.reminders.length)) {
+        receiptBase.timeDependencies.renderPlan = { entityNames: source.entities.map(entity => [entity.entityId, entity.displayName]), floors: selection.floors.map(({ floorId, floorMemoryId, assistantSeq, reasons, chronology, items }) => ({ floorId, floorMemoryId, assistantSeq, reasons: [...reasons], chronology: clone(chronology),
           items: items.map(({ rankScore, rankBranches, rankEntityBranches, ...item }) => clone(item)) })), limits: { maxCharacters: selection.limits.maxCharacters, estimatedTokenBudget: selection.limits.estimatedTokenBudget } };
       }
       receiptBase.completionStatus = receiptBase.injectionText ? 'ready' : 'empty';

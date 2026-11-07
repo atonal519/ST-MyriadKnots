@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { messageFloorAnchorCandidateSnapshot } from '../src/v3/message-floor-anchor.js';
 import assert from 'node:assert/strict';
 import { assertCapturedBranchTargetMatches, clearExactMessageFloorAnchor, inspectMessageFloorAnchor, persistBranchedMessageMetadata, persistMessageFloorAnchors, persistTargetChatIdentity, sameBranchMessageCore, sameMessageCoreAndQqjData, snapshotChatCoreAndQqjData, sameChatCoreAndQqjDataSnapshot } from '../src/v3/message-floor-anchor.js';
 
@@ -33,6 +34,23 @@ function targetApi(context, message, { saveStatus = 200, beforeSave = null, afte
   };
   return { targetChat, fetchImpl };
 }
+
+test('定向补标核对点击候选，保存及读回期间变化会拒绝并回滚自有标', async () => {
+  for (const phase of ['before', 'save', 'readback']) {
+    let h;
+    h = harness({ save: async () => { if (phase === 'save') h.message.mes = '保存期间改文。'; } });
+    const binding = { messageIndex: 0, floorId: FLOOR, expectedMessage: h.message, expectedCandidateSnapshot: messageFloorAnchorCandidateSnapshot(h.message) };
+    if (phase === 'before') h.message.mes = '开框后改文。';
+    const fetchImpl = async () => {
+      const response = await h.fetchImpl();
+      const payload = await response.json();
+      if (phase === 'readback') h.message.mes = '读回期间改文。';
+      return { ok: true, json: async () => payload };
+    };
+    await assert.rejects(persistMessageFloorAnchors({ hostAdapter: h.hostAdapter, chatId: CHAT, bindings: [binding], fetchImpl }), { code: 'V3_MESSAGE_ANCHOR_TARGET_CHANGED' });
+    assert.equal(h.message.extra?.qianqianjie_floor, undefined);
+  }
+});
 
 test('消息锚保存后必须从宿主聊天真实读回，silent no-op 保持可重试', async () => {
   const h = harness({ persisted: false });

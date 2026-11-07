@@ -327,6 +327,10 @@ export async function persistMessageFloorAnchors({ hostAdapter, chatId, bindings
   if (chatIdFrom(before) !== chatId || !Array.isArray(before.chat)) throw fail('V3_MESSAGE_ANCHOR_CHAT_CHANGED', '聊天已切换，未写入旧聊天的记忆标识。');
   const prepared = [];
   const seenMessages = new Set(), seenFloors = new Set();
+  const candidateMatches = (binding, message, persisted = false) => binding.expectedCandidateSnapshot === undefined
+    || ((persisted || message === binding.expectedMessage)
+      && messageFloorAnchorCandidateSnapshot(message) === binding.expectedCandidateSnapshot);
+  const targetChanged = () => fail('V3_MESSAGE_ANCHOR_TARGET_CHANGED', '待确认的消息正文或所选回复已变化，请重新点击本楼的重新提取。');
   for (const binding of bindings) {
     const messageIndex = binding?.messageIndex, floorId = binding?.floorId;
     if (!Number.isSafeInteger(messageIndex) || messageIndex < 0 || !isUuid(floorId) || seenMessages.has(messageIndex) || seenFloors.has(floorId)) {
@@ -334,13 +338,14 @@ export async function persistMessageFloorAnchors({ hostAdapter, chatId, bindings
     }
     const message = before.chat[messageIndex];
     if (!assistantMessage(message)) throw fail('V3_MESSAGE_ANCHOR_TARGET_MISSING', '待挂载的 AI 消息已经不存在。');
+    if (!candidateMatches(binding, message)) throw targetChanged();
     const inspected = inspectMessageFloorAnchor(message, chatId);
-    if (inspected.status === 'foreign' || inspected.status === 'invalid'
-      || (inspected.status === 'valid' && inspected.anchor.floorId !== floorId)) {
+    if (!(binding.replaceExisting === true && binding.expectedCandidateSnapshot !== undefined) && (inspected.status === 'foreign' || inspected.status === 'invalid'
+      || (inspected.status === 'valid' && inspected.anchor.floorId !== floorId))) {
       throw fail('V3_MESSAGE_ANCHOR_CONFLICT', '消息已有不属于当前记忆楼的标识，未静默覆盖。');
     }
     seenMessages.add(messageIndex); seenFloors.add(floorId);
-    if (inspected.status !== 'valid') prepared.push({ message, messageIndex, floorId, previousAnchor: message?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] });
+    if (inspected.status !== 'valid' || inspected.anchor.floorId !== floorId) prepared.push({ ...binding, message, messageIndex, floorId, previousAnchor: message?.extra?.[MESSAGE_FLOOR_ANCHOR_KEY] });
   }
   if (!prepared.length) return Object.freeze({ status: 'unchanged', persisted: 0 });
   const context = before.context;
@@ -364,6 +369,7 @@ export async function persistMessageFloorAnchors({ hostAdapter, chatId, bindings
     if (saved === false) throw fail('V3_MESSAGE_ANCHOR_SAVE_FAILED', '宿主未确认消息记忆标识已保存。');
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const after = hostAdapter.snapshot();
+    if (prepared.some(item => !candidateMatches(item, after.chat?.[item.messageIndex]))) throw targetChanged();
     if (chatIdFrom(after) !== chatId || after.chat !== before.chat
       || prepared.some(item => after.chat[item.messageIndex] !== item.message
         || inspectMessageFloorAnchor(item.message, chatId).anchor?.floorId !== item.floorId)) {
@@ -375,6 +381,10 @@ export async function persistMessageFloorAnchors({ hostAdapter, chatId, bindings
     if (!response?.ok) throw fail('V3_MESSAGE_ANCHOR_VERIFY_FAILED', '宿主保存后无法读回消息记忆标识。');
     const payload = await response.json();
     const persisted = Array.isArray(payload) ? payload.slice(1) : null;
+    const current = hostAdapter.snapshot();
+    if (prepared.some(item => item.expectedCandidateSnapshot !== undefined) && (chatIdFrom(current) !== chatId || current.chat !== before.chat
+      || prepared.some(item => !candidateMatches(item, current.chat?.[item.messageIndex])
+        || persisted && !candidateMatches(item, persisted[item.messageIndex], true)))) throw targetChanged();
     if (!persisted || prepared.some(item => inspectMessageFloorAnchor(persisted[item.messageIndex], chatId).anchor?.floorId !== item.floorId)) {
       throw fail('V3_MESSAGE_ANCHOR_VERIFY_FAILED', '消息记忆标识没有完成持久化，可安全重试。');
     }

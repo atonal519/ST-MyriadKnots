@@ -1361,6 +1361,46 @@ test('四项破坏性记忆操作等待异步确认，取消时零业务动作',
   assert.deepEqual(calls, []);
 });
 
+test('记忆管理在原重提确认前捕获目标，取消不写，确认后传原见证', async () => {
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 1,
+    rememberedCount: 1, memoryWorkBusy: false, floors: [{ floorId: 'floor', assistantSeq: 1, messageIndex: 2,
+      status: 'ready', memoryId: 'memory', summary: '摘要', counts: {}, memory: { exactAnchors: [] } }] };
+  const calls = [], captured = { message: { mes: '点击时正文' } };
+  let confirm;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    captureExtractionTarget(id) { calls.push(['capture', id]); return captured; },
+    async extractFloor(...args) { calls.push(['extract', ...args]); return state; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef, confirmImpl: () => {
+    calls.push(['confirm']); return new Promise(resolve => { confirm = resolve; });
+  } });
+  view.mount(container); view.setPage('memories');
+  const click = () => { openDetails(flatten(container).find(node => String(node.className).split(' ').includes('qqj-memory-card')));
+    flatten(container).find(node => node.textContent === '重新提取').click(); };
+  click(); assert.deepEqual(calls, [['capture', 'floor'], ['confirm']]);
+  confirm(false); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.some(call => call[0] === 'extract'), false);
+  calls.splice(0); click(); confirm(true); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [['capture', 'floor'], ['confirm'], ['extract', 'floor', { extractionTarget: captured }]]);
+});
+
+test('重提解析为当前B后反馈使用本次B结果，不按旧A误报未完成', async () => {
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 2,
+    rememberedCount: 2, memoryWorkBusy: false, floors: ['A', 'B'].map((id, index) => ({ floorId: id,
+      assistantSeq: index + 1, messageIndex: index * 2, status: 'ready', memoryId: `old-${id}`, summary: id,
+      counts: {}, memory: { exactAnchors: [] }, cse: { status: 'ready', deltaId: `delta-${id}` } })) };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    captureExtractionTarget: () => ({}), async extractFloor() {
+      state = { ...state, floors: state.floors.map(floor => floor.floorId === 'B' ? { ...floor, memoryId: 'new-B' } : floor) };
+      return { ...state, extractionFloorId: 'B' };
+    } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef, confirmImpl: async () => true });
+  view.mount(container); view.setPage('memories');
+  openDetails(flatten(container).find(node => String(node.className).split(' ').includes('qqj-memory-card')));
+  flatten(container).find(node => node.textContent === '重新提取').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /重新提取完成：第 2 楼摘要和人物状态均已保存/);
+});
+
 test('已有旧摘要或旧 CSE 时，本次重新提取/分析失败不会被旧记录误报为完成', async () => {
   const memory = { summaryEvidenceRefs: [], chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], eventFragments: [], exactAnchors: [], openLoops: [], ambiguities: [], cseSignals: [] };
   const floor = { floorId: 'floor', assistantSeq: 1, messageIndex: 6, status: 'ready', memoryId: 'old-memory', summary: '旧摘要', summarySource: 'ai', aiSummary: '旧摘要', counts: {}, memory, cse: { status: 'ready', deltaId: 'old-delta' } };

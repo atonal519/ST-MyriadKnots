@@ -1,6 +1,6 @@
 import { placeWorkspaceDependency } from './place-foundation.js';
 import { deriveCseTimeline, filterReachableDeltas, replayCurrentState } from './cse-engine.js';
-import { assessMemoryCoverageFromHost } from './memory-coverage.js';
+import { assessMemoryCoverageFromHost, memoryCoverageHostBindings } from './memory-coverage.js';
 import {
   buildEntityIdentityDirectory, deriveUserIdentityProjection, projectCseStateIdentityReferences,
   projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
@@ -65,6 +65,7 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
     sourceFloorIds: Object.freeze(sourceFloorIds),
     sourceAssistantSeqs: Object.freeze(sourceFloorIds.map(floorId => floorSeqById.get(floorId)).filter(Number.isSafeInteger)),
     summary: summaryText(memory),
+    summarySource: memory.summary?.effectiveSource === 'user' ? 'user' : 'ai',
     locationReferences: Object.freeze((Array.isArray(memory.sourceFloorSnapshots)
       ? memory.sourceFloorSnapshots.flatMap(snapshot => Array.isArray(snapshot.locationReference) ? snapshot.locationReference.map(text => Object.freeze({ text: safeText(text, 500), sourceFloorId: snapshot.floorId, assistantSeq: floorSeqById.get(snapshot.floorId) ?? null, hostLocator: hostLocatorDto(floorById.get(snapshot.floorId)) })) : [])
       : Array.isArray(memory.sourceLocationReference) ? memory.sourceLocationReference.map(text => Object.freeze({ text: safeText(text, 500), sourceFloorId: floor.id, assistantSeq: floor.assistantSeq, hostLocator: hostLocatorDto(floor) })) : [])),
@@ -188,16 +189,35 @@ export function selectRecallMemories(first) {
 export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
   const identityProjection = deriveUserIdentityProjection({ ...first, identityProjection: identityProjectionValue });
   const partition = migrationPartition(first);
-  const { floors, floorById, memoryGroups, activeMemories, activeMemoryIds } = selectRecallMemories(first);
-  const eligibleFloors = floors.filter(floor => !isMemoryExcludedFloor(floor, hostSnapshot?.chat, first.checkpoint, {
+  const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
+  const hostBindings = memoryCoverageHostBindings(readiness);
+  const unmatchedFloorIds = new Set(hostBindings?.unmatchedFloorIds ?? []);
+  const selected = selectRecallMemories(first);
+  const { floors, floorById, memoryGroups, activeMemoryIds } = selected;
+  let activeMemories = selected.activeMemories.flatMap(memory => {
+    if (!memorySourceFloorIds(memory).some(floorId => unmatchedFloorIds.has(floorId))) return [memory];
+    const manualTime = first.run?.diagnostics?.floorProvenance?.[memory.floorId]?.timeEdited === true;
+    if (memory.summary?.effectiveSource !== 'user' && !manualTime) return [];
+    // A saved manual summary remains authoritative while its body is updating.
+    // Automatic facts from the unconfirmed body do not accompany that summary.
+    return [{ ...memory, summary: memory.summary?.effectiveSource === 'user' ? memory.summary : { effectiveSource: 'user', userText: '' },
+      chronology: manualTime ? memory.chronology : [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [],
+      privateCognition: [], commitments: [], eventFragments: [], openLoops: [], spatialFacts: null,
+      exactAnchors: (memory.exactAnchors ?? []).filter(anchor => anchor.manual === true) }];
+  });
+  const confirmedFloors = floors.filter(floor => !unmatchedFloorIds.has(floor.id));
+  const eligibleFloors = floors.filter(floor => !isMemoryExcludedFloor(
+    hostBindings?.candidateByFloorId.has(floor.id) ? { ...floor, hostLocator: hostBindings.candidateByFloorId.get(floor.id).hostLocator } : floor,
+    unmatchedFloorIds.has(floor.id) ? null : hostSnapshot?.chat, first.checkpoint, {
     frozen: partition.isFrozenFloor(floor.id),
   }));
   const eligibleFloorIds = new Set(eligibleFloors.map(floor => floor.id));
+  activeMemories = activeMemories.filter(memory => eligibleFloorIds.has(memory.floorId));
   const degradedReasons = first.cseUnavailable === true ? ['cseReplayUnavailable'] : [];
   let trustedDeltas = [], replayed = null, cseTimeline = [];
   try {
     if (first.cseUnavailable === true) throw new TypeError('V3_RECALL_CSE_UNAVAILABLE');
-    trustedDeltas = filterReachableDeltas({ floors, floorMemories: first.floorMemories ?? [], stateDeltas: first.stateDeltas ?? [] });
+    trustedDeltas = filterReachableDeltas({ floors: confirmedFloors, floorMemories: first.floorMemories ?? [], stateDeltas: first.stateDeltas ?? [] });
     cseTimeline = deriveCseTimeline(trustedDeltas);
     if (first.baseline) {
       const timestamp = now();
@@ -221,7 +241,6 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
   // 主角人设由酒馆注入；记忆只省去它的基础资料副本，保留剧情变化与原始记录。
   const personaCoreIds = personaCoreStateIds(trustedDeltas);
-  const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
   const missingAssistantSeq = Object.freeze(eligibleFloors.filter(floor => !(memoryGroups.get(floor.id) ?? []).some(memory => activeMemoryIds.has(memory.id))).map(floor => floor.assistantSeq));
   const throughAssistantSeq = floorSeq.get(trustedDeltas.at(-1)?.floorId) ?? 0;
   const stableThroughAssistantSeq = floors.at(-1)?.assistantSeq ?? 0;
@@ -236,6 +255,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     memoryComplete,
     cseCurrent,
   });
+  const vectors = await projectVectorSources(activeMemories, floors);
   return Object.freeze({
     status: 'ready',
     chatId: first.root.chatId,
@@ -252,14 +272,15 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     coverage,
     degradedReasons: Object.freeze(degradedReasons),
     entities,
-    bodyMatchRefs: Object.freeze([...floors.filter(floor => eligibleFloorIds.has(floor.id)).map(floor => {
+    bodyMatchRefs: Object.freeze([...confirmedFloors.filter(floor => eligibleFloorIds.has(floor.id)).map(floor => {
       const memory = (memoryGroups.get(floor.id) ?? []).find(value => activeMemoryIds.has(value.id)) ?? null;
-      if (!floor || !Number.isSafeInteger(floor.hostLocator?.messageIndex)
+      const locator = hostBindings?.candidateByFloorId.get(floor.id)?.hostLocator ?? floor.hostLocator;
+      if (!floor || !Number.isSafeInteger(locator?.messageIndex)
         || typeof floor.content?.rawFingerprint !== 'string' || typeof floor.content?.canonicalFingerprint !== 'string') return null;
       return Object.freeze({
         floorId: floor.id, floorMemoryId: memory?.id ?? null, assistantSeq: floor.assistantSeq,
         ...(partition.isFrozenFloor(floor.id) ? { frozen: true, sourceOrigin: partition.originForFloor(floor.id) } : {}),
-        hostLocator: Object.freeze({ messageIndex: floor.hostLocator.messageIndex, swipeId: floor.hostLocator.swipeId ?? null, selectedSwipeIndex: floor.hostLocator.selectedSwipeIndex ?? null }),
+        hostLocator: Object.freeze({ messageIndex: locator.messageIndex, swipeId: locator.swipeId ?? null, selectedSwipeIndex: locator.selectedSwipeIndex ?? null }),
         rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint,
       });
     }).filter(Boolean), ...(readiness?.unregisteredSummaryRefs ?? [])]),
@@ -267,9 +288,12 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
       const floor = floorById.get(memory.floorId);
       return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq, floorById });
     })),
-    ...(await projectVectorSources(activeMemories, floors)),
-    currentState: stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds),
-    cseChanges: cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds),
+    ...vectors,
+    rawSources: Object.freeze(vectors.rawSources.filter(source => !unmatchedFloorIds.has(source.floorId))),
+    currentState: Object.freeze(stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds).map(subject => Object.freeze({ ...subject,
+      ...Object.fromEntries(['core', 'adaptive', 'situational'].map(layer => [layer, Object.freeze(subject[layer].filter(item => item.origin === 'manual' || !unmatchedFloorIds.has(item.sourceFloorId)))])) }))),
+    cseChanges: Object.freeze(cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds).filter(change =>
+      ![change.floorId, change.before?.sourceFloorId, change.after?.sourceFloorId].some(floorId => unmatchedFloorIds.has(floorId)))),
     identityProjection,
     placeWorkspace: identityProjection.placeWorkspace ?? null,
     placeWorkspaceDependency: placeWorkspaceDependency(first.root.chatId,identityProjection.placeWorkspaceRevision,identityProjection.placeWorkspace),

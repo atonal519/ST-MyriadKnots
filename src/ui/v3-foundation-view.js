@@ -929,10 +929,11 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       return { status: 'error', error };
     }
   }
-  const floorActionResult = (label, floorId, kind = 'extract') => (state, beforeState) => {
-    const floor = state?.floors?.find(item => item.floorId === floorId);
-    const beforeFloor = beforeState?.floors?.find(item => item.floorId === floorId);
-    const targetFloor = floorCopy(state, floor ?? { floorId }, '目标楼');
+  const floorActionResult = (label, floorId, kind = 'extract') => (state, beforeState, result) => {
+    const actualFloorId = kind === 'extract' ? result?.extractionFloorId ?? floorId : floorId;
+    const floor = state?.floors?.find(item => item.floorId === actualFloorId);
+    const beforeFloor = beforeState?.floors?.find(item => item.floorId === actualFloorId);
+    const targetFloor = floorCopy(state, floor ?? { floorId: actualFloorId }, '目标楼');
     if (kind === 'cse') {
       const changed = Boolean(floor?.cse?.deltaId && floor.cse.deltaId !== beforeFloor?.cse?.deltaId);
       if (!changed || !['ready', 'noChange'].includes(floor?.cse?.status)) return `${label}未完成：${targetFloor} · ${errorMessage(state?.lastCseError) || errorMessage(floor?.cse?.error) || '人物状态尚未保存。'}`;
@@ -1232,12 +1233,21 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const names = new Map((latest.memoryEntities ?? []).flatMap(entity => [entity.entityId, ...(entity.memberEntityIds ?? [])].map(id => [id, entity.displayName]))); const canonicalByMember = new Map((latest.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity.entityId]))); const normalizeKnownIds = values => [...new Set((values ?? []).map(id => canonicalByMember.get(id) ?? id))].sort(); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = [...new Set((memory?.participants ?? []).map(item => canonicalByMember.get(item.entityId) ?? item.entityId))].map(id => names.get(id)).filter(Boolean); const exactAnchors = (memory?.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, carrier: item.carrier ?? '', exactText: item.exactText, knownEntityIds: normalizeKnownIds(item.knownEntityIds) })); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, exactAnchors, originalExactAnchors: structuredClone(exactAnchors), note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
         trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
-        extract.addEventListener('click', async () => { const latest = foundationState ?? currentState; const ranged = (floor.sourceFloorIds?.length ?? 0) > 1; if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: `${ranged ? `${floorCopy(latest, floor)}将整体重新压缩。` : '将重新提取本楼摘要。'}已有的人物状态和其他楼不变；千事按字段保留人工修订，无法匹配时保留旧千事并提示。`, confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
+        extract.addEventListener('click', async () => { const latest = foundationState ?? currentState; const ranged = (floor.sourceFloorIds?.length ?? 0) > 1;
+          let extractionTarget;
+          try { if (!ranged) extractionTarget = runtime.captureExtractionTarget?.(floor.floorId); }
+          catch (error) { void run('重新提取', () => Promise.reject(error)); return; }
+          if (!await Promise.resolve(confirmImpl({ title: ranged ? '重新提取整段压缩记忆' : '重新提取本楼摘要', body: `${ranged ? `${floorCopy(latest, floor)}将整体重新压缩。` : '将重新提取本楼摘要。'}已有的人物状态和其他楼不变；千事按字段保留人工修订，无法匹配时保留旧千事并提示。`, confirmText: '重新提取', cancelText: '取消' }))) { feedback = '已取消重新提取。'; render(foundationState); return; } void run('重新提取', () => extractionTarget ? runtime.extractFloor(floor.floorId, { extractionTarget }) : runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('重新提取', floor.floorId) }); });
         menuBody.append(edit, extract);
       } else {
         const extract = element('button', 'qqj-memory-menu-action', '提取摘要'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
         trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
-        extract.addEventListener('click', () => { void run('提取摘要', () => runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('提取摘要', floor.floorId) }); });
+        extract.addEventListener('click', () => {
+          let extractionTarget;
+          try { extractionTarget = runtime.captureExtractionTarget?.(floor.floorId); }
+          catch (error) { void run('提取摘要', () => Promise.reject(error)); return; }
+          void run('提取摘要', () => extractionTarget ? runtime.extractFloor(floor.floorId, { extractionTarget }) : runtime.extractFloor(floor.floorId), { resultCopy: floorActionResult('提取摘要', floor.floorId) });
+        });
         menuBody.append(extract);
       }
       actions.append(menuToggle, menuBody); body.append(actions);

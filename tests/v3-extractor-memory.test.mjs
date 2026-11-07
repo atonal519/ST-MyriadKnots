@@ -14,6 +14,7 @@ import { buildFoundationIndexes, createFoundationRuntime, projectFoundationPrefi
 import { createV3MemoryRuntime, projectMemoryPersonEntities, projectMemoryPlaceEntities } from '../src/v3/memory-runtime.js';
 import { createPublicQianshiBridge } from '../src/v3/public-qianshi-bridge.js';
 import { initializeMigrationGraph } from '../src/v3/memory-migration.js';
+import { persistMessageFloorAnchors } from '../src/v3/message-floor-anchor.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { createV3FoundationView } from '../src/ui/v3-foundation-view.js';
@@ -1395,8 +1396,7 @@ test('同版本但挂标同步未恢复时拒绝快路，完整同步成功后�
     },
   });
   await h.runtime.start();
-  const first = h.runtime.getState().floors[0];
-  await h.runtime.extractFloor(first.floorId, { analyzeState: false });
+  await h.runtime.extractNext();
   assert.equal(h.runtime.getState().lastExtractorError?.phase, 'anchor');
   await h.runtime.startHistoricalRebuild();
   await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().memoryWorkBusy);
@@ -9803,6 +9803,146 @@ test('正式十楼聚合摘要阻止末登记楼重登', async () => {
   assert.equal(state.reviewReason?.assistantSeq, 10);
   assert.equal(target.extra.qianqianjie_floor.floorId, orphanId);
   assert.equal(hostWrites, 0);
+});
+
+async function manualReextractHarness({ utility = null } = {}) {
+  let h, saveFails = false;
+  h = harness({ modernAnchors: true,
+    initialChat: [assistant('A独有旧正文。'), user('稳定A'), assistant('B独有旧正文。'), user('稳定B')],
+    persistAnchors: options => persistMessageFloorAnchors({ ...options, fetchImpl: async () => ({ ok: true,
+      json: async () => [{ chat_metadata: h.context.chatMetadata }, ...structuredClone(h.context.chat)] }) }),
+    utility: options => utility?.(options) ?? (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+      ? { jsonData: { summary: `摘要：${JSON.parse(options.taskMessages[0].content).payload.canonicalContent}` } }
+      : { jsonData: { noMaterialChange: true } }),
+  });
+  h.context.saveChat = async () => !saveFails;
+  await h.runtime.start();
+  for (const floor of h.runtime.getState().floors) await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+  h.calls.splice(0);
+  return { ...h, failSave(value) { saveFails = value; } };
+}
+
+test('主动重提当前AI先补标：缺标改文恢复原楼，人工稿保留且不增加模型轮次', async () => {
+  const h = await manualReextractHarness();
+  const old = h.runtime.getState().floors[0];
+  await h.runtime.editSummary(old.floorId, '人工稿权威');
+  const before = h.runtime.getState().floors[0];
+  h.context.chat[0].mes = 'A人工改后正文。'; h.context.chat[0].swipes = ['A人工改后正文。'];
+  delete h.context.chat[0].extra.qianqianjie_floor;
+  await h.runtime.refreshStatus();
+  assert.ok(['needsReview', 'error'].includes(h.foundationRuntime.getState().status));
+  const target = h.runtime.captureExtractionTarget(old.floorId, { messageIndex: 0 });
+  await h.runtime.extractFloor(old.floorId, { extractionTarget: target, analyzeState: false });
+  const after = h.runtime.getState().floors.find(floor => floor.floorId === old.floorId);
+  assert.equal(h.context.chat[0].extra.qianqianjie_floor.floorId, old.floorId);
+  assert.equal(h.foundationRuntime.getState().status, 'ready');
+  assert.equal(after.summary, '人工稿权威');
+  assert.notEqual(after.memoryId, before.memoryId);
+  assert.equal(h.calls.length, 1);
+  assert.equal(JSON.parse(h.calls[0].taskMessages[0].content).payload.canonicalContent, 'A人工改后正文。');
+});
+
+test('主动重提缺标当前新swipe按所选正文更新本楼', async () => {
+  const h = await manualReextractHarness(); const old = h.runtime.getState().floors[0];
+  h.context.chat[0].swipes.push('当前选中的第二回复'); h.context.chat[0].swipe_id = 1;
+  h.context.chat[0].mes = h.context.chat[0].swipes[1]; delete h.context.chat[0].extra.qianqianjie_floor;
+  await h.runtime.extractFloor(old.floorId, { analyzeState: false });
+  assert.equal(h.context.chat[0].extra.qianqianjie_floor.floorId, old.floorId);
+  assert.equal(h.calls.length, 1);
+  assert.equal(JSON.parse(h.calls[0].taskMessages[0].content).payload.canonicalContent, '当前选中的第二回复');
+  assert.notEqual(h.runtime.getState().floors[0].memoryId, old.memoryId);
+});
+
+test('主动重提目标见证在正文/swipe/删重插/切chat后拒绝，零模型与补标', async t => {
+  for (const mutation of ['body', 'swipe', 'replace', 'chat']) await t.test(mutation, async () => {
+    const h = await manualReextractHarness();
+    const floor = h.runtime.getState().floors[0];
+    const target = h.runtime.captureExtractionTarget(floor.floorId, { messageIndex: 0 });
+    if (mutation === 'body') h.context.chat[0].swipes[0] = '变更正文';
+    if (mutation === 'swipe') { h.context.chat[0].swipes.push('另一回复'); h.context.chat[0].swipe_id = 1; }
+    if (mutation === 'replace') h.context.chat[0] = structuredClone(h.context.chat[0]);
+    if (mutation === 'chat') h.context.chatId = 'changed-chat';
+    await assert.rejects(h.runtime.extractFloor(floor.floorId, { extractionTarget: target, analyzeState: false }),
+      error => error.code === 'V3_MEMORY_EXTRACTION_TARGET_CHANGED');
+    assert.equal(h.calls.length, 0);
+  });
+});
+
+test('重提当前B不借A旧位置覆盖：缺标B上移仍按唯一正文提B', async () => {
+  const h = await manualReextractHarness();
+  const [a, b] = h.runtime.getState().floors;
+  h.context.chat.splice(0, 2); delete h.context.chat[0].extra.qianqianjie_floor;
+  const target = h.runtime.captureExtractionTarget(a.floorId, { messageIndex: 0 });
+  await h.runtime.extractFloor(a.floorId, { extractionTarget: target, analyzeState: false });
+  assert.equal(h.context.chat[0].extra.qianqianjie_floor.floorId, b.floorId);
+  assert.equal(h.calls.length, 1);
+  assert.equal(JSON.parse(h.calls[0].taskMessages[0].content).payload.canonicalContent, 'B独有旧正文。');
+  assert.notEqual(h.runtime.getState().floors.find(f => f.floorId === b.floorId)?.memoryId, b.memoryId);
+});
+
+test('主动重提先补标失败无模型，原按钮重试一次提取；无关失配楼保留原稿', async () => {
+  const h = await manualReextractHarness();
+  const [a, b] = h.runtime.getState().floors;
+  for (const index of [0, 2]) { h.context.chat[index].mes += '改文'; h.context.chat[index].swipes = [h.context.chat[index].mes]; delete h.context.chat[index].extra.qianqianjie_floor; }
+  const target = h.runtime.captureExtractionTarget(b.floorId, { messageIndex: 2 });
+  h.failSave(true);
+  await assert.rejects(h.runtime.extractFloor(b.floorId, { extractionTarget: target, analyzeState: false }),
+    error => error.code === 'V3_MESSAGE_ANCHOR_SAVE_FAILED');
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.runtime.getState().floors.find(f => f.floorId === b.floorId).memoryId, b.memoryId);
+  h.failSave(false);
+  await h.runtime.extractFloor(b.floorId, { extractionTarget: target, analyzeState: false });
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.runtime.getState().floors.find(f => f.floorId === a.floorId).memoryId, a.memoryId);
+  assert.notEqual(h.runtime.getState().floors.find(f => f.floorId === b.floorId).memoryId, b.memoryId);
+});
+
+test('主动重提纠正当前消息foreign/错楼/重复标记，不覆盖别楼稿', async t => {
+  for (const kind of ['foreign', 'wrongFloor', 'duplicate']) await t.test(kind, async () => {
+    const h = await manualReextractHarness();
+    const [a, b] = h.runtime.getState().floors;
+    h.context.chat[2].extra.qianqianjie_floor = { schemaVersion: 1,
+      chatId: kind === 'foreign' ? 'ffffffff-ffff-4fff-8fff-ffffffffffff' : CHAT,
+      floorId: kind === 'duplicate' || kind === 'wrongFloor' ? a.floorId : b.floorId };
+    const target = h.runtime.captureExtractionTarget(b.floorId, { messageIndex: 2 });
+    await h.runtime.extractFloor(b.floorId, { extractionTarget: target, analyzeState: false });
+    assert.equal(h.context.chat[2].extra.qianqianjie_floor.floorId, b.floorId);
+    assert.equal(h.context.chat[2].extra.qianqianjie_floor.chatId, CHAT);
+    assert.equal(h.runtime.getState().floors.find(f => f.floorId === a.floorId).memoryId, a.memoryId);
+    assert.notEqual(h.runtime.getState().floors.find(f => f.floorId === b.floorId).memoryId, b.memoryId);
+    assert.equal(h.calls.length, 1);
+  });
+});
+
+test('补标成功而提取失败保旧摘要，原按钮重试沿原一次提取', async () => {
+  let failRequest = false;
+  const h = await manualReextractHarness({ utility: () => {
+    if (failRequest) throw Object.assign(new Error('模拟请求被拒绝'), { status: 400, code: 'HTTP_400' });
+    return null;
+  } });
+  const old = h.runtime.getState().floors[0];
+  h.context.chat[0].mes = '改后当前正文'; h.context.chat[0].swipes = ['改后当前正文'];
+  delete h.context.chat[0].extra.qianqianjie_floor;
+  failRequest = true;
+  await h.runtime.extractFloor(old.floorId, { analyzeState: false });
+  assert.equal(h.context.chat[0].extra.qianqianjie_floor.floorId, old.floorId);
+  assert.equal(h.runtime.getState().floors[0].memoryId, old.memoryId);
+  assert.match(h.runtime.getState().lastExtractorError.message, /标记已保存.*摘要未更新/);
+  assert.equal(h.calls.length, 1);
+  failRequest = false; h.calls.splice(0);
+  await h.runtime.extractFloor(old.floorId, { analyzeState: false });
+  assert.equal(h.calls.length, 1);
+  assert.notEqual(h.runtime.getState().floors[0].memoryId, old.memoryId);
+});
+
+test('主动重提root响应丢失沿既有冷读确认，不重复已保存摘要请求', async () => {
+  const h = await manualReextractHarness(); const old = h.runtime.getState().floors[0];
+  h.backend.abortAfterNextPut(key => key === 'v3-root');
+  const result = await h.runtime.extractFloor(old.floorId, { analyzeState: false });
+  assert.equal(result.extractionFloorId, old.floorId);
+  assert.notEqual(h.runtime.getState().floors[0].memoryId, old.memoryId);
+  assert.equal(h.runtime.getState().lastExtractorError, null);
+  assert.equal(h.calls.length, 1);
 });
 
 test('正文编辑后的明确摘要重提不碰 CSE，显式 CSE 重分析只换本楼', async () => {

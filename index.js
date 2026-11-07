@@ -323,6 +323,7 @@ v3RecallRuntime = createV3RecallRuntime({
   semanticProvider: options => vectorIndex.query(options),
   isEnabled: settings.isEnabled,
   memoryStatus: () => v3MemoryRuntime.getState(),
+  manualMemorySnapshot: () => foundationRuntime.getReachable(),
   prepareMemory: options => v3MemoryRuntime.prepareCurrent(options),
   realtimeOrigin: () => v3MemoryRuntime.allowsRealtimeTailFromEmpty(),
   recentBodyFloorLimit: () => settings.get().autoHideKeepAiCount,
