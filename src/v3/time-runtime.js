@@ -234,11 +234,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   const sameBodyAttempt = (attempt, fragments, prepared = null) => Array.isArray(attempt?.fragments)
     ? JSON.stringify(attempt.fragments) === JSON.stringify(bodyAttempt(fragments).fragments)
     : prepared && prepared.cutoffFloorId === attempt?.cutoffFloorId && JSON.stringify(prepared.sourceKeys) === JSON.stringify(attempt?.sourceKeys);
-  const manualBlock = (ignoreActive = false, memory = null, source = null, snapshotProvided = false) => {
+  const manualBlock = ({ ignoreActive = false, memory = null, source = null, snapshotProvided = false, storedItems = false } = {}) => {
     if (!enabled()) return '时间推演已关闭。';
     if (active && !ignoreActive) return active.phase === 'saving' ? '正在保存时间事项。' : '正在整理时间事项。';
     if (!snapshotProvided) { memory = getMemoryActivityState(); source = getReachable(); }
-    if (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status)) return '请先同步当前聊天记忆，再整理时间事项。';
+    if (!storedItems && (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status))) return '请先同步当前聊天记忆，再整理时间事项。';
     if (!source?.root || !['ready', 'needsReseal'].includes(source.status ?? 'ready') || source.root.chatId !== identity().chatId) return '请等待当前聊天记忆读取就绪。';
     return '';
   };
@@ -357,14 +357,14 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   }
   const getState = () => {
     const memory = enabled() ? getMemoryActivityState() : null, source = enabled() ? getReachable() : null, activity = getActivityState(memory, source);
-    const canDisplay = enabled() && !memoryNeedsSync(memory) && itemsKey !== null && itemsKey === sourceKey(source);
+    const canDisplay = enabled() && source?.root?.chatId === identity().chatId && itemsKey !== null && itemsKey === sourceKey(source);
     return { ...activity, trackedItems: canDisplay ? structuredClone(trackedItems) : null, stoppedItems: canDisplay ? structuredClone(stoppedItems) : null, annualItems: canDisplay ? structuredClone(annualItems) : null };
   };
   const getActivityState = (memory = enabled() ? getMemoryActivityState() : null, source = enabled() ? getReachable() : null) => {
-    const disabledReason = manualBlock(false, memory, source, true);
+    const disabledReason = manualBlock({ memory, source, snapshotProvided: true });
     return Object.freeze({ status: active ? 'running' : enabled() ? memoryNeedsSync(memory) ? 'waiting' : last?.status ?? 'idle' : 'disabled',
       phase: activity.getActivityState().phase, busy: activity.getActivityState().busy, active: Boolean(active), last, coverage, clockContentChanged: enabled() && clockContentChanged,
-      progress: active?.progress ?? null, canOrganize: !disabledReason, disabledReason, pendingDeletionCount });
+      progress: active?.progress ?? null, canOrganize: !disabledReason, canEdit: !manualBlock({ memory, source, snapshotProvided: true, storedItems: true }), disabledReason, pendingDeletionCount });
   };
   const notify = () => { activity.notifyActivity(); const state = getState(); for (const listener of subscribers) try { listener(state); } catch { /* UI isolation */ } return state; };
   function invalidate() {
@@ -394,7 +394,6 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     }
     const bodyKey = sourceKey(source);
     const memory = getMemoryActivityState();
-    if (['needsReview', 'error'].includes(memory?.memorySyncStatus) || ['needsReview', 'error'].includes(memory?.status)) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '请先同步当前聊天记忆。' }; return notify(); }
     if (memory?.memorySyncStatus === 'syncing') {
       if (itemsKey !== bodyKey) { trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; }
       return notify();
@@ -408,7 +407,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     read.promise = (async () => {
       try {
         const stored = await store.read(chatId);
-        if (token !== epoch || !enabled() || active || identity().chatId !== chatId || sourceKey(getReachable()) !== bodyKey || memoryNeedsSync()) return getState();
+        if (token !== epoch || !enabled() || active || identity().chatId !== chatId || sourceKey(getReachable()) !== bodyKey) return getState();
         pendingDeletionCount = stored.head?.pendingDeletionRecords?.length ?? 0;
         const projected = await bodySource(source), freshAnnual = await annualSnapshot();
         if (token !== epoch || sourceKey(getReachable()) !== bodyKey || freshAnnual.ready !== annual.ready || freshAnnual.fingerprint !== annual.fingerprint) return getState();
@@ -461,15 +460,23 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (!plan || plan.epoch !== epoch || plan.chatId !== identity().chatId || manualBlock()) return notify();
     return runPlan(plan, true);
   }
+  async function assertCurrentItems(stored, selected) {
+    const latest = await bodySource();
+    const items = replayTimeBatches(stored.batches, latest);
+    for (const target of selected) {
+      const item = items.find(value => value.id === target.itemId);
+      if (!item || item.observationKey !== target.observationKey) throw new Error('事项已变化或来源已失效，请刷新后重试。');
+    }
+  }
   async function saveItems(edits, createFields = null) {
-    const blocked = manualBlock(); if (blocked) throw new Error(blocked);
+    const blocked = manualBlock({ storedItems: true }); if (blocked) throw new Error(blocked);
     if (!Array.isArray(edits) || !createFields && !edits.length || new Set(edits.map(edit => edit?.itemId)).size !== edits.length) throw new Error('请选择有效且不重复的时间事项。');
     const operation = { epoch, chatId: identity().chatId, controller: new AbortController(), phase: 'saving', promise: null, manual: true };
     active = operation; notify();
     operation.promise = (async () => {
       const reachable = await bodySource();
-      const key = sourceKey(reachable);
-      const valid = () => current(operation) && sourceKey(getReachable()) === key && !manualBlock(true);
+      const key = JSON.stringify([reachable.root.chatId, reachable.root.narrativeGeneration]);
+      const valid = () => current(operation) && JSON.stringify([getReachable()?.root?.chatId, getReachable()?.root?.narrativeGeneration]) === key && !manualBlock({ ignoreActive: true, storedItems: true });
       if (!valid() || !reachable?.root || reachable.root.chatId !== operation.chatId || !reachable.floors?.length) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
       let stored = await store.read(operation.chatId);
       if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
@@ -502,6 +509,8 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       const currentReviewAttempt = resolvedByRemoval && stored.head?.currentReviewAttempt?.status === 'partial'
         ? { ...stored.head.currentReviewAttempt, status: 'resolved' } : null;
       const nextHead = { ...headWithoutReviewAttempt, ...(currentReviewAttempt ? { currentReviewAttempt } : {}), batchIds: [...stored.head.batchIds, batch.id], ...(lastRun ? { lastRun } : {}) };
+      if (!createFields) await assertCurrentItems(stored, edits);
+      if (!valid()) throw new Error('当前聊天已变化，本次编辑未应用。');
       await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
       if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用到当前事项。');
       const freshAnnual = await annualSnapshot();
@@ -517,13 +526,13 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   const createItem = fields => saveItems([],fields);
   const editItem = (itemId, fields, observationKey) => editItems([{ itemId, fields, observationKey }]);
   async function deleteItems(items = []) {
-    const blocked = manualBlock(); if (blocked) throw new Error(blocked);
+    const blocked = manualBlock({ storedItems: true }); if (blocked) throw new Error(blocked);
     if (!Array.isArray(items) || new Set(items.map(item => item?.itemId)).size !== items.length) throw new Error('请选择有效且不重复的停止事项。');
     const operation = { epoch, chatId: identity().chatId, controller: new AbortController(), phase: 'saving', promise: null, manual: true };
     active = operation; notify();
     operation.promise = (async () => {
-      const reachable = await bodySource(), key = sourceKey(reachable);
-      const valid = () => current(operation) && sourceKey(getReachable()) === key && !manualBlock(true);
+      const reachable = await bodySource(), key = JSON.stringify([reachable.root.chatId, reachable.root.narrativeGeneration]);
+      const valid = () => current(operation) && JSON.stringify([getReachable()?.root?.chatId, getReachable()?.root?.narrativeGeneration]) === key && !manualBlock({ ignoreActive: true, storedItems: true });
       if (!valid() || !reachable?.root || reachable.root.chatId !== operation.chatId) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
       let stored = await store.read(operation.chatId);
       if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
@@ -564,6 +573,8 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
         nextHead.batchIds = stored.head.batchIds.map(id => replacements.get(id) ?? id);
         nextHead.pendingDeletionRecords = pending;
         if (nextHead.lastRun) nextHead.lastRun.items = itemCount(nextBatches, reachable);
+        await assertCurrentItems(stored, items);
+        if (!valid()) throw new Error('当前聊天已变化，本次删除未应用。');
         const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
         stored = { ...stored, head: nextHead, revision: saved.revision, batches: nextBatches };
         pendingDeletionCount = pending.length;

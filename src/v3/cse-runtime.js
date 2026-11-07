@@ -702,7 +702,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     active = operation; notify();
     try {
       operation.identityProjection = normalizeIdentityProjection(typeof identityProjectionProvider === 'function'
-        ? await identityProjectionProvider(targetIdentity) : currentIdentityProjection());
+        ? await identityProjectionProvider(targetIdentity, { includePlaces: false }) : currentIdentityProjection());
       value = await ensureBaseline(value, operation);
       operation.sourceReachable = value;
       operation.phase = 'analyzing'; notify();

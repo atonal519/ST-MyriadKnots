@@ -6650,7 +6650,7 @@ test('runtime 未映射 core 新增不改变来源排除集，regenerate/swipe/c
   assert.equal(harness.prompts.filter(call => call[1]).length, 4);
 });
 
-test('同一 user 的 normal/regenerate/swipe/continue 完整复用首次召回且零 source/provider/selector，删楼同字新对象才 fresh', async () => {
+test('同一 user 的 normal/regenerate/swipe/continue 复用首次选材并核当前辅助资料，删楼同字新对象才 fresh', async () => {
   const calls = { source: 0, root: 0, identity: 0, time: 0, qianshi: 0, selector: 0 };
   let queryRevision = 0;
   let currentSource = runtimeFixture();
@@ -6687,7 +6687,7 @@ test('同一 user 的 normal/regenerate/swipe/continue 完整复用首次召回�
     assert.equal(reused.lastRecall.injectionText, originalInjection, type);
     assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), originalInjection, type);
   }
-  assert.deepEqual(calls, { source: 0, root: 0, identity: 0, time: 0, qianshi: 0, selector: 0 });
+  assert.deepEqual(calls, { source: 0, root: 0, identity: 4, time: 0, qianshi: 0, selector: 0 });
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].receiptFingerprint, originalReceipt.receiptFingerprint, '复用不得重签或重存原回执');
 
   harness.runtime.invalidate('simulateReload');
@@ -6696,7 +6696,7 @@ test('同一 user 的 normal/regenerate/swipe/continue 完整复用首次召回�
   const restoredReuse = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(restoredReuse.lastRecall.reusedReceipt, true);
   assert.equal(restoredReuse.lastRecall.injectionText, originalInjection);
-  assert.deepEqual(calls, { source: 0, root: 0, identity: 0, time: 0, qianshi: 0, selector: 0 }, '刷新后仍只从当前 user extra 复用');
+  assert.deepEqual(calls, { source: 0, root: 0, identity: 1, time: 0, qianshi: 0, selector: 0 }, '刷新后复用同票并核当前辅助资料');
 
   const replacement = { is_user: true, is_system: false, mes: harness.userMessage.mes };
   harness.chat.splice(1, 1, replacement);
@@ -7700,6 +7700,12 @@ test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且
       sourceReader: () => { reads += 1; return kind === 'read' ? pending() : runtimeFixture(); },
       selector: options => { selects += 1; return selectRecall(options); } });
     const result = await harness.runtime.intercept(harness.chat, 12000, value => { if (value === true) aborts += 1; }, 'normal');
+    if (kind === 'identity') {
+      assert.equal(result.lastRecall.status, 'ready'); assert.equal(aborts, 0); assert.equal(selects, 1);
+      const beforeReads = reads; for (const release of releases) release(null);
+      await new Promise(resolve => setImmediate(resolve)); assert.equal(reads, beforeReads);
+      return;
+    }
     assert.equal(result.lastRecall.status, 'error'); assert.equal(result.lastRecall.error.code, 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT');
     assert.equal(aborts, 1); assert.equal(selects, kind === 'commitRoot' ? 1 : 0); assert.equal(harness.saves, 0);
     const attempts = result.lastRecall.attemptDiagnostics;
@@ -7776,7 +7782,7 @@ test('默认准备期限超时仍只进行两次来源尝试，迟到结果不�
   assert.ok(harness.prompts.every(call => call[1] === ''));
 });
 
-test('准备取消立即结束且迟到identity不得启动来源读取', async () => {
+test('准备取消立即结束且迟到identity不得继续来源读取', async () => {
   let releaseIdentity, enteredIdentity; const entered = new Promise(resolve => { enteredIdentity = resolve; });
   let prepares = 0, reads = 0;
   const harness = createRuntimeHarness({ preparationTimeoutMs: 1000,
@@ -7787,7 +7793,7 @@ test('准备取消立即结束且迟到identity不得启动来源读取', async 
   harness.handlers.get('generation-stopped')(); const result = await pending;
   assert.equal(result.lastRecall.status, 'stale'); assert.deepEqual(result.lastRecall.skipReasons, ['stopped']);
   releaseIdentity(null); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(prepares, 1); assert.equal(reads, 0); assert.equal(harness.saves, 0);
+  assert.equal(prepares, 1); assert.equal(reads, 1); assert.equal(harness.saves, 0);
   assert.equal(harness.prompts.some(call => call[1]?.includes('<qqj_recalled_context>')), false);
 });
 
@@ -8700,23 +8706,53 @@ test('自动当前方位覆盖旧五条进入正式召回DTO与候选，显式�
  assert.equal(historical.floorMemories[0].spatialFacts.relations.length,5);assert.equal(buildRecallHistoryCandidatePool({source:historical,queryContext}).candidates.filter(c=>c.value.kind==='spatialRelation').length,5);assert.equal(graph.floorMemories[0].spatialFacts.relations.length,5);
 });
 
-test('地点人工修订后再生成拒绝持久旧召回，同Core HEAD也重选', async () => {
+test('辅助来源沿原准备预算到期仅隔离未完成类别，迟到结果不再继续读', async t => {
+  for (const pending of ['people', 'places']) await t.test(pending, async () => {
+    let release, captured, reads = 0, aborts = 0;
+    const source = runtimeFixture();
+    const workspace = { placesByEntityId: {}, foundation: { entities: [], facts: [] } };
+    const h = createRuntimeHarness({ preparationTimeoutMs: 20,
+      sourceReader: async () => { reads++; return structuredClone(source); },
+      identityProjectionProvider: (_identity, options) => {
+        options.onPartial?.({ unavailableSources: [pending], ...(pending === 'people' ? { placeWorkspace: workspace } : {}) });
+        return new Promise(resolve => { release = resolve; });
+      }, selector: input => { captured = input.source; return selectRecall(input); } });
+    const result = await h.runtime.intercept(h.chat, 12000, () => { aborts++; }, 'normal');
+    assert.equal(result.lastRecall.status, 'ready'); assert.equal(aborts, 0);
+    assert.deepEqual(captured.unavailableSources, [pending]);
+    if (pending === 'people') { assert.equal(captured.currentState.length, 0); assert.deepEqual(captured.placeWorkspace, workspace); }
+    else { assert.ok(captured.entities.some(entity => entity.entityType === 'person')); assert.equal(captured.placeWorkspace, null); }
+    const after = reads; release({}); await new Promise(resolve => setImmediate(resolve)); assert.equal(reads, after);
+  });
+});
+
+test('辅助来源读取失败保留普通旧事并放行正文', async () => {
+  let aborts = 0;
+  const h = createRuntimeHarness({ identityProjectionProvider: async () => { throw new Error('辅助库读取失败'); },
+    placeWorkspaceDependencyProvider: async () => { throw new Error('地点库读取失败'); } });
+  const result = await h.runtime.intercept(h.chat, 12000, () => { aborts++; }, 'normal');
+  assert.equal(result.lastRecall.status, 'ready');
+  assert.ok(result.lastRecall.injectionText.includes('qqj_recalled_context'));
+  assert.equal(aborts, 0);
+});
+
+test('无关地点revision变化仍复用同一旧事回执', async () => {
   let revision = 0, selections = 0;
   const harness = createRuntimeHarness({ placeWorkspaceDependencyProvider: async () => `${CHAT}:${revision}`, identityProjectionProvider: async () => ({ placeWorkspaceRevision: revision }), selector: input => { selections++; return selectRecall(input); } });
   await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   await flushReceiptSave(); assert.equal(selections, 1);
   revision = 1; harness.runtime.invalidate('placeEdited');
   await harness.runtime.intercept(harness.chat, 12000, null, 'regenerate');
-  assert.equal(selections, 2); assert.equal(harness.runtime.getState().lastRecall.reusedReceipt, false);
+  assert.equal(selections, 1); assert.equal(harness.runtime.getState().lastRecall.reusedReceipt, true);
 });
 
-test('世界书来源许可改变使同HEAD同workspace版本持久receipt失效',async()=>{
+test('无选中地点的世界书许可变化继续复用旧事票',async()=>{
  const {placeWorkspaceDependency,filterPlaceFoundationSources}=await import('../src/v3/place-foundation.js');let excluded=false,selections=0;
  const workspace={foundation:{schemaVersion:1,entities:[],facts:[{itemId:'base-1',kind:'feature',placeEntityId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',text:'固定设施',knownFromFloorId:null,source:{kind:'worldbook',sourceName:'地图',locator:'地图:18',fingerprint:'sha256:fixture',quote:'固定设施'}}]}};
  const current=()=>filterPlaceFoundationSources(workspace,{filterWorldInfoSources:sources=>excluded?[]:sources});
  const h=createRuntimeHarness({placeWorkspaceDependencyProvider:()=>placeWorkspaceDependency(CHAT,1,current()),identityProjectionProvider:async()=>({placeWorkspaceRevision:1,placeWorkspace:current()}),selector:input=>{selections++;return selectRecall(input);}});
  await h.runtime.intercept(h.chat,12000,null,'normal');await flushReceiptSave();assert.equal(selections,1);
- excluded=true;await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,2);assert.equal(h.runtime.getState().lastRecall.reusedReceipt,false);
+ excluded=true;await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(selections,1);assert.equal(h.runtime.getState().lastRecall.reusedReceipt,true);
 });
 
 test('召回新注入直陈当时承诺与可见性，态度对象不冒作接收者，地点不补不知情', () => {
@@ -9030,6 +9066,125 @@ function exactPlaceClauseSource(){
   {itemId:'short-exact',kind:'relation',placeEntityId:room,text:'位于本馆走廊末端',referencePlaceEntityIds:[],source:structuredClone(ref)},
  ];return value;
 }
+
+test('已选地点B局部更新删除、无关C与展示编辑复用原票，选材在途不重跑', async t => {
+  for (const scenario of ['unrelated', 'display', 'edit', 'delete', 'inFlight', 'legacy', 'manualScope', 'floorOnlyScope']) await t.test(scenario, async () => {
+    const { source, room, queryContext } = exactPlaceClauseSource();
+    if (['manualScope','floorOnlyScope'].includes(scenario)) { queryContext.messageCount = 20; source.floorMemories.at(-1).summary = '示例客房相关叙事'; }
+    let workspace = structuredClone(source.placeWorkspace), selections = 0, selectedFloorId = null;
+    if (scenario === 'floorOnlyScope') workspace.foundation.facts = [];
+    const mutate = () => {
+      workspace = structuredClone(workspace);
+      if (scenario === 'unrelated') workspace.foundation.facts.push({ ...workspace.foundation.facts[1], itemId:'unrelated', placeEntityId: 'ccccdddd-cccc-4ccc-8ccc-ccccdddddddd', text:'无关地点C' });
+      else if (scenario === 'display') workspace.mapStyle = 'campus-compact';
+      else if (['manualScope','floorOnlyScope'].includes(scenario)) workspace.placesByEntityId[room] = { description:'本楼人工新地点描述', scopes:{ description:{ coveredFloorIds:[selectedFloorId], coveredItemIds:['old-feature'] } } };
+      else if (scenario === 'delete') workspace.foundation.facts = [];
+      else workspace.foundation.facts = [{ ...workspace.foundation.facts[1], text:'人工新地点资料' }];
+    };
+    const h = createRuntimeHarness({ queryBuilder: () => queryContext,
+      sourceReader: async () => structuredClone({ ...source, placeWorkspace: workspace }),
+      identityProjectionProvider: async () => ({ placeWorkspace: workspace, placeWorkspaceRevision: 2 }),
+      selector: input => {
+        selections++; const selected = structuredClone(selectRecall(input));
+        if (['manualScope','floorOnlyScope'].includes(scenario)) {
+          const floor = selected.floors[0]; selectedFloorId = floor.floorId;
+          floor.items.push({kind:'placeFeature',category:'objective',placeEntityId:room,itemId:'old-feature',
+            text:'当前地点设施：客房：旧设施独有',sourceRefs:[{floorId:floor.floorId}],storylineId:floor.items[0].storylineId});
+          selected.injectionText = formatRecallInjection({...selected,coverage:input.source.coverage,entityById:new Map(input.source.entities.map(entity=>[entity.entityId,entity]))});
+        }
+        if (scenario === 'inFlight') mutate(); return selected;
+      } });
+    await h.runtime.intercept(h.chat, 12000, null, 'normal'); await flushReceiptSave();
+    if (scenario === 'inFlight') {
+      assert.match(h.runtime.getState().lastRecall.injectionText, /人工新地点资料/);
+      assert.equal(selections, 1); return;
+    }
+    const saved = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    if (scenario === 'floorOnlyScope') assert.equal(saved.selectedPlaces?.length ?? 0,0);
+    else assert.ok(saved.selectedPlaces.some(place => place.placeEntityId === room));
+    if (scenario === 'legacy') { delete saved.timeDependencies.renderPlan; saved.receiptFingerprint = await receiptFingerprint(saved); h.runtime.invalidate(); }
+    const before = saved.injectionText; mutate();
+    await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+    const result = h.runtime.getState().lastRecall; assert.equal(result.reusedReceipt, true); assert.equal(selections, 1);
+    if (scenario === 'unrelated' || scenario === 'display') assert.equal(result.injectionText, before);
+    else if (['manualScope','floorOnlyScope'].includes(scenario)) { assert.match(result.injectionText,/本楼人工新地点描述/); assert.equal(result.injectionText.includes('旧设施独有'),false); }
+    else if (scenario === 'delete') assert.equal(result.injectionText.includes('配有书架'), false);
+    else { assert.match(result.injectionText, /人工新地点资料/); assert.equal(result.injectionText.includes('配有书架'), false); }
+  });
+});
+
+test('首次人物辅助源不可用仍保人工原文明确知情名单，只给人工块提供姓名', async () => {
+  const source = runtimeFixture();
+  source.floorMemories[0].exactAnchors = [{anchorId:'aaaa0000-0000-4000-8000-000000000010',kind:'other',manual:true,
+    carrier:'钟楼账册',exactText:'钟楼账册必须保留原文。',knownEntityIds:[PERSON]}];
+  let captured;
+  const h = createRuntimeHarness({sourceReader:async()=>structuredClone(source),manualMemorySnapshot:()=>null,
+    identityProjectionProvider:async()=>({unavailableSources:['people']}),
+    queryBuilder:()=>({text:'裴晚生钟楼账册',latestUserText:'裴晚生钟楼账册',messageCount:20}),
+    selector:input=>{captured=input.source;const pool=buildRecallHistoryCandidatePool(input);return selectRecall({...input,selectedHistoryCandidates:pool.candidates});}});
+  const result = await h.runtime.intercept(h.chat,12000,null,'normal');
+  assert.equal(result.lastRecall.status,'ready'); assert.equal(captured.entities.some(entity=>entity.entityType==='person'),false);
+  assert.equal(captured.currentState.length,0); assert.match(result.lastRecall.injectionText,/知情：裴晚生；不知情：其余人物/);
+  const invalid = structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]);
+  const artifact = invalid.timeDependencies.renderPlan.floors.flatMap(floor=>floor.items).find(item=>item.kind==='manualArtifact');
+  assert.deepEqual(artifact.knownEntityNames,[[PERSON,'裴晚生']]);
+  artifact.knownEntityNames[0][0]='foreign-person'; invalid.receiptFingerprint=await receiptFingerprint(invalid);
+  h.userMessage.extra[RECALL_RECEIPT_KEY]=invalid;
+  assert.equal(await projectHistoricalRecallReceipt(h.userMessage,{chatId:CHAT,userMessageIndex:1}),null);
+});
+
+test('辅助人物不可用重封plan保人工原文与冻结知情边界', async () => {
+  const source = runtimeFixture(); let failed = false;
+  source.floorMemories[0].exactAnchors = [{ anchorId:'aaaa0000-0000-4000-8000-000000000001', kind:'other', manual:true,
+    carrier:'钟楼账册', exactText:'钟楼账册载体原文必须保留。', knownEntityIds:[PERSON] }];
+  const h = createRuntimeHarness({sourceReader:async()=>structuredClone(source),manualMemorySnapshot:()=>null,
+    identityProjectionProvider:async()=>failed ? {unavailableSources:['people']} : {},
+    queryBuilder:()=>({text:'裴晚生钟楼账册',latestUserText:'裴晚生钟楼账册'}),
+    selector: input => {
+      const selection = structuredClone(selectRecall(input)), floor = selection.floors[0];
+      floor.items.push({kind:'manualArtifact',category:'objective',carrier:'钟楼账册',exactText:'钟楼账册载体原文必须保留。',knownEntityIds:[PERSON],storylineId:floor.items[0].storylineId});
+      selection.injectionText = formatRecallInjection({...selection,coverage:input.source.coverage,entityById:new Map(input.source.entities.map(entity=>[entity.entityId,entity]))});
+      return selection;
+    }});
+  await h.runtime.intercept(h.chat,12000,null,'normal'); await flushReceiptSave();
+  const before = h.userMessage.extra[RECALL_RECEIPT_KEY]; assert.ok(before.timeDependencies.renderPlan);
+  assert.match(before.injectionText,/知情：裴晚生；不知情：其余人物/);
+  failed = true; await h.runtime.intercept(h.chat,12000,null,'regenerate');
+  const after = h.runtime.getState().lastRecall;
+  assert.equal(after.reusedReceipt,true); assert.match(after.injectionText,/知情：裴晚生；不知情：其余人物/);
+  assert.match(after.injectionText,/钟楼账册载体原文必须保留/);
+  const { readManualArtifactBlocks } = await import('../src/v3/recall-text.js');
+  assert.deepEqual([...readManualArtifactBlocks(after.injectionText).blocks.values()], [...readManualArtifactBlocks(before.injectionText).blocks.values()]);
+});
+
+test('旧无plan地点重封保护人工literal和历史raw行，人物源失败撤实际人物段', async () => {
+  const { source, room, queryContext } = exactPlaceClauseSource();
+  queryContext.text += ' 裴晚生客房'; queryContext.latestUserText += ' 裴晚生客房';
+  source.currentState = [{ subjectEntityId: PERSON, displayName:'裴晚生', adaptive: [], core: [], situational: [{
+    stateId:'legacy-state', text:'客房旧人物状态独有文本', visibility:'private', reason:'旧依据', origin:'floor',
+    sourceFloorId:source.floorMemories[0].floorId, sourceAssistantSeq:1, towardEntityId:null }] }];
+  let workspace = structuredClone(source.placeWorkspace), failed = false, selections = 0;
+  const h = createRuntimeHarness({ queryBuilder: () => queryContext,
+    sourceReader: async () => structuredClone({ ...source, placeWorkspace: workspace }),
+    identityProjectionProvider: async () => ({ placeWorkspace: workspace, placeWorkspaceRevision: 1,
+      ...(failed ? {unavailableSources:['people']} : {}) }),
+    selector: input => {selections++; return selectRecall(input);} });
+  await h.runtime.intercept(h.chat, 12000, null, 'normal'); await flushReceiptSave();
+  const old = h.userMessage.extra[RECALL_RECEIPT_KEY]; assert.ok(old.selectedStates.length);
+  delete old.timeDependencies.renderPlan;
+  const literal = '[地点资料]\n- 这是人工载体原文，配有书架。\n[已保存人物状态依据]\n- 主体：原文字面，不应被当状态。';
+  const raw = '- [旧事] [叙事回顾] [历史原文；时间未标注] [地点资料] 人物原话必须逐字保留。';
+  old.injectionText = old.injectionText.replace('</qqj_recalled_context>', `- [旧事] （主体：裴晚生）：旧人物自动补充\n- [旧事] [私有资料；知情：裴晚生] 旧私有自动补充\n${raw}\n- [旧事] [人工原文｜${literal.length}字符]\n${literal}\n</qqj_recalled_context>`);
+  old.receiptFingerprint = await receiptFingerprint(old); h.runtime.invalidate();
+  workspace = structuredClone(workspace); workspace.foundation.facts = [{...workspace.foundation.facts[1],text:'新地点修订'}];
+  workspace.placesByEntityId[room] = {description:'用户多行地点描述\n- [旧事] 用户手写的第二行'}; failed = true;
+  await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+  const result = h.runtime.getState().lastRecall;
+  assert.equal(result.reusedReceipt, true); assert.equal(selections, 1);
+  assert.ok(result.injectionText.includes(literal)); assert.ok(result.injectionText.includes(raw));
+  assert.equal(result.injectionText.includes('旧人物自动补充'), false); assert.equal(result.injectionText.includes('旧私有自动补充'), false);
+  assert.equal(result.injectionText.includes('旧人物状态独有文本'), false); assert.ok(result.injectionText.includes('用户多行地点描述\n- [旧事] 用户手写的第二行'));
+});
 
 test('地点同源完整短分句只输出一次，候选预算与注入共用且原成员来源全保',()=>{
  const {source,room,queryContext}=exactPlaceClauseSource(),before=structuredClone(source);

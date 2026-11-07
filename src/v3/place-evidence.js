@@ -75,7 +75,7 @@ function paragraphContext(content, names, quotes) {
   return ranges.map(({start,end})=>({content:content.slice(start,end),offset:start}));
 }
 
-export async function collectPlaceOrganizationSources({entities,entityKeys,places,bodySources,floors,memoriesByFloor,parentFacts=[]}) {
+export async function collectPlaceOrganizationSources({entities,entityKeys,places,bodySources,contextSources=bodySources,floors,memoriesByFloor,parentFacts=[]}) {
   const keysByFloor=new Map(),available=new Set(floors.map(floor=>floor.id));
   const add=(floorId,ids)=>{
     if(!available.has(floorId))return;
@@ -93,8 +93,7 @@ export async function collectPlaceOrganizationSources({entities,entityKeys,place
     const memory=memoriesByFloor.get(floorId);return memory?[[memory.id,memory]]:[];
   })).values()];
   const {rawSources}=await projectVectorSources(memories,floors,{includeSummaries:false});
-  const names=[...new Set(places.flatMap(place=>[place.displayName,...(place.aliases??[])])
-    .filter(name=>typeof name==='string'&&name.length>=2).map(name=>name.toLocaleLowerCase()))];
+  const placesByKey=new Map(places.map(place=>[entityKeys.get(place.entityId),place]));
   const contexts=[],seen=new Set();
   const sameSource=(a,b)=>a.floorId===b.floorId&&(a.sourceType??'assistant')===(b.sourceType??'assistant')&&a.sourceSnapshotIndex===b.sourceSnapshotIndex;
   for(const source of rawSources){
@@ -105,7 +104,11 @@ export async function collectPlaceOrganizationSources({entities,entityKeys,place
     const sources=[{...base,sourceType:'assistant',canonicalContent:source.canonicalContent},
       ...(storedSourceUserInput(memory,source.floorId)?.messages??[]).map((message,sourceSnapshotIndex)=>({...base,sourceType:'precedingUser',sourceSnapshotIndex,canonicalContent:message.content}))];
     for(const candidate of sources){
-      const quotes=bodySources.filter(row=>sameSource(row,candidate)).map(row=>row.canonicalContent);
+      const related=bodySources.filter(row=>sameSource(row,candidate));
+      const placeKeys=new Set([...candidate.placeKeys,...related.flatMap(row=>row.placeKeys??[])]);
+      const names=[...new Set([...placeKeys].flatMap(key=>{const place=placesByKey.get(key);return place?[place.displayName,...(place.aliases??[])]:[];})
+        .filter(name=>typeof name==='string'&&name.length>=2).map(name=>name.toLocaleLowerCase()))];
+      const quotes=contextSources.filter(row=>sameSource(row,candidate)).map(row=>row.canonicalContent);
       let ranges=paragraphContext(candidate.canonicalContent,names,quotes);
       if(!ranges.length&&candidate.sourceType==='assistant')ranges=[{content:candidate.canonicalContent,offset:0}];
       for(const range of ranges)contexts.push({...candidate,canonicalContent:range.content,sourceOffset:range.offset});

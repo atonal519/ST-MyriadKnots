@@ -39,6 +39,60 @@ test('整理父边来源使用聚合成员的专属AI与USER快照，不借锚�
   const result=await placeEvidence.collectPlaceOrganizationSources({...args,memoriesByFloor:new Map([['f1',missing],['f2',missing]])});assert.equal(result.some(row=>row.floorId==='f1'),false);
 });
 
+test('整理上下文只由本来源关联地点与引文定位，保相邻新上级及无命中首见全文', async () => {
+  const text = '甲楼门厅。\n\n这座楼位于新增城区，二层有尚未登记的资料室。\n\n过渡一。\n\n过渡二。\n\n乙城的无关旧人物闲聊。\n\n过渡三。\n\n过渡四。\n\n甲楼内室有投影仪。';
+  const unknown = '只有尚未命名的建筑及地下室描述。\n\n入口在楼后，尚无已存名称。';
+  const floors = [{ id: 'f1', assistantSeq: 1, content: { canonicalContent: text } }, { id: 'f2', assistantSeq: 2, content: { canonicalContent: '乙城有旅店。' } }, { id: 'f3', assistantSeq: 3, content: { canonicalContent: unknown } }];
+  const places = [{ entityId: 'a', displayName: '甲楼', aliases: [] }, { entityId: 'b', displayName: '乙城', aliases: [] }, { entityId: 'c', displayName: '甲楼内室', aliases: [] }, { entityId: 'd', displayName: '旧名', aliases: [] }];
+  const args = { entities: places.map((place, index) => ({ id: place.entityId, entityType: 'place', firstSeenFloorId: index === 1 ? 'f2' : index === 3 ? 'f3' : 'f1' })),
+    entityKeys: new Map(places.map((place, index) => [place.entityId, `place-${index + 1}`])), places, bodySources: [], floors,
+    memoriesByFloor: new Map(floors.map(floor => [floor.id, { id: `m-${floor.id}`, floorId: floor.id, sourceCanonicalContent: floor.content.canonicalContent }])), parentFacts: [] };
+  const rows = await placeEvidence.collectPlaceOrganizationSources(args);
+  const first = rows.filter(row => row.floorId === 'f1');
+  assert.ok(first.some(row => row.canonicalContent.includes('新增城区，二层')));
+  assert.ok(first.some(row => row.canonicalContent.includes('甲楼内室有投影仪')));
+  assert.ok(first.every(row => !row.canonicalContent.includes('乙城的无关旧人物闲聊')));
+  for (const row of rows) assert.equal(args.memoriesByFloor.get(row.floorId).sourceCanonicalContent.slice(row.sourceOffset, row.sourceOffset + row.canonicalContent.length), row.canonicalContent);
+  assert.equal(rows.find(row => row.floorId === 'f3').canonicalContent, unknown);
+});
+
+test('整理旧位置quote保原句，只有当前事实来源quote扩相邻段落', async () => {
+  const oldQuote = '她站在此前的位置。', currentQuote = '投影仪固定在天花板。';
+  const text = ['甲楼门厅。', '入口相邻段。', '过渡一。', '过渡二。', '旧位置外围人物闲聊。', oldQuote, '旧位置另一段人物闲聊。', '过渡三。', '过渡四。', '新上级建筑的二层设有资料室。', currentQuote, '设备旁有控制台。'].join('\n\n');
+  const old = { floorId: 'f1', sourceType: 'assistant', canonicalContent: oldQuote, placeKeys: ['place-1'] };
+  const current = { floorId: 'f1', sourceType: 'assistant', canonicalContent: currentQuote, placeKeys: ['place-1'] };
+  const rows = await placeEvidence.collectPlaceOrganizationSources({ entities: [{ id: 'a', entityType: 'place', firstSeenFloorId: 'f1' }], entityKeys: new Map([['a', 'place-1']]),
+    places: [{ entityId: 'a', displayName: '甲楼', aliases: [] }], floors: [{ id: 'f1', assistantSeq: 1, content: { canonicalContent: text } }],
+    memoriesByFloor: new Map([['f1', { id: 'm1', floorId: 'f1', sourceCanonicalContent: text }]]), bodySources: [old, current], contextSources: [current] });
+  assert.ok(rows.some(row => row.canonicalContent === oldQuote && row.requiresExactQuote !== true));
+  assert.ok(rows.every(row => !row.canonicalContent.includes('旧位置外围人物闲聊')));
+  assert.ok(rows.some(row => row.requiresExactQuote && row.canonicalContent.includes('新上级建筑的二层') && row.canonicalContent.includes(currentQuote)));
+  for (const original of [old, current]) assert.ok(rows.some(row => row.sourceType === original.sourceType && row.canonicalContent.includes(original.canonicalContent)));
+});
+
+test('旧在场引文增长只增加短原句，当前事实和父链上下文不随外围剧情增长', async () => {
+  const currentQuote = '设备固定在墙上。';
+  const oldQuotes = Array.from({length:20}, (_, index) => `她停在旧位置${index + 1}旁。`);
+  const text = ['甲楼入口。','当前父链相邻段。',currentQuote,'当前设施相邻段。','过渡一。','过渡二。',
+    ...oldQuotes.flatMap((quote, index) => [`旧人物外围剧情${index + 1}。`, quote, `旧人物后续闲聊${index + 1}。`, '过渡。', '继续过渡。'])].join('\n\n');
+  const source = quote => ({floorId:'f1',sourceType:'assistant',canonicalContent:quote,placeKeys:['place-1']});
+  const args = {entities:[{id:'a',entityType:'place',firstSeenFloorId:'f1'}],entityKeys:new Map([['a','place-1']]),places:[{entityId:'a',displayName:'甲楼',aliases:[]}],
+    floors:[{id:'f1',assistantSeq:1,content:{canonicalContent:text}}],memoriesByFloor:new Map([['f1',{id:'m1',floorId:'f1',sourceCanonicalContent:text}]]),
+    parentFacts:[{placeEntityId:'a',parentEntityId:null,evidenceRefs:[{floorId:'f1'}]}],contextSources:[source(currentQuote)]};
+  let baseline;
+  for (const count of [0, 3, 20]) {
+    const original = [source(currentQuote), ...oldQuotes.slice(0,count).map(source)];
+    const rows = await placeEvidence.collectPlaceOrganizationSources({...args,bodySources:original});
+    const contexts = rows.filter(row=>row.requiresExactQuote).map(row=>row.canonicalContent);
+    baseline ??= contexts;
+    assert.deepEqual(contexts,baseline);
+    for (const quote of oldQuotes.slice(0,count)) assert.ok(rows.some(row=>row.sourceType==='assistant'&&row.canonicalContent===quote&&row.requiresExactQuote!==true));
+    assert.ok(rows.every(row=>!row.canonicalContent.includes('旧人物外围剧情')));
+    assert.equal(rows.reduce((sum,row)=>sum+row.canonicalContent.length,0),baseline.reduce((sum,text)=>sum+text.length,0)+oldQuotes.slice(0,count).reduce((sum,text)=>sum+text.length,0));
+    for (const originalSource of original) assert.ok(rows.some(row=>row.floorId===originalSource.floorId&&row.sourceType===originalSource.sourceType&&locatePlaceQuote(row.canonicalContent,originalSource.canonicalContent)));
+  }
+});
+
 test('194地点省略引用不接受重复、倒序、重叠、空片段、缺字或超出原预算', () => {
   for (const [content, quote] of [
     ['甲。甲。乙。', '甲。……乙。'], ['甲。乙。', '乙。……甲。'], ['甲乙丙', '甲乙……乙丙'],

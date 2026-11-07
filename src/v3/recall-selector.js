@@ -890,15 +890,20 @@ export function historySelectionContext(source, queryContext) {
         _subjectKey: row.entityId, _visibilityKey: 'manualPlace', _statusKey: String(index), _sourceOrder: 400000 + index, _chronology: [], _poolGroup: 'fact' }));
     }), queries, { keepUnmatched: true })]);
   const artifactMemories = floorMemories.filter(memory => memory.assistantSeq <= source.coverage.stableThroughAssistantSeq);
+  const manualNames = source.manualEntityNames ?? {};
+  const manualEntityById = new Map([...entityById, ...Object.entries(manualNames).map(([entityId, displayName]) =>
+    [entityId, { entityId, displayName, entityType: 'person', aliases: [] }])]);
   const manualArtifacts = scoreCandidates(artifactMemories.flatMap(memory => (memory.exactAnchors ?? [])
     .filter(anchor => anchor.manual === true && typeof anchor.carrier === 'string' && anchor.carrier.trim())
     .map((anchor, index) => {
-      const knownEntityIds = [...(anchor.knownEntityIds ?? [])].filter(id => entityById.get(id)?.entityType === 'person');
+      const knownEntityIds = [...(anchor.knownEntityIds ?? [])].filter(id => manualEntityById.get(id)?.entityType === 'person');
+      const knownEntityNames = knownEntityIds.filter(id => Object.hasOwn(manualNames, id)).map(id => [id, manualNames[id]]);
       return ({ category: 'objective', kind: 'manualArtifact', anchorId: anchor.anchorId, carrier: anchor.carrier, knownEntityIds,
+      ...(knownEntityNames.length ? { knownEntityNames } : {}),
       exactText: anchor.exactText, ...(anchor.speakerEntityId ? { speakerEntityId: anchor.speakerEntityId } : {}), sourceFloorId: memory.floorId,
       floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq, sourceAssistantSeqs: [memory.assistantSeq],
       priority: 175, score: 1, branchScores: Object.freeze({}), entityBranchScores: Object.freeze({}), summaryScores: Object.freeze({}),
-      _rankText: `${anchor.carrier} ${anchor.exactText}`, _entityText: entityNameText([anchor.speakerEntityId, ...knownEntityIds], entityById),
+      _rankText: `${anchor.carrier} ${anchor.exactText}`, _entityText: entityNameText([anchor.speakerEntityId, ...knownEntityIds], manualEntityById),
       _coreText: `${anchor.carrier} ${anchor.exactText}`, _summary: memory.summary,
       _subjectKey: anchor.speakerEntityId ?? '', _visibilityKey: 'artifact', _statusKey: anchor.anchorId, _sourceOrder: 100000 + index,
       _chronology: memory.chronology ?? [], _poolGroup: 'fact' }); })), queries, { keepUnmatched: true });
@@ -1338,7 +1343,9 @@ function buildStorylinePlan({ context, history, states, changes }) {
 }
 
 function manualKnowledgeBoundary(value, entityById) {
-  const known = [...(value.knownEntityIds ?? [])].filter(id => entityById.get(id)?.entityType === 'person').map(id => entityName(id, entityById));
+  const manualNames = new Map(value.kind === 'manualArtifact' ? value.knownEntityNames ?? [] : []);
+  const known = [...(value.knownEntityIds ?? [])].filter(id => entityById.get(id)?.entityType === 'person' || manualNames.has(id))
+    .map(id => manualNames.get(id) ?? entityName(id, entityById));
   return known.length ? { text: `知情：${known.join('、')}；不知情：其余人物`, candidate: `；知情：${known.join('、')}；不知情：其余人物` }
     : { text: '知情：无；不知情：全部人物', candidate: '；知情：无；不知情：全部人物' };
 }

@@ -186,6 +186,26 @@ export function selectRecallMemories(first) {
   return { floors, floorById, memoryGroups, activeMemories, activeMemoryIds };
 }
 
+export function isolateRecallAuxiliarySources(source, projection) {
+  if (source?.status !== 'ready' || !projection?.unavailableSources?.length) return source;
+  const people = projection.unavailableSources.includes('people'), places = projection.unavailableSources.includes('places');
+  const manualKnownIds = new Set(source.floorMemories.flatMap(memory => (memory.exactAnchors ?? [])
+    .filter(anchor => anchor.manual === true).flatMap(anchor => anchor.knownEntityIds ?? [])));
+  const manualEntityNames = { ...(source.manualEntityNames ?? {}), ...Object.fromEntries(source.entities
+    .filter(entity => entity.entityType === 'person' && manualKnownIds.has(entity.entityId))
+    .map(entity => [entity.entityId, entity.displayName])) };
+  const floorMemories = source.floorMemories.map(memory => ({ ...memory,
+    ...(places ? { locations: [], spatialFacts: null } : {}),
+    ...(people ? { participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] } : {}),
+  }));
+  return Object.freeze({ ...source, floorMemories,
+    entities: source.entities.filter(entity => !(people && entity.entityType === 'person') && !(places && entity.entityType === 'place')),
+    ...(people ? { currentState: [], cseChanges: [], manualEntityNames } : {}), ...(places ? { placeWorkspace: null } : {}),
+    identityProjection: { ...source.identityProjection, ...projection },
+    unavailableSources: projection.unavailableSources,
+  });
+}
+
 export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
   const identityProjection = deriveUserIdentityProjection({ ...first, identityProjection: identityProjectionValue });
   const partition = migrationPartition(first);
@@ -256,7 +276,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     cseCurrent,
   });
   const vectors = await projectVectorSources(activeMemories, floors);
-  return Object.freeze({
+  return isolateRecallAuxiliarySources(Object.freeze({
     status: 'ready',
     chatId: first.root.chatId,
     ...(first.migrationDescriptor ? { migrationDescriptor: Object.freeze({
@@ -297,7 +317,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     identityProjection,
     placeWorkspace: identityProjection.placeWorkspace ?? null,
     placeWorkspaceDependency: placeWorkspaceDependency(first.root.chatId,identityProjection.placeWorkspaceRevision,identityProjection.placeWorkspace),
-  });
+  }), identityProjection);
 }
 
 export async function readRecallSource({ store, now = () => new Date(), hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjection = null, identityProjectionProvider = null } = {}) {

@@ -1,3 +1,4 @@
+import { readManualArtifactBlocks } from '../v3/recall-text.js';
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
 import { recallReceiptSelectionLimits, renderedQianshiProgressText, RECALL_STRATEGY_VERSION } from '../v3/recall-runtime.js';
@@ -70,23 +71,6 @@ function skipBalancedFullwidthParens(text, start) {
   return cursor;
 }
 
-// 先按程序写入的长度跳过原文块，再解析外层来源/时间/剧情线。
-function readManualArtifactBlocks(source) {
-  const header = /^(- (?:AI #[^\n]+：|\[旧事\] ))\[人工原文｜(\d+)字符\]\n/gmu;
-  const blocks = new Map(), parts = [];
-  let cursor = 0, match;
-  while ((match = header.exec(source))) {
-    const length = Number(match[2]), start = header.lastIndex, end = start + length;
-    if (!Number.isSafeInteger(length) || length < 1 || end > source.length || end < source.length && source[end] !== '\n') return { valid: false, text: source, blocks };
-    const token = `\u0000qqj-manual-${blocks.size}\u0000`;
-    blocks.set(token, source.slice(start, end));
-    parts.push(source.slice(cursor, match.index), match[1], token);
-    cursor = end; header.lastIndex = end;
-  }
-  if (!blocks.size) return { valid: true, text: source, blocks };
-  parts.push(source.slice(cursor));
-  return { valid: true, text: parts.join(''), blocks };
-}
 const manualArtifactText = (text, blocks) => blocks?.get(text) ?? text;
 
 const HISTORY_RELATION_PREFIX = /^(?:邻近背景：|同人物与主题：|邻近背景；仅因时序相邻，不表示因果：|同人物与具体主题词关联，不表示因果：|来源关联：)/u;

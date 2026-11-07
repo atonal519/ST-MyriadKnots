@@ -64,6 +64,136 @@ test('非法附加 JSON、危险对象键或试图改任务归属时在请求前
   }
   assert.equal(calls, 0);
 });
+
+test('GPT-6输出上限使用completion字段，避免原400且只发送一次', async () => {
+  let calls = 0;
+  const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+    calls += 1;
+    const body = JSON.parse(options.body);
+    if (Object.hasOwn(body, 'max_tokens')) return jsonResponse({ error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." } }, 400);
+    if (Object.hasOwn(body, 'temperature')) return jsonResponse({ error: { message: "Unsupported parameter: 'temperature' is not supported with this reasoning mode." } }, 400);
+    assert.equal(body.max_completion_tokens, 12000);
+    return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+  } });
+  assert.deepEqual((await client.generateTask({ config: config({ model: 'gpt-6-luna' }), taskMessages: [] })).jsonData, { ok: true });
+  assert.equal(calls, 1);
+});
+
+test('输出上限按已知模型系列选择字段，旧模型与未知别名保留原字段', async t => {
+  for (const [model, field] of [
+    ['gpt-5', 'max_completion_tokens'], ['gpt-5.1-mini', 'max_completion_tokens'],
+    ['gpt-6-luna', 'max_completion_tokens'], ['openai/gpt-6-luna', 'max_completion_tokens'],
+    [' OPENAI/GPT-5.2-2026-10-01 ', 'max_completion_tokens'],
+    ['o1', 'max_completion_tokens'], ['o1-preview', 'max_completion_tokens'],
+    ['o3-mini', 'max_completion_tokens'], ['openai/o4-mini', 'max_completion_tokens'],
+    ['gpt-4o-mini', 'max_tokens'], ['glm-5.2', 'max_tokens'], ['private-model', 'max_tokens'],
+    ['gpt-50', 'max_tokens'], ['o10', 'max_tokens'],
+  ]) await t.test(model, async () => {
+    let calls = 0;
+    const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+      calls += 1;
+      const body = JSON.parse(options.body);
+      assert.equal(body.chat_completion_source, 'openai');
+      assert.deepEqual(Object.keys(body).filter(key => ['max_tokens', 'max_completion_tokens'].includes(key)), [field]);
+      assert.equal(body[field], 16000);
+      return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+    } });
+    await client.generateTask({ config: config({ model }), taskMessages: [], maxTokens: 16000 });
+    assert.equal(calls, 1);
+  });
+});
+
+test('输出上限尊重排除后的显式附加字段，普通与自定义上游合并后互斥', async t => {
+  const cases = [
+    { name: '旧模型显式completion', model: 'gpt-4o-mini', additional: { max_completion_tokens: 321 }, expected: { max_completion_tokens: 321 } },
+    { name: '新模型显式legacy', additional: { max_tokens: 654 }, expected: { max_tokens: 654 } },
+    { name: '两者显式以completion为准', additional: { max_tokens: 654, max_completion_tokens: 321 }, expected: { max_completion_tokens: 321 } },
+    { name: '显式零值', additional: { max_completion_tokens: 0 }, expected: { max_completion_tokens: 0 } },
+    { name: '显式null', additional: { max_tokens: null }, expected: { max_tokens: null } },
+    { name: '先排除completion后采用显式legacy', additional: { max_tokens: 654, max_completion_tokens: 321 }, excluded: ['max_completion_tokens'], expected: { max_tokens: 654 } },
+    { name: '先排除legacy后采用显式completion', additional: { max_tokens: 654, max_completion_tokens: 321 }, excluded: ['max_tokens'], expected: { max_completion_tokens: 321 } },
+    { name: '排除新模型默认字段', excluded: [' max_completion_tokens '], expected: {} },
+    { name: '排除旧模型默认字段', model: 'gpt-4o-mini', excluded: ['max_tokens'], expected: {} },
+    { name: '排除旧字段不影响新默认', excluded: ['max_tokens'], expected: { max_completion_tokens: 12000 } },
+    { name: '排除显式字段后使用未排除默认', additional: { max_tokens: 654 }, excluded: ['max_tokens'], expected: { max_completion_tokens: 12000 } },
+    { name: '排除两个字段', additional: { max_tokens: 654, max_completion_tokens: 321 }, excluded: ['max_tokens', 'max_completion_tokens'], expected: {} },
+  ];
+  for (const item of cases) for (const extra of [false, true]) await t.test(`${item.name}/${extra ? 'custom' : 'token only'}`, async () => {
+    let calls = 0;
+    const additional = { ...(item.additional ?? {}), ...(extra ? { seed: 42 } : {}) };
+    const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+      calls += 1;
+      const body = JSON.parse(options.body);
+      const included = JSON.parse(body.custom_include_body ?? '{}');
+      const upstream = { ...body, ...included };
+      assert.deepEqual(Object.fromEntries(Object.entries(upstream).filter(([key]) => ['max_tokens', 'max_completion_tokens'].includes(key))), item.expected);
+      for (const field of item.excluded ?? []) {
+        assert.equal(Object.hasOwn(body, field.trim()), false);
+        assert.equal(Object.hasOwn(included, field.trim()), false);
+      }
+      if (extra) { assert.equal(body.chat_completion_source, 'custom'); assert.equal(included.seed, 42); }
+      return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+    } });
+    await client.generateTask({ config: config({ model: item.model ?? 'gpt-6-luna', qqjAdditionalParams: JSON.stringify(additional), excludeParams: item.excluded ?? [] }), taskMessages: [] });
+    assert.equal(calls, 1);
+  });
+});
+
+test('推理系列省略程序默认温度，显式温度与none推理配置沿用当前参数', async t => {
+  const cases = [
+    { name: 'Luna服务默认推理', model: 'gpt-6-luna' },
+    { name: 'GPT5服务默认推理', model: 'openai/gpt-5.2' },
+    { name: 'o系列默认推理', model: 'o3-mini' },
+    { name: '显式非none推理', additional: { reasoning_effort: 'medium' } },
+    { name: 'none推理保留自动温度', additional: { reasoning_effort: 'none' }, expected: 0.2 },
+    { name: '被排除的none无效', additional: { reasoning_effort: 'none' }, excluded: ['reasoning_effort'] },
+    { name: '配置温度零值', temperature: 0, expected: 0 },
+    { name: '配置显式温度', temperature: 0.63, expected: 0.63 },
+    { name: '附加温度优先', temperature: 0.63, additional: { temperature: 0.4 }, expected: 0.4 },
+    { name: '附加温度零值', additional: { temperature: 0 }, expected: 0 },
+    { name: '附加温度null', additional: { temperature: null }, expected: null },
+    { name: '清空配置温度', temperature: '' },
+    { name: '无效配置温度', temperature: true },
+    { name: '温度排除优先', temperature: 0.63, additional: { reasoning_effort: 'none', temperature: 0.4 }, excluded: ['temperature'] },
+    { name: '旧模型保留自动温度', model: 'gpt-4o-mini', expected: 0.2 },
+    { name: '未知模型保留自动温度', model: 'private-model', expected: 0.2 },
+  ];
+  for (const item of cases) await t.test(item.name, async () => {
+    let calls = 0;
+    const client = createCompactApiClient({ fetchImpl: async (_path, options) => {
+      calls += 1;
+      const body = JSON.parse(options.body);
+      const upstream = { ...body, ...JSON.parse(body.custom_include_body ?? '{}') };
+      assert.equal(Object.hasOwn(upstream, 'temperature'), Object.hasOwn(item, 'expected'));
+      assert.equal(upstream.temperature, item.expected);
+      return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+    } });
+    await client.generateTask({ config: config({ model: item.model ?? 'gpt-6-luna', qqjTemperature: item.temperature, qqjAdditionalParams: JSON.stringify(item.additional ?? {}), excludeParams: item.excluded ?? [] }), taskMessages: [] });
+    assert.equal(calls, 1);
+  });
+});
+
+test('分析副API召回与连接测试共享输出上限兼容且各发送一次', async () => {
+  const requests = [];
+  const client = createCompactApiClient({ fetchImpl: async (path, options) => {
+    const body = JSON.parse(options.body);
+    const upstream = { ...body, ...JSON.parse(body.custom_include_body ?? '{}') };
+    requests.push({ path, upstream });
+    assert.equal(Object.hasOwn(upstream, 'max_tokens'), false);
+    return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+  } });
+  const route = source => ({ kind: 'independent', source, sourceLabel: source, config: config({ model: 'gpt-6-luna', qqjAdditionalParams: source === 'recall' ? '{"max_completion_tokens":4321}' : '' }) });
+  const router = createTaskRouter({ compactClient: client, resolver: { resolve: () => route('analysis'), resolveUtility: () => route('utility'), resolveRecall: () => route('recall') } });
+  for (const method of ['generateAnalysisTask', 'generateUtilityTask', 'generateRecallTask']) {
+    const result = await router[method]({ taskMessages: [], maxTokens: 16000 });
+    assert.equal(result.taskMetadata.transportAttempts, 1);
+  }
+  await client.testConnection({ config: config({ model: 'gpt-6-luna' }) });
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(request => request.path === '/api/backends/chat-completions/generate'));
+  assert.deepEqual(requests.map(request => request.upstream.max_completion_tokens), [16000, 16000, 4321, 12000]);
+  assert.ok(requests.every(request => !Object.hasOwn(request.upstream, 'temperature')));
+});
 const jsonResponse = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
 const sseResponse = (chunks, contentType = 'text/event-stream') => {
   const encoder = new TextEncoder(); let index = 0;

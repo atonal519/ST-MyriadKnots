@@ -208,13 +208,36 @@ const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient 
 const placeWorkspaceStore = createPlaceWorkspaceStore({ client: backendClient });
 let peopleWorkspaceRuntime;
 const placeWorkspaceDependencyProvider = async () => { const identity=session.identity(),value=await placeWorkspaceStore.read(identity);return placeWorkspaceDependency(identity.chatId,value.revision,filterPlaceFoundationSources(value.data,{filterWorldInfoSources:sourcePermissions.filterWorldInfoSources})); };
-const identityProjectionProvider = async identityValue => {
+const identityProjectionProvider = async (identityValue, { includePlaces = true, allowUnavailable = false, onPartial = null } = {}) => {
   const identity = identityValue ?? session.identity();
   const state = peopleWorkspaceRuntime?.getState?.();
-  const places = await placeWorkspaceStore.read(identity);
-  const people = state?.chatId === identity.chatId ? peopleWorkspaceRuntime.getIdentityProjection() : normalizeIdentityProjection((await peopleWorkspaceStore.read(identity)).data ?? {});
-  return normalizeIdentityProjection({ ...people, placeWorkspace: filterPlaceFoundationSources(places.data,{filterWorldInfoSources:sourcePermissions.filterWorldInfoSources}), placeWorkspaceRevision: places.revision });
+  const settled = {};
+  const project = () => normalizeIdentityProjection({ ...(settled.people?.status === 'fulfilled' ? settled.people.value : {}),
+    ...(settled.places?.status === 'fulfilled' ? settled.places.value : {}),
+    unavailableSources: ['people', ...(includePlaces ? ['places'] : [])].filter(kind => settled[kind]?.status !== 'fulfilled'),
+  });
+  const read = async (kind, task) => {
+    try {
+      const value = await task(); settled[kind] = { status: 'fulfilled', value };
+      if (allowUnavailable) onPartial?.(project());
+      return value;
+    } catch (error) { settled[kind] = { status: 'rejected' }; throw error; }
+  };
+  const [people, places] = await Promise.allSettled([
+    read('people', async () => state?.chatId === identity.chatId && state.status === 'ready' && !state.lastError
+      ? peopleWorkspaceRuntime.getIdentityProjection() : (await peopleWorkspaceStore.read(identity)).data),
+    includePlaces ? read('places', async () => {
+      const value = await placeWorkspaceStore.read(identity);
+      return { placeWorkspace: filterPlaceFoundationSources(value.data, { filterWorldInfoSources: sourcePermissions.filterWorldInfoSources }), placeWorkspaceRevision: value.revision };
+    }) : Promise.resolve(null),
+  ]);
+  if (!allowUnavailable) {
+    if (people.status === 'rejected') throw people.reason;
+    if (places.status === 'rejected') throw places.reason;
+  }
+  return project();
 };
+
 const vectorApi = createVectorApiClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
 const vectorIndex = createVectorIndex({
   client: backendClient, api: vectorApi, configProvider: () => resolveVectorConfig(settings),

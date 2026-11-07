@@ -76,6 +76,7 @@ export function normalizeIdentityProjection(value = {}, macros = null) {
   const currentNames = Object.fromEntries(Object.entries(profileNames).filter(([id, name]) => id && typeof name === 'string' && name.trim())
     .map(([id, name]) => [id, replaceCseSourceMacros(name.trim(), macros)]));
   return Object.freeze({ identityRedirectsByEntityId: Object.freeze(redirects), deletedEntityIds: Object.freeze(deleted),
+    ...(value?.unavailableSources?.length ? { unavailableSources: [...value.unavailableSources] } : {}),
     ...(Object.hasOwn(value ?? {}, 'userEntityId') ? { userEntityId: typeof value.userEntityId === 'string' && value.userEntityId ? value.userEntityId : null } : {}),
     ...(Object.keys(manualAliases).length ? { manualAliasesByEntityId: Object.freeze(manualAliases) } : {}),
     ...(Object.keys(reviewedAliases).length ? { reviewedAliasesByEntityId: Object.freeze(reviewedAliases) } : {}),

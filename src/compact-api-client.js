@@ -7,6 +7,7 @@ import { normalizeRetryCount, parseAdditionalParams } from './settings.js';
 import { stripMemoryTagBlocks } from './memory-content-sanitizer.js';
 
 const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages', 'json_schema']);
+const REASONING_MODEL = /^(?:openai\/)?(?:gpt-[56]|o[134])(?:$|[.-])/iu;
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const DEFAULT_TIMEOUT = 180;
 const HTTP_ERROR_BODY_LIMIT = 4096;
@@ -18,6 +19,16 @@ export function normalizeApiUrl(value) {
   if (/\/chat\/completions$/i.test(url)) return url.replace(/\/chat\/completions$/i, '');
   if (/^https?:\/\/[^/?#]+$/i.test(url)) return `${url}/v1`;
   return url;
+}
+
+function applyOutputTokenLimit(body, additional, maxTokens, excludedParams) {
+  let field = 'max_tokens';
+  if (Object.hasOwn(additional, 'max_completion_tokens')) field = 'max_completion_tokens';
+  else if (!Object.hasOwn(additional, 'max_tokens') && REASONING_MODEL.test(String(body.model).trim())) field = 'max_completion_tokens';
+  const otherField = field === 'max_completion_tokens' ? 'max_tokens' : 'max_completion_tokens';
+  delete body[otherField];
+  delete additional[otherField];
+  if (!Object.hasOwn(additional, field) && !excludedParams.has(field)) body[field] = maxTokens;
 }
 
 const timeoutSeconds = value => {
@@ -460,19 +471,23 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
     const configuredValue = config?.qqjTemperature;
     const configuredTemperature = configuredValue === null || configuredValue === undefined || typeof configuredValue === 'string' && configuredValue.trim() === ''
       ? null : typeof configuredValue === 'number' || typeof configuredValue === 'string' ? Number(configuredValue) : NaN;
-    const requestTemperature = Number.isFinite(configuredTemperature) && configuredTemperature >= 0 && configuredTemperature <= 2
-      ? configuredTemperature : temperature;
+    const hasConfiguredTemperature = Number.isFinite(configuredTemperature) && configuredTemperature >= 0 && configuredTemperature <= 2;
+    const requestTemperature = hasConfiguredTemperature ? configuredTemperature : temperature;
     const body = {
       chat_completion_source: 'openai', reverse_proxy: normalizeApiUrl(config?.url), proxy_password: config?.key,
       model: config?.model || DEFAULT_MODEL, messages: compactMessages, stream: config?.stream === true,
-      temperature: requestTemperature, max_tokens: maxTokens,
+      temperature: requestTemperature,
     };
     if (jsonSchema) body.json_schema = { name: jsonSchema.name || 'qianqianjie_task', value: jsonSchema.value || jsonSchema.schema, strict: jsonSchema.strict !== false };
     const additional = parseAdditionalParams(config?.qqjAdditionalParams);
+    const excludedParams = new Set();
     for (const item of config?.excludeParams || []) {
       const key = String(item).trim();
-      if (key && !PROTECTED_BODY_KEYS.has(key)) { delete body[key]; delete additional[key]; }
+      if (key && !PROTECTED_BODY_KEYS.has(key)) { excludedParams.add(key); delete body[key]; delete additional[key]; }
     }
+    applyOutputTokenLimit(body, additional, maxTokens, excludedParams);
+    if (REASONING_MODEL.test(String(body.model).trim()) && additional.reasoning_effort !== 'none'
+      && !hasConfiguredTemperature && !Object.hasOwn(additional, 'temperature')) delete body.temperature;
     if (Object.keys(additional).length) {
       // OpenAI 宿主通道只转发白名单；自定义通道的 JSON/YAML 扩展才会真正传给上游。
       // 凭证明确覆盖宿主自定义 Key，任务材料与 schema 保持原样，空配置仍走原通道。

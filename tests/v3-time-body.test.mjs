@@ -1498,6 +1498,40 @@ test('批量人工状态一次保存一个批次并拒绝旧观察键',async()=>
   assert.equal((await h.store.read(CHAT)).batches.length,after.batches.length);assert.equal(seed.batches.length,1);
 });
 
+test('全局记忆待核对仍读同聊旧事项并允许人工停止，推演保持来源门槛', async () => {
+  const h = await harness(); await seedTimeItems(h, 1); await h.runtime.refreshStatus();
+  const item = h.runtime.getState().trackedItems[0]; h.setSync('needsReview');
+  assert.equal(h.runtime.getState().trackedItems.length, 1);
+  assert.equal(h.runtime.getState().canOrganize, false);
+  await h.runtime.refreshStatus({force:true});
+  await h.runtime.editItem(item.id, {status:'paused'}, item.observationKey);
+  assert.equal(h.runtime.getState().stoppedItems.length, 1);
+  assert.equal(h.calls(), 0);
+});
+
+test('事项人工保存按目标观察键、身份及CAS核对，来源删除与存储失败保原head', async t => {
+  for (const fault of ['append', 'deleteSource', 'chat', 'observation', 'read', 'cas']) await t.test(fault, async () => {
+    const h = await harness(); await seedTimeItems(h, 1); await h.runtime.refreshStatus();
+    const item = h.runtime.getState().trackedItems[0], before = await h.store.read(CHAT);
+    h.setSync('needsReview');
+    const put = h.back.client.put, get = h.back.client.get;
+    if (fault === 'read') h.back.client.get = async () => { throw new Error('模拟读失败'); };
+    h.back.client.put = async (...args) => {
+      if (args[1].includes('batch')) {
+        if (fault === 'append') h.chat.push({is_user:true,mes:'无关新输入'});
+        if (fault === 'deleteSource') h.source.floors = [];
+        if (fault === 'chat') h.setChat('other-chat');
+      }
+      if (fault === 'cas' && args[1] === 'v3-time-head') throw Object.assign(new Error('模拟CAS冲突'), {status:409});
+      return put(...args);
+    };
+    const operation = h.runtime.editItem(item.id, {status:'paused'}, fault === 'observation' ? 'old-key' : item.observationKey);
+    if (fault === 'append') await operation; else await assert.rejects(operation);
+    h.back.client.get = get; const after = await h.store.read(CHAT);
+    assert.equal(after.revision, before.revision + Number(fault === 'append')); assert.equal(h.calls(), 0);
+  });
+});
+
 test('时间refreshStatus只用窄活动状态，ready同步审查错误不读取完整记忆投影', async () => {
   for (const memory of [{status:'ready',memorySyncStatus:'idle'}, {status:'ready',memorySyncStatus:'syncing'},
     {status:'ready',memorySyncStatus:'needsReview'}, {status:'error',memorySyncStatus:'idle'}]) {

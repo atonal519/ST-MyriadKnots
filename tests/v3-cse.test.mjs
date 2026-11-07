@@ -218,6 +218,18 @@ test('用户权威：正常补提较早楼复用较晚楼已有user，原生与L
   }
 });
 
+test('人物状态分析只要求人物身份工作区，地点故障不进入依赖', async () => {
+  const h = runtimeHarness(); await h.runtime.start(); await h.runtime.extractNext();
+  const graph = await h.store.readReachable({mode:'runtime'}); let requests = 0, reads = 0;
+  const runtime = createCseRuntime({store:h.store,hostAdapter:h.hostAdapter,
+    identityProjectionProvider: async (_identity, options) => {
+      reads++; if (options?.includePlaces !== false) throw new Error('地点库失败'); return {};
+    },generateAnalysisTask:async()=>{requests++;return{jsonData:{noMaterialChange:true}};},
+    now:()=>new Date(NOW),newUuid:uuidFactory(),logger:{warn(){}}});
+  await runtime.load(graph); await runtime.analyzeFloor(graph.floors[0].id,{replaceExisting:true});
+  assert.equal(reads,1); assert.equal(requests,1); assert.equal(runtime.getState().lastCseError,null);
+});
+
 test('用户权威：旧明确user双ID在CSE加载与人工纠正中保留状态并统一归属', async () => {
   const h = runtimeHarness();
   await h.runtime.start(); await h.runtime.extractNext();
