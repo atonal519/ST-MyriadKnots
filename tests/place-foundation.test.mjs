@@ -393,3 +393,20 @@ test('路径多引用保合法来源，加入错键/越源/不连续引文不改
     assert.equal(rejected.isolated[0].code,code); assert.equal(rejected.foundationPatch.facts.length,0);
   }
 });
+
+test('地点合并父链：保target有效外父，折叠中间成员越过自父或子孙环，同批明确新父仍可更新', () => {
+  const source=id(301), target=id(302), outer=id(303), alternate=id(304), child=id(305), f1=id(381), f2=id(382);
+  const edge=(placeEntityId,parentEntityId,index,at=f1)=>({itemId:id(index),placeEntityId,parentEntityId,evidenceRefs:[{floorId:at}]});
+  const memory=(floorId,containments)=>({floorId,recordStatus:'active',spatialFacts:{containments}});
+  const workspace={...emptyPlaceWorkspace(id(90)),identityRedirectsByEntityId:{[source]:target}};
+  const seq=new Map([[f1,1],[f2,2]]),resolve=value=>value===source?target:value;
+  const preferred=foundation.projectPlaceParentLinks([memory(f1,[edge(target,outer,391)]),memory(f2,[edge(source,alternate,392,f2)])],workspace,seq,Infinity,Infinity,{resolve});
+  assert.deepEqual([...preferred.get(target).parents.keys()],[outer]);
+  const folded=foundation.projectPlaceParentLinks([memory(f1,[edge(target,child,393),edge(child,source,394),edge(source,outer,395)])],workspace,seq,Infinity,Infinity,{resolve});
+  assert.deepEqual([...folded.get(target).parents.keys()],[outer]);
+  assert.deepEqual([...folded.get(child).parents.keys()],[target]);
+  const manual=structuredClone(workspace);manual.placesByEntityId[target]={parentEntityId:null,scopes:{parentEntityId:{knownThroughFloorId:f1,coveredFloorIds:[f1,f2],coveredItemIds:[]}}};
+  assert.equal(foundation.projectPlaceParentLinks([memory(f1,[edge(source,outer,396)])],manual,seq,Infinity,Infinity,{resolve}).get(target).parents.size,0);
+  const revised={...workspace,foundation:{schemaVersion:1,entities:[],facts:[{itemId:id(397),kind:'containment',placeEntityId:target,parentEntityId:alternate,identityChange:'ownershipChanged',knownFromFloorId:f2,source:{kind:'body',floorId:f2,quote:'明确新父。'}}]}};
+  assert.deepEqual([...foundation.projectPlaceParentLinks([memory(f1,[edge(target,outer,398)])],revised,seq,Infinity,Infinity,{resolve}).get(target).parents.keys()],[alternate]);
+});

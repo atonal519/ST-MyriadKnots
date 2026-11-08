@@ -840,7 +840,7 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.1.3');
+  assert.equal(manifest.version, '1.1.4');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(root, manifest.js.split('?')[0]);
@@ -980,7 +980,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   let lifecycleOptions;
   let peopleWorkspaceOptions;
   let peopleStoreOptions, placeStoreOptions;
-  const placeStore = { read: async () => ({ data: null, revision: 0 }), put() {}, invalidate() {} };
+  let placeReadError = null, peopleReadError = null;
+  const placeStore = { read: async () => { if (placeReadError) throw placeReadError; return { data: null, revision: 0 }; }, put() {}, invalidate() {} };
   let publicMemoryBridgeOptions;
   let publicQianshiBridgeOptions;
   let autoHideOptions;
@@ -1164,7 +1165,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const peopleWorkspaceRuntime = { async refresh(options) { backgroundStarts.push(['people', options]); }, async setEnabled(value) { runtimeEnables.push(`people:${value}`); }, invalidate() {}, getState: () => peopleWorkspaceState, getIdentityProjection: () => normalizeIdentityProjection(peopleWorkspaceState),
     subscribe(listener) { peopleWorkspaceListener = listener; return () => { peopleWorkspaceListener = null; }; } };
   define('./src/v3/people-workspace.js', {
-    createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read: async () => ({ data: peopleWorkspaceState }), put() {} }; },
+    createPeopleWorkspaceStore: options => { peopleStoreOptions = options; return { read: async () => { if (peopleReadError) throw peopleReadError; return { data: peopleWorkspaceState }; }, put() {} }; },
     createPeopleWorkspaceRuntime: options => { peopleWorkspaceOptions = options; return peopleWorkspaceRuntime; },
     projectAnnualPeople: (reachable, workspace) => {
       const projection = { identityRedirectsByEntityId: workspace.identityRedirectsByEntityId, deletedEntityIds: workspace.deletedEntityIds };
@@ -1282,6 +1283,15 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   const storedProjection = await v3RecallOptions.identityProjectionProvider({ chatId: 'stored-chat' });
   assert.deepEqual(nativeJson(liveProjection), nativeJson(storedProjection));
   assert.deepEqual(nativeJson(liveProjection.manualAliasesByEntityId), { 'awake-id': ['人工称呼'] });
+  placeReadError = new Error('place unavailable');
+  await assert.rejects(v3MemoryOptions.identityProjectionProvider({ chatId: 'stored-chat' }), /place unavailable/u);
+  const optionalPlaces = await v3MemoryOptions.identityProjectionProvider({ chatId: 'stored-chat' }, { allowUnavailablePlaces: true });
+  assert.deepEqual(nativeJson(optionalPlaces.unavailableSources), ['places']);
+  assert.deepEqual(nativeJson(optionalPlaces.manualAliasesByEntityId), { 'awake-id': ['人工称呼'] });
+  assert.equal(Object.hasOwn(optionalPlaces, 'placeWorkspace'), false);
+  peopleReadError = new Error('people unavailable');
+  await assert.rejects(v3MemoryOptions.identityProjectionProvider({ chatId: 'stored-chat' }, { allowUnavailablePlaces: true }), /people unavailable/u);
+  peopleReadError = null; placeReadError = null;
   assert.equal(v3MemoryOptions.generateAnalysisTask, analysisTask);
   assert.equal(timeOptions.generateTimeTask, utilityTask);
   assert.equal(Object.hasOwn(timeOptions, 'generateAnalysisTask'), false);

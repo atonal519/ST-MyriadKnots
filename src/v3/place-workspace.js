@@ -23,7 +23,7 @@ function latestPlaceLibrary(workspace, sourceEntities, targetFloors) {
   const seeds = new Map((data.foundation?.entities ?? []).map(entity => [entity.id, entity]));
   const available = new Map([...sourceEntities, ...seeds.values(), ...Object.values(rows).flatMap(row => row.createdEntity ? [row.createdEntity] : [])]
     .filter(entity => entity.entityType === 'place').map(entity => [entity.id, entity]));
-  const referenced = new Set([...Object.keys(rows), ...Object.values(rows).map(row => row.parentEntityId),
+  const referenced = new Set([...Object.keys(data.identityRedirectsByEntityId ?? {}), ...Object.values(data.identityRedirectsByEntityId ?? {}), ...Object.keys(rows), ...Object.values(rows).map(row => row.parentEntityId),
     ...(data.foundation?.facts ?? []).flatMap(fact => [fact.placeEntityId, fact.parentEntityId, ...(fact.referencePlaceEntityIds ?? [])])].filter(Boolean));
   for (const id of referenced) {
     const entity = available.get(id);
@@ -48,6 +48,18 @@ export function validatePlaceWorkspace(value, chatId) {
   if (!value || value.schemaVersion !== 1 || value.kind !== 'qqj-v3-place-workspace' || !isUuid(chatId) || value.chatId !== chatId
     || !value.placesByEntityId || typeof value.placesByEntityId !== 'object' || Array.isArray(value.placesByEntityId)
     || !value.deletionsByEntityId || typeof value.deletionsByEntityId !== 'object' || Object.entries(value.deletionsByEntityId).some(([id, scope]) => !isUuid(id) || !Array.isArray(scope?.coveredFloorIds) || scope.coveredFloorIds.some(id => !isUuid(id)))) throw fail('地点资料归属或格式无效。');
+  let normalizedRedirects = null;
+  if (own(value, 'identityRedirectsByEntityId')) {
+    const redirects = value.identityRedirectsByEntityId;
+    if (!redirects || typeof redirects !== 'object' || Array.isArray(redirects)
+      || Object.entries(redirects).some(([source, target]) => !isUuid(source) || !isUuid(target) || source === target)) throw fail('地点合并身份无效。');
+    normalizedRedirects = {};
+    for (const source of Object.keys(redirects)) {
+      const seen = new Set([source]); let current = redirects[source];
+      while (redirects[current]) { if (seen.has(current)) throw fail('地点合并身份形成循环。'); seen.add(current); current = redirects[current]; }
+      normalizedRedirects[source] = current;
+    }
+  }
   if(value.foundation)validatePlaceFoundation(value.foundation,chatId);
   if(own(value,'mapStyle')&&!validQianchuangMapStyle(value.mapStyle))throw fail('地点底图提示无效。');
   for (const [id, row] of Object.entries(value.placesByEntityId)) {
@@ -61,7 +73,87 @@ export function validatePlaceWorkspace(value, chatId) {
           || !Array.isArray(scope.coveredItemIds) || scope.coveredItemIds.some(id => typeof id !== 'string' || !id);
       })) throw fail('地点人工修订格式无效。');
   }
-  return Object.freeze(copy(value));
+  return Object.freeze({ ...copy(value), ...(normalizedRedirects ? { identityRedirectsByEntityId: normalizedRedirects } : {}) });
+}
+
+export function compilePlaceMerges(value, bindings = []) {
+  const isolated = [], redirects = {}, order = [], byKey = new Map(bindings.map(binding => [binding.entityKey, binding.entityId]));
+  const issue = (index, code) => isolated.push({ field: 'placeMerges', index, code, path: `placeMerges[${index}]` });
+  if (value === undefined) return { redirects, order, isolated };
+  if (!Array.isArray(value)) { issue(-1, 'QQJ_PLACE_MERGE_INVALID'); return { redirects, order, isolated }; }
+  const outgoing = new Map();
+  for (const [index, item] of value.entries()) {
+    const source = byKey.get(item?.sourceKey), target = byKey.get(item?.targetKey);
+    if (!source || !target || source === target) { issue(index, 'QQJ_PLACE_MERGE_INVALID'); continue; }
+    const edges = outgoing.get(source) ?? [];
+    edges.push({ target, index }); outgoing.set(source, edges);
+  }
+  for (const [source, edges] of outgoing) {
+    const visited = new Set([source]); let target = source, distance = 0, invalid = null;
+    while (outgoing.has(target)) {
+      const next = new Set(outgoing.get(target).map(edge => edge.target));
+      if (next.size !== 1) { invalid = 'QQJ_PLACE_MERGE_CONFLICT'; break; }
+      target = next.values().next().value; distance += 1;
+      if (visited.has(target)) { invalid = 'QQJ_PLACE_MERGE_CYCLE'; break; }
+      visited.add(target);
+    }
+    if (invalid) { for (const edge of edges) issue(edge.index, invalid); continue; }
+    redirects[source] = target; order.push({ source, target, distance, index: edges[0].index });
+  }
+  order.sort((a, b) => a.distance - b.distance || a.index - b.index);
+  return { redirects: Object.fromEntries(order.map(item => [item.source, item.target])), order, isolated };
+}
+
+export function applyPlaceMerges(workspace, plan, { entities = [], parents = new Map(), resolve } = {}) {
+  if (!plan.order.length) return workspace;
+  const data = copy(workspace), rows = data.placesByEntityId;
+  const combined = { ...(data.identityRedirectsByEntityId ?? {}), ...plan.redirects };
+  const distance = source => {
+    let count = 0, current = source;
+    const seen = new Set();
+    while (combined[current] && !seen.has(current)) {
+      seen.add(current); current = combined[current]; count += 1;
+    }
+    return count;
+  };
+  data.identityRedirectsByEntityId = Object.fromEntries(Object.keys(combined).sort((a, b) => distance(a) - distance(b)).map(source => [source, resolve(combined[source])]));
+  const parentOwner = new Map(Object.entries(rows).filter(([id, row]) => !data.identityRedirectsByEntityId[id] && own(row, 'parentEntityId')).map(([id]) => [id, id]));
+  const originalParent = id => own(workspace.placesByEntityId[id], 'parentEntityId') ? workspace.placesByEntityId[id].parentEntityId : parents.get(id);
+  const externalParent = (owner, target) => {
+    const chain = [], seen = new Set([owner]); let current = originalParent(owner);
+    while (current) {
+      if (seen.has(current)) return null;
+      seen.add(current); chain.push(current); current = originalParent(current);
+    }
+    let start = 0;
+    for (const [index, id] of chain.entries()) if (resolve(id) === target) start = index + 1;
+    return chain[start] ? resolve(chain[start]) : null;
+  };
+  const seeds = new Map((data.foundation?.entities ?? []).map(entity => [entity.id, entity]));
+  const byId = new Map(entities.map(entity => [entity.id, entity]));
+  for (const { source, target } of plan.order) {
+    for (const id of [source, target]) if (!seeds.has(id) && byId.has(id)) seeds.set(id, copy(byId.get(id)));
+    const sourceRow = rows[source];
+    if (!sourceRow) continue;
+    const targetRow = rows[target] ?? { scopes: {} };
+    for (const field of fields) {
+      if (!own(sourceRow, field)) continue;
+      if (!own(targetRow, field)) {
+        targetRow[field] = copy(sourceRow[field]);
+        targetRow.scopes[field] = copy(sourceRow.scopes[field]);
+        if (field === 'parentEntityId') parentOwner.set(target, source);
+      }
+      const scope = targetRow.scopes[field], inherited = sourceRow.scopes[field];
+      scope.coveredFloorIds = [...new Set([...scope.coveredFloorIds, ...inherited.coveredFloorIds])];
+      scope.coveredItemIds = [...new Set([...scope.coveredItemIds, ...inherited.coveredItemIds])];
+    }
+    rows[target] = targetRow;
+  }
+  for (const [id, row] of Object.entries(rows)) if (!data.identityRedirectsByEntityId[id] && row.parentEntityId) {
+    row.parentEntityId = externalParent(parentOwner.get(id) ?? id, id);
+  }
+  data.foundation = { ...(data.foundation ?? { schemaVersion: 1, facts: [] }), entities: [...seeds.values()] };
+  return data;
 }
 
 export function createPlaceWorkspaceStore({ client } = {}) {
@@ -129,7 +221,7 @@ export function filterPlaceMemory(memory, workspace, resolve = id => id) {
 }
 
 export function manualPlaceFacts(workspace) {
-  return Object.entries(workspace?.placesByEntityId ?? {}).map(([entityId, row]) => ({ entityId, ...row }));
+  return Object.entries(workspace?.placesByEntityId ?? {}).filter(([id]) => !workspace?.identityRedirectsByEntityId?.[id]).map(([entityId, row]) => ({ entityId, ...row }));
 }
 
 export function applyPlaceSnapshot(snapshot, workspace, {floorOrder=new Map(),memories=[],resolve=id=>id}={}) {

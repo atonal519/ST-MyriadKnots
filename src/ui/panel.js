@@ -32,7 +32,7 @@ if (snapshot.status === 'ready') {
   const people = snapshot.people.items;
 }`;
 
-const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(20px + env(safe-area-inset-top,0px));left:50%;right:auto;transform:translateX(-50%);width:calc(100dvw - 20px);max-width:calc(100dvw - 20px);height:calc(100dvh - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
+const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:auto;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(var(--qqj-panel-bounds-top,0px) + 20px + env(safe-area-inset-top,0px));left:calc(var(--qqj-panel-bounds-left,0px) + var(--qqj-panel-bounds-width,100dvw)/2);right:auto;transform:translateX(-50%);width:calc(var(--qqj-panel-bounds-width,100dvw) - 20px);max-width:calc(var(--qqj-panel-bounds-width,100dvw) - 20px);height:calc(var(--qqj-panel-bounds-height,100dvh) - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
 
 export function createPanel({
   settings,
@@ -96,6 +96,7 @@ export function createPanel({
     dragHandle: root.querySelector('.topbar'),
     resizeHandle: root.querySelector('.panel-resize-handle'),
     viewport: documentRef.defaultView ?? globalThis,
+    documentRef,
   });
   let activeTab = 'profiles';
   let screen = 'content';
@@ -114,6 +115,7 @@ export function createPanel({
   const themeButton = root.querySelector('.theme-btn');
   const fabToggleButton = root.querySelector('.fab-toggle-btn');
   let swipeGesture = null;
+  let backdropDown = false, backdropUp = false;
   let settingsManagementError = null;
   let documentationFallbackText = '', documentationCopyFeedback = '';
 
@@ -557,6 +559,7 @@ export function createPanel({
     storageManagementView.deactivate();
     geometry.cancelGesture();
     swipeGesture = null;
+    backdropDown = false; backdropUp = false;
     dialog?.closeAll?.();
     host.hidden = true;
     host.setAttribute('aria-hidden', 'true');
@@ -616,6 +619,15 @@ export function createPanel({
   }, { passive: false });
   body?.addEventListener?.('touchcancel', () => { swipeGesture = null; }, { passive: true });
 
+  const isBackdrop = event => event.target === host && !(event.composedPath?.().includes(panel) ?? panel?.contains?.(event.target));
+  host.addEventListener('pointerdown', event => { backdropDown = isBackdrop(event); backdropUp = false; });
+  host.addEventListener('pointerup', event => { backdropUp = isBackdrop(event); });
+  host.addEventListener('pointercancel', () => { backdropDown = false; backdropUp = false; });
+  host.addEventListener('click', event => {
+    const outsideClick = isBackdrop(event) && backdropDown && backdropUp;
+    backdropDown = false; backdropUp = false;
+    if (outsideClick && !host.hidden && !dialog?.hasActive?.()) close();
+  });
   root.querySelector('.close')?.addEventListener('click', close);
   themeButton?.addEventListener('click', () => {
     const current = settings.get().appearanceTheme ?? 'auto';

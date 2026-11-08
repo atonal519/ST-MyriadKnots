@@ -84,3 +84,72 @@ test('地点合并身份后的自动覆盖、人工空清和删除沿声明redir
  const oldManual={...manual,placesByEntityId:{[old]:manual.placesByEntityId[room]}};assert.equal(place.filterPlaceMemory(memory,oldManual,resolve).spatialFacts.features.length,0);
  assert.equal(place.filterPlaceMemory(memory,ws).spatialFacts.features.length,1,'不提供redirect时仍按原身份合同');assert.equal(JSON.stringify(memory),original);
 });
+
+test('地点显式合并编译：链归一与重复幂等，坏键多目标和环局部隔离',()=>{
+ const bindings=[room,parent,floor,next].map((entityId,index)=>({entityKey:`p${index}`,entityId}));
+ const plan=place.compilePlaceMerges([{sourceKey:'p0',targetKey:'p1'},{sourceKey:'p1',targetKey:'p2'},{sourceKey:'p0',targetKey:'p1'},{sourceKey:'missing',targetKey:'p3'}],bindings);
+ assert.deepEqual(plan.redirects,{[room]:floor,[parent]:floor});assert.equal(plan.order.length,2);assert.equal(plan.order[0].source,parent);assert.equal(plan.isolated.length,1);
+ for(const entries of [[{sourceKey:'p0',targetKey:'p1'},{sourceKey:'p0',targetKey:'p2'}],[{sourceKey:'p0',targetKey:'p1'},{sourceKey:'p1',targetKey:'p0'}]]){
+  const bad=place.compilePlaceMerges([...entries,{sourceKey:'p2',targetKey:'p3'}],bindings);assert.deepEqual(bad.redirects,{[floor]:next});assert.equal(bad.isolated.length,2);
+ }
+ assert.deepEqual(place.compilePlaceMerges(undefined,bindings),{redirects:{},order:[],isolated:[]});
+});
+
+test('地点合并人工资料：target空值优先source补缺，作用域并集和原稿保留',async()=>{
+ const {normalizeIdentityProjection,resolveIdentityEntityId}=await import('../src/v3/entity-identity.js');
+ const data=workspace(),scope={knownThroughFloorId:next,coveredFloorIds:[next],coveredItemIds:['source-old']};
+ data.placesByEntityId[parent]={description:'',parentEntityId:null,scopes:{description:structuredClone(scope),parentEntityId:structuredClone(scope)}};
+ const plan=place.compilePlaceMerges([{sourceKey:'source',targetKey:'target'}],[{entityKey:'source',entityId:room},{entityKey:'target',entityId:parent}]);
+ const projection=normalizeIdentityProjection({placeWorkspace:{...data,identityRedirectsByEntityId:plan.redirects}}),resolve=id=>resolveIdentityEntityId(id,projection);
+ const merged=place.applyPlaceMerges(data,plan,{resolve});
+ assert.equal(merged.placesByEntityId[parent].description,'');assert.equal(merged.placesByEntityId[parent].parentEntityId,null);assert.equal(merged.placesByEntityId[parent].relations,'走廊末端');
+ assert.deepEqual(new Set(merged.placesByEntityId[parent].scopes.description.coveredItemIds),new Set(['source-old','old']));
+ assert.deepEqual(merged.placesByEntityId[room],data.placesByEntityId[room]);assert.equal(place.manualPlaceFacts(merged).length,1);assert.doesNotThrow(()=>place.validatePlaceWorkspace(merged,chat));
+});
+
+test('地点redirect读入统一身份同时保旧非法输入兼容，workspace拒循环而旧包仍可读',async()=>{
+ const {normalizeIdentityProjection,resolveIdentityEntityId}=await import('../src/v3/entity-identity.js');
+ for(const value of ['abc',[room,parent]])assert.deepEqual(normalizeIdentityProjection({identityRedirectsByEntityId:value}).identityRedirectsByEntityId,{});
+ const data={...workspace(),identityRedirectsByEntityId:{[room]:parent}};const projection=normalizeIdentityProjection({placeWorkspace:data});assert.equal(resolveIdentityEntityId(room,projection),parent);
+ data.identityRedirectsByEntityId[parent]=room;assert.throws(()=>place.validatePlaceWorkspace(data,chat));
+});
+
+test('地点合并人工父：映射自父沿已有链找外父，target人工null仍优先',async()=>{
+ const {normalizeIdentityProjection,resolveIdentityEntityId}=await import('../src/v3/entity-identity.js');
+ const data=workspace(),scope=data.placesByEntityId[room].scopes.parentEntityId;
+ data.placesByEntityId[parent]={parentEntityId:room,scopes:{parentEntityId:structuredClone(scope)}};
+ data.placesByEntityId[room].parentEntityId=next;
+ const plan=place.compilePlaceMerges([{sourceKey:'s',targetKey:'t'}],[{entityKey:'s',entityId:room},{entityKey:'t',entityId:parent}]);
+ const projection=normalizeIdentityProjection({placeWorkspace:{...data,identityRedirectsByEntityId:plan.redirects}}),resolve=id=>resolveIdentityEntityId(id,projection);
+ const merged=place.applyPlaceMerges(data,plan,{resolve,parents:new Map([[parent,room],[room,next]])});
+ assert.equal(merged.placesByEntityId[parent].parentEntityId,next);
+});
+
+test('纯地点合并分支和导入往返：无manual或fact也保source旧名与target身份种子',async()=>{
+ const {normalizeIdentityProjection,buildEntityIdentityDirectory,resolveIdentityEntityId}=await import('../src/v3/entity-identity.js');
+ const makeSeed=(id,name)=>({schemaVersion:3,recordType:'entity',id,chatId:chat,narrativeGeneration:chat,entityType:'place',displayName:name,aliases:[],specialRole:'none',firstSeenFloorId:floor,lastSeenFloorId:floor,status:'provisional',mergedIntoEntityId:null,mergeEvidenceRefs:[],baselineClaimIds:[],createdAt:'2026-11-07T00:00:00Z',updatedAt:'2026-11-07T00:00:00Z',recordStatus:'active',supersedes:null});
+ const entities=[makeSeed(room,'旧公寓'),makeSeed(parent,'新家')],records=new Map(),client={async get(collection,key){const value=records.get(collection+'/'+key);if(!value)throw Object.assign(Error('missing'),{status:404});return structuredClone(value);},async put(collection,key,data,revision){const value={data:structuredClone(data),revision:revision+1};records.set(collection+'/'+key,value);return structuredClone(value);}};
+ const store=place.createPlaceWorkspaceStore({client}),data={...place.emptyPlaceWorkspace(chat),identityRedirectsByEntityId:{[room]:parent}};await store.put({chatId:chat},data,0);
+ const copied=await store.copy({chatId:chat},{chatId:next},{sourceEntities:entities,targetFloors:[{id:next,assistantSeq:1}],narrativeGeneration:next});
+ assert.deepEqual(new Set(copied.data.foundation.entities.map(entity=>entity.id)),new Set([room,parent]));
+ const projection=normalizeIdentityProjection({placeWorkspace:copied.data});assert.equal(resolveIdentityEntityId(room,projection),parent);
+ const directory=buildEntityIdentityDirectory({entities:[],identityProjection:projection});assert.equal(directory.length,1);assert.equal(directory[0].entityId,parent);assert.ok(directory[0].aliases.includes('旧公寓'));
+ const roundTrip=place.rehomePlaceWorkspace(JSON.parse(JSON.stringify(place.validatePlaceWorkspace(copied.data,next))),chat,chat);const scoped=place.placeWorkspaceForPrefix(roundTrip,new Set([floor]));assert.deepEqual(new Set(scoped.foundation.entities.map(entity=>entity.id)),new Set([room,parent]));assert.equal(scoped.identityRedirectsByEntityId[room],parent);assert.ok(scoped.foundation.entities.every(entity=>entity.chatId===chat&&entity.narrativeGeneration===chat));
+});
+
+test('地点合并多源人工同字段：近target先承接，同级模型原序，target已有空值保留',async()=>{
+ const {normalizeIdentityProjection,resolveIdentityEntityId}=await import('../src/v3/entity-identity.js');
+ const scope = { knownThroughFloorId: floor, coveredFloorIds: [floor], coveredItemIds: [] };
+ const data = {
+  ...place.emptyPlaceWorkspace(chat),
+  placesByEntityId: {
+   [room]: { description: '远源', scopes: { description: structuredClone(scope) } },
+   [parent]: { description: '近源', scopes: { description: structuredClone(scope) } },
+  },
+ };
+ const bindings=[room,parent,next].map((entityId,index)=>({entityKey:`k${index}`,entityId})),plan=place.compilePlaceMerges([{sourceKey:'k0',targetKey:'k1'},{sourceKey:'k1',targetKey:'k2'}],bindings);
+ const projection=normalizeIdentityProjection({placeWorkspace:{...data,identityRedirectsByEntityId:plan.redirects}}),resolve=id=>resolveIdentityEntityId(id,projection);
+ assert.equal(place.applyPlaceMerges(data,plan,{resolve}).placesByEntityId[next].description,'近源');
+ const sameLevel=place.compilePlaceMerges([{sourceKey:'k0',targetKey:'k2'},{sourceKey:'k1',targetKey:'k2'}],bindings);assert.equal(place.applyPlaceMerges(data,sameLevel,{resolve}).placesByEntityId[next].description,'远源');
+ data.placesByEntityId[next]={description:'',scopes:{description:structuredClone(scope)}};assert.equal(place.applyPlaceMerges(data,plan,{resolve}).placesByEntityId[next].description,'');
+});

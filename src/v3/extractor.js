@@ -7,6 +7,7 @@ import { deterministicUuid } from './foundation-domain.js';
 import { EXACT_ANCHOR_LIMIT, FLOOR_MEMORY_ITEM_LIMIT, collectFloorMemoryEntityIds, validateEntityRecord, validateFloorMemory } from './memory-schema.js';
 import { expandPlacePaths, placeCurrentFactBindings, completePlaceCurrentPatch, PLACE_CURRENT_GUIDANCE } from './place-foundation.js';
 import { locatePlaceQuote } from './place-evidence.js';
+import { resolvePlaceParentBatch } from './place-parent.js';
 import {QIANCHUANG_MAP_STYLES} from '../qianchuang-display-hints.js';
 import { copyFloorVariableReference } from './floor-variable-reference.js';
 import { sanitizeDiagnosticValue, sanitizeTaskMetadata } from './safe-metadata.js';
@@ -19,8 +20,8 @@ import { normalizeLocationReference } from './location-reference.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-62';
-export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-34`;
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-64';
+export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-36`;
 export const QIANSHI_OUTPUT_CAPACITY_GUIDANCE = '每个千事保存单元最多输出 160 条事件、320 条不同有效关系，每条事件最多 40 位人物；order 不要重复关系。';
 const PERSON_ALIAS_DESCRIPTION = '人物只收可长期复用的姓名、昵称或稳定称谓；不收代词、指示词及一次性外貌或身份描述。';
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
@@ -68,7 +69,7 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
     summary: { type: 'string', description: '按顺序记关键经过、篇末实际状态及明确结果；保留影响后续的条件预期，不自行补充后续。' },
     mapStyle: {type:'string',enum:[...QIANCHUANG_MAP_STYLES.map(style=>style.id),'town']},
     placePaths: { type: 'array', maxItems: 40, items: { type: 'object', required: ['path'], properties: {
-      path: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, sameAsPlaceKey: { type: 'string' }, mapRole: { type: 'string', enum: ['area','site','interior'] }, mapLevel: { type: ['string','null'], enum: ['city','country','scope',null] }, mapStyle:{type:'string',enum:[...QIANCHUANG_MAP_STYLES.map(style=>style.id),'town']}, mapLayout:{type:'string'}, facilities: {type:'array',items:{type:'object',properties:{icon:{type:'string'},label:{type:'string'}}}}, description: { type: 'string' }, relations: { type: 'array', items: { type: 'string' } } } } },
+      path: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, placeKey: { type: 'string' }, sameAsPlaceKey: { type: 'string' }, mapRole: { type: 'string', enum: ['area','site','interior'] }, mapLevel: { type: ['string','null'], enum: ['city','country','scope',null] }, mapStyle:{type:'string',enum:[...QIANCHUANG_MAP_STYLES.map(style=>style.id),'town']}, mapLayout:{type:'string'}, facilities: {type:'array',items:{type:'object',properties:{icon:{type:'string'},label:{type:'string'}}}}, description: { type: 'string' }, relations: { type: 'array', items: { type: 'string' } } } } },
       identityChange:{type:'string',enum:['ownershipChanged']},parentPlaceKey:{type:'null'},
       evidence: { type: 'array', items: { type: 'object', properties: { source: { type: 'string', enum: ['canonicalContent','precedingUserInput','worldbook'] }, sourceFloorKey: { type: 'string' }, sourceSnapshotIndex: { type: 'integer' }, sourceKey: { type: 'string' }, exactQuote: { type: 'string' } } } },
       placeKey: { type: 'string', description: '路径叶与本次spatialFacts.places为同一地点时，复制其place-mention-N；所有来源都填写此关联。' }, source: { type: 'string', enum: ['canonicalContent','precedingUserInput','worldbook'] }, sourceFloorKey: { type: 'string' }, sourceSnapshotIndex: { type: 'integer' }, sourceKey: { type: 'string' }, exactQuote: { type: 'string' }, description: { type: 'string' }, relations: { type: 'array', items: { type: 'string' } },
@@ -157,7 +158,7 @@ ${QIANSHI_LIFECYCLE_GUIDANCE}
 ${PLACE_CURRENT_GUIDANCE}
 
 13. 地点固定事实尽可能完整地首次登记；同一地点已经记录的设施、布局、包含和方位即使后续换句话复述，也不再次输出或累计多楼佐证。knownPlaces.relations 是已有方位，manualCurrentFacts 是人工校准的当前描述/方位（空值也有效），不能用旧记忆或复述反改人工版本。之后只补真正新增的独立事实或正文明确改动；不遗漏未被人工覆盖的新设施。正文明确建筑、楼层与房间归属时，楼层必须作为中间地点登记完整包含链，同建筑同楼层复用同一节点，不根据房间名推断楼层。
-14. 本轮涉及地点的明确归属（含资料地址/Location/Zone中的区域、街道、场地、建筑、楼层、房间）输出placePaths。path由大到小，只建资料实际给出的上级，不强填国家/城市，不用行政常识补全；Zone等组织标题须结合具体地点的位置，不能把并列地区都当同一父。每段{name,sameAsPlaceKey?,description?,relations?,mapRole?,mapLevel?,mapStyle?,mapLayout?,facilities?}；description/relations只归该段地点，房屋总述不能挂末端储藏室。已有地点复用knownPlaces.entityKey及pathLabel辨身份，补上级不另建旧房间；同一父级在本次places中只用一个key，多个新path共享完整上级前缀，不把同一父级分别标new；有据的新室内节点归属已知建筑时，优先写最近已知父节点sameAsPlaceKey到新节点的短path，不必重抄地区链；若给spatial包含边，先在本次places复用该建筑，再引用它的place-mention-N。家具/柜/沙发等设施写所属空间description，不新造独立地点。mapLevel在原资料明确是城市/国家时给city/country；资料明确独立浏览的大场景（独立地域、巨型设施、星球等）可给scope，普通地点省略，不强补国城，不改父链。结合叙事重心和空间组织，判断地点是否需要独立浏览；普通地点随父级地图展示。已有自动分类有据纠正为普通地点时可显式mapLevel:null，省略保原；人工mapLevel含null优先；人工mapRole非空时优先，null表示自动分类。不填经纬度。mapRole仅是可选地图展示提示：区域/街道area，可独立拜访的场地/建筑site，建筑内楼层/房间interior；不明省略，不改身份或父级。每条完整path用evidence:[{source,sourceKey或sourceFloorKey,sourceSnapshotIndex?,exactQuote}]独立引用各处原文，source为canonicalContent、precedingUserInput或worldbook；不把不同片段拼成一条连续引文。引用须覆盖相应父链、描述和方位，保原文字；仅排版空白差异可本地唯一定位回原文。旧单source/exactQuote及顶层description/relations仍兼容为叶地点字段。USER独有地点设置也记录，不要求AI复述；世界书只写稳定地点设定，不生成剧情事件、人物在场或知情。path明确撤销已有叶节点旧父时，仅单节点path同时给identityChange:ownershipChanged和parentPlaceKey:null；普通单节点或省略保旧。任何来源的path叶与spatialFacts.places是同一地点时，都用placeKey复制本次place-mention-N关联。exactQuote选用必要的连续原句，不自行插入省略号；依据分散时用多条独立evidence引用。不同建筑同名房间分开，走出、相邻、经由只说明通行或相对位置，不作包含，仅“楼上”不猜具体楼层；人工空描述和顶层所属继续优先。只整理本轮场所及必要上下级，不展开无关整书地图。
+14. 本轮涉及地点的明确归属（含资料地址/Location/Zone中的区域、街道、场地、建筑、楼层、房间）输出placePaths。path由大到小，只建资料实际给出的上级，不强填国家/城市，不用行政常识补全；Zone等组织标题须结合具体地点的位置，不能把并列地区都当同一父。每段{name,placeKey?,sameAsPlaceKey?,description?,relations?,mapRole?,mapLevel?,mapStyle?,mapLayout?,facilities?}；description/relations只归该段地点，房屋总述不能挂末端储藏室。已有地点复用knownPlaces.entityKey及pathLabel辨身份，补上级不另建旧房间；同一父级在本次places中只用一个key，多个新path共享完整上级前缀，不把同一父级分别标new；有据的新室内节点归属已知建筑时，优先写最近已知父节点sameAsPlaceKey到新节点的短path，不必重抄地区链；若给spatial包含边，先在本次places复用该建筑，再引用它的place-mention-N。家具/柜/沙发等设施写所属空间description，不新造独立地点。mapLevel在原资料明确是城市/国家时给city/country；资料明确独立浏览的大场景（独立地域、巨型设施、星球等）可给scope，普通地点省略，不强补国城，不改父链。结合叙事重心和空间组织，判断地点是否需要独立浏览；普通地点随父级地图展示。已有自动分类有据纠正为普通地点时可显式mapLevel:null，省略保原；人工mapLevel含null优先；人工mapRole非空时优先，null表示自动分类。不填经纬度。mapRole仅是可选地图展示提示：区域/街道area，可独立拜访的场地/建筑site，建筑内楼层/房间interior；不明省略，不改身份或父级。每条完整path用evidence:[{source,sourceKey或sourceFloorKey,sourceSnapshotIndex?,exactQuote}]独立引用各处原文，source为canonicalContent、precedingUserInput或worldbook；不把不同片段拼成一条连续引文。引用须覆盖相应父链、描述和方位，保原文字；仅排版空白差异可本地唯一定位回原文。旧单source/exactQuote及顶层description/relations仍兼容为叶地点字段。USER独有地点设置也记录，不要求AI复述；世界书只写稳定地点设定，不生成剧情事件、人物在场或知情。path明确撤销已有叶节点旧父时，仅单节点path同时给identityChange:ownershipChanged和parentPlaceKey:null；普通单节点或省略保旧。placePaths给出完整直接父链，明确的楼层须纳入；同一地点的有据粗述与细链兼容时，保留中间层和最近直接父级；完整path与spatialFacts使用相同地点身份共同校对包含关系。路径任一段与本次spatialFacts.places是同一地点时，可在该段用placeKey复制place-mention-N明确关联，不以名称长短推断；叶地点仍兼容整条path顶层placeKey，两者同时填写须一致。exactQuote选用必要的连续原句，不自行插入省略号；依据分散时用多条独立evidence引用。不同建筑同名房间分开，走出、相邻、经由只说明通行或相对位置，不作包含，仅“楼上”不猜具体楼层；人工空描述和顶层所属继续优先。只整理本轮场所及必要上下级，不展开无关整书地图。
 15. 每个city/scope的path段可选mapStyle与mapLayout，从payload.mapStyles给出的题材和布局语义选择；只按该范围的有据环境选择，不根据卡名或固定专名推断，不输出素材编号/mapAssetId。省略保原选择。资料表明本丸、和风御殿或日式生活院落群具有独立范围时，用mapLevel:scope、mapStyle:palace、mapLayout:honmaru。刀剑乱舞/刀剣乱舞/Touken Ranbu只作题材参考，仍按本范围实际环境选图；城镇街市与野外战场分别沿城镇、自然地形类型，不把同题材所有地点都用本丸。已有独立范围的校园按实际空间选campus及compact/garden/university：紧凑教学与运动场用compact，楼群庭园生活区用garden，多院系宿舍路网用university；高中和小大学可共用前两者，普通学校缺布局信息用compact，私立身份不决定园林或豪华。顶层mapStyle仍兼容聊天默认。path段facilities可选[{icon,label}]，icon写真实Lucide名称，label写该空间已存在设施短名；只根据本轮有效描述，不能从计划、动作或否定推设施。确已筛读且无设施时用[]，不涉及则省略。人工description含空值优先，不借旧文恢复被删设施。不要输出SVG路径，也不为底图或图标另起请求。
 
 ${QIANSHI_OUTPUT_CAPACITY_GUIDANCE}
@@ -910,16 +911,14 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
       for (const item of facts.containments) for (const sourceFloorId of new Set(item.evidenceRefs.map(ref => ref.floorId))) {
         const edges = edgesByFloor.get(sourceFloorId) ?? []; edges.push(item); edgesByFloor.set(sourceFloorId, edges);
       }
-      const invalidParentsByFloor = new Map();
+      const invalidParentsByFloor = new Map(), selectedParentsByFloor = new Map();
       for (const [sourceFloorId, edges] of edgesByFloor) {
-        const parentSets = new Map();
-        for (const edge of edges) { const parents = parentSets.get(edge.placeEntityId) ?? new Set(); parents.add(edge.parentEntityId); parentSets.set(edge.placeEntityId, parents); }
-        const invalid = new Set([...parentSets].filter(([, parents]) => parents.size > 1).map(([placeId]) => placeId));
-        const singleParent = new Map([...parentSets].filter(([placeId, parents]) => parents.size === 1 && !invalid.has(placeId)).map(([placeId, parents]) => [placeId, [...parents][0]]));
-        for (const start of singleParent.keys()) { const path = [], offsets = new Map(); let current = start; while (singleParent.has(current)) { if (offsets.has(current)) { for (const id of path.slice(offsets.get(current))) invalid.add(id); break; } offsets.set(current, path.length); path.push(current); current = singleParent.get(current); } }
+        const { rejected: invalid, updates } = resolvePlaceParentBatch(edges);
+        selectedParentsByFloor.set(sourceFloorId, updates);
         if (invalid.size) { invalidParentsByFloor.set(sourceFloorId, invalid); isolate('spatialFacts.containments', -1, extractorError('V3_EXTRACTOR_SPATIAL_CONFLICT', 'spatialFacts.containments')); }
       }
-      facts.containments = facts.containments.flatMap(item => { const evidenceRefs = item.evidenceRefs.filter(ref => !invalidParentsByFloor.get(ref.floorId)?.has(item.placeEntityId)); return evidenceRefs.length ? [{ ...item, evidenceRefs }] : []; });
+      facts.containments = facts.containments.flatMap(item => { const evidenceRefs = item.evidenceRefs.filter(ref => !invalidParentsByFloor.get(ref.floorId)?.has(item.placeEntityId)
+        && (item.parentEntityId === null ? selectedParentsByFloor.get(ref.floorId)?.get(item.placeEntityId)?.cleared : selectedParentsByFloor.get(ref.floorId)?.get(item.placeEntityId)?.parents.has(item.parentEntityId))); return evidenceRefs.length ? [{ ...item, evidenceRefs }] : []; });
       const relations = [];
       for (const [index, item] of readSpatialArray('relations').entries()) {
         try {
@@ -1455,14 +1454,27 @@ async function placeCurrentMemory(memory,patch,floor,envelope) {
  return changed?validateFloorMemory({...memory,spatialFacts:spatial},{expectedChatId:memory.chatId}):memory;
 }
 
-async function compileSemanticPacket({ response, finishReason, envelope, floor, existingEntities = [], now, supersedes, preservedSummary, expectedScope }) {
+function withoutPlaceFields(packet, legacy = false) {
+  const result = { ...packet };
+  for (const key of Object.keys(result)) if (['spatialfacts', 'placepaths', 'locations', 'location', 'places', 'place', '地点', '场景', '空间事实', 'mapstyle'].includes(normalizedKey(key))) delete result[key];
+  if (legacy) {
+    result.locations = [];
+    result.entityMentions = (result.entityMentions ?? []).filter(mention => mention.entityType !== 'place');
+  }
+  return result;
+}
+
+async function compileSemanticPacketDomains({ response, finishReason, envelope, floor, existingEntities = [], now, supersedes, preservedSummary, expectedScope, skipPlaces = false }) {
   const parsed = semanticPacket(response, { finishReason });
   if (parsed.legacy) {
-    const normalized = await normalizeLegacyExtractorResponse({ response: parsed.legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
+    const legacyResponse = skipPlaces ? { ...parsed.legacy, floors: parsed.legacy.floors.map(packet => withoutPlaceFields(packet, true)) } : parsed.legacy;
+    const normalized = await normalizeLegacyExtractorResponse({ response: legacyResponse, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
     return Object.freeze({ ...normalized, qianshiPacket: parsed.legacy.floors?.[0] ?? null });
   }
   let { packet, summary } = parsed;
-  const pathResult = await expandPlacePaths({ packet, envelope, existingEntities, now });
+  if (skipPlaces) packet = withoutPlaceFields(packet);
+  const pathResult = skipPlaces ? { packet, envelope, entities: existingEntities, freshEntities: [], foundationPatch: { schemaVersion: 1, entities: [], facts: [], replaceFields: [] }, isolated: [] } : await expandPlacePaths({ packet, envelope, existingEntities, now, deferParentResolution: true });
+  const freshPlaceIds = new Set(pathResult.freshEntities.map(entity => entity.id));
   packet = pathResult.packet; envelope = pathResult.envelope; existingEntities = pathResult.entities;
   const isolated = [...pathResult.isolated];
   const issue = (fieldName, index, code, path = fieldName, reason = null) => {
@@ -1637,14 +1649,22 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     if (value.length > SPATIAL_FACT_LIMIT) issue(`spatialFacts.${key}`, SPATIAL_FACT_LIMIT, 'V3_EXTRACTOR_ARRAY_TRUNCATED', `spatialFacts.${key}`);
     return value.slice(0, SPATIAL_FACT_LIMIT);
   };
-  const spatialEvidenceReasons = new Map();
+  const spatialEvidenceRecords = new Map();
   const spatialEvidence = item => {
-    const diagnostic = {}, evidence = semanticEvidence(item, floor, envelope, true, diagnostic);
-    spatialEvidenceReasons.set(item, diagnostic.reason);
-    return evidence;
+    if (spatialEvidenceRecords.has(item)) return spatialEvidenceRecords.get(item).refs;
+    const diagnostic = {};
+    const refs = semanticEvidence(item, floor, envelope, true, diagnostic).filter(ref => {
+      try {
+        const source = sourceContentFor({ floor, envelope, value: ref, path: 'spatialFacts.evidence' });
+        compileEvidenceSegments(source.content, ref.quoteSegments, 'spatialFacts.evidence.quoteSegments');
+        return true;
+      } catch (error) { diagnostic.reason = error?.code ?? 'invalidEvidence'; return false; }
+    });
+    spatialEvidenceRecords.set(item, { refs, reason: diagnostic.reason });
+    return refs;
   };
   const spatialFailureReason = (item, placeKey, fallback) => !placeKey ? 'placeKeyMissing'
-    : !spatialPlaces.has(placeKey) ? 'unknownPlaceKey' : spatialEvidenceReasons.get(item) ?? fallback;
+    : !spatialPlaces.has(placeKey) ? 'unknownPlaceKey' : spatialEvidenceRecords.get(item)?.reason ?? fallback;
   for (const [index, item] of spatialArray('places').entries()) {
     const key = semanticText(item, ['key', 'placeKey'], 80), name = semanticText(item, ['name', 'displayName', '地点'], 500);
     const aliases = [...new Set(list(field(item, ['aliases', '别名'])).map(value => semanticText(value, [], 500)).filter(Boolean))];
@@ -1661,7 +1681,7 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     if (identityChange !== undefined && (identityChange !== 'ownershipChanged' || identityMode !== 'existing' || !sameAsPlaceKey)) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_PLACE_IDENTITY_UNRESOLVED', 'spatialFacts.places.identityChange'); continue; }
     if (identityBasis !== undefined && (identityBasis !== 'explicitSamePlace' || identityMode !== 'existing' || !sameAsPlaceKey)) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_PLACE_IDENTITY_UNRESOLVED', 'spatialFacts.places.identityBasis'); continue; }
     const evidenceRefs = spatialEvidence(item);
-    if (!evidenceRefs.length) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.places[${index}]`, spatialEvidenceReasons.get(item)); continue; }
+    if (!evidenceRefs.length) { issue('spatialFacts.places', index, 'V3_EXTRACTOR_SPATIAL_EVIDENCE_INVALID', `spatialFacts.places[${index}]`, spatialEvidenceRecords.get(item)?.reason); continue; }
     let identity = identityMode, entityKey = null;
     if (identity === 'existing') {
       if (sameAsPlaceKey) {
@@ -1684,23 +1704,60 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     spatialPlaces.set(key, mention);
 
   }
-  // Local parents can themselves be new in this response. Resolve their identity tokens first.
-  const localParents = new Map();
-  const addParent = (child, parent, item) => {
-    if (!spatialPlaces.has(child) || !(spatialPlaces.has(parent)||parent===null&&spatialPlaces.get(child).identityChange==='ownershipChanged') || child === parent || !spatialEvidence(item).length) return;
-    const parents = localParents.get(child) ?? new Set(); parents.add(parent); localParents.set(child, parents);
+  // Both endpoints have passed the normal identity parser. Only evidence that
+  // compiles through the normal source contract can prove a finer parent chain.
+  const containmentItems = spatialArray('containments'), relationItems = spatialArray('relations');
+  const validParent = (item, parentKey) => {
+    const child = spatialPlaces.get(item?.placeKey);
+    if (!child || !(spatialPlaces.has(parentKey) || parentKey === null && child.identityChange === 'ownershipChanged') || item.placeKey === parentKey) return false;
+    return spatialEvidence(item).length > 0;
   };
-  for (const item of spatialArray('containments')) addParent(field(item, ['placeKey']), field(item, ['parentPlaceKey']), item);
-  for (const item of spatialArray('relations')) if (item.kind === 'locatedIn' && Array.isArray(item.referencePlaceKeys) && item.referencePlaceKeys.length === 1 && semanticText(item, ['text'], 1000))
-    addParent(item.placeKey, item.referencePlaceKeys[0], item);
-  const oldParents = envelope.scope.parentEntityIdsByPlaceId ?? new Map();
   const bindingByKey = new Map(placeBindings.map(binding => [binding.entityKey, binding]));
+  const placeToken = key => key === null ? null : bindingByKey.get(spatialPlaces.get(key)?.entityKey)?.entityId ?? key;
+  const bodyParents = containmentItems.filter(item => validParent(item, item?.parentPlaceKey)).map(item => ({
+    placeEntityId: placeToken(item.placeKey), parentEntityId: placeToken(item.parentPlaceKey),
+    identityChange: spatialPlaces.get(item.placeKey).identityChange, authority: item._placePathIndex === undefined ? 0 : 1, item,
+  }));
+  const foundationParents = (pathResult.foundationPatch.facts ?? []).filter(fact => fact.kind === 'containment').map(fact => ({ ...fact, authority: 2 }));
+  const previousParents = new Map([...(envelope.scope.parentEntityIdsByPlaceId ?? [])].map(([id, parents]) => [id, { parents: new Map([...parents].map(parent => [parent, {}])) }]));
+  const manualParents = new Map(Object.entries(envelope.scope.identityProjection?.placeWorkspace?.placesByEntityId ?? {}).filter(([, row]) => Object.hasOwn(row, 'parentEntityId'))
+    .map(([id, row]) => [id, new Map(row.parentEntityId ? [[row.parentEntityId, { manual: true }]] : [])]));
+  const parentDecision = skipPlaces ? { updates: new Map(), rejected: new Set(), compatible: new Set() } : resolvePlaceParentBatch([...bodyParents, ...foundationParents], { previous: previousParents, manual: manualParents, preservePreviousRefinements: false });
+  const rejectedPaths = new Set([...bodyParents.filter(intent => parentDecision.rejected.has(intent.placeEntityId)).map(intent => intent.item._placePathIndex),
+    ...foundationParents.filter(intent => parentDecision.rejected.has(intent.placeEntityId)).map(intent => pathResult.pathOrigins?.parentPathIndex.get(intent.itemId))].filter(index => index !== undefined));
+  for (const index of rejectedPaths) issue('placePaths', index, 'QQJ_PLACE_PATH_SCOPE_CONFLICT', `placePaths[${index}]`);
+  pathResult.foundationPatch.facts = pathResult.foundationPatch.facts.filter(fact => !parentDecision.rejected.has(fact.placeEntityId)
+    && ![...(pathResult.pathOrigins?.factPathIndexes.get(fact.itemId) ?? [])].every(index => rejectedPaths.has(index)));
+  const foundationEntityIds = new Set(pathResult.foundationPatch.facts.flatMap(fact => [fact.placeEntityId, fact.parentEntityId, ...(fact.referencePlaceEntityIds ?? [])]).filter(Boolean));
+  pathResult.foundationPatch.entities = pathResult.foundationPatch.entities.filter(entity => foundationEntityIds.has(entity.id));
+  pathResult.foundationPatch.replaceFields = pathResult.foundationPatch.replaceFields.filter(row => pathResult.foundationPatch.facts.some(fact => fact.placeEntityId === row.entityId && fact.kind === row.kind));
+  const acceptedBodyParents = new Set(bodyParents.filter(intent => parentDecision.compatible.has(intent) && !rejectedPaths.has(intent.item._placePathIndex)).map(intent => intent.item));
+  const qualifiedBodyParents = new Set(bodyParents.map(intent => intent.item));
+  const useContainment = item => !qualifiedBodyParents.has(item) || acceptedBodyParents.has(item);
+  const localIntents = bodyParents.filter(intent => acceptedBodyParents.has(intent.item)).map(intent => ({
+    placeEntityId: intent.item.placeKey, parentEntityId: intent.item.parentPlaceKey, identityChange: intent.identityChange, authority: intent.authority,
+  }));
+  const locatedParents = relationItems.filter(item => item?.kind === 'locatedIn' && item.referencePlaceKeys?.length === 1 && semanticText(item, ['text'], 1000)
+    && validParent(item, item.referencePlaceKeys[0])).map(item => ({ placeEntityId: item.placeKey, parentEntityId: item.referencePlaceKeys[0], item }));
+  const ownershipDecision = skipPlaces ? { updates: new Map(), rejected: new Set(), compatible: new Set() } : resolvePlaceParentBatch([...localIntents, ...locatedParents], { preservePreviousRefinements: false });
+  const localParents = new Map([...ownershipDecision.updates].map(([id, value]) => [id, new Set(value.cleared ? [null] : value.parents.keys())]));
+  const oldParents = envelope.scope.parentEntityIdsByPlaceId ?? new Map();
   const lineage = id => {
     const result = new Set(); let next = id;
     while (next && !result.has(next)) { result.add(next); const parents = oldParents.get(next); next = parents?.size === 1 ? [...parents][0] : null; }
     return result;
   };
-  const invalidPlaces = new Set(), checking = new Set(), checked = new Set();
+  const invalidPlaces = new Set([...spatialPlaces.keys()].filter(key => parentDecision.rejected.has(placeToken(key)) || ownershipDecision.rejected.has(key))), checking = new Set(), checked = new Set();
+  const knownParentThroughNewPlaces = key => {
+    let current = key;
+    while (current && checked.has(current) && !invalidPlaces.has(current)) {
+      const binding = bindingByKey.get(spatialPlaces.get(current).entityKey);
+      if (binding && !freshPlaceIds.has(binding.entityId)) return binding;
+      const parents = localParents.get(current);
+      current = parents?.size === 1 ? [...parents][0] : null;
+    }
+    return null;
+  };
   const check = key => {
     if (checked.has(key)) return !invalidPlaces.has(key);
     if (checking.has(key)) { invalidPlaces.add(key); return false; }
@@ -1716,8 +1773,14 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
       const parentBinding = bindingByKey.get(parent.entityKey);
       if (known?.size !== undefined && known.size !== 1) invalidPlaces.add(key);
       else if (known?.size === 1) {
-        const expected = lineage([...known][0]);
-        if (!parentBinding || !expected.has(parentBinding.entityId) && !lineage(parentBinding.entityId).has([...known][0])) invalidPlaces.add(key);
+        const expectedParent = [...known][0];
+        if (parentBinding && !freshPlaceIds.has(parentBinding.entityId)) {
+          if (!lineage(expectedParent).has(parentBinding.entityId) && !lineage(parentBinding.entityId).has(expectedParent)) invalidPlaces.add(key);
+        } else {
+          // A new subdivision must lead back inside the old parent, not just to a shared ancestor.
+          const anchor = knownParentThroughNewPlaces(parentKey);
+          if (!anchor || !lineage(anchor.entityId).has(expectedParent)) invalidPlaces.add(key);
+        }
       }
     }
     mention.allowPlaceAliasLearning = !invalidPlaces.has(key);
@@ -1731,11 +1794,12 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
   }
   for (const location of target.locations) {
     const label = identityLabelKey(location.name);
-    const matches = [...spatialPlaces.values()].filter(mention => [mention.surface, ...mention.aliases].some(value => identityLabelKey(value) === label));
+    const matches = [...spatialPlaces.values()].filter(mention => [mention.surface, ...mention.aliases, ...(bindingByKey.get(mention.entityKey)?.labels ?? [])].some(value => identityLabelKey(value) === label));
     if (matches.length === 1) location.entityMentionKey = matches[0].mentionKey;
   }
   const normalizedSpatialFacts = { schemaVersion: 1, places: [...spatialPlaces.keys()].map(placeMentionKey => ({ placeMentionKey })), containments: [], positions: [] };
-  for (const [index, item] of spatialArray('containments').entries()) {
+  for (const [index, item] of containmentItems.entries()) {
+    if (!useContainment(item)) continue;
     const placeMentionKey = semanticText(item, ['placeKey'], 80), parentMentionKey = item?.parentPlaceKey===null?null:semanticText(item, ['parentPlaceKey'], 80);
     const evidenceRefs = spatialEvidence(item),revision=spatialPlaces.get(placeMentionKey)?.identityChange==='ownershipChanged';
     if (!spatialPlaces.has(placeMentionKey) || !(spatialPlaces.has(parentMentionKey)||parentMentionKey===null&&revision) || placeMentionKey === parentMentionKey || !evidenceRefs.length) {
@@ -1755,7 +1819,9 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     normalizedSpatialFacts.positions.push({ subjectMentionKey, placeMentionKey, status, evidence: evidenceRefs });
   }
   const relations = [];
-  for (const [index, item] of spatialArray('relations').entries()) {
+  for (const [index, item] of relationItems.entries()) {
+    const parentIntent = locatedParents.find(intent => intent.item === item);
+    if (parentIntent && !ownershipDecision.compatible.has(parentIntent)) continue;
     const placeMentionKey = semanticText(item, ['placeKey'], 80), kind = field(item, ['kind']);
     const referenceMentionKeys = field(item, ['referencePlaceKeys']), text = semanticText(item, ['text'], 1000), evidenceRefs = spatialEvidence(item);
     if (!spatialPlaces.has(placeMentionKey) || !['locatedIn', 'onFloor', 'relative'].includes(kind) || !Array.isArray(referenceMentionKeys)
@@ -1879,10 +1945,30 @@ async function compileSemanticPacket({ response, finishReason, envelope, floor, 
     target.cseSignals.push({ subjectMentionKey, objectMentionKey: mentionFor(field(item, ['object', 'target', 'to'])), signalType, description, evidence: evidence(item) });
   }
   let normalized = await normalizeLegacyExtractorResponse({ response: legacy, envelope, floor, existingEntities, now, supersedes, preservedSummary, expectedScope });
-  normalized={...normalized,memory:await placeCurrentMemory(normalized.memory,pathResult.foundationPatch,floor,envelope)};
+  if (!skipPlaces) normalized={...normalized,memory:await placeCurrentMemory(normalized.memory,pathResult.foundationPatch,floor,envelope)};
   const referenced = collectFloorMemoryEntityIds(normalized.memory);
   return Object.freeze({ ...normalized, newEntities: Object.freeze([...normalized.newEntities, ...pathResult.freshEntities.filter(entity => referenced.has(entity.id))]),
-    foundationPatch: completePlaceCurrentPatch(pathResult.foundationPatch,normalized.memory), isolated: Object.freeze([...isolated, ...normalized.isolated].slice(0, 80)), needsReview: false, qianshiPacket: packet });
+    foundationPatch: skipPlaces ? pathResult.foundationPatch : completePlaceCurrentPatch(pathResult.foundationPatch,normalized.memory), isolated: Object.freeze([...isolated, ...normalized.isolated].slice(0, 80)), needsReview: false, qianshiPacket: packet });
+}
+
+async function compileSemanticPacket(options) {
+  const unavailable = options.envelope?.scope?.identityProjection?.unavailableSources?.includes('places');
+  if (!unavailable) {
+    try { return await compileSemanticPacketDomains(options); }
+    catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      // Validate the same acquired response without the optional domain. Required
+      // summary, body identity and scope checks still run and must all succeed.
+      try {
+        const result = await compileSemanticPacketDomains({ ...options, skipPlaces: true });
+        return Object.freeze({ ...result, placeUnavailable: true, isolated: Object.freeze([...result.isolated,
+          { field: 'places', index: -1, code: 'V3_EXTRACTOR_PLACE_COMPILE_FAILED', path: 'places' }]) });
+      } catch { throw error; }
+    }
+  }
+  const result = await compileSemanticPacketDomains({ ...options, skipPlaces: true });
+  return Object.freeze({ ...result, placeUnavailable: true, isolated: Object.freeze([...result.isolated,
+    { field: 'places', index: -1, code: 'V3_EXTRACTOR_PLACE_SOURCE_UNAVAILABLE', path: 'places' }]) });
 }
 
 export async function normalizeExtractorResponse(options) {

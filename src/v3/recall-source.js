@@ -207,7 +207,7 @@ export function isolateRecallAuxiliarySources(source, projection) {
 }
 
 export async function projectRecallSource(first, now, sourceReadAttempts = null, hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjectionValue = null) {
-  const identityProjection = deriveUserIdentityProjection({ ...first, identityProjection: identityProjectionValue });
+  let identityProjection = deriveUserIdentityProjection({ ...first, identityProjection: identityProjectionValue });
   const partition = migrationPartition(first);
   const readiness = hostSnapshot ? await assessMemoryCoverageFromHost({ reachable: first, snapshot: hostSnapshot, sanitizerOptions, captureGuard: true, realtimeOrigin }) : null;
   const hostBindings = memoryCoverageHostBindings(readiness);
@@ -276,6 +276,9 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     cseCurrent,
   });
   const vectors = await projectVectorSources(activeMemories, floors);
+  const projectedMemories = activeMemories.map(memory => projectFloorMemoryIdentityReferences(memory, identityProjection));
+  if (projectedMemories.some(memory => memory.unavailableSources?.includes('places'))) identityProjection = { ...identityProjection,
+    unavailableSources: [...new Set([...(identityProjection.unavailableSources ?? []), 'places'])] };
   return isolateRecallAuxiliarySources(Object.freeze({
     status: 'ready',
     chatId: first.root.chatId,
@@ -304,9 +307,9 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
         rawFingerprint: floor.content.rawFingerprint, canonicalFingerprint: floor.content.canonicalFingerprint,
       });
     }).filter(Boolean), ...(readiness?.unregisteredSummaryRefs ?? [])]),
-    floorMemories: Object.freeze(activeMemories.map(memory => {
+    floorMemories: Object.freeze(projectedMemories.map(memory => {
       const floor = floorById.get(memory.floorId);
-      return memoryDto(projectFloorMemoryIdentityReferences(memory, identityProjection), floor, { floorSeqById: floorSeq, floorById });
+      return memoryDto(memory, floor, { floorSeqById: floorSeq, floorById });
     })),
     ...vectors,
     rawSources: Object.freeze(vectors.rawSources.filter(source => !unmatchedFloorIds.has(source.floorId))),

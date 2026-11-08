@@ -727,8 +727,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const storedPrevious = value.currentStates?.at(-1) ?? null;
       const previousCurrentState = rebuiltPrevious && storedPrevious?.fingerprint === rebuiltPrevious.fingerprint ? storedPrevious : rebuiltPrevious;
       const projectedPreviousCurrentState = projectCseStateIdentityReferences(previousCurrentState, identityProjection);
-      const trackedMemories = value.floorMemories.filter(item => item.recordStatus === 'active' && trackedFloorIds.has(item.floorId)).map(item => projectFloorMemoryIdentityReferences(item, identityProjection));
-      const projectedMemory = projectFloorMemoryIdentityReferences(memory, identityProjection);
+      const trackedMemories = value.floorMemories.filter(item => item.recordStatus === 'active' && trackedFloorIds.has(item.floorId)).map(item => projectFloorMemoryIdentityReferences(item, identityProjection, { includeSpatial: false }));
+      const projectedMemory = projectFloorMemoryIdentityReferences(memory, identityProjection, { includeSpatial: false });
       const projectedBaseline = { ...value.baseline,
         userPersona: { ...value.baseline.userPersona, entityId: resolveIdentityEntityId(value.baseline.userPersona.entityId, identityProjection) },
         characterCard: { ...value.baseline.characterCard, entityId: resolveIdentityEntityId(value.baseline.characterCard.entityId, identityProjection) } };

@@ -335,7 +335,7 @@ function browserStorage(initial = {}) {
   };
 }
 
-function harness({ withPlaces = false, onPlaceChanged = () => {}, placeWorldInfoProvider = null, filterWorldInfoSources = sources => sources, text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, readMainGenerationState, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, hasTimeFloorReference = null, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, storeIdentityProvider = null, identityProjectionProvider = null, captureBusinessIdentity = null, prepareSession = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, qianshiGraphProjector = undefined, failureStorage = undefined, coreRecordCache = null, now = () => new Date(NOW), foundationNow = () => new Date(NOW) } = {}) {
+function harness({ memoryRuntimeFactory = createV3MemoryRuntime, withPlaces = false, onPlaceChanged = () => {}, placeWorldInfoProvider = null, filterWorldInfoSources = sources => sources, text = '裴晚生提醒你带伞。', initialChat = null, utility, host = 'official', automation = { enabled: false, batchSize: 2 }, notifyUser, isMainGenerationActive, readMainGenerationState, onAutomaticSummaryCommitted = () => {}, onMemoryBatchCommitted = () => {}, extractorPromptGuidance, csePromptGuidance, processingPrompt, storyClockReferenceTags = '', sanitizerOptions = () => ({}), foundationRefresh, foundationFetch = undefined, hasTimeFloorReference = null, eventTypes = null, sharedBackend = null, sharedContext = null, modernAnchors = false, persistAnchors = null, readOnlyLifecycle = false, storeIdentityProvider = null, identityProjectionProvider = null, captureBusinessIdentity = null, prepareSession = null, qianshiExternalReferenceProvider = () => [], qianshiCandidatePreparer = undefined, qianshiCandidateIndexFactory = undefined, qianshiGraphProjector = undefined, failureStorage = undefined, coreRecordCache = null, now = () => new Date(NOW), foundationNow = () => new Date(NOW) } = {}) {
   let enabled = true;
   const handlers = new Map();
   const warnings = [];
@@ -379,8 +379,8 @@ function harness({ withPlaces = false, onPlaceChanged = () => {}, placeWorldInfo
     return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }], events: [{ title: '带伞提醒', description: '裴晚生提醒用户带伞。' }] }, taskMetadata: { source: 'shared-utility', sourceLabel: '机械副 API', model: 'mock-model', finishReason: 'stop' } };
   };
   const placeWorkspaceStore = withPlaces ? createPlaceWorkspaceStore({ client: backend.client }) : null;
-  const placeProvider = withPlaces ? async identity => { const value = await placeWorkspaceStore.read(identity ?? { chatId: CHAT }); return { placeWorkspace: value.data, placeWorkspaceRevision: value.revision }; } : identityProjectionProvider;
-  const runtime = createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, readMainGenerationState, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider: placeProvider, placeWorkspaceStore, onPlaceChanged, placeWorldInfoProvider, filterWorldInfoSources, captureBusinessIdentity, qianshiExternalReferenceProvider, ...(qianshiCandidatePreparer ? { qianshiCandidatePreparer } : {}), ...(qianshiCandidateIndexFactory ? { qianshiCandidateIndexFactory } : {}), ...(qianshiGraphProjector ? { qianshiGraphProjector } : {}), failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
+  const placeProvider = identityProjectionProvider ?? (withPlaces ? async identity => { const value = await placeWorkspaceStore.read(identity ?? { chatId: CHAT }); return { placeWorkspace: value.data, placeWorkspaceRevision: value.revision }; } : null);
+  const runtime = memoryRuntimeFactory({ foundationRuntime, store, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask, isEnabled: () => enabled, automationSettings: () => automation, notifyUser, isMainGenerationActive, readMainGenerationState, onAutomaticSummaryCommitted, onMemoryBatchCommitted, extractorPromptGuidance: () => typeof extractorPromptGuidance === 'function' ? extractorPromptGuidance() : '', csePromptGuidance: () => typeof csePromptGuidance === 'function' ? csePromptGuidance() : '', processingPrompt: () => typeof processingPrompt === 'function' ? processingPrompt() : (processingPrompt ?? ''), storyClockReferenceTags: () => typeof storyClockReferenceTags === 'function' ? storyClockReferenceTags() : storyClockReferenceTags, sanitizerOptions: currentSanitizerOptions, persistAnchors, identityProjectionProvider: placeProvider, placeWorkspaceStore, onPlaceChanged, placeWorldInfoProvider, filterWorldInfoSources, captureBusinessIdentity, qianshiExternalReferenceProvider, ...(qianshiCandidatePreparer ? { qianshiCandidatePreparer } : {}), ...(qianshiCandidateIndexFactory ? { qianshiCandidateIndexFactory } : {}), ...(qianshiGraphProjector ? { qianshiGraphProjector } : {}), failureStorage, now, newUuid: uuidFactory(), logger: { warn(...args) { warnings.push(args); } } });
   runtime.bind({ eventSource: context.eventSource, eventTypes: context.eventTypes });
   const emit = (name, ...args) => (handlers.get(name) ?? []).forEach(listener => listener(...args));
   return { runtime, foundationRuntime, store, backend, context, hostAdapter, placeWorkspaceStore, calls, warnings, emit, readReachableModes, snapshotCount: () => snapshotCalls,
@@ -3041,8 +3041,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assert.match(buildExtractorSystemPrompt('自定义偏好'), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
   assertQianshiLifecycleGuidance(buildExtractorSystemPrompt('用户自定义偏好'));
   assert.doesNotMatch(buildHighFloorExtractorSystemPrompt(), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-62');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-62/schema-3/semantic-compiler-34');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-64');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-64/schema-3/semantic-compiler-36');
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.aliases.maxItems, 20);
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.maxLength, 400);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /identityBriefEvidence.*identityFacts/u);
@@ -13831,6 +13831,363 @@ test('忘记的父地点在新来源重收后可再次被选为所属地点',asy
 });
 
 
+async function intermediateParentFixture({ levels = ['二楼'], anchorIndex = 0, manualNull = false } = {}) {
+  const entities = [precisionPlace(601, '甲楼'), precisionPlace(602, '客房'), precisionPlace(603, '乙楼'),
+    precisionPlace(604, '城区'), precisionPlace(605, '甲楼东翼'), precisionPlace(606, '客房')];
+  const content = '甲楼的客房经由新走廊和二楼，位于甲楼东翼内部。甲楼和乙楼都在城区。林岚在客房，房内有书桌。相同引文。相同引文。';
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 8, content: { canonicalContent: content } };
+  const parents = new Map([[entities[1].id, new Set(manualNull ? [] : [entities[0].id])],
+    [entities[0].id, new Set([entities[3].id])], [entities[2].id, new Set([entities[3].id])],
+    [entities[4].id, new Set([entities[0].id])], [entities[5].id, new Set([entities[2].id])]]);
+  const envelope = await createExtractorEnvelope({ batchId: '33333333-3333-4333-8333-333333333333', chatId: CHAT,
+    narrativeGeneration: GENERATION, floor, entities, userIdentity: { displayName: '林岚', aliases: ['林岚'] },
+    previousFloorContext: { parentEntityIdsByPlaceId: parents } });
+  const catalogKey = index => envelope.scope.placeCatalogBindings.find(item => item.entityId === entities[index].id).entityKey;
+  const evidence = { source: 'canonicalContent', sourceFloorKey: 'floor-1', exactQuote: content };
+  const places = [{ key: 'place-mention-1', name: entities[anchorIndex].displayName, identity: 'existing', sameAsPlaceKey: catalogKey(anchorIndex), ...evidence },
+    ...levels.map((name, index) => ({ key: `place-mention-${index + 2}`, name, identity: 'new', ...evidence }))];
+  const roomKey = `place-mention-${places.length + 1}`;
+  places.push({ key: roomKey, name: '客房', identity: 'existing', sameAsPlaceKey: catalogKey(1), ...evidence });
+  const containments = places.slice(1).map((place, index) => ({ placeKey: place.key, parentPlaceKey: places[index].key, ...evidence }));
+  const response = { summary: '林岚走进甲楼客房。', people: [{ name: '林岚', entityKind: 'individual', role: 'user', presence: 'present' }],
+    locations: [{ name: '客房', change: 'present', ...evidence }], spatialFacts: { places, containments,
+      positions: [{ subject: '林岚', placeKey: roomKey, status: 'confirmed', ...evidence }],
+      features: [{ key: 'feature-1', placeKey: roomKey, kind: 'stable', text: '房内有书桌', replacesKeys: [], ...evidence }] } };
+  return { entities, floor, envelope, response, roomKey, catalogKey, evidence,
+    normalize: () => normalizeExtractorResponse({ response, envelope, floor, existingEntities: entities, now: NOW, expectedScope: envelope.scope }) };
+}
+
+test('新中间父链：旧房间经一层或多层新节点仍属于原建筑，位置设施和同名异楼身份保持', async () => {
+  for (const levels of [['二楼'], ['二楼', '新走廊']]) {
+    const fixture = await intermediateParentFixture({ levels });
+    const result = await fixture.normalize(), roomId = fixture.entities[1].id;
+    assert.deepEqual(result.isolated, []);
+    assert.equal(result.memory.locations[0].entityId, roomId);
+    assert.equal(result.memory.spatialFacts.containments.length, levels.length + 1);
+    assert.equal(result.memory.spatialFacts.positions[0].placeEntityId, roomId);
+    assert.equal(result.memory.spatialFacts.features[0].placeEntityId, roomId);
+    assert.equal(result.newEntities.filter(entity => entity.entityType === 'place').length, levels.length);
+    assert.ok(result.memory.spatialFacts.containments.every(edge => edge.placeEntityId !== fixture.entities[5].id));
+  }
+});
+
+test('新中间父链：可接原建筑内部已知节点，直接已知父仍容许原有粗述', async () => {
+  const inside = await intermediateParentFixture({ anchorIndex: 4 });
+  const result = await inside.normalize();
+  assert.deepEqual(result.isolated, []);
+  assert.equal(result.memory.locations[0].entityId, inside.entities[1].id);
+  for (const anchorIndex of [0, 3]) {
+    const direct = await intermediateParentFixture({ levels: [], anchorIndex });
+    const normalized = await direct.normalize();
+    assert.deepEqual(normalized.isolated, []);
+    assert.equal(normalized.memory.spatialFacts.containments[0].parentEntityId, direct.entities[anchorIndex].id);
+  }
+});
+
+test('新中间父链：共同城区、异楼、人工空父、环与多父仍不证明旧房间所属', async () => {
+  for (const variant of ['common-city', 'other-building', 'manual-null', 'cycle', 'multiple-parents']) {
+    const fixture = await intermediateParentFixture({ anchorIndex: variant === 'common-city' ? 3 : variant === 'other-building' ? 2 : 0, manualNull: variant === 'manual-null' });
+    if (variant === 'cycle') fixture.response.spatialFacts.containments[0].parentPlaceKey = fixture.roomKey;
+    if (variant === 'multiple-parents') fixture.response.spatialFacts.containments.push({ placeKey: 'place-mention-2', parentPlaceKey: fixture.roomKey, ...fixture.evidence });
+    const result = await fixture.normalize();
+    assert.ok(result.isolated.some(issue => issue.code === 'V3_EXTRACTOR_SPATIAL_PLACE_SCOPE_CONFLICT'), variant);
+    assert.equal(result.memory.locations[0].entityId, null, variant);
+    assert.equal(result.memory.spatialFacts?.containments?.some(edge => edge.placeEntityId === fixture.entities[1].id) ?? false, false, variant);
+  }
+});
+
+test('新中间父链：非法来源或非唯一引文不能证明新层所属，locatedIn使用相同已核链', async () => {
+  for (const variant of ['wrong-floor', 'missing-quote', 'ambiguous-quote', 'locatedIn']) {
+    const fixture = await intermediateParentFixture();
+    const parentEdge = fixture.response.spatialFacts.containments[0];
+    if (variant === 'wrong-floor') parentEdge.sourceFloorKey = 'floor-999';
+    if (variant === 'missing-quote') parentEdge.exactQuote = '原文没有这个引文。';
+    if (variant === 'ambiguous-quote') parentEdge.exactQuote = '相同引文。';
+    if (variant === 'locatedIn') {
+      fixture.response.spatialFacts.containments.shift();
+      fixture.response.spatialFacts.relations = [{ kind: 'locatedIn', placeKey: parentEdge.placeKey, referencePlaceKeys: [parentEdge.parentPlaceKey], text: '二楼位于甲楼内部', ...fixture.evidence }];
+    }
+    const result = await fixture.normalize();
+    if (variant === 'locatedIn') {
+      assert.deepEqual(result.isolated, []);
+      assert.equal(result.memory.locations[0].entityId, fixture.entities[1].id);
+      assert.equal(result.memory.spatialFacts.relations.length, 1);
+    } else {
+      assert.equal(result.memory.locations[0].entityId, null, variant);
+      assert.equal(result.memory.spatialFacts?.containments?.some(edge => edge.placeEntityId === fixture.entities[1].id) ?? false, false, variant);
+    }
+  }
+});
+
+test('新中间父链：普通空间关系与等价placePaths均保存同一旧房间和新层', async () => {
+  const fixture = await intermediateParentFixture();
+  const spatial = await fixture.normalize();
+  const path = await direct({ summary: '林岚走进甲楼客房。', placePaths: [{ path: [
+    { name: '甲楼', sameAsPlaceKey: fixture.catalogKey(0) }, { name: '二楼' }, { name: '客房', sameAsPlaceKey: fixture.catalogKey(1) }], ...fixture.evidence }] },
+    { entities: fixture.entities, content: fixture.floor.content.canonicalContent,
+      previousFloorContext: { parentEntityIdsByPlaceId: fixture.envelope.scope.parentEntityIdsByPlaceId } });
+  for (const result of [spatial, path]) {
+    assert.deepEqual(result.isolated, []);
+    assert.equal(result.memory.spatialFacts.containments.length, 2);
+    assert.equal(result.newEntities.filter(entity => entity.entityType === 'place').length, 1);
+    assert.ok(result.memory.spatialFacts.containments.some(edge => edge.placeEntityId === fixture.entities[1].id));
+  }
+});
+
+test('新中间父链：正常runtime提取把新楼层和旧房间父边保存且冷读保留，只调用原两次摘要', async () => {
+  const first = '林岚走进甲楼客房，客房在甲楼内部。';
+  const second = '林岚走进甲楼二楼的客房，二楼位于甲楼内部。';
+  const h = harness({ withPlaces: true, modernAnchors: true, readOnlyLifecycle: true,
+    initialChat: [user('继续'), assistant(first), user('继续'), assistant(second), user('稳定')],
+    utility: options => {
+      const payload = JSON.parse(options.taskMessages[0].content).payload;
+      const refining = payload.canonicalContent === second;
+      const evidence = { source: 'canonicalContent', sourceFloorKey: payload.sourceFloorKey, exactQuote: payload.canonicalContent };
+      const place = (name, key) => {
+        const known = payload.knownPlaces.find(item => item.displayName === name);
+        return { key, name, identity: known ? 'existing' : 'new', ...(known ? { sameAsPlaceKey: known.entityKey } : {}), ...evidence };
+      };
+      const roomKey = refining ? 'place-mention-3' : 'place-mention-2';
+      return { jsonData: { summary: '林岚走进甲楼客房。', people: [{ name: '林岚', entityKind: 'individual', role: 'user', presence: 'present' }],
+        locations: [{ name: '客房', change: 'present', ...evidence }], spatialFacts: {
+          places: [place('甲楼', 'place-mention-1'), ...(refining ? [place('二楼', 'place-mention-2')] : []), place('客房', roomKey)],
+          containments: refining
+            ? [{ placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-1', ...evidence }, { placeKey: roomKey, parentPlaceKey: 'place-mention-2', ...evidence }]
+            : [{ placeKey: roomKey, parentPlaceKey: 'place-mention-1', ...evidence }],
+          positions: [{ subject: '林岚', placeKey: roomKey, status: 'confirmed', ...evidence }],
+          features: [{ key: 'feature-1', placeKey: roomKey, kind: 'stable', text: '房内有书桌', replacesKeys: [], ...evidence }],
+        } } };
+    } });
+  await h.foundationRuntime.reconcile('intermediate-parent');
+  await h.runtime.start();
+  const floors = h.runtime.getState().floors;
+  await h.runtime.extractFloor(floors[0].floorId, { analyzeState: false });
+  const roomId = h.runtime.getQianchuangSnapshot().places.find(place => place.displayName === '客房').entityId;
+  await h.runtime.extractFloor(floors[1].floorId, { analyzeState: false });
+  assert.equal(h.calls.length, 2);
+  await h.runtime.refreshStatus({ preferCached: false });
+  const snapshot = h.runtime.getQianchuangSnapshot();
+  const level = snapshot.places.find(place => place.displayName === '二楼');
+  assert.ok(level);
+  assert.equal(snapshot.places.find(place => place.entityId === roomId).parentEntityId, level.entityId);
+  const saved = await h.store.readReachable();
+  const memory = saved.floorMemories.find(item => item.floorId === floors[1].floorId);
+  assert.equal(memory.spatialFacts.containments.length, 2);
+  assert.equal(memory.spatialFacts.positions[0].placeEntityId, roomId);
+  assert.equal(memory.spatialFacts.features[0].placeEntityId, roomId);
+  assert.ok(memory.spatialFacts.containments.some(edge => edge.placeEntityId === roomId && edge.parentEntityId === level.entityId));
+});
+
+async function explicitLeafPathFixture({ variant = 'full' } = {}) {
+  const content = '山麓的林间宅院内有客房。林岚进入林间宅院深处的客房，屋内有书桌。另一栋别院也有客房。';
+  const evidence = { source: 'canonicalContent', sourceFloorKey: 'floor-1', exactQuote: content };
+  const response = { summary: '林岚进入客房。', people: [{ name: '林岚', entityKind: 'individual', role: 'user', presence: 'present' }],
+    locations: [{ name: '客房', change: 'present', ...evidence }], spatialFacts: {
+      places: [{ key: 'place-mention-1', name: '山麓林间宅院', identity: 'new', ...evidence },
+        { key: 'place-mention-2', name: '客房', identity: 'new', ...evidence }],
+      containments: [{ placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-1', ...evidence }],
+      positions: [{ subject: '林岚', placeKey: 'place-mention-2', status: 'confirmed', ...evidence }],
+      features: [{ key: 'feature-1', placeKey: 'place-mention-2', kind: 'stable', text: '屋内有书桌', replacesKeys: [], ...evidence }],
+    }, placePaths: [{ placeKey: 'place-mention-2', path: [{ name: '山麓' }, { name: '林间宅院' }, { name: '客房' }], ...evidence }] };
+  if (variant === 'single-description') response.placePaths[0].path = [{ name: '客房', description: '屋内有书桌。' }];
+  if (variant === 'invalid-source') response.placePaths[0].sourceFloorKey = 'floor-999';
+  if (variant === 'two-full-paths') response.placePaths.push({ placeKey: 'place-mention-2', path: [{ name: '别院' }, { name: '客房' }], ...evidence });
+  return { response, content, result: await direct(response, { content }) };
+}
+
+test('显式叶完整路径：父名长短不同仍按已验证path挂接，原父身份不靠名字合并，位置设施保留', async () => {
+  const { result } = await explicitLeafPathFixture();
+  assert.deepEqual(result.isolated, []);
+  const places = new Map(result.newEntities.filter(entity => entity.entityType === 'place').map(entity => [entity.displayName, entity.id]));
+  assert.notEqual(places.get('山麓林间宅院'), places.get('林间宅院'));
+  assert.equal(result.memory.locations[0].entityId, places.get('客房'));
+  assert.equal(result.memory.spatialFacts.positions[0].placeEntityId, places.get('客房'));
+  assert.equal(result.memory.spatialFacts.features[0].placeEntityId, places.get('客房'));
+  assert.ok(result.memory.spatialFacts.containments.some(edge => edge.placeEntityId === places.get('客房') && edge.parentEntityId === places.get('林间宅院')));
+  assert.equal(result.memory.spatialFacts.containments.some(edge => edge.placeEntityId === places.get('客房') && edge.parentEntityId === places.get('山麓林间宅院')), false);
+});
+
+test('显式叶完整路径：单节点描述或无效路径不撤原父，多条完整路径真冲突仍隔离', async () => {
+  for (const variant of ['single-description', 'invalid-source']) {
+    const { result } = await explicitLeafPathFixture({ variant });
+    const places = new Map(result.newEntities.filter(entity => entity.entityType === 'place').map(entity => [entity.displayName, entity.id]));
+    assert.equal(result.memory.locations[0].entityId, places.get('客房'), variant);
+    assert.ok(result.memory.spatialFacts.containments.some(edge => edge.placeEntityId === places.get('客房') && edge.parentEntityId === places.get('山麓林间宅院')), variant);
+    assert.equal(result.memory.spatialFacts.positions[0].placeEntityId, places.get('客房'), variant);
+  }
+  const conflicting = await explicitLeafPathFixture({ variant: 'two-full-paths' });
+  assert.ok(conflicting.result.isolated.some(issue => issue.code === 'V3_EXTRACTOR_SPATIAL_PLACE_SCOPE_CONFLICT'));
+  assert.equal(conflicting.result.memory.locations[0].entityId, null);
+});
+
+test('显式路径和locatedIn分别保物理关系，明确同父的粗path保raw细链', async () => {
+  const fixture = await explicitLeafPathFixture();
+  const response = structuredClone(fixture.response);
+  response.spatialFacts.relations = [{ kind: 'locatedIn', placeKey: 'place-mention-2', referencePlaceKeys: ['place-mention-1'], text: '客房位于宅院', ...response.spatialFacts.containments[0] }];
+  response.spatialFacts.containments = [];
+  const located = await direct(response, { content: fixture.content });
+  assert.deepEqual(located.isolated, []);
+  assert.equal(located.memory.spatialFacts.relations?.length ?? 0, 0);
+  assert.equal(located.memory.spatialFacts.containments.length, 2);
+  const finer = structuredClone(fixture.response);
+  finer.spatialFacts.places[0].name = '林间宅院';
+  finer.spatialFacts.places.push({ ...finer.spatialFacts.places[0], key: 'place-mention-3', name: '二楼' });
+  finer.spatialFacts.containments[0].parentPlaceKey = 'place-mention-3';
+  finer.spatialFacts.containments.push({ ...finer.spatialFacts.containments[0], placeKey: 'place-mention-3', parentPlaceKey: 'place-mention-1' });
+  finer.placePaths[0].path = [{ name: '林间宅院', placeKey: 'place-mention-1' }, { name: '客房' }];
+  const result = await direct(finer, { content: fixture.content });
+  assert.deepEqual(result.isolated, []);
+  const ids = new Map(result.newEntities.filter(entity => entity.entityType === 'place').map(entity => [entity.displayName, entity.id]));
+  assert.ok(result.memory.spatialFacts.containments.some(edge => edge.placeEntityId === ids.get('客房') && edge.parentEntityId === ids.get('二楼')));
+  const { projectPlaceParentLinks } = await import('../src/v3/place-foundation.js');
+  const projectedParents = projectPlaceParentLinks([result.memory], null, new Map([[result.memory.floorId, 1]]));
+  assert.deepEqual([...projectedParents.get(ids.get('客房')).parents.keys()], [ids.get('二楼')]);
+});
+
+async function nodeBoundPathFixture(variant = 'valid') {
+  const fixture = await explicitLeafPathFixture();
+  const response = structuredClone(fixture.response);
+  delete response.placePaths[0].placeKey;
+  response.placePaths[0].path[1].placeKey = 'place-mention-1';
+  response.placePaths[0].path[2].placeKey = 'place-mention-2';
+  const extra = () => ({ path: [{ name: '山麓' }, { name: '林间宅院', placeKey: 'place-mention-1' }, { name: '客房', placeKey: 'place-mention-2' }], evidence: [{ source: 'canonicalContent', sourceFloorKey: 'floor-1', exactQuote: fixture.content }] });
+  if (variant === 'unknown-key') response.placePaths[0].path[1].placeKey = 'place-mention-99';
+  if (variant === 'repeated-key') response.placePaths[0].path[0].placeKey = 'place-mention-1';
+  if (variant === 'entry-leaf-conflict') response.placePaths[0].placeKey = 'place-mention-1';
+  if (variant === 'entry-fallback-repeat') {
+    response.placePaths[0].placeKey = 'place-mention-1';
+    delete response.placePaths[0].path[2].placeKey;
+  }
+  if (variant === 'same-key-two-paths') response.placePaths.push(extra());
+  if (variant === 'two-parents') {
+    const path = extra();
+    path.path[0].name = '另一山麓';
+    response.placePaths.push(path);
+  }
+  let entities = [];
+  if (variant === 'stable-identity-conflict') {
+    entities = [precisionPlace(611, '原宅院'), precisionPlace(612, '另一宅院')];
+    response.spatialFacts.places[0].identity = 'existing';
+    response.spatialFacts.places[0].sameAsPlaceKey = 'place-1';
+    response.placePaths[0].path[1].sameAsPlaceKey = 'place-2';
+  }
+  return { response, result: await direct(response, { content: fixture.content, entities }) };
+}
+
+test('路径节点显式key：长短父名由模型关联共用身份，node叶key兼容且同key多path一致复用', async () => {
+  for (const variant of ['valid', 'same-key-two-paths']) {
+    const { result } = await nodeBoundPathFixture(variant);
+    assert.deepEqual(result.isolated, []);
+    const places = result.newEntities.filter(entity => entity.entityType === 'place' && !entity.mergedIntoEntityId);
+    assert.equal(places.length, 3);
+    const ids = new Map(places.map(entity => [entity.displayName, entity.id]));
+    assert.equal(result.memory.locations[0].entityId, ids.get('客房'));
+    assert.equal(new Set(result.memory.spatialFacts.containments.map(edge => `${edge.placeEntityId}:${edge.parentEntityId}`)).size, 2);
+    assert.equal(result.memory.spatialFacts.positions[0].placeEntityId, ids.get('客房'));
+  }
+});
+
+test('路径节点显式key：未知key重复环叶引用冲突与既有身份冲突不接受路径，真多父仍隔离', async () => {
+  for (const variant of ['unknown-key', 'repeated-key', 'entry-leaf-conflict', 'entry-fallback-repeat', 'stable-identity-conflict']) {
+    const { result } = await nodeBoundPathFixture(variant);
+    assert.ok(result.isolated.some(issue => issue.field === 'placePaths'), variant);
+  }
+  const conflicting = await nodeBoundPathFixture('two-parents');
+  assert.ok(conflicting.result.isolated.some(issue => issue.code === 'V3_EXTRACTOR_SPATIAL_PLACE_SCOPE_CONFLICT'));
+});
+
+test('路径显式key保原surface：中间节点长名location和旧entry叶长名均绑定已确认身份', async () => {
+  const fixture = await explicitLeafPathFixture();
+  for (const middle of [true, false]) {
+    const response = structuredClone(fixture.response);
+    const originalName = middle ? '山麓林间宅院' : '林间宅院客房';
+    if (middle) {
+      response.placePaths[0].path[1].placeKey = 'place-mention-1';
+      response.locations.push({ ...response.locations[0], name: originalName });
+    } else {
+      response.spatialFacts.places[1].name = originalName;
+      response.locations[0].name = originalName;
+    }
+    const result = await direct(response, { content: fixture.content });
+    assert.deepEqual(result.isolated, []);
+    const entity = result.newEntities.find(entity => entity.displayName === (middle ? '林间宅院' : '客房'));
+    assert.equal(result.memory.locations.find(location => location.name === originalName).entityId, entity.id);
+  }
+});
+
+test('路径显式key二十别名：原长名路径短名首末alias均可绑定，不裁合法别名', async () => {
+  const fixture = await explicitLeafPathFixture(), response = structuredClone(fixture.response);
+  const aliases = Array.from({ length: 20 }, (_, index) => `明确别称${index}`);
+  response.spatialFacts.places[0].aliases = aliases;
+  response.placePaths[0].path[1].placeKey = 'place-mention-1';
+  const names = ['山麓林间宅院', '林间宅院', aliases[0], aliases.at(-1)];
+  response.locations.push(...names.map(name => ({ ...response.locations[0], name })));
+  const result = await direct(response, { content: fixture.content });
+  assert.deepEqual(result.isolated, []);
+  const parent = result.newEntities.find(entity => entity.displayName === '林间宅院' && !entity.mergedIntoEntityId);
+  for (const name of names) assert.equal(result.memory.locations.find(location => location.name === name).entityId, parent.id, name);
+  const alias = result.newEntities.find(entity => entity.mergedIntoEntityId === parent.id);
+  assert.ok(alias);
+  assert.ok([alias.displayName, ...alias.aliases.map(item => item.name)].includes(aliases.at(-1)));
+});
+
+test('路径显式key旧兼容：uncertain单节点由有效路径定身份，未定或new可沿path明确known解析', async () => {
+  const fixture = await explicitLeafPathFixture();
+  const uncertain = structuredClone(fixture.response);
+  uncertain.spatialFacts.places[1].identity = 'uncertain';
+  uncertain.placePaths[0].path = [{ name: '客房', description: '屋内有书桌。' }];
+  const resolved = await direct(uncertain, { content: fixture.content });
+  assert.ok(resolved.memory.locations[0].entityId);
+  assert.equal(resolved.isolated.some(issue => issue.field === 'placePaths'), false);
+  const room = precisionPlace(621, '旧客房');
+  for (const identity of ['uncertain', 'new']) {
+    const response = structuredClone(uncertain);
+    response.spatialFacts.places[1].identity = identity;
+    response.placePaths[0].path = [{ name: '客房', sameAsPlaceKey: 'place-1', placeKey: 'place-mention-2' }];
+    const result = await direct(response, { content: fixture.content, entities: [room] });
+    assert.equal(result.memory.locations[0].entityId, room.id, identity);
+    assert.equal(result.isolated.some(issue => issue.field === 'placePaths'), false, identity);
+  }
+});
+
+test('显式路径正常runtime：原长短父包与node中间key均保存父链两人位置设施并冷读', async () => {
+  for (const nodeKeys of [false, true]) {
+    const fixture = await explicitLeafPathFixture();
+    const response = structuredClone(fixture.response);
+    response.people.push({ name: '周慎', entityKind: 'individual', presence: 'present' });
+    response.spatialFacts.positions.push({ ...response.spatialFacts.positions[0], subject: '周慎' });
+    if (nodeKeys) {
+      delete response.placePaths[0].placeKey;
+      response.placePaths[0].path[1].placeKey = 'place-mention-1';
+      response.placePaths[0].path[2].placeKey = 'place-mention-2';
+      response.spatialFacts.places[0].aliases = Array.from({ length: 20 }, (_, index) => `明确别称${index}`);
+      response.locations.push(...['山麓林间宅院', '林间宅院', '明确别称0', '明确别称19'].map(name => ({ ...response.locations[0], name })));
+    }
+    const h = harness({ withPlaces: true, modernAnchors: true, readOnlyLifecycle: true,
+      initialChat: [user('继续'), assistant(fixture.content), user('稳定')], utility: () => ({ jsonData: response }) });
+    await h.foundationRuntime.reconcile('explicit-path-runtime');
+    await h.runtime.start();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    await h.runtime.extractFloor(floorId, { analyzeState: false });
+    assert.equal(h.calls.length, 1);
+    await h.runtime.refreshStatus({ preferCached: false });
+    const saved = await h.store.readReachable(), memory = saved.floorMemories.find(item => item.floorId === floorId);
+    const snapshot = h.runtime.getQianchuangSnapshot();
+    const room = snapshot.places.find(place => place.displayName === '客房');
+    const parent = snapshot.places.find(place => place.displayName === '林间宅院');
+    assert.ok(room && parent);
+    assert.equal(room.parentEntityId, parent.entityId);
+    assert.equal(memory.spatialFacts.positions.length, 2);
+    assert.ok(memory.spatialFacts.positions.every(position => position.placeEntityId === room.entityId));
+    assert.equal(memory.spatialFacts.features.length, 1);
+    assert.equal(memory.spatialFacts.features[0].placeEntityId, room.entityId);
+    assert.ok(memory.spatialFacts.containments.some(edge => edge.placeEntityId === room.entityId && edge.parentEntityId === parent.entityId));
+    assert.equal(snapshot.places.filter(place => place.displayName === '山麓林间宅院').length, nodeKeys ? 0 : 1);
+    assert.equal(snapshot.places.length, nodeKeys ? 3 : 4);
+    if (nodeKeys) for (const name of ['山麓林间宅院', '林间宅院', '明确别称0', '明确别称19']) assert.equal(memory.locations.find(location => location.name === name).entityId, parent.entityId, name);
+  }
+});
+
 test('完整正文路径细化旧包含：旧宿舍→新一楼→旧客房保UUID，无描述中间层真实入Core facts', async()=>{
  const entities=[precisionPlace(1,'宿舍'),precisionPlace(2,'客房')], content='走进宿舍一楼的客房。';
  const context={parentEntityIdsByPlaceId:new Map([[entities[1].id,new Set([entities[0].id])]])};
@@ -14643,4 +15000,414 @@ test('正常摘要与整理同次路径混合引用只存合法来源，坏引�
   assert.equal(h.runtime.getQianchuangSnapshot().places.find(row=>row.entityId===school.entityId).parentEntityId,parent);
   for(const fact of saved.data.foundation.facts)for(const ref of [fact.source,...(fact.source.references??[])])assert.equal(ref.quote,content);
   assert.equal(h.calls.length,2); assert.deepEqual(h.calls.map(call=>JSON.parse(call.taskMessages[0].content).task),['extractFloorSemantics','organizePlaces']);
+});
+
+
+test('地点整理显式合并：原一次模型选择将两已有ID归一，子级位置旧名双资料同CAS冷读', async () => {
+  const content = '松风公寓与松风之家指这处住所。卧室属于松风公寓，林岚站在住所里，室内有书桌和木床。';
+  let mergeKeys;
+  const h = harness({ withPlaces: true, modernAnchors: true, readOnlyLifecycle: true,
+    initialChat: [user('继续'), assistant(content), user('稳定')],
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content), payload = request.payload;
+      if (request.task === 'organizePlaces') {
+        assert.match(options.systemPrompt, /placeMerges.*sourceKey.*targetKey/u);
+        assert.match(options.systemPrompt, /target已有人工字段含空值优先/u);
+        const source = payload.knownPlaces.find(place => place.displayName === '松风公寓');
+        const target = payload.knownPlaces.find(place => place.displayName === '松风之家');
+        mergeKeys = { sourceKey: source.entityKey, targetKey: target.entityKey };
+        return { jsonData: { placePaths: [], placeMerges: [mergeKeys] } };
+      }
+      const evidence = { source: 'canonicalContent', sourceFloorKey: payload.sourceFloorKey, exactQuote: content };
+      return { jsonData: { summary: '林岚在住所里。', people: [{ name: '林岚', entityKind: 'individual', role: 'user', presence: 'present' }],
+        locations: [{ name: '松风公寓', change: 'present', ...evidence }], spatialFacts: {
+          places: ['松风公寓', '松风之家', '卧室'].map((name, index) => ({ key: `place-mention-${index + 1}`, name, identity: 'new', ...evidence })),
+          containments: [{ placeKey: 'place-mention-3', parentPlaceKey: 'place-mention-1', ...evidence }],
+          positions: [{ subject: '林岚', placeKey: 'place-mention-1', status: 'confirmed', ...evidence }],
+          features: [{ key: 'feature-1', placeKey: 'place-mention-1', kind: 'stable', text: '有书桌', replacesKeys: [], ...evidence },
+            { key: 'feature-2', placeKey: 'place-mention-2', kind: 'stable', text: '有木床', replacesKeys: [], ...evidence }],
+        } } };
+    } });
+  await h.foundationRuntime.reconcile('place-merges'); await h.runtime.start();
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  const before = h.runtime.getQianchuangSnapshot();
+  const source = before.places.find(place => place.displayName === '松风公寓'), target = before.places.find(place => place.displayName === '松风之家');
+  const graphBefore = await h.store.readReachable();
+  const result = await h.runtime.organizePlaces();
+  assert.equal(result.status, 'saved');
+  assert.ok(mergeKeys);
+  assert.equal(h.calls.length, 2, '一次原摘要加一次原整理，不增加模型轮次');
+  h.placeWorkspaceStore.invalidate(CHAT); await h.runtime.refreshStatus({ preferCached: false });
+  const snapshot = h.runtime.getQianchuangSnapshot(), current = snapshot.places.find(place => place.entityId === target.entityId);
+  assert.equal(snapshot.places.length, 2);
+  assert.equal(snapshot.places.some(place => place.entityId === source.entityId), false);
+  assert.ok(current.aliases.includes('松风公寓'));
+  assert.equal(snapshot.places.find(place => place.displayName === '卧室').parentEntityId, target.entityId);
+  assert.equal(snapshot.userPosition.placeEntityId, target.entityId);
+  assert.deepEqual(new Set(current.features.map(feature => feature.text)), new Set(['有书桌', '有木床']));
+  const saved = await h.placeWorkspaceStore.read({ chatId: CHAT }, { fresh: true });
+  assert.equal(saved.data.identityRedirectsByEntityId[source.entityId], target.entityId);
+  const recall = await readRecallSource({ store: h.store, identityProjection: { placeWorkspace: saved.data, placeWorkspaceRevision: saved.revision }, now: () => new Date(NOW) });
+  assert.equal(recall.entities.some(entity => entity.entityId === source.entityId), false);
+  assert.ok(recall.entities.find(entity => entity.entityId === target.entityId).aliases.includes('松风公寓'));
+  assert.equal(recall.floorMemories[0].spatialFacts.positions[0].placeEntityId, target.entityId);
+  const graphAfter = await h.store.readReachable();
+  assert.equal(graphAfter.root.headCheckpointId, graphBefore.root.headCheckpointId, '地点合并沿workspace单CAS，旧Core原记录保留');
+});
+
+async function placeMergeRuntimeFixture() {
+  const sourceQuote='松风公寓有书桌。',targetQuote='松风之家有木床。';
+  const content=`${sourceQuote}${targetQuote}松风公寓属于父乙，松风之家属于父甲，卧室属于松风公寓。林岚站在松风公寓。`;
+  let organization=()=>({placePaths:[]}),extraction=null;
+  const h=harness({withPlaces:true,modernAnchors:true,readOnlyLifecycle:true,initialChat:[user('继续'),assistant(content),user('稳定')],utility:async options=>{
+    const request=JSON.parse(options.taskMessages[0].content),payload=request.payload;
+    if(request.task==='organizePlaces')return {jsonData:await organization(payload)};
+    if(extraction)return {jsonData:await extraction(payload)};
+    const evidence=exactQuote=>({source:'canonicalContent',sourceFloorKey:payload.sourceFloorKey,exactQuote});
+    return {jsonData:{summary:'林岚在住所里。',people:[{name:'林岚',entityKind:'individual',role:'user',presence:'present'}],
+      locations:[{name:'松风公寓',change:'present',...evidence('林岚站在松风公寓。')}],spatialFacts:{
+        places:['松风公寓','松风之家','卧室','父甲','父乙'].map((name,index)=>({key:`place-mention-${index+1}`,name,identity:'new',...evidence(content)})),
+        containments:[['place-mention-1','place-mention-5'],['place-mention-2','place-mention-4'],['place-mention-3','place-mention-1']].map(([placeKey,parentPlaceKey])=>({placeKey,parentPlaceKey,...evidence(content)})),
+        positions:[{subject:'林岚',placeKey:'place-mention-1',status:'confirmed',...evidence('林岚站在松风公寓。')}],
+        features:[{key:'feature-1',placeKey:'place-mention-1',kind:'stable',text:'有书桌',replacesKeys:[],...evidence(sourceQuote)},
+          {key:'feature-2',placeKey:'place-mention-2',kind:'stable',text:'有木床',replacesKeys:[],...evidence(targetQuote)}],
+      }}};
+  }});
+  await h.foundationRuntime.reconcile('place-merge-fixture');await h.runtime.start();await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId,{analyzeState:false});
+  const nodes=new Map(h.runtime.getQianchuangSnapshot().places.map(place=>[place.displayName,place]));
+  const keys=payload=>({sourceKey:payload.knownPlaces.find(place=>place.displayName==='松风公寓').entityKey,targetKey:payload.knownPlaces.find(place=>place.displayName==='松风之家').entityKey});
+  const evidence=payload=>{const {columns,rows}=payload.storedPlaceEvidence,index=columns.indexOf('sourceKey'),contentIndex=columns.indexOf('content'),row=rows.find(row=>row[contentIndex].includes(sourceQuote));return {source:'storedPlaceEvidence',sourceKey:row[index],exactQuote:sourceQuote};};
+  return {h,nodes,content,sourceQuote,targetQuote,keys,evidence,setOrganization(value){organization=value;},setExtraction(value){extraction=value;}};
+}
+
+test('地点合并runtime父归属：target旧有效外父优先，同包source键路径可明确修正自动父',async()=>{
+ for(const newPath of [false,true]){
+  const f=await placeMergeRuntimeFixture(),{h}=f;
+  f.setOrganization(payload=>({placeMerges:[f.keys(payload)],...(newPath?{placePaths:[{path:[{name:'父乙',sameAsPlaceKey:payload.knownPlaces.find(place=>place.displayName==='父乙').entityKey},{name:'松风公寓',sameAsPlaceKey:f.keys(payload).sourceKey}],evidence:[f.evidence(payload)]}]}:{})}));
+  await h.runtime.organizePlaces();h.placeWorkspaceStore.invalidate(CHAT);await h.runtime.refreshStatus({preferCached:false});
+  const current=h.runtime.getQianchuangSnapshot(),target=current.places.find(place=>place.entityId===f.nodes.get('松风之家').entityId);
+  assert.equal(target.parentEntityId,f.nodes.get(newPath?'父乙':'父甲').entityId);
+  assert.equal(current.places.find(place=>place.displayName==='卧室').parentEntityId,target.entityId);
+  const saved=await h.placeWorkspaceStore.read({chatId:CHAT});assert.equal(Object.hasOwn(saved.data.placesByEntityId[target.entityId]??{},'parentEntityId'),false,'自动父归属不能伪装成人工字段');
+ }
+});
+
+test('地点合并和简介同包：新简介承接双方原引文与替换ID，旧source键正常归canonical',async()=>{
+ const f=await placeMergeRuntimeFixture(),{h}=f;
+ const original=await h.store.readReachable(),oldItems=original.floorMemories[0].spatialFacts.features.map(item=>item.itemId);
+ f.setOrganization(payload=>({placeMerges:[f.keys(payload)],placePaths:[{path:[{name:'松风公寓',sameAsPlaceKey:f.keys(payload).sourceKey,description:'有书桌和木床'}],evidence:[f.evidence(payload)]}]}));
+ await h.runtime.organizePlaces();await h.runtime.refreshStatus({preferCached:false});
+ const saved=await h.placeWorkspaceStore.read({chatId:CHAT}),targetId=f.nodes.get('松风之家').entityId;
+ const fact=saved.data.foundation.facts.find(fact=>fact.kind==='feature'&&fact.placeEntityId===targetId&&fact.text==='有书桌和木床');
+ assert.ok(fact);assert.ok(oldItems.every(id=>fact.replacesItemIds.includes(id)));
+ const quotes=new Set((fact.source.references??[fact.source]).map(ref=>ref.quote));assert.ok(quotes.has(f.sourceQuote));assert.ok(quotes.has(f.targetQuote));
+ const texts=h.runtime.getQianchuangSnapshot().places.find(place=>place.entityId===targetId).features.map(item=>item.text);assert.deepEqual(texts,['有书桌和木床']);
+});
+
+test('地点合并人工优先：target空描述空父级保留，source独有方位补入且旧人工稿仍在',async()=>{
+ const f=await placeMergeRuntimeFixture(),{h}=f,sourceId=f.nodes.get('松风公寓').entityId,targetId=f.nodes.get('松风之家').entityId;
+ await h.runtime.savePlace(sourceId,{description:'源人工书桌',relations:'人工方位',mapLevel:'scope'},h.runtime.getPlaceEditContext(sourceId));
+ await h.runtime.savePlace(targetId,{description:'',parentEntityId:null,mapLevel:null},h.runtime.getPlaceEditContext(targetId));
+ f.setOrganization(payload=>({placeMerges:[f.keys(payload)],placePaths:[{path:[{name:'松风之家',sameAsPlaceKey:f.keys(payload).targetKey,description:'模型旧描述',relations:['模型旧方位']}],evidence:[f.evidence(payload)]}]}));
+ await h.runtime.organizePlaces();await h.runtime.refreshStatus({preferCached:false});
+ const snapshot=h.runtime.getQianchuangSnapshot(),target=snapshot.places.find(place=>place.entityId===targetId);
+ assert.equal(target.parentEntityId,null);assert.equal(target.mapLevel,null);assert.deepEqual(target.features,[]);assert.deepEqual(target.relations.map(item=>item.text),['人工方位']);
+ const saved=await h.placeWorkspaceStore.read({chatId:CHAT});assert.equal(saved.data.placesByEntityId[sourceId].description,'源人工书桌');assert.equal(saved.data.placesByEntityId[targetId].description,'');assert.equal(saved.data.placesByEntityId[targetId].relations,'人工方位');
+});
+
+test('地点合并后二次整理和新摘要：source独有原句仍绑定canonical，旧名复用同ID',async()=>{
+ const f=await placeMergeRuntimeFixture(),{h}=f,targetId=f.nodes.get('松风之家').entityId;
+ f.setOrganization(payload=>({placeMerges:[f.keys(payload)]}));await h.runtime.organizePlaces();
+ f.setOrganization(payload=>{
+  const target=payload.knownPlaces.find(place=>place.displayName==='松风之家');assert.ok(target.aliases.includes('松风公寓'));assert.equal(payload.knownPlaces.some(place=>place.displayName==='松风公寓'),false);
+  const {columns,rows}=payload.storedPlaceEvidence,contentIndex=columns.indexOf('content'),keysIndex=columns.indexOf('placeKeys');assert.ok(rows.some(row=>row[contentIndex].includes(f.sourceQuote)&&row[keysIndex].includes(target.entityKey)));
+  return {placePaths:[]};
+ });await h.runtime.organizePlaces();
+ f.setExtraction(payload=>{const known=payload.knownPlaces.find(place=>place.aliases.includes('松风公寓'));assert.ok(known);const evidence={source:'canonicalContent',sourceFloorKey:payload.sourceFloorKey,exactQuote:payload.canonicalContent};return {summary:'旧称地点正常承接。',locations:[{name:'松风公寓',change:'present',...evidence}],spatialFacts:{places:[{key:'place-mention-1',name:'松风公寓',identity:'existing',sameAsPlaceKey:known.entityKey,...evidence}],containments:[],positions:[]}};});
+ h.context.chat.push(assistant('松风公寓里添了一把椅子。'),user('新楼稳定'));await h.foundationRuntime.reconcile('after-place-merge');await h.runtime.refreshStatus({preferCached:false});const floor=h.runtime.getState().floors.at(-1);await h.runtime.extractFloor(floor.floorId,{analyzeState:false});
+ const saved=await h.store.readReachable();assert.equal(saved.floorMemories.find(memory=>memory.floorId===floor.floorId).locations[0].entityId,targetId);assert.equal(h.calls.length,4);
+});
+
+test('地点合并坏指令局部隔离并同存合法路径，旧无merge包保持独立身份',async()=>{
+ const old=await placeMergeRuntimeFixture();old.setOrganization(()=>({placePaths:[]}));await old.h.runtime.organizePlaces();assert.equal(old.h.runtime.getQianchuangSnapshot().places.length,5);
+ const f=await placeMergeRuntimeFixture();f.setOrganization(payload=>({placeMerges:[f.keys(payload),{sourceKey:'missing',targetKey:f.keys(payload).targetKey},{sourceKey:f.keys(payload).targetKey,targetKey:f.keys(payload).targetKey}],placePaths:[{path:[{name:'松风之家',sameAsPlaceKey:f.keys(payload).targetKey,description:'有书桌和木床'}],evidence:[f.evidence(payload)]}]}));
+ const result=await f.h.runtime.organizePlaces();assert.equal(result.status,'saved');assert.equal(result.isolatedCount,2);assert.equal(f.h.runtime.getQianchuangSnapshot().places.length,4);assert.equal(f.h.calls.length,2);
+});
+
+test('地点合并保存失败与在途删除切聊：无半份redirect，不覆盖新人工删除，不增加模型调用',async()=>{
+ const conflict=await placeMergeRuntimeFixture();conflict.setOrganization(payload=>({placeMerges:[conflict.keys(payload)]}));const before=JSON.stringify((await conflict.h.placeWorkspaceStore.read({chatId:CHAT})).data);
+ conflict.h.backend.setBeforePut(({key})=>{if(key==='v3-place-workspace')throw Object.assign(Error('CAS conflict'),{status:409});});await assert.rejects(conflict.h.runtime.organizePlaces());conflict.h.placeWorkspaceStore.invalidate(CHAT);assert.equal(JSON.stringify((await conflict.h.placeWorkspaceStore.read({chatId:CHAT},{fresh:true})).data),before);assert.equal(conflict.h.calls.length,2);
+ for(const action of ['delete','chat']){
+  const f=await placeMergeRuntimeFixture();let release,started;const gate=new Promise(resolve=>{started=resolve;});f.setOrganization(payload=>new Promise(resolve=>{release=()=>resolve({placeMerges:[f.keys(payload)]});started();}));
+  const pending=f.h.runtime.organizePlaces();const outcome=pending.then(value=>({value}),error=>({error}));await gate;
+  if(action==='delete'){const id=f.nodes.get('松风之家').entityId;await f.h.runtime.deletePlace(id,f.h.runtime.getPlaceEditContext(id));}else f.h.context.chatMetadata.qianqianjie.chatId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  release();const result=await outcome;assert.ok(result.error||result.value.status==='skipped');const saved=await f.h.placeWorkspaceStore.read({chatId:CHAT},{fresh:true});assert.equal(Object.keys(saved.data?.identityRedirectsByEntityId??{}).length,0);assert.equal(f.h.calls.length,2);
+ }
+});
+
+test('地点独立库不可读时首轮摘要与CSE继续，地点更新暂停且人物读取仍严格', async () => {
+  let h;
+  const provider = async (identity, { includePlaces = true, allowUnavailablePlaces = false } = {}) => {
+    if (!includePlaces) return {};
+    try {
+      const value = await h.placeWorkspaceStore.read(identity ?? { chatId: CHAT });
+      return { placeWorkspace: value.data, placeWorkspaceRevision: value.revision };
+    } catch (error) {
+      if (allowUnavailablePlaces) return { unavailableSources: ['places'] };
+      throw error;
+    }
+  };
+  h = harness({ withPlaces: true, identityProjectionProvider: provider, utility: options => ({ jsonData: options.systemPrompt === CSE_SYSTEM_PROMPT
+    ? { noMaterialChange: true }
+    : { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }],
+      placePaths: [{ path: [{ name: '未知旧人工地点' }], source: 'canonicalContent', sourceFloorKey: 'floor-1', exactQuote: '裴晚生提醒你带伞。' }] } }) });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  h.backend.setBeforeGet(({ key }) => { if (key === 'v3-place-workspace') throw Object.assign(new Error('place read unavailable'), { code: 'QQJ_PLACE_READ_FAILURE' }); });
+  h.placeWorkspaceStore.invalidate(CHAT);
+  const prepared = await h.runtime.prepareCurrent();
+  assert.equal(prepared.status, 'ready');
+  assert.equal(h.runtime.getQianchuangSnapshot().status, 'error');
+  const beforePuts = h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-place-workspace').length;
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(h.calls.length, 1);
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.floorMemories.length, 1);
+  assert.equal(saved.entities.some(entity => entity.entityType === 'place'), false);
+  assert.equal(h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-place-workspace').length, beforePuts);
+  await h.runtime.retryStateAnalysis(floorId);
+  assert.equal(h.calls.length, 2);
+  assert.equal((await h.store.readReachable({ mode: 'runtime' })).stateDeltas.length, 1);
+  assert.equal(h.runtime.shouldBlockMainGeneration(), false);
+});
+
+test('整个地点编译抛错保同份摘要人物及千事，只消耗一次原请求', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const sourceUrl = new URL('../src/v3/extractor.js', import.meta.url);
+  let source = await readFile(sourceUrl, 'utf8');
+  source = source.replace('import { expandPlacePaths,', 'import { expandPlacePaths as originalExpandPlacePaths,');
+  source = source.replace(/from '([^']+)'/gu, (all, name) => name.startsWith('.') ? `from '${new URL(name, sourceUrl).href}'` : all);
+  source += '\nasync function expandPlacePaths(){throw Object.assign(new Error("place compile unavailable"),{code:"QQJ_PLACE_ALGORITHM_FAILURE"});}\n//# sourceURL=qqj-place-fault-test.mjs\n';
+  const injected = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  const floor = { id: '11111111-1111-4111-8111-111111111111', chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq: 1, content: { canonicalContent: '裴晚生提醒你带伞。' } };
+  const envelope = await createExtractorEnvelope({ batchId: '33333333-3333-4333-8333-333333333333', chatId: CHAT, narrativeGeneration: GENERATION, floor, entities: [] });
+  let requests = 0;
+  const result = await injected.runExtractorRequest({ generateUtilityTask: async ({ transportBudget }) => {
+    requests += 1; transportBudget.used += 1; transportBudget.remaining -= 1;
+    return { jsonData: { summary: '合法摘要。', people: [{ name: '裴晚生' }], events: [{ title: '提醒', description: '裴晚生提醒你带伞。' }] } };
+  }, envelope, floor, now: NOW, expectedScope: envelope.scope });
+  assert.equal(requests, 1);
+  assert.equal(result.memory.summary.aiText, '合法摘要。');
+  assert.ok(result.newEntities.some(entity => entity.displayName === '裴晚生'));
+  assert.ok(result.memory.eventFragments.length > 0);
+  assert.ok(result.isolated.some(issue => issue.field === 'places'));
+});
+
+test('locatedIn最近所属只参与身份判断，不能删掉有据物理包含边', async () => {
+  const content = '甲馆内有客房和二楼，客房归二楼管理。';
+  const evidence = { source: 'canonicalContent', sourceFloorKey: 'floor-1', exactQuote: content };
+  const result = await direct({ summary: content, spatialFacts: {
+    places: ['甲馆', '客房', '二楼'].map((name, index) => ({ key: `place-mention-${index + 1}`, name, identity: 'new', ...evidence })),
+    containments: [{ placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-1', ...evidence }, { placeKey: 'place-mention-3', parentPlaceKey: 'place-mention-1', ...evidence }],
+    positions: [], relations: [{ kind: 'locatedIn', placeKey: 'place-mention-2', referencePlaceKeys: ['place-mention-3'], text: '客房归二楼管理', ...evidence }],
+  } }, { content });
+  assert.deepEqual(result.isolated, []);
+  const ids = new Map(result.newEntities.map(entity => [entity.displayName, entity.id]));
+  assert.ok(result.memory.spatialFacts.containments.some(edge => edge.placeEntityId === ids.get('客房') && edge.parentEntityId === ids.get('甲馆')));
+  assert.equal(result.memory.spatialFacts.relations[0].referencePlaceEntityIds[0], ids.get('二楼'));
+});
+
+test('重复引文的无效父边不作为粗细归约证明，旧合法父继续保留', async () => {
+  const entities = [precisionPlace(701, '甲馆'), precisionPlace(702, '客房'), precisionPlace(703, '二楼')];
+  const content = '甲馆内有客房。客房在二楼内部。二楼属于甲馆。二楼属于甲馆。';
+  const evidence = exactQuote => ({ source: 'canonicalContent', sourceFloorKey: 'floor-1', exactQuote });
+  const previous = new Map([[entities[1].id, new Set([entities[0].id])]]);
+  const result = await direct({ summary: content, spatialFacts: {
+    places: entities.map((entity, index) => ({ key: `place-mention-${index + 1}`, name: entity.displayName, identity: 'existing', sameAsPlaceKey: `place-${index + 1}`, ...evidence(content) })),
+    containments: [{ placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-1', ...evidence('甲馆内有客房。') },
+      { placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-3', ...evidence('客房在二楼内部。') },
+      { placeKey: 'place-mention-3', parentPlaceKey: 'place-mention-1', ...evidence('二楼属于甲馆。') }], positions: [],
+  } }, { entities, content, previousFloorContext: { parentEntityIdsByPlaceId: previous } });
+  assert.ok(result.isolated.some(issue => issue.code === 'V3_EXTRACTOR_SPATIAL_PLACE_SCOPE_CONFLICT'));
+  assert.equal(result.memory.spatialFacts?.containments?.some(edge => edge.placeEntityId === entities[1].id) ?? false, false);
+});
+
+test('未解析身份的父端点不能消掉同包合法包含，保已有房间位置', async () => {
+  const content = '甲馆二楼内设有客房。林岚仍在客房。';
+  const evidence = { source: 'canonicalContent', sourceFloorKey: 'floor-1', exactQuote: content };
+  const result = await direct({ summary: content, people: [{ name: '林岚', role: 'user' }], spatialFacts: {
+    places: [{ key: 'place-mention-1', name: '甲馆', identity: 'existing', sameAsPlaceKey: 'place-1', ...evidence },
+      { key: 'place-mention-2', name: '客房', identity: 'existing', sameAsPlaceKey: 'place-2', ...evidence },
+      { key: 'place-mention-3', name: '二楼', identity: 'uncertain', ...evidence }],
+    containments: [{ placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-1', ...evidence },
+      { placeKey: 'place-mention-2', parentPlaceKey: 'place-mention-3', ...evidence }, { placeKey: 'place-mention-3', parentPlaceKey: 'place-mention-1', ...evidence }],
+    positions: [{ subject: '林岚', placeKey: 'place-mention-2', status: 'confirmed', ...evidence }],
+  } }, { entities: [precisionPlace(711, '甲馆'), precisionPlace(712, '客房')], content,
+    previousFloorContext: { parentEntityIdsByPlaceId: new Map([[precisionPlace(712, '客房').id, new Set([precisionPlace(711, '甲馆').id])]]) } });
+  assert.ok(result.isolated.some(issue => issue.code === 'V3_EXTRACTOR_SPATIAL_PLACE_IDENTITY_UNRESOLVED'));
+  assert.equal(result.memory.spatialFacts.containments.length, 1);
+  assert.equal(result.memory.spatialFacts.containments[0].parentEntityId, precisionPlace(711, '甲馆').id);
+  assert.equal(result.memory.spatialFacts.positions.length, 1);
+});
+
+test('请求前地点树或父投影整体异常仍保摘要及CSE正常入口，不派地点写入', async () => {
+  const { readFile } = await import('node:fs/promises');
+  for (const projector of ['projectQianchuangSnapshot', 'projectPlaceOwnership']) {
+    const sourceUrl = new URL('../src/v3/memory-runtime.js', import.meta.url);
+    let source = await readFile(sourceUrl, 'utf8');
+    source = source.replace(new RegExp(`\\b${projector}([, }])`, 'u'), `${projector} as originalPlaceProjection$1`);
+    source = source.replace(/from '([^']+)'/gu, (all, name) => name.startsWith('.') ? `from '${new URL(name, sourceUrl).href}'` : all);
+    source += `\nlet armed = false; export const armPlaceFault = () => { armed = true; };\nfunction ${projector}(...args) { if (armed) throw Object.assign(new Error('place projection unavailable'), { code: 'QQJ_PLACE_ALGORITHM_FAILURE' }); return originalPlaceProjection(...args); }\n//# sourceURL=qqj-place-preparation-fault-${projector}.mjs\n`;
+    const injected = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+    const h = harness({ withPlaces: true, memoryRuntimeFactory: injected.createV3MemoryRuntime,
+      utility: options => ({ jsonData: options.systemPrompt === CSE_SYSTEM_PROMPT ? { noMaterialChange: true } : { summary: '裴晚生提醒用户带伞。' } }) });
+    await h.runtime.start();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    // Ensure previous-place context has a saved floor to inspect on the second run.
+    await h.runtime.extractFloor(floorId, { analyzeState: false });
+    const beforeRequests = h.calls.length;
+    const beforePlaceWrites = h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-place-workspace').length;
+    injected.armPlaceFault();
+    await h.runtime.prepareCurrent();
+    await h.runtime.extractFloor(floorId, { analyzeState: false });
+    assert.equal(h.calls.length - beforeRequests, 1, projector);
+    assert.equal((await h.store.readReachable({ mode: 'runtime' })).floorMemories.length, 1);
+    assert.equal(h.backend.calls.filter(call => call[0] === 'put' && call[2] === 'v3-place-workspace').length, beforePlaceWrites);
+    await h.runtime.retryStateAnalysis(floorId);
+    assert.equal(h.calls.length - beforeRequests, 2, projector);
+  }
+});
+
+test('地点库故障普通召回在首轮正常准备继续，只隔离地点来源', async () => {
+  let h;
+  const provider = async (identity, { includePlaces = true, allowUnavailablePlaces = false, allowUnavailable = false } = {}) => {
+    if (!includePlaces) return {};
+    try {
+      const value = await h.placeWorkspaceStore.read(identity ?? { chatId: CHAT });
+      return { placeWorkspace: value.data, placeWorkspaceRevision: value.revision };
+    } catch (error) {
+      if (allowUnavailablePlaces || allowUnavailable) return { unavailableSources: ['places'] };
+      throw error;
+    }
+  };
+  h = harness({ withPlaces: true, identityProjectionProvider: provider,
+    initialChat: [user('继续'), ...Array.from({ length: 5 }, (_, index) => [assistant(index === 0 ? '裴晚生提醒你带伞。' : `后来第${index + 1}楼继续走路。`), user(index === 4 ? '他当时说过什么？' : '继续')]).flat()] });
+  await h.runtime.start();
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  h.backend.setBeforeGet(({ key }) => { if (key === 'v3-place-workspace') throw new Error('place unavailable'); });
+  h.placeWorkspaceStore.invalidate(CHAT);
+  h.context.constants = { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 1 } };
+  h.context.setExtensionPrompt = () => {}; h.context.saveChat = async () => {};
+  const preparations = []; let selections = 0, aborts = 0;
+  const recall = createV3RecallRuntime({ store: h.store, hostAdapter: h.hostAdapter, identityProjectionProvider: provider,
+    prepareMemory: options => { preparations.push(options.allowRefresh); return h.runtime.prepareCurrent(options); },
+    selector: input => { selections += 1; return selectRecall(input); }, now: () => new Date(NOW), pluginVersion: 'place-isolation-test', logger: { warn() {} } });
+  const result = await recall.intercept(h.context.chat, 12000, () => { aborts += 1; }, 'normal');
+  assert.equal(preparations[0], true);
+  assert.equal(result.lastRecall.attemptDiagnostics.length, 1);
+  assert.ok(result.lastRecall.timings.preparationAttempts.every(attempt => attempt.status === 'ready'));
+  assert.equal(selections, 1); assert.equal(aborts, 0);
+  assert.equal(result.lastRecall.status, 'ready');
+  assert.ok(result.lastRecall.injectionText.length > 0);
+});
+
+test('地点候选算法异常局限地点，正常召回首轮保摘要且筛选一次', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const sourceUrl = new URL('../src/v3/recall-selector.js', import.meta.url);
+  let source = await readFile(sourceUrl, 'utf8');
+  source = source.replace('function placeFeatureCandidates(source, queryContext, entityById, queries, memories) {', "function placeFeatureCandidates(source, queryContext, entityById, queries, memories) { throw Object.assign(new Error('place candidate unavailable'), { code: 'QQJ_PLACE_ALGORITHM_FAILURE' });");
+  source = source.replace(/from '([^']+)'/gu, (all, name) => name.startsWith('.') ? `from '${new URL(name, sourceUrl).href}'` : all);
+  source += '\n//# sourceURL=qqj-place-selection-fault.mjs\n';
+  const injected = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  const h = harness({ initialChat: [user('继续'), ...Array.from({ length: 5 }, (_, index) => [assistant(index === 0 ? '裴晚生提醒你带伞。' : `后来第${index + 1}楼继续走路。`), user(index === 4 ? '他当时说过什么？' : '继续')]).flat()] });
+  await h.runtime.start();
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  h.context.constants = { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 1 } };
+  h.context.setExtensionPrompt = () => {}; h.context.saveChat = async () => {};
+  let selections = 0, aborts = 0;
+  const recall = createV3RecallRuntime({ store: h.store, hostAdapter: h.hostAdapter,
+    prepareMemory: options => h.runtime.prepareCurrent(options), selector: input => { selections += 1; return injected.selectRecall(input); },
+    now: () => new Date(NOW), pluginVersion: 'place-selection-fault-test', logger: { warn() {} } });
+  const result = await recall.intercept(h.context.chat, 12000, () => { aborts += 1; }, 'normal');
+  assert.equal(aborts, 0); assert.equal(selections, 1);
+  assert.equal(result.lastRecall.status, 'ready');
+  assert.ok(result.lastRecall.injectionText.length > 0);
+  assert.ok(result.lastRecall.skipReasons.includes('placeSourceUnavailable'));
+});
+
+test('共享父级算法整体故障时正常摘要分析及非地点召回继续，必需域仍走原验证', async t => {
+  const { cp, mkdtemp, writeFile, symlink, rm } = await import('node:fs/promises');
+  const { pathToFileURL } = await import('node:url');
+  const temporary = await mkdtemp('/tmp/qqj-place-parent-fault-');
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  await cp(new URL('../src', import.meta.url), `${temporary}/src`, { recursive: true });
+  await symlink(new URL('../node_modules', import.meta.url).pathname, `${temporary}/node_modules`);
+  const parentUrl = new URL('../src/v3/place-parent.js', import.meta.url).href;
+  await writeFile(`${temporary}/src/v3/place-parent.js`, `import { resolvePlaceParentBatch as original } from '${parentUrl}';
+let armed = false;
+export const armPlaceFault = () => { armed = true; };
+export function resolvePlaceParentBatch(...args) { if (armed) throw Object.assign(new Error('shared place parent unavailable'), { code: 'QQJ_PLACE_ALGORITHM_FAILURE' }); return original(...args); }
+`);
+  const injectedMemory = await import(pathToFileURL(`${temporary}/src/v3/memory-runtime.js`).href);
+  const injectedRecall = await import(pathToFileURL(`${temporary}/src/v3/recall-runtime.js`).href);
+  const injectedParent = await import(pathToFileURL(`${temporary}/src/v3/place-parent.js`).href);
+  const h = harness({ withPlaces: true, memoryRuntimeFactory: injectedMemory.createV3MemoryRuntime,
+    initialChat: [user('继续'), ...Array.from({ length: 5 }, (_, index) => [assistant(index === 0 ? '裴晚生在甲馆客房，甲馆内有客房。' : `后来第${index + 1}楼继续走路。`), user(index === 4 ? '他当时说过什么？' : '继续')]).flat()],
+    utility: options => {
+      if (options.systemPrompt === CSE_SYSTEM_PROMPT) return { jsonData: { noMaterialChange: true } };
+      const payload = JSON.parse(options.taskMessages[0].content).payload;
+      return { jsonData: { summary: '裴晚生提醒用户带伞。', people: [{ name: '裴晚生' }, { name: '你', role: 'user' }],
+        placePaths: [{ path: [{ name: '甲馆' }, { name: '客房' }], source: 'canonicalContent', sourceFloorKey: payload.sourceFloorKey, exactQuote: payload.canonicalContent }] } };
+    } });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  const before = h.calls.length;
+  const oldPlaces = structuredClone((await h.store.readReachable({ mode: 'runtime' })).floorMemories[0].spatialFacts);
+  injectedParent.armPlaceFault();
+  await h.runtime.prepareCurrent();
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  assert.equal(h.calls.length - before, 1);
+  assert.deepEqual((await h.store.readReachable({ mode: 'runtime' })).floorMemories[0].spatialFacts, oldPlaces);
+  assert.equal(h.runtime.getQianchuangSnapshot().status, 'error');
+  await h.runtime.retryStateAnalysis(floorId);
+  assert.equal(h.calls.length - before, 2);
+  h.context.constants = { promptTypes: { IN_CHAT: 1 }, promptRoles: { SYSTEM: 1 } };
+  h.context.setExtensionPrompt = () => {}; h.context.saveChat = async () => {};
+  let aborts = 0;
+  const recall = injectedRecall.createV3RecallRuntime({ store: h.store, hostAdapter: h.hostAdapter,
+    prepareMemory: options => h.runtime.prepareCurrent(options), selector: input => selectRecall(input),
+    now: () => new Date(NOW), pluginVersion: 'shared-place-parent-fault', logger: { warn() {} } });
+  const result = await recall.intercept(h.context.chat, 12000, () => { aborts += 1; }, 'normal');
+  assert.equal(aborts, 0); assert.equal(result.lastRecall.status, 'ready');
+  assert.equal(result.lastRecall.attemptDiagnostics.length, 1);
+});
+
+test('地点暂停时USER输入已改的同AI楼不继承旧空间事实', async () => {
+  let h;
+  const provider = async (identity, { includePlaces = true, allowUnavailablePlaces = false } = {}) => {
+    if (!includePlaces) return {};
+    try { const value = await h.placeWorkspaceStore.read(identity ?? { chatId: CHAT }); return { placeWorkspace: value.data, placeWorkspaceRevision: value.revision }; }
+    catch (error) { if (allowUnavailablePlaces) return { unavailableSources: ['places'] }; throw error; }
+  };
+  h = harness({ withPlaces: true, identityProjectionProvider: provider, initialChat: [user('甲馆内有客房。'), assistant('裴晚生提醒你带伞。'), user('稳定')],
+    utility: options => {
+      const payload = JSON.parse(options.taskMessages[0].content).payload;
+      return { jsonData: { summary: '裴晚生提醒用户带伞。', placePaths: [{ path: [{ name: '甲馆' }, { name: '客房' }],
+        source: 'precedingUserInput', sourceFloorKey: payload.sourceFloorKey, sourceSnapshotIndex: 0, exactQuote: payload.precedingUserInput[0].content }] } };
+    } });
+  await h.runtime.start();
+  const floorId = h.runtime.getState().floors[0].floorId;
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  const old = (await h.store.readReachable({ mode: 'runtime' })).floorMemories[0];
+  assert.ok(old.spatialFacts.containments.length > 0);
+  h.context.chat[0].mes = '乙馆内有客房。';
+  h.backend.setBeforeGet(({ key }) => { if (key === 'v3-place-workspace') throw new Error('place unavailable'); });
+  h.placeWorkspaceStore.invalidate(CHAT);
+  await h.runtime.extractFloor(floorId, { analyzeState: false });
+  const current = (await h.store.readReachable({ mode: 'runtime' })).floorMemories[0];
+  assert.equal(current.sourceRawFingerprint, old.sourceRawFingerprint);
+  assert.equal(current.sourceUserInputSnapshot.messages[0].content, '乙馆内有客房。');
+  assert.equal(current.spatialFacts, undefined);
+  assert.equal(h.calls.length, 2);
 });

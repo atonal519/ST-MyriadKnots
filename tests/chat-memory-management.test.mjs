@@ -23,7 +23,7 @@ import { createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
 const CHAT_ID = '123e4567-e89b-42d3-a456-426614174000';
 const OTHER_ID = '223e4567-e89b-42d3-a456-426614174000';
 
-function fixture({ failBinding = false, failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, prepareHook = null, removeHook = null, afterHostSaveHook = null, rebuildHook = null, migrationPrefix = false, memoryMigration = null } = {}) {
+function fixture({ failBinding = false, failRemove = null, holdRemove = null, failSaveChat = false, silentSaveChatFailure = false, failSaveMetadata = false, busy = false, prepareHook = null, removeHook = null, afterHostSaveHook = null, rebuildHook = null, migrationPrefix = false, memoryMigration = null, memoryActivity = null, mainGenerationActive = false, memoryState = null } = {}) {
   const records = new Map([
     [`chat-${CHAT_ID}/floor-a`, { recordId: 'floor-a', revision: 2, data: { kind: 'floor' } }],
     [`chat-${CHAT_ID}/orphan-old`, { recordId: 'orphan-old', revision: 5, data: { kind: 'old-version' } }],
@@ -82,9 +82,9 @@ function fixture({ failBinding = false, failRemove = null, holdRemove = null, fa
     suspend(chatId) { assert.equal(chatId, CHAT_ID); calls.push(['suspend', chatId]); suspended = true; return { status: 'suspended', identity }; },
     resume(chatId) { assert.equal(chatId, CHAT_ID); calls.push(['resume', chatId]); suspended = false; return true; },
   };
-  const state = { memoryWorkBusy: busy };
+  const state = memoryActivity ?? { memoryWorkBusy: busy };
   const runtime = name => ({ getState: () => state, getReachable: () => migrationPrefix ? { root: { chatId: CHAT_ID }, migrationDescriptor: { id: 'archive-prefix' } } : null, invalidate() { invalidated.push(name); } });
-  const memoryRuntime = { async startHistoricalRebuild() { const chatId = context.chatMetadata.qianqianjie.chatId; calls.push(['history', chatId]); records.set(`chat-${chatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId } }); return { status: 'ready', chatId }; }, getState: () => ({ ...state, chatId: CHAT_ID }), getActivityState: () => state, invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
+  const memoryRuntime = { async startHistoricalRebuild() { const chatId = context.chatMetadata.qianqianjie.chatId; calls.push(['history', chatId]); records.set(`chat-${chatId}/v3-root`, { recordId: 'v3-root', revision: 1, data: { chatId } }); return { status: 'ready', chatId }; }, getState: () => memoryState ?? ({ ...state, chatId: CHAT_ID }), getActivityState: () => state, invalidate(options) { memoryInvalidations.push(options); invalidated.push('memory'); } };
   const recallRuntime = { getState: () => ({}), invalidate() { invalidated.push('recall'); }, clearCurrent() { invalidated.push('recall-clear'); } };
   const peopleRuntime = { getState: () => ({}), invalidate() { invalidated.push('people'); } };
   const timeRuntime = { async stop() { calls.push(['stopTime']); }, async authorizeHistory() { calls.push(['timeHistory', context.chatMetadata.qianqianjie.chatId]); } };
@@ -113,7 +113,7 @@ function fixture({ failBinding = false, failRemove = null, holdRemove = null, fa
     calls.push(['history', chatId]);
     return { status: 'ready', chatId };
   };
-  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, timeRuntime, memoryMigration, autoHideController, isMainGenerationActive: () => false, fetchImpl, coreRecordCache: { async invalidateIdentity(identity) { calls.push(['invalidateCache', identity.chatId]); } }, createHistoricalRebuild, logger: { warn() {} } });
+  const manager = createChatMemoryManagement({ client, session, hostAdapter, foundationRuntime: runtime('foundation'), memoryRuntime, recallRuntime, peopleRuntime, timeRuntime, memoryMigration, autoHideController, isMainGenerationActive: () => mainGenerationActive, fetchImpl, coreRecordCache: { async invalidateIdentity(identity) { calls.push(['invalidateCache', identity.chatId]); } }, createHistoricalRebuild, logger: { warn() {} } });
   return { manager, client, hostAdapter, fetchImpl, records, calls, invalidated, memoryInvalidations, context, user, hidden, malformedHidden, manualHidden, receipt, floorMarker, identity, releaseHeld,
     updatePersistedHost({ metadata, messages }) { if (metadata) persistedMetadata = structuredClone(metadata); if (messages) persistedMessages = cloneMessages(messages); },
     readPersistedHost() { return [{ chat_metadata: structuredClone(persistedMetadata) }, ...cloneMessages(persistedMessages)]; } };
@@ -343,6 +343,247 @@ test('完全重构任务转发真实进度与暂停，暂停后复用同一目�
   assert.equal(starts, 1, '继续按钮调用同一历史任务实例，不新删后端或重开另一task');
   assert.equal(completed.rebuildStatus, 'caughtUp');
   assert.equal(f.records.has(`chat-${OTHER_ID}/v3-root`), true);
+});
+
+test('完全重构以control当前终态结算，迟到的旧partial返回不覆盖完成通知', async () => {
+  const old = Object.freeze({ rebuildStatus: 'partial', chatId: OTHER_ID, rememberedCount: 4, stableCount: 5,
+    rebuildCompletedCount: 2, rebuildTotalCount: 5, unprocessedCount: 1, csePendingCount: 2 });
+  const completed = Object.freeze({ ...old, rebuildStatus: 'caughtUp', rememberedCount: 5,
+    rebuildCompletedCount: 5, unprocessedCount: 0, csePendingCount: 0 });
+  let state = old, listener;
+  const control = { getState: () => state, subscribe(callback) { listener = callback; return () => { listener = null; }; } };
+  const f = fixture({ rebuildHook: async options => {
+    options.onTaskControl(control);
+    state = completed; listener(state);
+    return old;
+  } });
+  const notifications = [];
+  f.manager.subscribe(snapshot => notifications.push(snapshot));
+  const result = await f.manager.fullRebuild(CHAT_ID);
+  assert.equal(result.rebuildStatus, 'caughtUp');
+  assert.equal(result.rememberedCount, 5);
+  const lastProgress = notifications.filter(snapshot => snapshot.rebuildState).at(-1).rebuildState;
+  assert.equal(lastProgress.rebuildStatus, 'caughtUp');
+  assert.equal(lastProgress.rebuildCompletedCount, 5);
+  assert.equal(f.manager.getState().rebuildState, null, '完成后释放旧任务，允许重新开始完全重构');
+  assert.equal(f.manager.getState().workBusy, false);
+});
+
+test('管理状态读取control当前快照，保留固定目标的新partial进度而不按计数取大', async () => {
+  let state = Object.freeze({ rebuildStatus: 'partial', chatId: OTHER_ID, rememberedCount: 4,
+    rebuildCompletedCount: 4, rebuildTotalCount: 5 });
+  const control = { getState: () => state, subscribe: () => () => {} };
+  const f = fixture({ rebuildHook: async options => { options.onTaskControl(control); return state; } });
+  await f.manager.fullRebuild(CHAT_ID);
+  state = Object.freeze({ ...state, rememberedCount: 3, rebuildCompletedCount: 2 });
+  assert.equal(f.manager.getState().rebuildState.rememberedCount, 3);
+  assert.equal(f.manager.getState().rebuildState.rebuildCompletedCount, 2);
+  assert.equal(f.manager.getState().rebuildState.rebuildTotalCount, 5);
+});
+
+test('管理已结束任务刷新为waitingRealtime时释放覆盖层，paused固定目标继续保留', async () => {
+  let state = { rebuildStatus: 'paused', chatId: OTHER_ID, rebuildCompletedCount: 2, rebuildTotalCount: 5 };
+  let unsubscribed = 0;
+  const control = { getState: () => state, subscribe: () => () => { unsubscribed += 1; } };
+  const f = fixture({ rebuildHook: async options => { options.onTaskControl(control); return state; } });
+  await f.manager.fullRebuild(CHAT_ID);
+  assert.equal(f.manager.getState().rebuildState.rebuildTotalCount, 5);
+  assert.equal(unsubscribed, 0);
+  state = { ...state, rebuildStatus: 'waitingRealtime' };
+  assert.equal(f.manager.getState().rebuildState, null);
+  assert.equal(f.manager.getState().workBusy, false);
+  assert.equal(unsubscribed, 1);
+});
+
+test('完全重构接回等待中采用control更新终态', async () => {
+  const rebuiltChatId = '323e4567-e89b-42d3-a456-426614174000';
+  let state = { rebuildStatus: 'partial', chatId: rebuiltChatId, rebuildCompletedCount: 2, rebuildTotalCount: 5 };
+  let listener, enteredAdoption, finishAdoption;
+  const adopting = new Promise(resolve => { enteredAdoption = resolve; });
+  const adoption = new Promise(resolve => { finishAdoption = resolve; });
+  const control = { getState: () => state, subscribe(callback) { listener = callback; return () => { listener = null; }; } };
+  const f = fixture({ prepareHook: async () => { enteredAdoption(); await adoption; }, rebuildHook: async (options, context) => {
+    context.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: rebuiltChatId };
+    await context.saveChatMetadata();
+    options.onTaskControl(control);
+    return state;
+  } });
+  const pending = f.manager.fullRebuild(CHAT_ID);
+  await adopting;
+  state = { ...state, rebuildStatus: 'caughtUp', rebuildCompletedCount: 5 };
+  listener(state);
+  finishAdoption();
+  const result = await pending;
+  assert.equal(result.rebuildStatus, 'caughtUp');
+  assert.equal(result.chatId, rebuiltChatId);
+  assert.equal(f.manager.getState().rebuildState, null);
+});
+
+test('完全重构切到其他聊天后迟到终态只结算原目标', async () => {
+  const rebuiltChatId = '323e4567-e89b-42d3-a456-426614174000';
+  const old = { rebuildStatus: 'partial', chatId: rebuiltChatId, rebuildCompletedCount: 2, rebuildTotalCount: 5 };
+  let state = old, listener, enteredFactory, releaseFactory;
+  const started = new Promise(resolve => { enteredFactory = resolve; });
+  const held = new Promise(resolve => { releaseFactory = resolve; });
+  const control = { getState: () => state, subscribe(callback) { listener = callback; return () => { listener = null; }; } };
+  const f = fixture({ rebuildHook: async (options, context) => {
+    context.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: rebuiltChatId };
+    await context.saveChatMetadata();
+    options.onTaskControl(control);
+    enteredFactory(); await held;
+    return old;
+  } });
+  const pending = f.manager.fullRebuild(CHAT_ID);
+  await started;
+  f.context.chatId = 'other-host';
+  f.context.chatMetadata = { qianqianjie: { schemaVersion: 2, chatId: OTHER_ID }, otherPlugin: { keep: 'new-chat' } };
+  f.context.chat = [{ is_user: false, mes: '其他聊天正文', extra: { otherPlugin: true } }];
+  const otherChat = structuredClone({ metadata: f.context.chatMetadata, chat: f.context.chat });
+  state = { ...old, rebuildStatus: 'caughtUp', rebuildCompletedCount: 5 };
+  listener(state);
+  assert.equal(f.manager.getState().rebuildState, null, '迟到任务进度不显示在新聊天');
+  releaseFactory();
+  const result = await pending;
+  assert.equal(result.rebuildStatus, 'caughtUp');
+  assert.equal(result.chatId, rebuiltChatId);
+  assert.deepEqual({ metadata: f.context.chatMetadata, chat: f.context.chat }, otherChat);
+  assert.equal(f.calls.some(call => call[0] === 'prepare'), false);
+});
+
+test('只有同目标已就绪主快照可结束settled partial，暂停失败及运行中任务保原control', async t => {
+  const rebuiltChatId = '323e4567-e89b-42d3-a456-426614174000';
+  const completed = { chatId: rebuiltChatId, narrativeGeneration: 'generation-a', status: 'ready', foundationStatus: 'ready',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', rebuildStatus: 'caughtUp', rebuildHasActionableWork: false };
+  const scenarios = [
+    { name: '同目标当前已追平', patch: {}, released: true },
+    { name: '同目标等待新楼', patch: { rebuildStatus: 'waitingRealtime' }, released: true },
+    { name: '另一聊天', patch: { chatId: OTHER_ID }, released: false },
+    { name: '另一代际', patch: { narrativeGeneration: 'generation-b' }, released: false },
+    { name: '主runtime仍在运行', patch: { status: 'running' }, released: false },
+    { name: '主runtime记忆仍忙', patch: { memoryWorkBusy: true }, released: false },
+    { name: '主runtime手动重提尚在运行', patch: { activeExtraction: { phase: 'extracting' } }, released: false },
+    { name: '主runtime人物分析尚在运行', patch: { activeCse: { phase: 'analyzingCse' } }, released: false },
+    { name: '主快照未读入', patch: { memorySnapshotStatus: 'syncing' }, released: false },
+    { name: '主快照仍在同步', patch: { memorySyncStatus: 'syncing' }, released: false },
+    { name: '来源尚待核对', patch: { foundationStatus: 'needsReview' }, released: false },
+    { name: '主快照仍有待办', patch: { rebuildHasActionableWork: true }, released: false },
+    { name: '原任务暂停', taskStatus: 'paused', patch: {}, released: false },
+    { name: '原任务失败', taskStatus: 'failed', patch: {}, released: false },
+  ];
+  for (const scenario of scenarios) await t.test(scenario.name, async () => {
+    const state = { ...completed, rebuildStatus: scenario.taskStatus ?? 'partial', rebuildHasActionableWork: true };
+    const memoryState = { ...state };
+    const control = { getState: () => state, subscribe: () => () => {} };
+    const f = fixture({ memoryState, rebuildHook: async (options, context) => {
+      context.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: rebuiltChatId };
+      await context.saveChatMetadata();
+      options.onTaskControl(control); return state;
+    } });
+    await f.manager.fullRebuild(CHAT_ID);
+    Object.assign(memoryState, completed, scenario.patch);
+    assert.equal(f.manager.getState().rebuildState === null, scenario.released);
+  });
+});
+
+test('历史任务尚未返回时保留独立partial进度，结束后才接用同目标完整主快照', async () => {
+  const rebuiltChatId = '323e4567-e89b-42d3-a456-426614174000';
+  const memoryState = { chatId: rebuiltChatId, status: 'ready', foundationStatus: 'ready', memorySnapshotStatus: 'ready',
+    memorySyncStatus: 'idle', rebuildStatus: 'caughtUp', rebuildHasActionableWork: false };
+  const state = { ...memoryState, rebuildStatus: 'partial', rebuildHasActionableWork: true, rebuildCompletedCount: 2, rebuildTotalCount: 5 };
+  let enteredFactory, releaseFactory;
+  const started = new Promise(resolve => { enteredFactory = resolve; });
+  const held = new Promise(resolve => { releaseFactory = resolve; });
+  const control = { getState: () => state, subscribe: () => () => {} };
+  const f = fixture({ memoryState, rebuildHook: async (options, context) => {
+    context.chatMetadata.qianqianjie = { schemaVersion: 2, chatId: rebuiltChatId };
+    await context.saveChatMetadata();
+    options.onTaskControl(control);
+    enteredFactory(); await held;
+    return state;
+  } });
+  const pending = f.manager.fullRebuild(CHAT_ID);
+  await started;
+  assert.equal(f.manager.getState().workBusy, true);
+  assert.equal(f.manager.getState().rebuildState.rebuildStatus, 'partial');
+  assert.equal(f.manager.getState().rebuildState.rebuildTotalCount, 5);
+  releaseFactory();
+  assert.equal((await pending).rebuildStatus, 'caughtUp');
+  assert.equal(f.manager.getState().rebuildState, null);
+});
+
+test('partial完全重构继续只调用同一control并保留原aggregate和目标，不重复清理或创建任务', async () => {
+  let state = Object.freeze({ rebuildStatus: 'partial', chatId: OTHER_ID, rebuildCompletedCount: 2, rebuildTotalCount: 5 });
+  let listener, starts = 0, factories = 0;
+  const control = {
+    getState: () => state,
+    subscribe(callback) { listener = callback; return () => { listener = null; }; },
+    async start(options) {
+      assert.deepEqual(options, { aggregate: true });
+      starts += 1;
+      state = Object.freeze({ ...state, rebuildStatus: 'caughtUp', rebuildCompletedCount: 5 });
+      listener?.(state);
+      return state;
+    },
+  };
+  const f = fixture({ rebuildHook: async options => { factories += 1; options.onTaskControl(control); return state; } });
+  await f.manager.fullRebuild(CHAT_ID, { aggregate: true });
+  const cleanupCount = f.calls.filter(call => ['remove', 'hostSave'].includes(call[0])).length;
+  const result = await f.manager.fullRebuild(CHAT_ID, { aggregate: false });
+  assert.equal(result.rebuildStatus, 'caughtUp');
+  assert.equal(result.chatId, OTHER_ID);
+  assert.equal(starts, 1);
+  assert.equal(factories, 1);
+  assert.equal(f.calls.filter(call => ['remove', 'hostSave'].includes(call[0])).length, cleanupCount);
+});
+
+test('暂停、失败和partial原任务续跑都等待真实主生成或记忆工作结束', async t => {
+  for (const status of ['paused', 'failed', 'partial']) await t.test(status, async () => {
+    const memoryActivity = { mainGenerationActive: false, memoryWorkBusy: false };
+    let state = { rebuildStatus: status, chatId: OTHER_ID }, starts = 0;
+    const control = { getState: () => state, subscribe: () => () => {}, async start() {
+      starts += 1; state = { ...state, rebuildStatus: 'caughtUp' }; return state;
+    } };
+    const f = fixture({ memoryActivity, rebuildHook: async options => { options.onTaskControl(control); return state; } });
+    await f.manager.fullRebuild(CHAT_ID);
+    for (const busyKey of ['mainGenerationActive', 'memoryWorkBusy']) {
+      memoryActivity[busyKey] = true;
+      assert.equal(f.manager.getState().workBusy, true);
+      await assert.rejects(f.manager.fullRebuild(CHAT_ID), error => error.code === 'QQJ_REBUILD_BUSY');
+      assert.equal(starts, 0);
+      memoryActivity[busyKey] = false;
+    }
+    assert.equal((await f.manager.fullRebuild(CHAT_ID)).rebuildStatus, 'caughtUp');
+    assert.equal(starts, 1);
+  });
+});
+
+test('无control旧任务工厂保留其返回状态并释放已完成任务', async () => {
+  const f = fixture();
+  const result = await f.manager.fullRebuild(CHAT_ID);
+  assert.equal(result.status, 'ready');
+  assert.equal(result.chatId, '323e4567-e89b-42d3-a456-426614174000');
+  assert.equal(f.manager.getState().rebuildState, null);
+  assert.equal(f.manager.getState().workBusy, false);
+});
+
+test('管理busy优先复用memory已解析主生成状态，缺字段才沿旧宿主回调', async t => {
+  const scenarios = [
+    { name: '解析idle覆盖残留raw true', memory: { mainGenerationActive: false }, raw: true, blocked: false },
+    { name: '解析active仍阻拦', memory: { mainGenerationActive: true }, raw: false, blocked: true },
+    { name: '旧宿主缺字段沿raw true', memory: {}, raw: true, blocked: true },
+    { name: '旧宿主缺字段沿raw false', memory: {}, raw: false, blocked: false },
+    { name: '真实记忆任务仍阻拦', memory: { mainGenerationActive: false, memoryWorkBusy: true }, raw: false, blocked: true },
+    { name: '真实提取仍阻拦', memory: { mainGenerationActive: false, activeExtraction: { phase: 'extracting' } }, raw: false, blocked: true },
+  ];
+  for (const scenario of scenarios) await t.test(scenario.name, async () => {
+    const f = fixture({ memoryActivity: scenario.memory, mainGenerationActive: scenario.raw });
+    assert.equal(f.manager.getState().workBusy, scenario.blocked);
+    if (scenario.blocked) {
+      await assert.rejects(f.manager.fullRebuild(CHAT_ID), error => error.code === 'QQJ_REBUILD_BUSY');
+      await assert.rejects(f.manager.deleteCurrent(), error => error.code === 'QQJ_DELETE_BUSY');
+      assert.equal(f.calls.some(call => ['remove', 'hostSave'].includes(call[0])), false);
+    } else assert.equal((await f.manager.fullRebuild(CHAT_ID)).status, 'ready');
+  });
 });
 
 test('按实际revision删除全collection后root和binding，并保留正文、他插件字段与人工隐藏边界', async () => {

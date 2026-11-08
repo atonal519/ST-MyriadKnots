@@ -6,6 +6,7 @@ import { isUuid } from '../identity.js';
 import { normalizePlaceFacilities, validQianchuangMapStyle, validQianchuangMapLayout, normalizeQianchuangMapLayout, normalizeQianchuangMapStyle } from '../qianchuang-display-hints.js';
 import {selectQianchuangMapAsset} from '../qianchuang-map-assets.js';
 import { locatePlaceQuote } from './place-evidence.js';
+import { resolvePlaceParentBatch } from './place-parent.js';
 const label=value=>String(value??'').normalize('NFKC').trim().toLocaleLowerCase();
 const copy=value=>structuredClone(value);
 
@@ -201,18 +202,19 @@ export function filterPlaceFoundationSources(workspace,{filterWorldInfoSources=s
  if(!workspace?.foundation)return workspace;
  const facts=workspace.foundation.facts.filter(fact=>referencedSources(fact.source).every(source=>(source.kind!=='worldbook'||filterWorldInfoSources([{sourceName:source.sourceName??''}]).length)
   &&(source.kind!=='body'||!floorIds||floorIds.has(source.floorId)))&&(!floorIds||!Array.isArray(fact.replacesItemIds)||!fact.knownFromFloorId||floorIds.has(fact.knownFromFloorId)));
- const ids=new Set(facts.flatMap(fact=>[fact.placeEntityId,fact.parentEntityId,...(fact.referencePlaceEntityIds??[])].filter(Boolean)));
+ const ids=new Set([...Object.keys(workspace.identityRedirectsByEntityId??{}),...Object.values(workspace.identityRedirectsByEntityId??{}),...facts.flatMap(fact=>[fact.placeEntityId,fact.parentEntityId,...(fact.referencePlaceEntityIds??[])].filter(Boolean))]);
  for(const [id,row]of Object.entries(workspace.placesByEntityId??{}))if(Object.keys(row.scopes??{}).length){ids.add(id);if(row.parentEntityId)ids.add(row.parentEntityId);}
  return {...workspace,foundation:{...workspace.foundation,facts,entities:workspace.foundation.entities.filter(entity=>ids.has(entity.id))}};
 }
 
 export function effectiveFoundationFacts(workspace,memories=[]){
+ const canonical=id=>workspace?.identityRedirectsByEntityId?.[id]??id;
  const replaced=new Set(memories.flatMap(memory=>[...(memory.spatialFacts?.features??[]),...(memory.spatialFacts?.containments??[])].flatMap(fact=>fact.replacesItemIds??[])));
  return (workspace?.foundation?.facts??[]).filter(fact=>{
   if(replaced.has(fact.itemId))return false;
   const field=fact.kind==='containment'?'parentEntityId':fact.kind==='feature'?'description':'relations';
-  return fact.kind==='place'||!Object.hasOwn(workspace.placesByEntityId?.[fact.placeEntityId]??{},field);
- });
+  return fact.kind==='place'||!Object.hasOwn(workspace.placesByEntityId?.[canonical(fact.placeEntityId)]??{},field);
+ }).map(fact=>({...fact,placeEntityId:canonical(fact.placeEntityId),...(Object.hasOwn(fact,'parentEntityId')?{parentEntityId:canonical(fact.parentEntityId)}:{}),...(fact.referencePlaceEntityIds?{referencePlaceEntityIds:fact.referencePlaceEntityIds.map(canonical)}:{})}));
 }
 
 // Only the user's book exclusions participate in the existing revision receipt key.
@@ -224,6 +226,46 @@ export function placeWorkspaceDependency(chatId,revision,workspace){
 // Replay explicit parent assertions together so later coarse ancestry cannot erase a known intermediate place.
 export function projectPlaceParentLinks(memories, workspace, seqById, throughAssistantSeq = Infinity,
   libraryThroughAssistantSeq = throughAssistantSeq, { includeLocatedIn = false, resolve = id => id, baseIntents = [] } = {}) {
+  const redirects = workspace?.identityRedirectsByEntityId ?? {};
+  if (Object.keys(redirects).length) {
+    const raw = projectPlaceParentLinks(memories, { ...workspace, identityRedirectsByEntityId: undefined }, seqById,
+      throughAssistantSeq, libraryThroughAssistantSeq, { includeLocatedIn, baseIntents });
+    const canonical = id => resolve(redirects[id] ?? id);
+    const groups = new Map();
+    for (const id of [...raw.keys(), ...Object.keys(redirects), ...Object.values(redirects)]) {
+      const target = canonical(id), members = groups.get(target) ?? new Set(); members.add(id); groups.set(target, members);
+    }
+    const externalParent = (owner, target) => {
+      const chain = [], seen = new Set([owner]); let current = owner;
+      while (raw.get(current)?.parents.size === 1) {
+        current = raw.get(current).parents.keys().next().value;
+        if (seen.has(current)) return null;
+        seen.add(current); chain.push(current);
+      }
+      let start = 0;
+      for (const [index, id] of chain.entries()) if (canonical(id) === target) start = index + 1;
+      return chain[start] ? canonical(chain[start]) : null;
+    };
+    const result = new Map();
+    for (const [target, members] of groups) {
+      const direct = raw.get(target);
+      if (Object.hasOwn(workspace.placesByEntityId?.[target] ?? {}, 'parentEntityId') && workspace.placesByEntityId[target].parentEntityId === null) {
+        result.set(target, { seq: Infinity, parents: new Map() }); continue;
+      }
+      let selected = null;
+      for (const id of [target, ...Object.keys(redirects).filter(id => canonical(id) === target), ...members]) {
+        const value = raw.get(id);
+        if (!value) continue;
+        if (id === target && value.cleared) { selected = value; break; }
+        const parent = externalParent(id, target);
+        if (!parent || parent === target) continue;
+        const origin = value.parents.values().next().value;
+        selected = { ...value, parents: new Map([[parent, origin]]) }; break;
+      }
+      result.set(target, selected ?? { ...(direct ?? { seq: 0 }), parents: new Map() });
+    }
+    return result;
+  }
   const intents = [...baseIntents];
   for (const memory of memories) {
     if (memory.recordStatus && memory.recordStatus !== 'active') continue;
@@ -249,42 +291,22 @@ export function projectPlaceParentLinks(memories, workspace, seqById, throughAss
       itemId:fact.itemId,replacesItemIds:fact.replacesItemIds,identityChange:fact.identityChange,
       sourceFloorId: fact.knownFromFloorId ?? null, sourceAssistantSeq: seq, authority: 1 });
   }
-  const covered = new Set(intents.flatMap(intent=>intent.replacesItemIds??[]));
+  const covered = new Set(intents.flatMap(intent => intent.replacesItemIds ?? []));
   const bySeq = new Map();
   for (const intent of intents) {
-    if (!intent.placeEntityId || !intent.parentEntityId && !(intent.parentEntityId===null&&intent.identityChange==='ownershipChanged') || covered.has(intent.itemId)) continue;
-    let atSeq = bySeq.get(intent.seq); if (!atSeq) { atSeq = new Map(); bySeq.set(intent.seq, atSeq); }
-    const authority = intent.authority ?? 0;
-    let group = atSeq.get(intent.placeEntityId);
-    if (!group || group.authority < authority) { group = {authority,parents:new Map(),revision:false}; atSeq.set(intent.placeEntityId,group); }
-    if (group.authority > authority) continue;
-    group.revision ||= intent.identityChange==='ownershipChanged';
-    group.parents.set(intent.parentEntityId, {sourceFloorId:intent.sourceFloorId,sourceAssistantSeq:intent.sourceAssistantSeq});
+    if (!intent.placeEntityId || !intent.parentEntityId && !(intent.parentEntityId === null && intent.identityChange === 'ownershipChanged') || covered.has(intent.itemId)) continue;
+    const rows = bySeq.get(intent.seq) ?? [];
+    rows.push({ ...intent, origin: { sourceFloorId: intent.sourceFloorId, sourceAssistantSeq: intent.sourceAssistantSeq } });
+    bySeq.set(intent.seq, rows);
   }
-  const manualParents = new Map(Object.entries(workspace?.placesByEntityId ?? {}).filter(([,row]) => Object.hasOwn(row,'parentEntityId'))
-    .map(([id,row]) => [resolve(id),new Map(row.parentEntityId ? [[resolve(row.parentEntityId),{manual:true}]] : [])]));
+  const manualParents = new Map(Object.entries(workspace?.placesByEntityId ?? {}).filter(([id, row]) => !workspace?.identityRedirectsByEntityId?.[id] && Object.hasOwn(row, 'parentEntityId'))
+    .map(([id, row]) => [resolve(id), new Map(row.parentEntityId ? [[resolve(row.parentEntityId), { manual: true }]] : [])]));
   const latest = new Map();
-  for (const [seq, atSeq] of [...bySeq].sort(([a],[b]) => a-b)) {
-    const updates = new Map();
-    for (const [child, {parents,revision}] of atSeq) {
-      const prior = latest.get(child);
-      if (!revision && parents.size === 1 && prior?.parents.size === 1) {
-        const next = parents.keys().next().value, current = prior.parents.keys().next().value;
-        if (next !== current && next !== child) {
-          const seen = new Set([child]); let ancestor = current;
-          while (ancestor && !seen.has(ancestor)) {
-            if (ancestor === next) break;
-            seen.add(ancestor); const links = manualParents.get(ancestor) ?? atSeq.get(ancestor)?.parents ?? latest.get(ancestor)?.parents;
-            ancestor = links?.size === 1 ? links.keys().next().value : null;
-          }
-          if (ancestor === next) continue;
-        }
-      }
-      updates.set(child, parents.size===1&&parents.has(null)?{seq,parents:new Map(),cleared:true}:{seq,parents});
-    }
-    for (const [child, value] of updates) latest.set(child, value);
+  for (const [seq, rows] of [...bySeq].sort(([a], [b]) => a - b)) {
+    const { updates } = resolvePlaceParentBatch(rows, { previous: latest, manual: manualParents });
+    for (const [child, value] of updates) latest.set(child, { seq, ...value });
   }
-  for (const [id,parents] of manualParents) latest.set(id, {seq:Infinity,parents});
+  for (const [id, parents] of manualParents) latest.set(id, { seq: Infinity, parents });
   return latest;
 }
 
@@ -295,10 +317,16 @@ function makeSeed(id, name, scope, now) {
 }
 
 
-export async function expandPlacePaths({ packet, envelope, existingEntities = [], now, persistBodyPaths = false }) {
+export async function expandPlacePaths({ packet, envelope, existingEntities = [], now, persistBodyPaths = false, deferParentResolution = false }) {
   const result = copy(packet), scope = envelope.scope, entities = [...existingEntities], byId = new Map(entities.map(entity => [entity.id, entity]));
   const bindings = [...(scope.placeCatalogBindings ?? [])], byKey = new Map(bindings.map(binding => [binding.entityKey, binding]));
   const parents = new Map(scope.parentEntityIdsByPlaceId ?? []), seenPaths = new Map(), facts = new Map(), isolated = [], replaceFields = [], displayMetadataBindings = [];
+  const parentPathIndex = new Map(), factPathIndexes = new Map(), entityPathIndexes = new Map();
+  let activePathIndex = -1;
+  const recordFact = (itemId, fact) => {
+    const owners = factPathIndexes.get(itemId) ?? new Set(); owners.add(activePathIndex); factPathIndexes.set(itemId, owners);
+    facts.set(itemId, fact);
+  };
   const input = result.spatialFacts;
   const spatial = input && typeof input === 'object' && !Array.isArray(input) ? input : (result.spatialFacts = { places: [], containments: [], positions: [] });
   if (input !== undefined && spatial !== input) isolated.push({ field: 'spatialFacts', index: -1, code: 'V3_EXTRACTOR_OBJECT_INVALID', path: 'spatialFacts' });
@@ -311,6 +339,13 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
   // Only the model's original local edges can link an omitted leaf key; a path
   // expanded earlier in this pass cannot supply evidence for another path.
   const linkedInput={places:spatial.places.map(place=>place&&{...place}),containments:[...spatial.containments]};
+
+  const localPlace = key => {
+    if (typeof key !== 'string' || !/^place-mention-[1-9]\d*$/u.test(key)) return null;
+    const originals = linkedInput.places.filter(place => place?.key === key);
+    if (originals.length !== 1) return null;
+    return spatial.places.find(place => place?.key === key) ?? null;
+  };
   let mentionIndex = Math.max(0, ...spatial.places.map(place => Number(/place-mention-(\d+)$/u.exec(place?.key)?.[1]) || 0));
   const mentionById = new Map();
   for (const place of spatial.places) {
@@ -321,6 +356,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
   const originalParents = scope.parentEntityIdsByPlaceId ?? new Map();
   const lineage = entityId => { const ids = new Set(); let current = entityId; while (current && !ids.has(current)) { ids.add(current); const next = originalParents.get(current); current = next?.size === 1 ? [...next][0] : null; } return ids; };
   for (const [index, rawEntry] of (Array.isArray(result.placePaths) ? result.placePaths : []).entries()) {
+    activePathIndex = index;
     const entry=Array.isArray(rawEntry?.path)?{...rawEntry,path:rawEntry.path.map(segment=>{
       if(!segment||typeof segment!=='object'||Object.hasOwn(segment,'name')||typeof segment.sameAsPlaceKey!=='string')return segment;
       const matches=(scope.placeCatalogBindings??[]).filter(binding=>binding.entityKey===segment.sameAsPlaceKey),binding=matches.length===1?matches[0]:null;
@@ -343,18 +379,34 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     const primary = resolved.find(ref => ref.source.kind === 'worldbook') ?? resolved[0];
     const autoSource = !bodySource || persistBodyPaths ? { ...primary.source,
       ...(resolved.length > 1 ? { references: resolved.map(ref => ref.source) } : {}) } : null;
-    let leaf = typeof entry.placeKey === 'string' ? spatial.places.find(place => place?.key === entry.placeKey) : undefined;
+    const explicitLeafKey = entry.placeKey ?? entry.path.at(-1).placeKey;
+    const nodeKeys = entry.path.map((segment, depth) => depth === entry.path.length - 1 ? explicitLeafKey : segment.placeKey).filter(key => key !== undefined);
+    const explicitNodes = new Map();
+    let invalidLink = new Set(nodeKeys).size !== nodeKeys.length
+      || Object.hasOwn(entry, 'placeKey') && !localPlace(entry.placeKey)
+      || entry.placeKey && entry.path.at(-1).placeKey && entry.placeKey !== entry.path.at(-1).placeKey;
+    for (const [depth, segment] of entry.path.entries()) {
+      if (!Object.hasOwn(segment, 'placeKey')) continue;
+      const linked = localPlace(segment.placeKey);
+      if (!linked) invalidLink = true;
+      else explicitNodes.set(depth, linked);
+    }
+    if (invalidLink) { isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_IDENTITY_INVALID', path: `placePaths[${index}]` }); continue; }
+    let leaf = explicitLeafKey ? localPlace(explicitLeafKey) : undefined;
+    if (leaf) explicitNodes.set(entry.path.length - 1, leaf);
     let bridge = null;
-    if (!entry.placeKey && bodySource && !persistBodyPaths && !clearParent) {
+    if (!explicitLeafKey && bodySource && !persistBodyPaths && !clearParent) {
       const linked=linkedBodyLeaf(entry,linkedInput,resolved,scope);
       if(linked.conflict){isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_IDENTITY_INVALID',path:`placePaths[${index}]`});continue;}
       leaf=spatial.places.find(place=>place?.key===linked.leaf?.key);bridge=linked;
     }
     const segments = entry.path.map((segment, i) => {
-      const linked = bridge?.nodes?.get(i) ?? (i === entry.path.length - 1 ? leaf : null);
+      const linked = explicitNodes.get(i) ?? bridge?.nodes?.get(i) ?? (i === entry.path.length - 1 ? leaf : null);
+      const linkedBinding = linked?.identity === 'existing' ? byKey.get(linked.sameAsPlaceKey) : null;
+      if (linkedBinding && segment.sameAsPlaceKey && linkedBinding.entityId !== byKey.get(segment.sameAsPlaceKey)?.entityId) invalidLink = true;
       return { ...segment, ...(linked?.sameAsPlaceKey && !segment.sameAsPlaceKey ? { sameAsPlaceKey: linked.sameAsPlaceKey } : {}) };
     });
-    if (segments.some(segment => segment.sameAsPlaceKey && !byKey.has(segment.sameAsPlaceKey))) {
+    if (invalidLink || segments.some(segment => segment.sameAsPlaceKey && !byKey.has(segment.sameAsPlaceKey))) {
       isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_IDENTITY_INVALID', path: `placePaths[${index}]` }); continue;
     }
     let knownPrefix = null, scopeConflict = false;
@@ -367,12 +419,16 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     if (scopeConflict && entry.identityChange !== 'ownershipChanged' && envelope.request?.task !== 'organizePlaces') {
       isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SCOPE_CONFLICT', path: `placePaths[${index}]` }); continue;
     }
-    // Explicit organization can correct a known parent; resolve once before publishing any part of a cyclic path.
+    // Resolve path identities before deciding the batch containment constraints.
     const pathNodes = [], pathEntities = [], pathBindings = [...bindings], pathParents = new Map(parents), pathSeen = new Map(seenPaths);
     let parentId = null;
-    for (const segment of segments) {
+    for (const [depth, segment] of segments.entries()) {
       const name = segment.name.trim(), pathKey = JSON.stringify([parentId, label(name)]);
-      let entityId = byKey.get(segment.sameAsPlaceKey)?.entityId ?? pathSeen.get(pathKey);
+      const local = explicitNodes.get(depth) ?? bridge?.nodes?.get(depth);
+      const localIdentity = linkedInput.places.find(place => place?.key === local?.key);
+      let entityId = localIdentity?.identity === 'new' && !(scope.placeCatalogBindings ?? []).some(binding => binding.entityKey === segment.sameAsPlaceKey)
+        ? await deterministicUuid(['v3-place-path-local', scope.chatId, scope.narrativeGeneration, scope.batchId, localIdentity.key])
+        : byKey.get(segment.sameAsPlaceKey)?.entityId ?? pathSeen.get(pathKey);
       if (!entityId) {
         const matches = pathBindings.filter(binding => (binding.labels ?? []).some(value => label(value) === label(name))
           && (parentId ? pathParents.get(binding.entityId)?.has(parentId) : !pathParents.get(binding.entityId)?.size));
@@ -380,6 +436,8 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       }
       if (!entityId) {
         entityId = await deterministicUuid(['v3-place-path', scope.chatId, scope.narrativeGeneration, scope.batchId, parentId, label(name)]);
+      }
+      if (!byId.has(entityId) && !pathEntities.some(entity => entity.id === entityId)) {
         pathEntities.push(makeSeed(entityId, name, scope, now));
         pathBindings.push({ entityKey: `place-path-${pathBindings.length + 1}`, entityId, entityType: 'place', specialRole: 'none', labels: [name] });
       }
@@ -387,10 +445,19 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       if(parentId)pathParents.set(entityId,new Set([parentId]));parentId=entityId;
     }
     if(clearParent)pathParents.delete(pathNodes[0].entityId);
-    const cyclic=pathNodes.some(({entityId})=>{const seen=new Set();let id=entityId;while(id){if(seen.has(id))return true;seen.add(id);const next=pathParents.get(id);id=next?.size===1?[...next][0]:null;}return false;});
-    if(cyclic){isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_SCOPE_CONFLICT',path:`placePaths[${index}]`});continue;}
+    if (new Set(pathNodes.map(node => node.entityId)).size !== pathNodes.length) {
+      isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SCOPE_CONFLICT', path: `placePaths[${index}]` }); continue;
+    }
+    for (const { entityId } of pathNodes) {
+      const owners = entityPathIndexes.get(entityId) ?? new Set(); owners.add(index); entityPathIndexes.set(entityId, owners);
+    }
     for(const entity of pathEntities){entities.push(entity);freshEntities.push(entity);byId.set(entity.id,entity);}
     for(const binding of pathBindings.slice(bindings.length)){bindings.push(binding);byKey.set(binding.entityKey,binding);}
+    for (const [depth, linked] of explicitNodes) {
+      const node = pathNodes[depth], binding = bindings.find(binding => binding.entityId === node.entityId);
+      linked.identity = 'existing'; linked.sameAsPlaceKey = binding.entityKey;
+      mentionById.set(node.entityId, linked.key);
+    }
     if (bodySource && !persistBodyPaths) {
       // The linked leaf and its explicit parent edges identify new path nodes;
       // a shared name by itself does not bind two places.
@@ -420,28 +487,31 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       if (depth === segments.length - 1 && leaf) { leaf.identity = 'existing'; leaf.sameAsPlaceKey = binding.entityKey; }
       let mention = mentionById.get(entityId);
       if (bodySource && !persistBodyPaths) {
-        mention ??= depth === segments.length - 1 && entry.placeKey ? entry.placeKey : `place-mention-${++mentionIndex}`;
+        mention ??= depth === segments.length - 1 && explicitLeafKey ? explicitLeafKey : `place-mention-${++mentionIndex}`;
         const old = spatial.places.findIndex(place => place?.key === mention), prior = spatial.places[old];
-        const value = { ...(revision?{identityChange:'ownershipChanged'}:prior?.identityChange?{identityChange:prior.identityChange}:{}), ...(prior?.identityBasis ? { identityBasis: prior.identityBasis } : {}), ...(Array.isArray(prior?.aliases) ? { aliases: prior.aliases } : {}), key: mention, name, identity: 'existing', sameAsPlaceKey: binding.entityKey, exactQuote: quote, ...bodyEvidence };
+        const surface = explicitNodes.get(depth)?.key === mention && typeof prior?.name === 'string' ? prior.name : name;
+        const value = { ...(revision?{identityChange:'ownershipChanged'}:prior?.identityChange?{identityChange:prior.identityChange}:{}), ...(prior?.identityBasis ? { identityBasis: prior.identityBasis } : {}), ...(Array.isArray(prior?.aliases) ? { aliases: prior.aliases } : {}), key: mention, name: surface, identity: 'existing', sameAsPlaceKey: binding.entityKey, exactQuote: quote, ...bodyEvidence };
         if (old >= 0) spatial.places[old] = value; else spatial.places.push(value);
         mentionById.set(entityId, mention);
       }
       if (parentId) {
         parents.set(entityId, new Set([parentId]));
         if (bodySource && !persistBodyPaths) {
-          if (!bridge?.linkedEdges?.has(`${mention}:${parentMention}`) && !spatial.containments.some(edge => edge?.placeKey === mention && edge.parentPlaceKey === parentMention && edge.exactQuote === quote && edge.source === bodyEvidence.source && edge.sourceFloorKey === bodyEvidence.sourceFloorKey && edge.sourceSnapshotIndex === bodyEvidence.sourceSnapshotIndex)) spatial.containments.push({ placeKey: mention, parentPlaceKey: parentMention, exactQuote: quote, ...bodyEvidence });
+          if (!bridge?.linkedEdges?.has(`${mention}:${parentMention}`) && !spatial.containments.some(edge => edge?.placeKey === mention && edge.parentPlaceKey === parentMention && edge.exactQuote === quote && edge.source === bodyEvidence.source && edge.sourceFloorKey === bodyEvidence.sourceFloorKey && edge.sourceSnapshotIndex === bodyEvidence.sourceSnapshotIndex)) spatial.containments.push({ placeKey: mention, parentPlaceKey: parentMention, exactQuote: quote, ...bodyEvidence, _placePathIndex: index });
         }
         else {
           const itemId = await deterministicUuid(['v3-worldbook-place', autoSource.locator, autoSource.fingerprint, entityId, parentId, 'containment']);
-          facts.set(itemId, revision?parentRevision(entityId,itemId,parentId,autoSource,scope):{ itemId, kind: 'containment', placeEntityId: entityId, parentEntityId: parentId, knownFromFloorId: scope.floorId ?? null,source: autoSource });
+          parentPathIndex.set(itemId,index);
+          recordFact(itemId, revision?parentRevision(entityId,itemId,parentId,autoSource,scope):{ itemId, kind: 'containment', placeEntityId: entityId, parentEntityId: parentId, knownFromFloorId: scope.floorId ?? null,source: autoSource });
         }
       }
       if(clearParent){
         parents.delete(entityId);
-        if(bodySource&&!persistBodyPaths)spatial.containments.push({placeKey:mention,parentPlaceKey:null,...bodyEvidence});
+        if(bodySource&&!persistBodyPaths)spatial.containments.push({placeKey:mention,parentPlaceKey:null,...bodyEvidence,_placePathIndex:index});
         else{
           const itemId=await deterministicUuid(['v3-worldbook-place',autoSource.locator,autoSource.fingerprint,entityId,null,'containment']);
-          facts.set(itemId,parentRevision(entityId,itemId,null,autoSource,scope));
+          parentPathIndex.set(itemId,index);
+          recordFact(itemId,parentRevision(entityId,itemId,null,autoSource,scope));
           replaceFields.push({entityId,kind:'containment'});
         }
       }
@@ -453,7 +523,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
         const existing=scope.identityProjection?.placeWorkspace?.foundation?.facts??[],old=existing.find(fact=>fact.kind==='place'&&fact.placeEntityId===entityId),keys=['mapRole','mapLevel','facilities','mapStyle','mapLayout'].filter(key=>Object.hasOwn(value,key));
         const same=Object.hasOwn(scope,'placeCurrentFactBindings')&&old&&keys.every(key=>JSON.stringify(old[key])===JSON.stringify(value[key]));
         if(same||keys.length||!Object.hasOwn(scope,'placeCurrentFactBindings')||!existing.some(fact=>fact.placeEntityId===entityId)){
-          const fact=same?old:value;replaceFields.push({entityId,kind:'place'});facts.set(fact.itemId,fact);displayFactItemId=fact.itemId;
+          const fact=same?old:value;replaceFields.push({entityId,kind:'place'});recordFact(fact.itemId,fact);displayFactItemId=fact.itemId;
         }
       }
       if (envelope.request?.task === 'organizePlaces' && ['mapLevel','mapStyle','mapLayout'].some(key => Object.hasOwn(segment,key))) {
@@ -465,7 +535,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
         const source=autoSource??{...primary.source,...(resolved.length>1?{references:resolved.map(ref=>ref.source)}:{})};
         const itemId = await deterministicUuid(['v3-worldbook-place', source.locator, source.fingerprint, entityId, 'feature', text]);
         const prior=(scope.placeCurrentFactBindings??[]).filter(fact=>fact.placeEntityId===entityId&&fact.kind==='feature');
-        const fact=currentFact('feature',entityId,itemId,text,source,scope,prior.length===1&&prior[0].current===true);facts.set(fact.itemId,fact);
+        const fact=currentFact('feature',entityId,itemId,text,source,scope,prior.length===1&&prior[0].current===true);recordFact(fact.itemId,fact);
       }
       for (const raw of Array.isArray(relations)&&!Object.hasOwn(manual,'relations') ? relations.length?relations:[''] : []) {
         const text = typeof raw === 'string' ? raw.trim() : '';if(typeof raw!=='string')continue;
@@ -473,7 +543,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
         const itemId = await deterministicUuid(['v3-place-relation',source.locator,source.fingerprint,entityId,text]);
         const prior=(scope.placeCurrentFactBindings??[]).filter(fact=>fact.placeEntityId===entityId&&fact.kind==='relation'),texts=relations.length?relations.map(text=>text.trim()):[''];
         const unchanged=prior.length===texts.length&&prior.every(fact=>fact.current&&texts.includes(fact.text));
-        const fact={...currentFact('relation',entityId,itemId,text,source,scope,unchanged),relationKind:'relative',referencePlaceEntityIds:[]};facts.set(fact.itemId,fact);
+        const fact={...currentFact('relation',entityId,itemId,text,source,scope,unchanged),relationKind:'relative',referencePlaceEntityIds:[]};recordFact(fact.itemId,fact);
       }
       if(autoSource&&parentId)replaceFields.push({entityId,kind:'containment'});
       if(autoSource){
@@ -485,12 +555,48 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       parentId = entityId; parentMention = mention;
     }
   }
+  if (!deferParentResolution) {
+    const tokenFor = key => {
+      const place = spatial.places.find(place => place?.key === key);
+      return byKey.get(place?.sameAsPlaceKey)?.entityId ?? key;
+    };
+    const parentEdges = spatial.containments;
+    const validBodyParent = edge => edge._placePathIndex !== undefined;
+    const bodyIntents = parentEdges.flatMap(edge => !validBodyParent(edge) ? [] : [{
+      placeEntityId: tokenFor(edge.placeKey), parentEntityId: edge.parentPlaceKey === null ? null : tokenFor(edge.parentPlaceKey),
+      identityChange: spatial.places.find(place => place?.key === edge.placeKey)?.identityChange,
+      authority: edge._placePathIndex === undefined ? 0 : 1, edge,
+    }]);
+    const foundationIntents = [...facts.values()].filter(fact => fact.kind === 'containment').map(fact => ({ ...fact, authority: 2 }));
+    const previous = new Map([...originalParents].map(([id, parents]) => [id, { parents: new Map([...parents].map(parent => [parent, {}])) }]));
+    const manual = new Map(Object.entries(scope.identityProjection?.placeWorkspace?.placesByEntityId ?? {}).filter(([, row]) => Object.hasOwn(row, 'parentEntityId'))
+      .map(([id, row]) => [id, new Map(row.parentEntityId ? [[row.parentEntityId, { manual: true }]] : [])]));
+    const decision = resolvePlaceParentBatch([...bodyIntents, ...foundationIntents], { previous, manual, preservePreviousRefinements: false });
+    const validBody = new Set(bodyIntents.filter(intent => decision.compatible.has(intent)).map(intent => intent.edge));
+    const keepParentEdge = edge => !bodyIntents.some(intent => intent.edge === edge) || validBody.has(edge) || decision.rejected.has(tokenFor(edge.placeKey));
+    spatial.containments = spatial.containments.filter(keepParentEdge);
+    for (const child of decision.rejected) if (bodyIntents.some(intent => intent.placeEntityId === child)) isolated.push({
+      field: 'spatialFacts.places', index: -1, code: 'V3_EXTRACTOR_SPATIAL_PLACE_SCOPE_CONFLICT', path: 'spatialFacts.places',
+    });
+    for (const fact of foundationIntents) if (decision.rejected.has(fact.placeEntityId)) facts.delete(fact.itemId);
+    const rejectedPathIndexes = new Set([...bodyIntents.filter(intent => decision.rejected.has(intent.placeEntityId)).map(intent => intent.edge._placePathIndex),
+      ...foundationIntents.filter(intent => decision.rejected.has(intent.placeEntityId)).map(intent => parentPathIndex.get(intent.itemId))].filter(index => index !== undefined));
+    for (const index of rejectedPathIndexes) isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SCOPE_CONFLICT', path: `placePaths[${index}]` });
+    for (const [itemId, owners] of factPathIndexes) if ([...owners].every(index => rejectedPathIndexes.has(index))) facts.delete(itemId);
+    const rejectedEntities = new Set([...entityPathIndexes].filter(([id, owners]) => freshEntities.some(entity => entity.id === id)
+      && [...owners].every(index => rejectedPathIndexes.has(index))).map(([id]) => id));
+    for (let index = freshEntities.length - 1; index >= 0; index -= 1) if (rejectedEntities.has(freshEntities[index].id)) freshEntities.splice(index, 1);
+    for (let index = entities.length - 1; index >= 0; index -= 1) if (rejectedEntities.has(entities[index].id)) entities.splice(index, 1);
+    for (let index = bindings.length - 1; index >= 0; index -= 1) if (rejectedEntities.has(bindings[index].entityId)) bindings.splice(index, 1);
+    for (let index = replaceFields.length - 1; index >= 0; index -= 1) if (!([...facts.values()].some(fact => fact.placeEntityId === replaceFields[index].entityId && fact.kind === replaceFields[index].kind))) replaceFields.splice(index, 1);
+    for (let index = displayMetadataBindings.length - 1; index >= 0; index -= 1) if (rejectedPathIndexes.has(displayMetadataBindings[index].pathIndex)) displayMetadataBindings.splice(index, 1);
+  }
   delete result.placePaths;
   const mapStyle=normalizeQianchuangMapStyle(result.mapStyle);delete result.mapStyle;
   const ids = new Set([...facts.values()].flatMap(fact => [fact.placeEntityId, fact.parentEntityId]).filter(Boolean));
   return { packet: result, entities, freshEntities, foundationPatch: { schemaVersion: 1, entities: entities.filter(entity => ids.has(entity.id)), facts: [...facts.values()], replaceFields, ...(mapStyle?{mapStyle}:{}) },
     envelope: { ...envelope, request: { ...envelope.request, payload: { ...envelope.request?.payload,
       knownPlaces: bindings.map(binding => envelope.request?.payload?.knownPlaces?.find(place => place.entityKey === binding.entityKey) ?? { entityKey: binding.entityKey, displayName: byId.get(binding.entityId)?.displayName, entityType: 'place', aliases: [] }) } },
-      scope: { ...scope, placeCatalogBindings: bindings, parentEntityIdsByPlaceId: parents } }, isolated, displayMetadataBindings };
+      scope: { ...scope, placeCatalogBindings: bindings, parentEntityIdsByPlaceId: originalParents } }, isolated, displayMetadataBindings, pathOrigins: { parentPathIndex, factPathIndexes } };
 }
 

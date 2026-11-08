@@ -1,3 +1,4 @@
+import { createPanelGeometryController, PANEL_POSITION_KEY, PANEL_SIZE_KEY } from '../src/ui/layout.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -193,6 +194,32 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   assert.equal(dialogAppearances.at(-1)?.fontCssUrl, 'https://example.invalid/font.css');
   assert.match(root.innerHTML, /\.body\{[^}]*touch-action:pan-y/);
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
+  const outsideEvent = inside => ({ target: host, composedPath: () => inside ? [close, panelNode, root, host] : [host] });
+  const pointerSequence = (downInside, upInside) => {
+    host.fire('pointerdown', outsideEvent(downInside));
+    host.fire('pointerup', outsideEvent(upInside));
+    host.fire('click', outsideEvent(false));
+  };
+  pointerSequence(true, false);
+  assert.equal(panel.getState().open, true, '从面板内部拖到外侧不关闭');
+  pointerSequence(false, true);
+  assert.equal(panel.getState().open, true, '从外侧拖到面板内部不关闭');
+  host.fire('pointerdown', outsideEvent(false)); host.fire('pointercancel', {});
+  host.fire('pointerup', outsideEvent(false)); host.fire('click', outsideEvent(false));
+  assert.equal(panel.getState().open, true, '取消的pointer手势不关闭');
+  host.fire('pointerdown', outsideEvent(true)); host.fire('pointerup', outsideEvent(true)); host.fire('click', outsideEvent(true));
+  assert.equal(panel.getState().open, true, 'Shadow DOM重定向到host的内部点击保持打开');
+  dialogActive = true; pointerSequence(false, false);
+  assert.equal(panel.getState().open, true, '子弹窗活跃时外侧事件不穿透关闭主面板');
+  dialogActive = false;
+  const outsideTrigger = new Node('button');
+  await panel.show(outsideTrigger);
+  const outsideDeactivations = calls.filter(([kind]) => kind === 'profiles-deactivate').length;
+  pointerSequence(false, false);
+  assert.equal(panel.getState().open, false, '面板外空白两端点击沿close关闭');
+  assert.equal(outsideTrigger.focused, true);
+  assert.equal(calls.filter(([kind]) => kind === 'profiles-deactivate').length, outsideDeactivations + 1, '外侧关闭执行原视图清理');
+  await panel.show();
   body.scrollTop = 31;
   settingsTab.fire('click');
   const findManagementMount = () => view.children[0]?.children.find(node => node.className === 'qqj-settings-management');
@@ -608,4 +635,76 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   const ttCacheInput = flatten(ttCacheToggle).find(node => node.tag === 'input');
   ttCacheInput.checked = true; ttCacheInput.fire('change');
   assert.equal(values.coreCacheEnabled, true, 'TT可用现有设置选择启用缓存');
+});
+
+
+function panelGeometryFixture({ width = 1200, height = 900, chat = { left: 200, top: 60, width: 800, height: 720 }, visual = null, saved = {} } = {}) {
+  const eventTarget = () => {
+    const listeners = new Map();
+    return {
+      addEventListener(name, listener) { listeners.set(name, listener); },
+      removeEventListener(name) { listeners.delete(name); },
+      fire(name, event = {}) { listeners.get(name)?.(event); },
+    };
+  };
+  const preferences = new Map(Object.entries(saved).map(([key, value]) => [key, JSON.stringify(value)]));
+  const writes = [];
+  const storage = { getItem: key => preferences.get(key), setItem(key, value) { writes.push([key, value]); preferences.set(key, value); } };
+  const viewport = { ...eventTarget(), innerWidth: width, innerHeight: height,
+    ...(visual ? { visualViewport: { ...eventTarget(), ...visual } } : {}) };
+  const variables = new Map();
+  const panel = { style: { setProperty: (key, value) => variables.set(key, value) }, classList: { add() {}, remove() {} },
+    getBoundingClientRect() { return Object.fromEntries(['left', 'top', 'width', 'height'].map(key => [key, Number.parseFloat(this.style[key]) || 0])); } };
+  const dragHandle = eventTarget(), resizeHandle = eventTarget();
+  const nodes = { chat: { getBoundingClientRect: () => chat } };
+  const documentRef = { getElementById: key => nodes[key] ?? null };
+  const controller = createPanelGeometryController({ panel, dragHandle, resizeHandle, viewport, storage, documentRef });
+  return { controller, panel, viewport, dragHandle, resizeHandle, variables, writes, nodes, setChat: value => { chat = value; } };
+}
+
+test('主面板桌面恢复、拖动和调整尺寸限制在聊天与可视视口交集内', () => {
+  const f = panelGeometryFixture({ visual: { offsetLeft: 100, offsetTop: 120, width: 900, height: 420 },
+    saved: { [PANEL_SIZE_KEY]: { width: 1000, height: 900 }, [PANEL_POSITION_KEY]: { left: -40, top: 1000 } } });
+  assert.deepEqual(f.panel.getBoundingClientRect(), { left: 210, top: 130, width: 780, height: 400 });
+  assert.equal(f.writes.length, 0, '自动clamp保留原桌面偏好');
+  f.dragHandle.fire('pointerdown', { pointerId: 1, clientX: 300, clientY: 150 });
+  f.dragHandle.fire('pointermove', { pointerId: 1, clientX: 1800, clientY: 1500 });
+  f.dragHandle.fire('pointerup', { pointerId: 1 });
+  assert.deepEqual(f.panel.getBoundingClientRect(), { left: 210, top: 130, width: 780, height: 400 });
+  f.resizeHandle.fire('pointerdown', { pointerId: 2, clientX: 990, clientY: 530 });
+  f.resizeHandle.fire('pointermove', { pointerId: 2, clientX: 1800, clientY: 1500 });
+  f.resizeHandle.fire('pointerup', { pointerId: 2 });
+  assert.deepEqual(f.panel.getBoundingClientRect(), { left: 210, top: 130, width: 780, height: 400 });
+  assert.deepEqual(f.writes.map(([key]) => key), [PANEL_POSITION_KEY, PANEL_SIZE_KEY]);
+  f.controller.destroy();
+});
+
+test('主面板手机尺寸随聊天区域和软键盘可视视口变化，恢复不写桌面偏好', () => {
+  const f = panelGeometryFixture({ width: 390, height: 844, chat: { left: 0, top: 50, width: 390, height: 700 },
+    visual: { offsetLeft: 0, offsetTop: 100, width: 390, height: 500 } });
+  assert.deepEqual(Object.fromEntries(f.variables), { '--qqj-panel-bounds-left': '0px', '--qqj-panel-bounds-top': '100px', '--qqj-panel-bounds-width': '390px', '--qqj-panel-bounds-height': '500px' });
+  f.viewport.visualViewport.height = 300;
+  f.viewport.visualViewport.fire('resize');
+  assert.equal(f.variables.get('--qqj-panel-bounds-height'), '300px');
+  f.viewport.visualViewport.offsetTop = 150;
+  f.viewport.visualViewport.fire('scroll');
+  assert.equal(f.variables.get('--qqj-panel-bounds-top'), '150px');
+  f.setChat({ left: 10, top: 180, width: 370, height: 150 });
+  f.viewport.fire('resize');
+  assert.equal(f.variables.get('--qqj-panel-bounds-top'), '180px');
+  assert.equal(f.variables.get('--qqj-panel-bounds-height'), '150px');
+  assert.equal(f.writes.length, 0);
+  f.controller.destroy();
+});
+
+test('主面板缺少有效chat时用sheld并避开输入栏，缺少宿主区域时沿视口', () => {
+  const f = panelGeometryFixture({ chat: { left: 0, top: 0, width: 0, height: 0 } });
+  f.nodes.sheld = { getBoundingClientRect: () => ({ left: 250, top: 40, width: 700, height: 800 }) };
+  f.nodes.form_sheld = { getBoundingClientRect: () => ({ top: 700 }) };
+  f.controller.restore();
+  assert.deepEqual(f.panel.getBoundingClientRect(), { left: 570, top: 120, width: 360, height: 561 });
+  delete f.nodes.sheld;
+  f.controller.restore();
+  assert.deepEqual(f.panel.getBoundingClientRect(), { left: 820, top: 80, width: 360, height: 600 });
+  f.controller.destroy();
 });

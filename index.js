@@ -208,7 +208,7 @@ const peopleWorkspaceStore = createPeopleWorkspaceStore({ client: backendClient 
 const placeWorkspaceStore = createPlaceWorkspaceStore({ client: backendClient });
 let peopleWorkspaceRuntime;
 const placeWorkspaceDependencyProvider = async () => { const identity=session.identity(),value=await placeWorkspaceStore.read(identity);return placeWorkspaceDependency(identity.chatId,value.revision,filterPlaceFoundationSources(value.data,{filterWorldInfoSources:sourcePermissions.filterWorldInfoSources})); };
-const identityProjectionProvider = async (identityValue, { includePlaces = true, allowUnavailable = false, onPartial = null } = {}) => {
+const identityProjectionProvider = async (identityValue, { includePlaces = true, allowUnavailable = false, allowUnavailablePlaces = false, onPartial = null } = {}) => {
   const identity = identityValue ?? session.identity();
   const state = peopleWorkspaceRuntime?.getState?.();
   const settled = {};
@@ -233,7 +233,7 @@ const identityProjectionProvider = async (identityValue, { includePlaces = true,
   ]);
   if (!allowUnavailable) {
     if (people.status === 'rejected') throw people.reason;
-    if (places.status === 'rejected') throw places.reason;
+    if (places.status === 'rejected' && !allowUnavailablePlaces) throw places.reason;
   }
   return project();
 };

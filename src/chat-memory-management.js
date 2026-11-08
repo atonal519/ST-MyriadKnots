@@ -54,6 +54,7 @@ export function createChatMemoryManagement({
     } catch { return false; }
   };
   const getState = () => {
+    refreshHistoricalRebuildState();
     const scopedActive = active && inCurrentHost(active.identity) ? active : null;
     const scopedPending = pending && inCurrentHost(pending.identity) ? pending : null;
     const scopedResult = lastResult && inCurrentHost({ hostChatId: lastResult.hostChatId, chatId: lastResult.chatId }, false);
@@ -91,7 +92,8 @@ export function createChatMemoryManagement({
     const foundation = foundationRuntime?.getState?.() ?? {};
     const recall = recallRuntime?.getState?.() ?? {};
     const people = peopleRuntime?.getState?.() ?? {};
-    return Boolean(isMainGenerationActive?.() || memory.memoryWorkBusy || memory.activeAutoMemory || memory.activeExtraction || memory.activeCse
+    const mainGenerationActive = typeof memory.mainGenerationActive === 'boolean' ? memory.mainGenerationActive : isMainGenerationActive?.();
+    return Boolean(mainGenerationActive || memory.memoryWorkBusy || memory.activeAutoMemory || memory.activeExtraction || memory.activeCse
       || foundation.activeRun || recall.activeRecall || people.active || vectorRuntime?.getState?.().active);
   }
   const invalidateRuntimes = deletedChatId => {
@@ -331,6 +333,7 @@ export function createChatMemoryManagement({
 
   function fullRebuild(expectedChatId, options = {}) {
     if (typeof createHistoricalRebuild !== 'function') return Promise.reject(errorWith('QQJ_REBUILD_UNAVAILABLE', '目标聊天重构任务尚未接入。'));
+    refreshHistoricalRebuildState();
     if (rebuilding) {
       let sameTarget = false;
       try {
@@ -340,7 +343,8 @@ export function createChatMemoryManagement({
       } catch { /* another active target is busy */ }
       if (!sameTarget) return Promise.reject(errorWith('QQJ_REBUILD_BUSY', '另一聊天的完全重构仍在执行。'));
       if (rebuilding.promise) return rebuilding.promise;
-      if (!rebuilding.taskControl || !['paused', 'failed'].includes(rebuilding.taskState?.rebuildStatus)) return Promise.resolve(rebuilding.taskState);
+      if (!rebuilding.taskControl || !['paused', 'failed', 'partial'].includes(rebuilding.taskState?.rebuildStatus)) return Promise.resolve(rebuilding.taskState);
+      if (busy()) return Promise.reject(errorWith('QQJ_REBUILD_BUSY', '当前记忆管理或生成任务仍在执行，请稍候再重构。'));
       return continueHistoricalRebuild(rebuilding);
     }
     let identity, target, sources, initialSnapshot, provisionalIdentity = false, preserveMigrationPrefix = false;
@@ -413,14 +417,44 @@ export function createChatMemoryManagement({
     notify();
   }
 
+  function readHistoricalRebuildState(operation, result = null) {
+    const state = operation.taskControl?.getState?.() ?? operation.taskState ?? result;
+    return state?.rebuildStatus ? state : state?.state?.rebuildStatus ? state.state : state;
+  }
+
+  function readCompletedVisibleRebuildState(operation, state) {
+    if (state?.rebuildStatus !== 'partial' || !isUuid(state.chatId) || !inCurrentHost({ hostChatId: operation.identity.hostChatId, chatId: state.chatId })) return state;
+    const current = memoryRuntime?.getState?.();
+    const sameGeneration = state.narrativeGeneration == null || current?.narrativeGeneration === state.narrativeGeneration;
+    const memoryWorkActive = current?.memoryWorkBusy || current?.activeMemoryWork || current?.activeAutoMemory || current?.activeExtraction || current?.activeCse;
+    return current?.chatId === state.chatId && sameGeneration && current.status === 'ready' && !memoryWorkActive
+      && current.foundationStatus === 'ready'
+      && current.memorySnapshotStatus === 'ready' && current.memorySyncStatus === 'idle'
+      && ['caughtUp', 'waitingRealtime'].includes(current.rebuildStatus) && current.rebuildHasActionableWork === false
+      ? current : state;
+  }
+
+  function refreshHistoricalRebuildState() {
+    if (!rebuilding) return;
+    rebuilding.taskState = readHistoricalRebuildState(rebuilding);
+    if (rebuilding.promise) return;
+    rebuilding.taskState = readCompletedVisibleRebuildState(rebuilding, rebuilding.taskState);
+    if (['caughtUp', 'waitingRealtime'].includes(rebuilding.taskState?.rebuildStatus)) {
+      rebuilding.unsubscribeTask?.();
+      rebuilding.unsubscribeTask = null;
+      rebuilding = null;
+    }
+  }
+
   async function finishHistoricalRebuild(operation, identity, target, cleaned, result) {
-    const rebuilt = result?.rebuildStatus ? result : result?.state?.rebuildStatus ? result.state : result;
+    let rebuilt = readHistoricalRebuildState(operation, result);
+    await adoptRebuiltTarget(identity, target, cleaned, rebuilt, operation.chatBaseline, baseline => { operation.chatBaseline = baseline; });
+    // Adoption can await host refreshes while the original task publishes its final state.
+    rebuilt = readCompletedVisibleRebuildState(operation, readHistoricalRebuildState(operation, rebuilt));
     operation.taskState = rebuilt;
     if (['paused', 'failed', 'partial'].includes(rebuilt?.rebuildStatus)) {
-      await adoptRebuiltTarget(identity, target, cleaned, rebuilt, operation.chatBaseline, baseline => { operation.chatBaseline = baseline; });
       operation.promise = null; notify(); return rebuilt;
     }
-    await adoptRebuiltTarget(identity, target, cleaned, rebuilt, operation.chatBaseline, baseline => { operation.chatBaseline = baseline; });
     operation.unsubscribeTask?.();
     operation.unsubscribeTask = null;
     if (rebuilding === operation) rebuilding = null;

@@ -875,20 +875,27 @@ export function historySelectionContext(source, queryContext) {
     .map(memory => historySummary(memory)).filter(Boolean)
     .map(value => ({ ...value, score: 1, branchScores: Object.freeze({}), entityBranchScores: Object.freeze({}), summaryScores: Object.freeze({}), recallSection: 'recent' }));
   const oldMemories = floorMemories.filter(memory => bodyCoverage(memory) !== 'all' && !recentWindowFloorIds.has(memory.floorId));
-  const facts = bundlePlaceCandidates([...scoreCandidates(oldMemories.flatMap(memory => historyFacts(memory, entityById)), queries, { keepUnmatched: true }),
-    ...scoreCandidates(floorMemories.filter(memory => bodyCoverage(memory) !== 'all').flatMap(memory => placeHistoryFacts(memory, entityById, bodyCoveredFloorIds, source.coverage.stableThroughAssistantSeq)), queries, { keepUnmatched: true }),
-    ...placeFeatureCandidates(source, queryContext, entityById, queries, floorMemories),
-    ...scoreCandidates(manualPlaceFacts(source.placeWorkspace).flatMap(row => {
-      if (!entityById.has(row.entityId)) return [];
-      const texts = [Object.hasOwn(row, 'description') && row.description.trim() ? `地点描述：${row.description}` : '',
-        ...String(row.relations ?? '').split(/\r?\n/u).filter(text => text.trim()).map(text => `方位说明：${text}`),
-        row.parentEntityId ? `所属地点：${entityName(row.parentEntityId, entityById)}` : ''].filter(Boolean);
-      return texts.map((text, index) => ({ category: 'objective', kind: 'manualPlace', manual: true, placeEntityId: row.entityId,
-        itemId: `manual-place-${row.entityId}-${index}`, text: `${entityName(row.entityId, entityById)}：${text}`,
-        floorId: `manual-place-${row.entityId}`, floorMemoryId: null, assistantSeq: 0, priority: 110,
-        _rankText: `${entityName(row.entityId, entityById)} ${text}`, _coreText: text, _entityText: entityName(row.entityId, entityById), _summary: '',
-        _subjectKey: row.entityId, _visibilityKey: 'manualPlace', _statusKey: String(index), _sourceOrder: 400000 + index, _chronology: [], _poolGroup: 'fact' }));
-    }), queries, { keepUnmatched: true })]);
+  let placeCandidates = [], placesUnavailable = source.unavailableSources?.includes('places') === true;
+  if (!placesUnavailable) {
+    try {
+      placeCandidates = bundlePlaceCandidates([
+        ...scoreCandidates(floorMemories.filter(memory => bodyCoverage(memory) !== 'all').flatMap(memory => placeHistoryFacts(memory, entityById, bodyCoveredFloorIds, source.coverage.stableThroughAssistantSeq)), queries, { keepUnmatched: true }),
+        ...placeFeatureCandidates(source, queryContext, entityById, queries, floorMemories),
+        ...scoreCandidates(manualPlaceFacts(source.placeWorkspace).flatMap(row => {
+          if (!entityById.has(row.entityId)) return [];
+          const texts = [Object.hasOwn(row, 'description') && row.description.trim() ? `地点描述：${row.description}` : '',
+            ...String(row.relations ?? '').split(/\r?\n/u).filter(text => text.trim()).map(text => `方位说明：${text}`),
+            row.parentEntityId ? `所属地点：${entityName(row.parentEntityId, entityById)}` : ''].filter(Boolean);
+          return texts.map((text, index) => ({ category: 'objective', kind: 'manualPlace', manual: true, placeEntityId: row.entityId,
+            itemId: `manual-place-${row.entityId}-${index}`, text: `${entityName(row.entityId, entityById)}：${text}`,
+            floorId: `manual-place-${row.entityId}`, floorMemoryId: null, assistantSeq: 0, priority: 110,
+            _rankText: `${entityName(row.entityId, entityById)} ${text}`, _coreText: text, _entityText: entityName(row.entityId, entityById), _summary: '',
+            _subjectKey: row.entityId, _visibilityKey: 'manualPlace', _statusKey: String(index), _sourceOrder: 400000 + index, _chronology: [], _poolGroup: 'fact' }));
+        }), queries, { keepUnmatched: true })]);
+    } catch { placesUnavailable = true; }
+  }
+  const historyMemories = placesUnavailable ? oldMemories.map(memory => ({ ...memory, locations: [], spatialFacts: null })) : oldMemories;
+  const facts = [...scoreCandidates(historyMemories.flatMap(memory => historyFacts(memory, entityById)), queries, { keepUnmatched: true }), ...placeCandidates];
   const artifactMemories = floorMemories.filter(memory => memory.assistantSeq <= source.coverage.stableThroughAssistantSeq);
   const manualNames = source.manualEntityNames ?? {};
   const manualEntityById = new Map([...entityById, ...Object.entries(manualNames).map(([entityId, displayName]) =>
@@ -933,7 +940,7 @@ export function historySelectionContext(source, queryContext) {
   const partialAggregateBodyOverlap = floorMemories.some(memory => (memory.sourceFloorIds?.length ?? 0) > 1 && bodyCoverage(memory) === 'partial');
   const fullyCoveredMemoryCount = floorMemories.filter(memory => bodyCoverage(memory) === 'all').length;
   return { query, queries, oldMemories, entityById, facts, summaries, direct, adjacent, manualArtifacts, bodyCoveredFloorIds,
-    fullyCoveredMemoryCount, partialAggregateBodyOverlap, recentWindow, recentWindowFloorIds, recentSummaries };
+    fullyCoveredMemoryCount, partialAggregateBodyOverlap, recentWindow, recentWindowFloorIds, recentSummaries, placesUnavailable };
 }
 
 const setIntersection = (left, right) => [...left].filter(value => right.has(value));
@@ -1818,6 +1825,7 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     ? Object.freeze({ timeGuard, selectedKeys: Object.freeze(priorityCandidates.filter(candidate => selectedPriorityStableKeys.has(candidate.stableKey)).map(candidate => candidate.key)) })
     : null;
   const skipReasons = [...(source.degradedReasons ?? [])];
+  if (historyContext.placesUnavailable) skipReasons.push('placeSourceUnavailable');
   if (historyContext.fullyCoveredMemoryCount) skipReasons.push('coreBodyDuplicate');
   if (historyContext.partialAggregateBodyOverlap) skipReasons.push('partialAggregateBodyOverlap');
   if (!historical.length) skipReasons.push('noReliableMemoryMatch');

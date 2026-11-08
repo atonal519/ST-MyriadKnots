@@ -1,3 +1,4 @@
+import { createChatMemoryManagement } from '../src/chat-memory-management.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
@@ -1927,9 +1928,9 @@ test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 进�
 test('完全重构进度与暂停/续跑控制从管理页转发到同一目标任务', async () => {
   const state = { status: 'ready', pluginEnabled: true, compatibilityMode: 'standard', chatId: CHAT, foundationStatus: 'ready', stableCount: 4, rememberedCount: 4, unprocessedCount: 0, failedCount: 0, reviewCount: 0, pending: null, headCheckpointId: 'head', activeRun: null, activeExtraction: null, activeCse: null, memoryWorkBusy: false, activeAutoMemory: null, lastRun: null, lastError: null, lastExtractorError: null, lastCseError: null, unreachableCount: 0, metrics: {}, autoMemoryEnabled: true, autoMemoryBatchSize: 1, rebuildStatus: 'caughtUp', rebuildCompletedCount: 4, rebuildTotalCount: 4, rebuildHasActionableWork: false, cseRebuildStatus: 'idle', cseRebuildCompletedCount: 0, cseRebuildTotalCount: 0, cseReady: true, csePendingCount: 0, cseFailedCount: 0, baselineId: null, cseSubjects: [], floors: [] };
   let taskState = { ...state, rebuildStatus: 'rebuilding', rebuildCompletedCount: 2, rebuildTotalCount: 4, activeAutoMemory: { mode: 'historical', phase: 'extracting', floorIds: ['floor-a'] } };
-  let listener, paused = 0, resumed = 0;
+  let listener, paused = 0, resumed = 0, externalBusy = false;
   const management = {
-    getState: () => ({ rebuildState: taskState, pauseHistoricalRebuild: async () => { paused += 1; taskState = { ...taskState, rebuildStatus: 'paused', activeAutoMemory: null }; listener?.(management.getState()); } }),
+    getState: () => ({ workBusy: externalBusy, rebuildState: taskState, pauseHistoricalRebuild: async () => { paused += 1; taskState = { ...taskState, rebuildStatus: 'paused', activeAutoMemory: null }; listener?.(management.getState()); } }),
     subscribe(callback) { listener = callback; return () => { listener = null; }; },
     deleteCurrent: async () => ({}),
     fullRebuild: async chatId => { assert.equal(chatId, CHAT); resumed += 1; taskState = { ...taskState, rebuildStatus: 'caughtUp' }; return taskState; },
@@ -1944,8 +1945,60 @@ test('完全重构进度与暂停/续跑控制从管理页转发到同一目标�
   assert.equal(paused, 1);
   assert.equal(flatten(container).some(node => node.textContent === '继续完全重构'), true);
   assert.equal(flatten(container).some(node => node.textContent === '继续补齐'), false);
+  externalBusy = true; view.render(state);
+  assert.equal(flatten(container).find(node => node.textContent === '继续完全重构').disabled, true, '真实外部任务忙时不能开始原任务续跑');
+  externalBusy = false; view.render(state);
   flatten(container).find(node => node.textContent === '继续完全重构').click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(resumed, 1);
+});
+
+for (const settledSource of ['control', 'main']) test(`管理页刷新读取真实manager的${settledSource}当前状态，旧partial缓存不盖当前完整记忆`, async () => {
+  const ready = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', stableCount: 5, rememberedCount: 5,
+    unprocessedCount: 0, csePendingCount: 0, cseReady: true, cseRebuildStatus: 'idle',
+    rebuildStatus: 'caughtUp', rebuildCompletedCount: 5, rebuildTotalCount: 5,
+    rebuildHasActionableWork: false, memoryWorkBusy: false, activeAutoMemory: null, floors: [] };
+  let taskState = { ...ready, rememberedCount: 4, unprocessedCount: 1, csePendingCount: 2,
+    rebuildStatus: 'partial', rebuildCompletedCount: 2, rebuildHasActionableWork: true };
+  let liveState = taskState;
+  const identity = { chatId: CHAT, hostChatId: 'host-chat', characterLocator: 'char.png' };
+  const context = { chatId: 'host-chat', characterId: 0, characters: [{ name: '角色', avatar: 'char.png' }],
+    chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: CHAT } }, chat: [], getRequestHeaders: () => ({}) };
+  let factories = 0;
+  const manager = createChatMemoryManagement({
+    client: { list() {}, get() {}, remove() {} },
+    session: { identity: () => identity, suspend() {}, resume() {}, prepare: async () => ({ status: 'ready', identity }) },
+    hostAdapter: { snapshot: () => ({ context, chatId: context.chatId, chat: context.chat }) },
+    foundationRuntime: { getState: () => ready, getReachable: () => ({ root: { chatId: CHAT }, migrationDescriptor: { id: 'archive' } }) },
+    memoryRuntime: { getState: () => liveState, getActivityState: () => ({ mainGenerationActive: false }) },
+    autoHideController: { stop() {} },
+    fetchImpl: async url => { assert.equal(url, '/api/chats/get'); return { ok: true, json: async () => [{ chat_metadata: context.chatMetadata }] }; },
+    createHistoricalRebuild: async options => {
+      factories += 1;
+      options.onTaskControl({ getState: () => taskState, subscribe: () => () => {} });
+      return taskState;
+    },
+  });
+  await manager.fullRebuild(CHAT);
+  const runtime = { getState: () => liveState, refreshStatus: async () => {
+    liveState = ready;
+    if (settledSource === 'control') taskState = ready;
+    return ready;
+  }, confirmLatest: async () => liveState };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, memoryManagement: manager, documentRef });
+  view.mount(container, { page: 'management' });
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /摘要待补 1 楼 · CSE 待分析 2 楼/);
+  flatten(container).find(node => node.textContent === '刷新状态').click();
+  await new Promise(resolve => setImmediate(resolve));
+  const text = flatten(container).map(node => node.textContent).join('|');
+  assert.doesNotMatch(text, /摘要待补 1 楼|CSE 待分析 2 楼|记忆尚未完整/);
+  assert.match(text, /历史重建\|已追平 · 5\/5/);
+  assert.equal(flatten(container).some(node => node.textContent === '继续完全重构'), false);
+  assert.equal(manager.getState().rebuildState, null, '刷新确认任务已完成后释放旧partial操作');
+  await manager.fullRebuild(CHAT);
+  assert.equal(factories, 2, '刷新后的完全重构按钮可开始新一轮任务');
+  view.deactivate();
 });
 
 test('合并聊天完全重构确认说明归档历史保留且只重做当前部分', async () => {

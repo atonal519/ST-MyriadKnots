@@ -67,13 +67,34 @@ function panelRect(panel) {
   };
 }
 
-export function createPanelGeometryController({ panel, dragHandle, resizeHandle, storage = globalThis.localStorage, viewport = globalThis } = {}) {
+export function createPanelGeometryController({ panel, dragHandle, resizeHandle, storage = globalThis.localStorage, viewport = globalThis, documentRef = panel?.ownerDocument ?? viewport?.document } = {}) {
   let gesture = null;
   let frame = null;
   let queuedPoint = null;
 
   const isDesktop = () => Number(viewport?.innerWidth) >= DESKTOP_PANEL_BREAKPOINT;
-  const dimensions = () => viewportSize(viewport?.innerWidth, viewport?.innerHeight);
+  const dimensions = () => {
+    const visual = viewport?.visualViewport;
+    const view = { left: Number(visual?.offsetLeft) || 0, top: Number(visual?.offsetTop) || 0,
+      ...viewportSize(Number(visual?.width) > 0 ? visual.width : viewport?.innerWidth, Number(visual?.height) > 0 ? visual.height : viewport?.innerHeight) };
+    const chat = documentRef?.getElementById?.('chat')?.getBoundingClientRect?.();
+    const hasChat = chat?.width > 0 && chat?.height > 0;
+    const container = hasChat ? chat : documentRef?.getElementById?.('sheld')?.getBoundingClientRect?.();
+    if (!(container?.width > 0 && container?.height > 0)) return view;
+    const left = Math.max(view.left, container.left), top = Math.max(view.top, container.top);
+    const right = Math.min(view.left + view.width, container.left + container.width);
+    let bottom = Math.min(view.top + view.height, container.top + container.height);
+    if (!hasChat) for (const id of ['form_sheld', 'send_form']) {
+      const input = documentRef?.getElementById?.(id)?.getBoundingClientRect?.();
+      if (input?.top > top) bottom = Math.min(bottom, input.top);
+    }
+    return right > left && bottom > top ? { left, top, width: right - left, height: bottom - top } : view;
+  };
+  const positionInView = (view, width, height, saved = null) => {
+    const position = desktopPanelPosition(view.width, view.height, width, height, saved
+      ? { left: saved.left - view.left, top: saved.top - view.top } : null);
+    return { left: position.left + view.left, top: position.top + view.top };
+  };
   const writePreference = (key, value) => {
     try { storage?.setItem?.(key, JSON.stringify(value)); } catch { /* UI preference failures must not break the panel. */ }
   };
@@ -84,7 +105,7 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
   const applyDrag = point => {
     if (!gesture || gesture.kind !== 'drag') return;
     const size = panelRect(panel), view = dimensions();
-    const position = desktopPanelPosition(view.width, view.height, size.width, size.height, {
+    const position = positionInView(view, size.width, size.height, {
       left: gesture.left + point.x - gesture.startX,
       top: gesture.top + point.y - gesture.startY,
     });
@@ -93,8 +114,8 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
   const applyResize = point => {
     if (!gesture || gesture.kind !== 'resize') return;
     const view = dimensions();
-    const maximumWidth = Math.max(0, view.width - gesture.left - PANEL_SAFETY_MARGIN);
-    const maximumHeight = Math.max(0, view.height - gesture.top - PANEL_SAFETY_MARGIN);
+    const maximumWidth = Math.max(0, view.left + view.width - gesture.left - PANEL_SAFETY_MARGIN);
+    const maximumHeight = Math.max(0, view.top + view.height - gesture.top - PANEL_SAFETY_MARGIN);
     const minimumWidth = Math.min(PANEL_MIN_WIDTH, maximumWidth);
     const minimumHeight = Math.min(PANEL_MIN_HEIGHT, maximumHeight);
     const width = clamp(gesture.width + point.x - gesture.startX, minimumWidth, maximumWidth);
@@ -162,7 +183,7 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
     if (!isDesktop() || !validPrimaryPointer(event)) return;
     event?.preventDefault?.(); event?.stopPropagation?.();
     const point = pointOf(event), rect = panelRect(panel), view = dimensions();
-    const position = desktopPanelPosition(view.width, view.height, rect.width, rect.height, rect);
+    const position = positionInView(view, rect.width, rect.height, rect);
     panel.style.left = `${position.left}px`; panel.style.top = `${position.top}px`; panel.style.right = 'auto';
     gesture = { kind: 'resize', surface: resizeHandle, pointerId: event?.pointerId, startX: point.x, startY: point.y, left: position.left, top: position.top, width: rect.width, height: rect.height };
     panel.style.willChange = 'width, height'; panel?.classList?.add?.('is-gesturing'); capture(resizeHandle, event);
@@ -178,36 +199,38 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
   const restore = () => {
     finish();
     if (!panel) return;
+    const view = dimensions();
+    for (const property of ['left', 'top', 'width', 'height']) panel.style.setProperty(`--qqj-panel-bounds-${property}`, `${view[property]}px`);
     if (!isDesktop()) {
       for (const property of ['left', 'top', 'right', 'bottom', 'width', 'height', 'maxWidth', 'maxHeight', 'transform', 'willChange']) panel.style[property] = '';
       return;
     }
-    const view = dimensions(), savedSize = readPreference(storage, PANEL_SIZE_KEY);
+    const savedSize = readPreference(storage, PANEL_SIZE_KEY);
     const size = desktopPanelSize(view.width, view.height, savedSize);
     panel.style.width = `${size.width}px`; panel.style.height = `${size.height}px`; panel.style.maxWidth = `${size.maxWidth}px`; panel.style.maxHeight = `${size.maxHeight}px`;
     panel.style.bottom = 'auto'; panel.style.transform = 'none';
     const savedPosition = readPreference(storage, PANEL_POSITION_KEY);
-    const position = desktopPanelPosition(view.width, view.height, size.width, size.height, savedPosition);
+    const position = positionInView(view, size.width, size.height, savedPosition);
     panel.style.top = `${position.top}px`;
-    if (savedPosition && finite(savedPosition.left) && finite(savedPosition.top)) {
-      panel.style.left = `${position.left}px`; panel.style.right = 'auto';
-    } else {
-      panel.style.left = ''; panel.style.right = `${Math.max(0, view.width - position.left - size.width)}px`;
-    }
+    panel.style.left = `${position.left}px`; panel.style.right = 'auto';
   };
   const onViewportChange = () => restore();
   const bindings = [
     [dragHandle, 'pointerdown', onDragDown], [dragHandle, 'pointermove', onDragMove], [dragHandle, 'pointerup', onPointerUp], [dragHandle, 'pointercancel', onPointerCancel], [dragHandle, 'lostpointercapture', onPointerCancel],
     [resizeHandle, 'pointerdown', onResizeDown], [resizeHandle, 'pointermove', onResizeMove], [resizeHandle, 'pointerup', onPointerUp], [resizeHandle, 'pointercancel', onPointerCancel], [resizeHandle, 'lostpointercapture', onPointerCancel],
     [viewport, 'resize', onViewportChange], [viewport, 'orientationchange', onViewportChange],
+    [viewport?.visualViewport, 'resize', onViewportChange], [viewport?.visualViewport, 'scroll', onViewportChange],
   ];
   for (const [target, name, listener] of bindings) target?.addEventListener?.(name, listener);
+  const observedChat = documentRef?.getElementById?.('chat') ?? documentRef?.getElementById?.('sheld');
+  const observer = observedChat && typeof viewport?.ResizeObserver === 'function' ? new viewport.ResizeObserver(onViewportChange) : null;
+  observer?.observe(observedChat);
   restore();
   return {
     restore,
     cancelGesture: () => finish(),
     destroy() {
-      finish();
+      finish(); observer?.disconnect();
       for (const [target, name, listener] of bindings) target?.removeEventListener?.(name, listener);
     },
   };

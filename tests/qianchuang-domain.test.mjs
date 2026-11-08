@@ -87,11 +87,11 @@ test('最新父级比较实际来源，而非聚合承载楼号',()=>{
  assert.equal(snapshot.containments[0].sourceAssistantSeq,2);
 });
 
-test('同源多父不强选，跨楼环不吞地点',()=>{
+test('同源新多父不强选，跨楼新增环保原合法枝',()=>{
  const ambiguous=project(graph([memory(1,{containments:[edge(300,2,1),edge(301,2,3)]})]));
  assert.equal(ambiguous.containments.length,0);assert.equal(ambiguous.places.length,3);
  const cycle=project(graph([memory(1,{containments:[edge(300,1,2)]}),memory(2,{containments:[edge(301,2,1,2)]})]));
- assert.equal(cycle.containments.length,0);assert.equal(cycle.places.length,3);assert.equal(cycle.mapRootIds.length,0);
+ assert.deepEqual(cycle.containments.map(edge=>[edge.placeEntityId,edge.parentEntityId]),[[id(1),id(2)]]);assert.equal(cycle.places.length,3);assert.deepEqual(cycle.mapRootIds,[id(2)]);
 });
 
 test('locatedIn/onFloor/relative保原文，均不制造物理父链',()=>{
@@ -175,11 +175,11 @@ test('无图与已就绪空库区分，DTO不带正文和证据原句且不改�
  assert.equal(text.includes('private body'),false);assert.equal(text.includes('private evidence'),false);assert.deepEqual(value,before);
 });
 
- test('新的已删除父级或多父意图不会复活旧父级',()=>{
+ test('新父已删除时不复活旧父，后来等权多父保原合法父',()=>{
  const value=graph([memory(1,{containments:[edge(300,2,1)]}),memory(2,{containments:[edge(301,2,3,2)]})]);
  assert.equal(project(value,{identityProjection:{deletedEntityIds:[id(3)]}}).places.find(p=>p.entityId===id(2)).parentEntityId,null);
  value.floorMemories[1].spatialFacts.containments.push(edge(302,2,1,2));
- assert.equal(project(value).places.find(p=>p.entityId===id(2)).parentEntityId,null);
+ assert.equal(project(value).places.find(p=>p.entityId===id(2)).parentEntityId,id(1));
  });
 
  test('新增合法包含后未归属地点自动进入组件，已有文本不丢失',()=>{

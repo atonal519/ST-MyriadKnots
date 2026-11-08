@@ -356,7 +356,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     if(runtime.organizePlaces&&dialog?.confirm){
       organizeAction=button('secondary-action compact qqj-window-organize',organizationController?'取消整理':'整理',async()=>{
         if(organizationController){organizationController.abort();return;}
-        if(!await dialog.confirm({title:'整理地点',body:'根据地点目录、有据片段、允许世界书和角色设定补齐层级、选择底图与设施图标。调用一次摘要模型，保留人工修订。',confirmText:'整理',cancelText:'取消'}))return;
+        if(!await dialog.confirm({title:'整理地点',body:'根据地点目录和来源识别同一地点的不同称呼，合并重复地点并承接资料和子地点；补齐层级、选择底图与设施图标。调用一次摘要模型，保留人工修订。',confirmText:'整理',cancelText:'取消'}))return;
         const controller=new AbortController();organizationController=controller;organizeAction.textContent='取消整理';
         try{await runtime.organizePlaces({signal:controller.signal});}
         catch(error){if(error?.name!=='AbortError')await dialog.info?.({title:'整理失败',body:publicErrorMessage(error,{fallback:'地点整理失败，原资料已保留。'})});}

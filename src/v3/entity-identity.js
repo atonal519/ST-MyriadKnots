@@ -1,4 +1,5 @@
 import { replaceCseSourceMacros } from '../cse-source-selection.js';
+import { resolvePlaceParentBatch } from './place-parent.js';
 import { identityBriefSourceForRecord } from './identity-brief.js';
 import { filterPlaceMemory, withCreatedPlaces, placeDeletionIdentityIds } from './place-workspace.js';
 
@@ -65,9 +66,12 @@ function reviewedAliasProjection(value) {
 }
 
 export function normalizeIdentityProjection(value = {}, macros = null) {
-  const redirects = value?.identityRedirectsByEntityId && typeof value.identityRedirectsByEntityId === 'object' && !Array.isArray(value.identityRedirectsByEntityId)
-    ? Object.fromEntries(Object.entries(value.identityRedirectsByEntityId).filter(([source, target]) => typeof source === 'string' && typeof target === 'string' && source && target && source !== target))
-    : {};
+  const identityRedirects = value?.identityRedirectsByEntityId, placeRedirects = value?.placeWorkspace?.identityRedirectsByEntityId;
+  const redirectInput = {
+    ...(identityRedirects && typeof identityRedirects === 'object' && !Array.isArray(identityRedirects) ? identityRedirects : {}),
+    ...(placeRedirects && typeof placeRedirects === 'object' && !Array.isArray(placeRedirects) ? placeRedirects : {}),
+  };
+  const redirects = Object.fromEntries(Object.entries(redirectInput).filter(([source, target]) => typeof source === 'string' && typeof target === 'string' && source && target && source !== target));
   const deleted = [...new Set([...(Array.isArray(value?.deletedEntityIds) ? value.deletedEntityIds.filter(id => typeof id === 'string' && id && !(value?.placeDeletedEntityIds ?? []).includes(id)) : []), ...(value?.placeDeletedEntityIds ?? [])])];
   const manualAliases = manualAliasProjection(value);
   const reviewedAliases = reviewedAliasProjection(value);
@@ -119,6 +123,7 @@ export function reuseIdentityProjection(previous, value) {
   if (!previous) return normalized;
   if ((previous.placeWorkspaceRevision ?? 0) !== (normalized.placeWorkspaceRevision ?? 0) || JSON.stringify(previous.placeWorkspace ?? null) !== JSON.stringify(normalized.placeWorkspace ?? null)) return normalized;
   if (previous.userEntityId !== normalized.userEntityId) return normalized;
+  if (JSON.stringify(previous.unavailableSources ?? []) !== JSON.stringify(normalized.unavailableSources ?? [])) return normalized;
   const previousRedirects = previous.identityRedirectsByEntityId ?? {};
   const nextRedirects = normalized.identityRedirectsByEntityId;
   const previousSources = Object.keys(previousRedirects), nextSources = Object.keys(nextRedirects);
@@ -178,16 +183,19 @@ const resolvedParticipants = (values, projection) => {
   }));
 };
 
-export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
+export function projectFloorMemoryIdentityReferences(memory, projection = {}, { includeSpatial = true } = {}) {
   const resolve = id => resolveIdentityEntityId(id, projection);
-  memory = filterPlaceMemory(memory, projection.placeWorkspace, resolve);
-  const spatialFacts = memory?.spatialFacts ? (() => {
+  const placesUnavailable = projection.unavailableSources?.includes('places');
+  memory = placesUnavailable ? { ...memory, locations: [], spatialFacts: null } : filterPlaceMemory(memory, projection.placeWorkspace, resolve);
+  let spatialFacts = includeSpatial ? undefined : null;
+  let spatialUnavailable = false;
+  try { spatialFacts = includeSpatial && memory?.spatialFacts ? (() => {
     const edges = (memory.spatialFacts.containments ?? []).flatMap(item => {
       const placeEntityId = resolve(item.placeEntityId), parentEntityId = resolve(item.parentEntityId);
       return !placeEntityId || !parentEntityId&&!(item.parentEntityId===null&&item.identityChange==='ownershipChanged') || isIdentityDeleted(placeEntityId, projection) || parentEntityId&&isIdentityDeleted(parentEntityId, projection)
         ? [] : [{ item, placeEntityId, parentEntityId }];
     });
-    const edgesBySource = new Map(), invalidChildrenBySource = new Map();
+    const edgesBySource = new Map(), invalidChildrenBySource = new Map(), selectedParentsBySource = new Map();
     for (const edge of edges) for (const sourceFloorId of new Set((edge.item.evidenceRefs ?? []).map(ref => ref.floorId))) {
       const current = invalidChildrenBySource.get(sourceFloorId) ?? new Set();
       if (edge.placeEntityId === edge.parentEntityId) { current.add(edge.placeEntityId); invalidChildrenBySource.set(sourceFloorId, current); continue; }
@@ -195,25 +203,15 @@ export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
       sourceEdges.push(edge); edgesBySource.set(sourceFloorId, sourceEdges);
     }
     for (const [sourceFloorId, sourceEdges] of edgesBySource) {
-      const parentSets = new Map();
-      for (const edge of sourceEdges) {
-        const parents = parentSets.get(edge.placeEntityId) ?? new Set();
-        parents.add(edge.parentEntityId); parentSets.set(edge.placeEntityId, parents);
-      }
-      const invalidChildren = invalidChildrenBySource.get(sourceFloorId) ?? new Set();
-      for (const [placeId, parents] of parentSets) if (parents.size > 1) invalidChildren.add(placeId);
-      const singleParent = new Map([...parentSets].filter(([placeId, parents]) => parents.size === 1 && !invalidChildren.has(placeId)).map(([placeId, parents]) => [placeId, [...parents][0]]));
-      for (const start of singleParent.keys()) {
-        const path = [], offsetByPlace = new Map(); let current = start;
-        while (singleParent.has(current)) {
-          if (offsetByPlace.has(current)) { for (const placeId of path.slice(offsetByPlace.get(current))) invalidChildren.add(placeId); break; }
-          offsetByPlace.set(current, path.length); path.push(current); current = singleParent.get(current);
-        }
-      }
+      const { rejected, updates } = resolvePlaceParentBatch(sourceEdges.map(edge => ({ ...edge.item,
+        placeEntityId: edge.placeEntityId, parentEntityId: edge.parentEntityId })));
+      selectedParentsBySource.set(sourceFloorId, updates);
+      const invalidChildren = new Set([...(invalidChildrenBySource.get(sourceFloorId) ?? []), ...rejected]);
       if (invalidChildren.size) invalidChildrenBySource.set(sourceFloorId, invalidChildren);
     }
     const containments = edges.flatMap(({ item, placeEntityId, parentEntityId }) => {
-      const evidenceRefs = (item.evidenceRefs ?? []).filter(ref => !invalidChildrenBySource.get(ref.floorId)?.has(placeEntityId));
+      const evidenceRefs = (item.evidenceRefs ?? []).filter(ref => !invalidChildrenBySource.get(ref.floorId)?.has(placeEntityId)
+        && (parentEntityId === null ? selectedParentsBySource.get(ref.floorId)?.get(placeEntityId)?.cleared : selectedParentsBySource.get(ref.floorId)?.get(placeEntityId)?.parents.has(parentEntityId)));
       return evidenceRefs.length ? [Object.freeze({ ...item, placeEntityId, parentEntityId, evidenceRefs: Object.freeze(evidenceRefs) })] : [];
     });
     const positionRows = [];
@@ -247,10 +245,12 @@ export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
       return [Object.freeze({ ...item, placeEntityId, referencePlaceEntityIds: Object.freeze(referencePlaceEntityIds) })];
     });
     return Object.freeze({ ...memory.spatialFacts, containments: Object.freeze(containments), positions: Object.freeze(positions), ...(features ? { features: Object.freeze(features) } : {}), ...(relations ? { relations: Object.freeze(relations) } : {}) });
-  })() : undefined;
+  })() : spatialFacts;
+  } catch { spatialFacts = null; spatialUnavailable = true; }
   return Object.freeze({ ...memory,
+    ...(spatialUnavailable ? { unavailableSources: [...new Set([...(memory.unavailableSources ?? []), 'places'])] } : {}),
     participants: resolvedParticipants(memory?.participants, projection),
-    locations: Object.freeze((memory?.locations ?? []).map(item => Object.freeze({ ...item, entityId: item.entityId ? resolve(item.entityId) : null, participantEntityIds: resolvedIds(item.participantEntityIds, projection) }))),
+    locations: Object.freeze((spatialUnavailable ? [] : memory?.locations ?? []).map(item => Object.freeze({ ...item, entityId: item.entityId ? resolve(item.entityId) : null, participantEntityIds: resolvedIds(item.participantEntityIds, projection) }))),
     actions: Object.freeze((memory?.actions ?? []).map(item => Object.freeze({ ...item, actorEntityId: resolve(item.actorEntityId), targetEntityIds: resolvedIds(item.targetEntityIds, projection) }))),
     observations: Object.freeze((memory?.observations ?? []).map(item => Object.freeze({ ...item, subjectEntityId: item.subjectEntityId ? resolve(item.subjectEntityId) : null }))),
     informationTransfers: Object.freeze((memory?.informationTransfers ?? []).map(item => Object.freeze({ ...item, fromEntityId: item.fromEntityId ? resolve(item.fromEntityId) : null, toEntityIds: resolvedIds(item.toEntityIds, projection) }))),
@@ -262,7 +262,7 @@ export function projectFloorMemoryIdentityReferences(memory, projection = {}) {
       ...(item.manual === true ? { knownEntityIds: Object.freeze(resolvedIds(item.knownEntityIds, projection).filter(id => !isIdentityDeleted(id, projection))) } : {}),
     }))),
     cseSignals: Object.freeze((memory?.cseSignals ?? []).map(item => Object.freeze({ ...item, subjectEntityId: resolve(item.subjectEntityId), objectEntityId: item.objectEntityId ? resolve(item.objectEntityId) : null }))),
-    ...(spatialFacts ? { spatialFacts } : {}),
+    ...(spatialFacts !== undefined ? { spatialFacts } : {}),
   });
 }
 
@@ -314,7 +314,7 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, f
     const target = canonicalById.get(resolveIdentityEntityId(aliasEntity.id, combinedProjection));
     if (!target || target.id === aliasEntity.id || target.entityType !== aliasEntity.entityType
       || target.chatId !== aliasEntity.chatId || target.narrativeGeneration !== aliasEntity.narrativeGeneration) continue;
-    learned.get(target.id).push(...aliasNames(aliasEntity));
+    learned.get(target.id).push(...aliasNames(aliasEntity), ...(typeof projection.placeWorkspace?.placesByEntityId?.[aliasEntity.id]?.name === 'string' ? [projection.placeWorkspace.placesByEntityId[aliasEntity.id].name] : []));
     if (typeof aliasEntity.identityBrief === 'string' && aliasEntity.identityBrief.trim()) {
       const prior = identityBriefRecords.get(target.id);
       const priorTime = Date.parse(prior?.updatedAt ?? prior?.createdAt ?? '') || 0;
