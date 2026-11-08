@@ -43,7 +43,7 @@ const hostSignals = ({ documentRef, windowRef }) => {
   try {
     const computed = windowRef?.getComputedStyle?.(documentRef?.documentElement); if (!computed) return {};
     const read = name => text(computed.getPropertyValue(name));
-    return { body: read('--SmartThemeBodyColor'), quote: read('--SmartThemeQuoteColor'), chat: read('--SmartThemeChatTintColor'), bot: read('--SmartThemeBotMesBlurTintColor'), user: read('--SmartThemeUserMesBlurTintColor') };
+    return { body: read('--SmartThemeBodyColor'), quote: read('--SmartThemeQuoteColor'), chat: read('--SmartThemeChatTintColor'), bot: read('--SmartThemeBotMesBlurTintColor'), blur: read('--SmartThemeBlurTintColor'), user: read('--SmartThemeUserMesBlurTintColor') };
   } catch { return {}; }
 };
 const channel = value => Math.min(255, Math.max(0, Number(value) || 0));
@@ -53,6 +53,12 @@ const relativeLuminance = rgb => rgb.reduce((sum, value, index) => {
   const linear = channelValue <= .04045 ? channelValue / 12.92 : ((channelValue + .055) / 1.055) ** 2.4;
   return sum + linear * [.2126, .7152, .0722][index];
 }, 0);
+const colorContrast = (documentRef, foreground, background) => {
+  const ink = cssColor(documentRef, foreground), paper = cssColor(documentRef, background);
+  if (!ink || !paper) return 0;
+  const [dark, light] = [relativeLuminance(ink.rgb), relativeLuminance(paper.rgb)].sort((left, right) => left - right);
+  return (light + .05) / (dark + .05);
+};
 const onPrimary = parsed => {
   if (!parsed?.rgb) return '#fff';
   const accent = relativeLuminance(parsed.rgb), dark = relativeLuminance([34, 40, 43]);
@@ -76,14 +82,35 @@ export function resolveAppearance({ value = {}, documentRef = globalThis.documen
   const palette = (mode === 'auto' ? AUTO_FALLBACK_PALETTES : PALETTES)[effectiveTheme];
   if (mode !== 'auto') return { mode, effectiveTheme, palette: { ...palette, onPrimary: onPrimary(cssColor(documentRef, palette.knot)) }, hasHostSignal: Boolean(hostTheme) };
   const opaque = (raw, fallback) => cssColor(documentRef, raw)?.value ?? fallback;
-  const accent = cssColor(documentRef, signals.quote) ?? cssColor(documentRef, palette.crimson);
+  const ink = opaque(signals.body, palette.ink);
+  const readableSurface = background => [ink, palette.soft].every(foreground => colorContrast(documentRef, foreground, background) >= 4.5);
+  const surface = (raw, fallback) => {
+    const candidate = backgroundColor(documentRef, raw, fallback);
+    if (readableSurface(candidate)) return candidate;
+    // A host message tint can depend on message-specific CSS. Its UI tint is the next matching surface.
+    const hostUi = backgroundColor(documentRef, signals.blur, fallback);
+    return readableSurface(hostUi) ? hostUi : fallback;
+  };
+  const paper = surface(signals.chat, palette.paper), panel = surface(signals.bot, palette.panel);
+  const readableText = foreground => [paper, panel].every(background => colorContrast(documentRef, foreground, background) >= 4.5);
+  const finalInk = readableText(ink) ? ink : palette.ink;
+  const foreground = (raw, fallback) => {
+    const candidate = opaque(raw, fallback);
+    if (readableText(candidate)) return candidate;
+    return readableText(fallback) ? fallback : finalInk;
+  };
+  const accent = foreground(signals.quote, palette.knot);
+  const primaryText = onPrimary(cssColor(documentRef, accent));
+  // Dialog notes place secondary text over the existing 9% accent tint.
+  const noteSurface = backgroundColor(documentRef, `rgba(${cssColor(documentRef, accent).rgb.join(', ')}, .09)`, panel);
+  const soft = colorContrast(documentRef, palette.soft, noteSurface) >= 4.5 ? palette.soft : palette.ink;
   return {
     mode, effectiveTheme, hasHostSignal: Boolean(hostTheme),
     palette: {
-      ...palette,
-      ink: opaque(signals.body, palette.ink), knot: opaque(signals.quote, palette.knot), crimson: opaque(signals.quote, palette.crimson), blue: opaque(signals.quote, palette.blue),
-      paper: backgroundColor(documentRef, signals.chat, palette.paper), panel: backgroundColor(documentRef, signals.bot, palette.panel), thread: backgroundColor(documentRef, signals.user, palette.thread),
-      onPrimary: onPrimary(accent),
+      ...palette, ink: finalInk, paper, panel, soft,
+      knot: accent, crimson: foreground(signals.quote, palette.crimson), blue: foreground(signals.quote, palette.blue), success: foreground('', palette.success),
+      thread: backgroundColor(documentRef, signals.user, palette.thread),
+      onPrimary: colorContrast(documentRef, primaryText, accent) >= 4.5 ? primaryText : '#000',
     },
   };
 }

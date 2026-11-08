@@ -186,10 +186,10 @@ test('跟随酒馆将实际透明主题背景合成到外观底色并保留文�
   assert.equal(states.at(-1).palette.knot, 'rgb(199, 174, 203)', '解析后的实色 palette 必须传给 FAB 与自有对话框');
   values['--SmartThemeBodyColor'] = 'rgb(30 35 40 / 12%)'; observerCallback();
   assert.equal(states.at(-1).effectiveTheme, 'day', '酒馆根节点换色后应即时同步有效主题');
-  assert.equal(properties['--paper'], 'rgb(88, 89, 89)', '聊天背景按切换后的日间 paper 合成');
+  assert.equal(properties['--paper'], '#e8ecec', '合成深灰底与新的深色正文不搭配，回到已判定的日间 paper');
   assert.equal(properties['--ink'], 'rgb(30, 35, 40)');
   applyAppearance({ host, root: { querySelector: () => null }, settings: settings.get(), documentRef, windowRef });
-  assert.equal(properties['--on-primary'], '#22282b', 'auto palette 通过面板主按钮语义 token 输出前景');
+  assert.equal(properties['--on-primary'], '#fff', '日间不可读的浅强调色回到主题强调色，按钮同步其可读前景');
   controller.destroy();
 });
 
@@ -215,11 +215,11 @@ test('auto palette 合成 HEX alpha，手动主题仍用固定按钮前景', () 
     '--SmartThemeUserMesBlurTintColor': '#121314',
   });
   const opaque = resolveAppearance({ value: { appearanceTheme: 'auto' }, documentRef, windowRef });
-  assert.equal(opaque.palette.knot, 'rgb(40, 20, 30)', '普通不透明宿主强调色保留原 RGB');
+  assert.equal(opaque.palette.knot, '#d9707a', '深色强调字与夜间底色不搭配时沿原夜间强调色');
   assert.equal(opaque.palette.paper, '#1a1a1a', '不透明聊天颜色仍直接使用');
   assert.equal(opaque.palette.panel, 'rgb(20, 30, 40)', '不透明机器人颜色仍直接使用');
   assert.equal(opaque.palette.thread, '#121314', '不透明用户颜色仍直接使用');
-  assert.equal(opaque.palette.onPrimary, '#fff', '深色强调底色使用白色按钮文字');
+  assert.equal(opaque.palette.onPrimary, '#22282b', '按钮采用已修正强调色上的可读前景');
   assert.equal(resolveAppearance({ value: { appearanceTheme: 'day' }, documentRef, windowRef }).palette.onPrimary, '#fff');
   assert.equal(resolveAppearance({ value: { appearanceTheme: 'night' }, documentRef, windowRef }).palette.onPrimary, '#22282b');
 });
@@ -253,4 +253,110 @@ test('固定日间及auto回落的状态文字在本身浅色背景上可读', (
       assert.ok((levels[1] + .05) / (levels[0] + .05) >= 4.5, `${mode} ${name}需满足正文小字对比度`);
     }
   }
+});
+
+function appearanceContrast(foreground, background) {
+  const rgb = color => {
+    if (!color.startsWith('#')) return color.match(/\d+/gu).map(Number);
+    const hex = color.slice(1), full = hex.length === 3 ? [...hex].map(value => value + value).join('') : hex;
+    return [0, 2, 4].map(index => Number.parseInt(full.slice(index, index + 2), 16));
+  };
+  const level = color => rgb(color).reduce((sum, value, index) => {
+    const channel = value / 255;
+    return sum + (channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4) * [.2126, .7152, .0722][index];
+  }, 0);
+  const [dark, light] = [level(foreground), level(background)].sort((left, right) => left - right);
+  return (light + .05) / (dark + .05);
+}
+
+function hostAppearance(values, light = false) {
+  const windowRef = { getComputedStyle: () => ({ getPropertyValue: name => values[name] ?? '' }), matchMedia: () => ({ matches: light }) };
+  return resolveAppearance({ value: { appearanceTheme: 'auto' }, documentRef: { documentElement: {}, defaultView: windowRef }, windowRef });
+}
+
+const cdThemeColors = {
+  '--SmartThemeBodyColor': 'rgba(225, 235, 244, 1)',
+  '--SmartThemeQuoteColor': 'rgba(215, 232, 248, 1)',
+  '--SmartThemeChatTintColor': 'rgba(30, 45, 64, .72)',
+  '--SmartThemeBotMesBlurTintColor': 'rgba(245, 245, 245, 1)',
+  '--SmartThemeUserMesBlurTintColor': 'rgba(230, 230, 230, 1)',
+  '--SmartThemeBlurTintColor': 'rgba(30, 45, 64, .73)',
+};
+
+test('auto CD盒 keeps host text and uses its readable UI tint for the white bot surface', () => {
+  const { mode, effectiveTheme, palette } = hostAppearance(cdThemeColors);
+  assert.equal(mode, 'auto'); assert.equal(effectiveTheme, 'night');
+  assert.equal(palette.ink, 'rgb(225, 235, 244)');
+  assert.equal(palette.knot, 'rgb(215, 232, 248)');
+  assert.equal(palette.paper, 'rgb(27, 39, 54)');
+  assert.equal(palette.panel, 'rgb(29, 42, 57)', 'use the host blue UI tint before a fixed night fallback');
+  for (const background of [palette.paper, palette.panel]) for (const foreground of [palette.ink, palette.soft, palette.knot, palette.blue]) {
+    assert.ok(appearanceContrast(foreground, background) >= 4.5, `${foreground} on ${background}`);
+  }
+  assert.ok(appearanceContrast(palette.onPrimary, palette.knot) >= 4.5);
+});
+
+test('auto corrects an unreadable paper with the host UI tint while preserving a readable bot surface', () => {
+  const { palette } = hostAppearance({
+    '--SmartThemeBodyColor': '#202830', '--SmartThemeQuoteColor': '#9a2d42',
+    '--SmartThemeChatTintColor': '#202830', '--SmartThemeBotMesBlurTintColor': '#ffffff',
+    '--SmartThemeBlurTintColor': '#f0f4f8',
+  });
+  assert.equal(palette.paper, '#f0f4f8'); assert.equal(palette.panel, '#ffffff');
+  assert.equal(palette.ink, '#202830'); assert.equal(palette.knot, '#9a2d42');
+  for (const background of [palette.paper, palette.panel]) for (const foreground of [palette.ink, palette.soft]) assert.ok(appearanceContrast(foreground, background) >= 4.5);
+});
+
+test('auto keeps compatible day and night host palettes and handles transparent or absent backgrounds', () => {
+  for (const values of [
+    { '--SmartThemeBodyColor': '#202830', '--SmartThemeQuoteColor': '#9a2d42', '--SmartThemeChatTintColor': '#f0f2f4', '--SmartThemeBotMesBlurTintColor': '#ffffff' },
+    { '--SmartThemeBodyColor': '#e1e9f2', '--SmartThemeQuoteColor': '#b7cde3', '--SmartThemeChatTintColor': '#111a24', '--SmartThemeBotMesBlurTintColor': '#1e2934' },
+  ]) {
+    const { palette } = hostAppearance(values);
+    assert.equal(palette.paper, values['--SmartThemeChatTintColor']);
+    assert.equal(palette.panel, values['--SmartThemeBotMesBlurTintColor']);
+    assert.equal(palette.ink, values['--SmartThemeBodyColor']);
+    assert.equal(palette.knot, values['--SmartThemeQuoteColor']);
+  }
+  const transparent = hostAppearance({ ...cdThemeColors, '--SmartThemeChatTintColor': 'transparent', '--SmartThemeBotMesBlurTintColor': '#ffffff00', '--SmartThemeBlurTintColor': 'rgba(255,255,255,0)' });
+  assert.equal(transparent.palette.paper, '#13181b'); assert.equal(transparent.palette.panel, '#1c2327');
+  for (const light of [false, true]) {
+    const resolved = hostAppearance({}, light);
+    assert.equal(resolved.effectiveTheme, light ? 'day' : 'night'); assert.equal(resolved.hasHostSignal, false);
+    assert.ok(appearanceContrast(resolved.palette.ink, resolved.palette.panel) >= 4.5);
+  }
+});
+
+test('auto substitutes unreadable foregrounds and keeps primary button contrast for a mid-tone accent', () => {
+  const mid = hostAppearance({ '--SmartThemeBodyColor': '#888888', '--SmartThemeQuoteColor': '#22282b', '--SmartThemeChatTintColor': '#101820', '--SmartThemeBotMesBlurTintColor': '#1c2327' });
+  for (const background of [mid.palette.paper, mid.palette.panel]) for (const foreground of [mid.palette.ink, mid.palette.soft, mid.palette.knot]) assert.ok(appearanceContrast(foreground, background) >= 4.5);
+  const button = hostAppearance({ '--SmartThemeBodyColor': '#eeeeee', '--SmartThemeQuoteColor': '#888888', '--SmartThemeChatTintColor': '#000000', '--SmartThemeBotMesBlurTintColor': '#000000' });
+  assert.equal(button.palette.knot, '#888888', 'a readable host accent remains the action color');
+  assert.ok(appearanceContrast(button.palette.onPrimary, button.palette.knot) >= 4.5);
+});
+
+test('auto secondary text stays readable on the existing nine-percent accent note background', () => {
+  const { palette } = hostAppearance({
+    '--SmartThemeBodyColor': '#e7ecee', '--SmartThemeQuoteColor': '#d9707a',
+    '--SmartThemeChatTintColor': 'rgba(30,45,64,.12)', '--SmartThemeBlurTintColor': 'rgba(30,45,64,.12)',
+    '--SmartThemeBotMesBlurTintColor': 'rgba(245,245,245,.12)',
+  });
+  assert.equal(palette.panel, 'rgb(54, 60, 64)', 'keep the compatible host alpha surface');
+  const accent = palette.knot.match(/\d+/gu)?.map(Number) ?? [];
+  const accentRgb = palette.knot.startsWith('#') ? [1, 3, 5].map(index => Number.parseInt(palette.knot.slice(index, index + 2), 16)) : accent;
+  const panel = [54, 60, 64];
+  const note = `rgb(${accentRgb.map((value, index) => Math.round(.09 * value + .91 * panel[index])).join(', ')})`;
+  assert.ok(appearanceContrast(palette.soft, note) >= 4.5, 'dialog note uses the same soft token on its real nine-percent accent tint');
+});
+
+test('auto preserves a host mid-gray foreground that is readable on the final black surfaces', () => {
+  const { palette } = hostAppearance({
+    '--SmartThemeBodyColor': '#888888', '--SmartThemeQuoteColor': '#dddddd',
+    '--SmartThemeChatTintColor': '#000000', '--SmartThemeBotMesBlurTintColor': '#000000',
+    '--SmartThemeBlurTintColor': '#000000',
+  });
+  assert.equal(palette.ink, '#888888');
+  assert.equal(palette.paper, '#000000'); assert.equal(palette.panel, '#000000');
+  assert.ok(appearanceContrast(palette.ink, palette.paper) >= 4.5);
+  assert.ok(appearanceContrast(palette.ink, palette.panel) >= 4.5);
 });
