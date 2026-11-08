@@ -10,7 +10,8 @@ const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, v
 const viewportSize = (width, height) => ({ width: Math.max(0, Number(width) || 0), height: Math.max(0, Number(height) || 0) });
 
 export function mobilePanelRect(width, height, safeTop = 0, safeBottom = 0) {
-  return { left: 10, width: Math.max(0, width - 20), right: 10, top: 20 + safeTop, height: Math.max(0, height - 40 - safeTop - safeBottom), bottom: 20 + safeBottom };
+  const top = Math.max(40, safeTop), bottom = Math.max(40, safeBottom);
+  return { left: 10, width: Math.max(0, width - 20), right: 10, top, height: Math.max(0, height - top - bottom), bottom };
 }
 
 export function desktopPanelSize(width, height, saved = null) {
@@ -20,8 +21,7 @@ export function desktopPanelSize(width, height, saved = null) {
   const minimumWidth = Math.min(PANEL_MIN_WIDTH, maximumWidth);
   const minimumHeight = Math.min(PANEL_MIN_HEIGHT, maximumHeight);
   const preferredWidth = finite(saved?.width) && Number(saved.width) > 0 ? Number(saved.width) : 360;
-  const defaultHeight = Math.min(600, Math.max(0, viewport.height * 0.85));
-  const preferredHeight = finite(saved?.height) && Number(saved.height) > 0 ? Number(saved.height) : defaultHeight;
+  const preferredHeight = finite(saved?.height) && Number(saved.height) > 0 ? Number(saved.height) : 600;
   return {
     width: clamp(preferredWidth, minimumWidth, maximumWidth),
     height: clamp(preferredHeight, minimumHeight, maximumHeight),
@@ -67,7 +67,7 @@ function panelRect(panel) {
   };
 }
 
-export function createPanelGeometryController({ panel, dragHandle, resizeHandle, storage = globalThis.localStorage, viewport = globalThis, documentRef = panel?.ownerDocument ?? viewport?.document } = {}) {
+export function createPanelGeometryController({ panel, dragHandle, resizeHandle, storage = globalThis.localStorage, viewport = globalThis } = {}) {
   let gesture = null;
   let frame = null;
   let queuedPoint = null;
@@ -77,18 +77,7 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
     const visual = viewport?.visualViewport;
     const view = { left: Number(visual?.offsetLeft) || 0, top: Number(visual?.offsetTop) || 0,
       ...viewportSize(Number(visual?.width) > 0 ? visual.width : viewport?.innerWidth, Number(visual?.height) > 0 ? visual.height : viewport?.innerHeight) };
-    const chat = documentRef?.getElementById?.('chat')?.getBoundingClientRect?.();
-    const hasChat = chat?.width > 0 && chat?.height > 0;
-    const container = hasChat ? chat : documentRef?.getElementById?.('sheld')?.getBoundingClientRect?.();
-    if (!(container?.width > 0 && container?.height > 0)) return view;
-    const left = Math.max(view.left, container.left), top = Math.max(view.top, container.top);
-    const right = Math.min(view.left + view.width, container.left + container.width);
-    let bottom = Math.min(view.top + view.height, container.top + container.height);
-    if (!hasChat) for (const id of ['form_sheld', 'send_form']) {
-      const input = documentRef?.getElementById?.(id)?.getBoundingClientRect?.();
-      if (input?.top > top) bottom = Math.min(bottom, input.top);
-    }
-    return right > left && bottom > top ? { left, top, width: right - left, height: bottom - top } : view;
+    return view;
   };
   const positionInView = (view, width, height, saved = null) => {
     const position = desktopPanelPosition(view.width, view.height, width, height, saved
@@ -222,15 +211,12 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
     [viewport?.visualViewport, 'resize', onViewportChange], [viewport?.visualViewport, 'scroll', onViewportChange],
   ];
   for (const [target, name, listener] of bindings) target?.addEventListener?.(name, listener);
-  const observedChat = documentRef?.getElementById?.('chat') ?? documentRef?.getElementById?.('sheld');
-  const observer = observedChat && typeof viewport?.ResizeObserver === 'function' ? new viewport.ResizeObserver(onViewportChange) : null;
-  observer?.observe(observedChat);
   restore();
   return {
     restore,
     cancelGesture: () => finish(),
     destroy() {
-      finish(); observer?.disconnect();
+      finish();
       for (const [target, name, listener] of bindings) target?.removeEventListener?.(name, listener);
     },
   };

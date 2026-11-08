@@ -31127,7 +31127,7 @@ async function Od({ store: e, targetIdentity: t, cachedReachable: n = null, getR
 }
 //#endregion
 //#region manifest.json
-var kd = "1.1.5", Ad = "CHANGELOG.md", jd = /* @__PURE__ */ new Set([
+var kd = "1.1.6", Ad = "CHANGELOG.md", jd = /* @__PURE__ */ new Set([
 	"bodyVersion",
 	"replySelection",
 	"timeEvidence",
@@ -64219,10 +64219,10 @@ var Kp = "<section class=\"panel\" role=\"dialog\" aria-modal=\"true\" aria-labe
 	height: Math.max(0, Number(t) || 0)
 });
 function em(e, t, n = null) {
-	let r = $p(e, t), i = Math.max(0, r.width - 20), a = Math.max(0, r.height - 20), o = Math.min(320, i), s = Math.min(300, a), c = Zp(n?.width) && Number(n.width) > 0 ? Number(n.width) : 360, l = Math.min(600, Math.max(0, r.height * .85)), u = Zp(n?.height) && Number(n.height) > 0 ? Number(n.height) : l;
+	let r = $p(e, t), i = Math.max(0, r.width - 20), a = Math.max(0, r.height - 20), o = Math.min(320, i), s = Math.min(300, a), c = Zp(n?.width) && Number(n.width) > 0 ? Number(n.width) : 360, l = Zp(n?.height) && Number(n.height) > 0 ? Number(n.height) : 600;
 	return {
 		width: Qp(c, o, i),
-		height: Qp(u, s, a),
+		height: Qp(l, s, a),
 		minWidth: o,
 		minHeight: s,
 		maxWidth: i,
@@ -64253,26 +64253,15 @@ function rm(e) {
 		height: Number(t.height) > 0 ? Number(t.height) : Number(e?.offsetHeight) || Number.parseFloat(e?.style?.height) || 0
 	};
 }
-function im({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.localStorage, viewport: i = globalThis, documentRef: a = e?.ownerDocument ?? i?.document } = {}) {
-	let o = null, s = null, c = null, l = () => Number(i?.innerWidth) >= 641, u = () => {
-		let e = i?.visualViewport, t = {
+function im({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.localStorage, viewport: i = globalThis } = {}) {
+	let a = null, o = null, s = null, c = () => Number(i?.innerWidth) >= 641, l = () => {
+		let e = i?.visualViewport;
+		return {
 			left: Number(e?.offsetLeft) || 0,
 			top: Number(e?.offsetTop) || 0,
 			...$p(Number(e?.width) > 0 ? e.width : i?.innerWidth, Number(e?.height) > 0 ? e.height : i?.innerHeight)
-		}, n = a?.getElementById?.("chat")?.getBoundingClientRect?.(), r = n?.width > 0 && n?.height > 0, o = r ? n : a?.getElementById?.("sheld")?.getBoundingClientRect?.();
-		if (!(o?.width > 0 && o?.height > 0)) return t;
-		let s = Math.max(t.left, o.left), c = Math.max(t.top, o.top), l = Math.min(t.left + t.width, o.left + o.width), u = Math.min(t.top + t.height, o.top + o.height);
-		if (!r) for (let e of ["form_sheld", "send_form"]) {
-			let t = a?.getElementById?.(e)?.getBoundingClientRect?.();
-			t?.top > c && (u = Math.min(u, t.top));
-		}
-		return l > s && u > c ? {
-			left: s,
-			top: c,
-			width: l - s,
-			height: u - c
-		} : t;
-	}, d = (e, t, n, r = null) => {
+		};
+	}, u = (e, t, n, r = null) => {
 		let i = tm(e.width, e.height, t, n, r ? {
 			left: r.left - e.left,
 			top: r.top - e.top
@@ -64281,56 +64270,56 @@ function im({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.
 			left: i.left + e.left,
 			top: i.top + e.top
 		};
-	}, f = (e, t) => {
+	}, d = (e, t) => {
 		try {
 			r?.setItem?.(e, JSON.stringify(t));
 		} catch {}
-	}, p = () => {
-		s !== null && typeof i?.cancelAnimationFrame == "function" && i.cancelAnimationFrame(s), s = null, c = null;
-	}, m = (t) => {
-		if (!o || o.kind !== "drag") return;
-		let n = rm(e), r = u(), i = d(r, n.width, n.height, {
-			left: o.left + t.x - o.startX,
-			top: o.top + t.y - o.startY
+	}, f = () => {
+		o !== null && typeof i?.cancelAnimationFrame == "function" && i.cancelAnimationFrame(o), o = null, s = null;
+	}, p = (t) => {
+		if (!a || a.kind !== "drag") return;
+		let n = rm(e), r = l(), i = u(r, n.width, n.height, {
+			left: a.left + t.x - a.startX,
+			top: a.top + t.y - a.startY
 		});
 		e.style.left = `${i.left}px`, e.style.top = `${i.top}px`, e.style.right = "auto";
-	}, h = (t) => {
-		if (!o || o.kind !== "resize") return;
-		let n = u(), r = Math.max(0, n.left + n.width - o.left - 10), i = Math.max(0, n.top + n.height - o.top - 10), a = Math.min(320, r), s = Math.min(300, i), c = Qp(o.width + t.x - o.startX, a, r), l = Qp(o.height + t.y - o.startY, s, i);
-		e.style.width = `${c}px`, e.style.height = `${l}px`, e.style.maxWidth = `${r}px`, e.style.maxHeight = `${i}px`;
-	}, g = () => {
-		let e = c;
-		s = null, c = null, e && (o?.kind === "drag" ? m(e) : o?.kind === "resize" && h(e));
-	}, _ = (e) => {
-		c = e, s === null && (typeof i?.requestAnimationFrame == "function" ? s = i.requestAnimationFrame(g) : g());
-	}, v = () => {
-		c && (s !== null && typeof i?.cancelAnimationFrame == "function" && i.cancelAnimationFrame(s), g());
-	}, y = (e) => {
+	}, m = (t) => {
+		if (!a || a.kind !== "resize") return;
+		let n = l(), r = Math.max(0, n.left + n.width - a.left - 10), i = Math.max(0, n.top + n.height - a.top - 10), o = Math.min(320, r), s = Math.min(300, i), c = Qp(a.width + t.x - a.startX, o, r), u = Qp(a.height + t.y - a.startY, s, i);
+		e.style.width = `${c}px`, e.style.height = `${u}px`, e.style.maxWidth = `${r}px`, e.style.maxHeight = `${i}px`;
+	}, h = () => {
+		let e = s;
+		o = null, s = null, e && (a?.kind === "drag" ? p(e) : a?.kind === "resize" && m(e));
+	}, g = (e) => {
+		s = e, o === null && (typeof i?.requestAnimationFrame == "function" ? o = i.requestAnimationFrame(h) : h());
+	}, _ = () => {
+		s && (o !== null && typeof i?.cancelAnimationFrame == "function" && i.cancelAnimationFrame(o), h());
+	}, v = (e) => {
 		try {
 			e?.surface?.releasePointerCapture?.(e.pointerId);
 		} catch {}
-	}, b = ({ persist: t = !1 } = {}) => {
-		let n = o;
-		if (!n || (t && n.kind !== "pending-drag" ? v() : p(), o = null, e?.classList?.remove?.("is-gesturing"), e.style.willChange = "", y(n), !t)) return;
+	}, y = ({ persist: t = !1 } = {}) => {
+		let n = a;
+		if (!n || (t && n.kind !== "pending-drag" ? _() : f(), a = null, e?.classList?.remove?.("is-gesturing"), e.style.willChange = "", v(n), !t)) return;
 		let r = rm(e);
-		n.kind === "drag" && f(Yp, {
+		n.kind === "drag" && d(Yp, {
 			left: r.left,
 			top: r.top
-		}), n.kind === "resize" && f(Xp, {
+		}), n.kind === "resize" && d(Xp, {
 			width: r.width,
 			height: r.height
 		});
-	}, x = (e, t) => {
+	}, b = (e, t) => {
 		try {
 			e?.setPointerCapture?.(t.pointerId);
 		} catch {}
-	}, S = (e) => e?.button === void 0 || e.button === 0, C = (e) => !!e?.closest?.("button,a,input,select,textarea,[contenteditable]"), w = (e) => ({
+	}, x = (e) => e?.button === void 0 || e.button === 0, S = (e) => !!e?.closest?.("button,a,input,select,textarea,[contenteditable]"), C = (e) => ({
 		x: Number(e?.clientX) || 0,
 		y: Number(e?.clientY) || 0
-	}), T = (e) => !o || e?.pointerId === void 0 || e.pointerId === o.pointerId, E = (n) => {
-		if (!l() || !S(n) || C(n?.target)) return;
-		let r = w(n), i = rm(e);
-		o = {
+	}), w = (e) => !a || e?.pointerId === void 0 || e.pointerId === a.pointerId, T = (n) => {
+		if (!c() || !x(n) || S(n?.target)) return;
+		let r = C(n), i = rm(e);
+		a = {
 			kind: "pending-drag",
 			surface: t,
 			pointerId: n?.pointerId,
@@ -64340,24 +64329,24 @@ function im({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.
 			top: i.top,
 			width: i.width,
 			height: i.height
-		}, x(t, n);
-	}, D = (t) => {
-		if (!o || !["pending-drag", "drag"].includes(o.kind) || !T(t)) return;
+		}, b(t, n);
+	}, E = (t) => {
+		if (!a || !["pending-drag", "drag"].includes(a.kind) || !w(t)) return;
 		if (t?.pointerType === "mouse" && t.buttons === 0) {
-			b();
+			y();
 			return;
 		}
-		let n = w(t);
-		if (o.kind === "pending-drag") {
-			if (Math.hypot(n.x - o.startX, n.y - o.startY) <= 5) return;
-			o.kind = "drag", e.style.left = `${o.left}px`, e.style.top = `${o.top}px`, e.style.right = "auto", e.style.willChange = "left, top", e?.classList?.add?.("is-gesturing");
+		let n = C(t);
+		if (a.kind === "pending-drag") {
+			if (Math.hypot(n.x - a.startX, n.y - a.startY) <= 5) return;
+			a.kind = "drag", e.style.left = `${a.left}px`, e.style.top = `${a.top}px`, e.style.right = "auto", e.style.willChange = "left, top", e?.classList?.add?.("is-gesturing");
 		}
-		t?.preventDefault?.(), _(n);
-	}, O = (t) => {
-		if (!l() || !S(t)) return;
+		t?.preventDefault?.(), g(n);
+	}, D = (t) => {
+		if (!c() || !x(t)) return;
 		t?.preventDefault?.(), t?.stopPropagation?.();
-		let r = w(t), i = rm(e), a = u(), s = d(a, i.width, i.height, i);
-		e.style.left = `${s.left}px`, e.style.top = `${s.top}px`, e.style.right = "auto", o = {
+		let r = C(t), i = rm(e), o = l(), s = u(o, i.width, i.height, i);
+		e.style.left = `${s.left}px`, e.style.top = `${s.top}px`, e.style.right = "auto", a = {
 			kind: "resize",
 			surface: n,
 			pointerId: t?.pointerId,
@@ -64367,29 +64356,29 @@ function im({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.
 			top: s.top,
 			width: i.width,
 			height: i.height
-		}, e.style.willChange = "width, height", e?.classList?.add?.("is-gesturing"), x(n, t);
-	}, k = (e) => {
-		if (!(!o || o.kind !== "resize" || !T(e))) {
+		}, e.style.willChange = "width, height", e?.classList?.add?.("is-gesturing"), b(n, t);
+	}, O = (e) => {
+		if (!(!a || a.kind !== "resize" || !w(e))) {
 			if (e?.pointerType === "mouse" && e.buttons === 0) {
-				b();
+				y();
 				return;
 			}
-			e?.preventDefault?.(), _(w(e));
+			e?.preventDefault?.(), g(C(e));
 		}
+	}, k = (e) => {
+		a && w(e) && y({ persist: !0 });
 	}, A = (e) => {
-		o && T(e) && b({ persist: !0 });
-	}, j = (e) => {
-		o && T(e) && b();
-	}, M = () => {
-		if (b(), !e) return;
-		let t = u();
+		a && w(e) && y();
+	}, j = () => {
+		if (y(), !e) return;
+		let t = l();
 		for (let n of [
 			"left",
 			"top",
 			"width",
 			"height"
 		]) e.style.setProperty(`--qqj-panel-bounds-${n}`, `${t[n]}px`);
-		if (!l()) {
+		if (!c()) {
 			for (let t of [
 				"left",
 				"top",
@@ -64406,88 +64395,87 @@ function im({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.
 		}
 		let n = nm(r, Xp), i = em(t.width, t.height, n);
 		e.style.width = `${i.width}px`, e.style.height = `${i.height}px`, e.style.maxWidth = `${i.maxWidth}px`, e.style.maxHeight = `${i.maxHeight}px`, e.style.bottom = "auto", e.style.transform = "none";
-		let a = nm(r, Yp), o = d(t, i.width, i.height, a);
+		let a = nm(r, Yp), o = u(t, i.width, i.height, a);
 		e.style.top = `${o.top}px`, e.style.left = `${o.left}px`, e.style.right = "auto";
-	}, N = () => M(), P = [
+	}, M = () => j(), N = [
 		[
 			t,
 			"pointerdown",
+			T
+		],
+		[
+			t,
+			"pointermove",
 			E
 		],
 		[
 			t,
-			"pointermove",
-			D
-		],
-		[
-			t,
 			"pointerup",
-			A
+			k
 		],
 		[
 			t,
 			"pointercancel",
-			j
+			A
 		],
 		[
 			t,
 			"lostpointercapture",
-			j
+			A
 		],
 		[
 			n,
 			"pointerdown",
-			O
+			D
 		],
 		[
 			n,
 			"pointermove",
-			k
+			O
 		],
 		[
 			n,
 			"pointerup",
-			A
+			k
 		],
 		[
 			n,
 			"pointercancel",
-			j
+			A
 		],
 		[
 			n,
 			"lostpointercapture",
-			j
+			A
 		],
 		[
 			i,
 			"resize",
-			N
+			M
 		],
 		[
 			i,
 			"orientationchange",
-			N
+			M
 		],
 		[
 			i?.visualViewport,
 			"resize",
-			N
+			M
 		],
 		[
 			i?.visualViewport,
 			"scroll",
-			N
+			M
 		]
 	];
-	for (let [e, t, n] of P) e?.addEventListener?.(t, n);
-	let F = a?.getElementById?.("chat") ?? a?.getElementById?.("sheld"), I = F && typeof i?.ResizeObserver == "function" ? new i.ResizeObserver(N) : null;
-	return I?.observe(F), M(), {
-		restore: M,
-		cancelGesture: () => b(),
+	for (let [e, t, n] of N) e?.addEventListener?.(t, n);
+	return j(), {
+		restore: j,
+		cancelGesture: () => y(),
 		destroy() {
-			b(), I?.disconnect();
-			for (let [e, t, n] of P) e?.removeEventListener?.(t, n);
+			y();
+			for (let [e, t, n] of N) e?.removeEventListener?.(t, n);
 		}
 	};
 }
@@ -83781,7 +83769,7 @@ var GE = "千千结使用说明", KE = [
 			"普通 SillyTavern/Luker 在实际运行的酒馆根目录 config.yaml 中检查 enableServerPlugins: true；已有该键就修改原值，不要重复追加。默认 serverPluginsPath 是 ./plugins，改过则按配置路径安装；enableServerPluginsAutoUpdate 只控制自动更新，不是加载条件。安装或改配置后完整重启酒馆服务，再刷新网页；只刷新网页或切换插件开关不会加载后端。遇到后端 404 先看下面的“排障手册”，不要删除记忆来修安装。",
 			"先到“设置 → 通用设置 → API 配置”。分析 API 用于双丝网人物状态分析；摘要 API 负责逐楼摘要、千人人物资料和千窗地点整理；召回 API 负责 LLM 召回选材。摘要默认跟随分析，召回默认跟随摘要，也可各自选择共享预设。不同预设仍可能共用同一账号的并发额度。连接编辑弹窗的高级参数可填写“失败重试次数”，默认 2；0 不重试，2 最多尝试 3 次，文字请求的网络、超时和格式重做共用额度。在 API 配置页里，“保存”不发请求；“测试”或“拉取模型”会发出请求。",
 			"新聊天正常对话即可逐步建立记忆，不需要先打开千千结面板。旧聊天可到“设置 → 记忆管理”手动补齐；空聊天还没有可保存的记忆属于正常情况。",
-			"主面板放在可见聊天区域内，手机上下保留空白，点击面板外侧可关闭。桌面可拖动或调整尺寸，窗口保持在聊天区域内，自动适配会保留你已存的尺寸和位置偏好。",
+			"手机主面板按浏览器可视窗口显示，左右各留 10px、上下各留 40px，屏幕安全区较大时采用安全区间距。点击面板外侧空白可关闭。桌面默认 360×600，可在整个浏览器可视范围内拖动或调整尺寸，重开沿用已存尺寸和位置；可视空间不足时自动缩小至完整显示。",
 			"从同一角色聊天创建原生分支时，千千结按实际复制到新聊天的记忆楼标记继承已有摘要和人物状态。首楼或中间尚未记忆的消息不会阻断继承；这些消息由新聊天正常登记，原聊天后续未复制的记忆不会带入。地点采用整套最新档案，分支后各自独立修改。",
 			"想先整理地点，可打开“千窗”点“整理”。模型会结合完整目录和来源识别同一地点的不同称呼，按明确返回的合并结果承接资料和子地点。双方人工字段冲突时保留目标已有值，含空值，源地点只补未设字段。已有重复描述与同义方位也会合并成当前简介；后续摘要有真实新信息时沿同一次请求更新，保留未改变的设施，旧楼事实和引文继续保留。它会调用一次摘要 API，参考已保存地点来源的连续上下文、允许读取的世界书和角色背景；还没有逐楼摘要时也能使用。有世界设定的空聊天可以先整理地点，再开始对话。",
 			"故事有特殊纪年或一年只有四个月时，先到“设置 → 记忆设置”确认历法。“特殊年”只填年份前的完整纪年名称，例如“启航387年”填“启航”，不填数字或“年”。时间推演是另一个默认关闭的功能，用于推算身体状态、周期和约定期限；需要时再开启，具体区别见下面“设置”。",
@@ -84064,7 +84052,7 @@ var ZE = Object.freeze({
 	color_surface: "var(--sp-sheet-bg)",
 	color_line: "var(--sp-divider)",
 	color_on_accent: "var(--sp-on-primary)"
-})}}${cD}${lD}${uD}${dD}`, mD = "const bridge = globalThis.qqj_v3_public_bridge_v1;\nconst status = bridge.getStatus();\nconst promptSnapshot = bridge.getPromptSnapshot();\nconst snapshot = bridge.getSnapshot();\n\nif (promptSnapshot.status === 'ready') {\n  const recallText = promptSnapshot.recall.text;\n  const prequelText = promptSnapshot.prequel.text;\n}\n\nif (snapshot.status === 'ready') {\n  const summaries = snapshot.memory.floors;\n  const currentStates = snapshot.cse.currentSubjects;\n  const cseHistory = snapshot.cse.floors;\n  const people = snapshot.people.items;\n}", hD = ":host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:auto;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:min(600px,85dvh);max-width:calc(100dvw - 40px);max-height:85dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(var(--qqj-panel-bounds-top,0px) + 20px + env(safe-area-inset-top,0px));left:calc(var(--qqj-panel-bounds-left,0px) + var(--qqj-panel-bounds-width,100dvw)/2);right:auto;transform:translateX(-50%);width:calc(var(--qqj-panel-bounds-width,100dvw) - 20px);max-width:calc(var(--qqj-panel-bounds-width,100dvw) - 20px);height:calc(var(--qqj-panel-bounds-height,100dvh) - 40px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}";
+})}}${cD}${lD}${uD}${dD}`, mD = "const bridge = globalThis.qqj_v3_public_bridge_v1;\nconst status = bridge.getStatus();\nconst promptSnapshot = bridge.getPromptSnapshot();\nconst snapshot = bridge.getSnapshot();\n\nif (promptSnapshot.status === 'ready') {\n  const recallText = promptSnapshot.recall.text;\n  const prequelText = promptSnapshot.prequel.text;\n}\n\nif (snapshot.status === 'ready') {\n  const summaries = snapshot.memory.floors;\n  const currentStates = snapshot.cse.currentSubjects;\n  const cseHistory = snapshot.cse.floors;\n  const people = snapshot.people.items;\n}", hD = ":host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:auto;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:80px;right:20px;width:360px;height:600px;max-width:calc(100dvw - 20px);max-height:calc(100dvh - 20px);display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(max-width:640px){.panel{top:calc(var(--qqj-panel-bounds-top,0px) + max(40px,env(safe-area-inset-top,0px)));left:calc(var(--qqj-panel-bounds-left,0px) + var(--qqj-panel-bounds-width,100dvw)/2);right:auto;transform:translateX(-50%);width:max(0px,calc(var(--qqj-panel-bounds-width,100dvw) - 20px));max-width:calc(var(--qqj-panel-bounds-width,100dvw) - 20px);height:max(0px,calc(var(--qqj-panel-bounds-height,100dvh) - max(40px,env(safe-area-inset-top,0px)) - max(40px,env(safe-area-inset-bottom,0px))));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}";
 function gD({ settings: e, apiTools: t, vectorApi: n, vectorIndex: r, pluginUpdates: i, renderUpdateMarkdown: a, v3FoundationView: o, peopleProfilesView: s, qianshiTimelineView: c, qianchuangView: l, storageManagementView: u, memoryTransferViewFactory: d, sourcePermissionView: f, onPluginEnabledChange: p, onPluginEnableFailure: m, onStoryClockChange: h, subscribeSettingsChange: g, onAutoHideChange: _, onTimeEvolutionChange: v, calendarContextProvider: y = () => ({
 	chatId: null,
 	calendar: null
