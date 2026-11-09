@@ -44,13 +44,14 @@
     "family": "old-town",
     "layout": "inland",
     "file": "old-town-inland.svg",
-    "sha256": "26c829dcb97d2859e61f4e284c65f193430885e2c2590f21a5c02c0b7f9e7efb",
-    "width": 590,
+    "sha256": "efc0c068dae13d282cc7e6a2e9bcac5d818e1ba13873f4e6ea0dcc363ec1de24",
+    "width": 540,
     "height": 540,
     "source": "Watabou MFCG Redfall seed222816148",
     "sourceSha256": "79b3ba9329e5456d4af11e8a4aff01bab586198745b2ba115ab4fcc30598e88b",
     "modifications": [
-      "Original town crop; text and outer closed wall/tower group removed; internal streets/buildings retained."
+      "Original town crop; text and outer closed wall/tower group removed; internal streets/buildings retained.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "shortTags": [
       "西幻",
@@ -58,7 +59,20 @@
       "城镇",
       "内陆",
       "街巷"
-    ]
+    ],
+    "squareViewport": {
+      "originalViewBox": [
+        0,
+        0,
+        590,
+        540
+      ],
+      "crop": [
+        25,
+        0,
+        540
+      ]
+    }
   },
   {
     "id": "palace-axial",
@@ -85,15 +99,16 @@
     "family": "sci-fi",
     "layout": "linear",
     "file": "sci-fi-linear.svg",
-    "sha256": "719b54a3d7c360665e632b7bcc315be86b70da426e50269817374a5ae776ebf5",
+    "sha256": "1d07c7c65d911611ebb7daa828533f2737922b38234931694a581ad229c97b79",
     "width": 1120,
-    "height": 1280,
+    "height": 1120,
     "source": "Robert Pearce / Eric B. Smith · Luxury Liner Deck 1",
     "sourceSha256": "c983882e11c0846958432e7b26576bc1280f3bb5691d2e37f7529d79d1056dac",
     "modifications": [
       "Interior window crop; no enclosing hull frame.",
       "Prominent atrium captions removed; small generic room labels retained as low-contrast source detail.",
-      "Raster source separated into themed ink/water/vegetation masks; original walls, fixtures, paths and water geometry retained."
+      "Raster source separated into themed ink/water/vegetation masks; original walls, fixtures, paths and water geometry retained.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "sourceUrl": "https://gurpsland.sytes.net/images/Geomorphs/LuxuryLiner/Luxury_Liner_Square_Deck_1_Pool.png",
     "sourcePage": "https://gurpsland.sytes.net/geomorphs/",
@@ -111,7 +126,20 @@
       "设施",
       "生活舱",
       "甲板"
-    ]
+    ],
+    "squareViewport": {
+      "originalViewBox": [
+        0,
+        0,
+        1120,
+        1280
+      ],
+      "crop": [
+        0,
+        0,
+        1120
+      ]
+    }
   },
   {
     "id": "modern-coast",
@@ -385,12 +413,13 @@
       520,
       390
     ],
-    "sha256": "162c438d3381c3629cffd415a8843302e609130620f29fc38d858708a78f51c6",
-    "bytes": 3027054,
+    "sha256": "e30e0dcbe0c36053dd686606a556515ab817465cd9b84e86a9d97b24a8122405",
+    "bytes": 3027126,
     "modifications": [
       "Approved flat preview, original vertices and crop retained.",
       "Remove source names, decorative frame/outer shell, gradients and redundant shadow or hatch paint; map to shared ql semantic colors.",
-      "Production regions, labels and anchors follow source roads, waterways and existing natural boundaries; all layout data is static."
+      "Production regions, labels and anchors follow source roads, waterways and existing natural boundaries; all layout data is static.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "shortTags": [
       "西幻",
@@ -399,7 +428,22 @@
       "聚落",
       "桥",
       "田野"
-    ]
+    ],
+    "width": 390,
+    "height": 390,
+    "squareViewport": {
+      "originalViewBox": [
+        100,
+        45,
+        520,
+        390
+      ],
+      "crop": [
+        165,
+        45,
+        390
+      ]
+    }
   },
   {
     "id": "old-town-coast",
@@ -446,12 +490,13 @@
       800,
       500
     ],
-    "sha256": "9b4278a56b7119a34351b4406832bd75d65ec768d3296cf353c11818864fe549",
-    "bytes": 1759666,
+    "sha256": "985d36a6ede9ded92ec5a40fde66b9309d0bd913f616da33fdd3b6f7a9937828",
+    "bytes": 1759739,
     "modifications": [
       "Approved flat preview, original vertices and crop retained.",
       "Remove source names, decorative frame/outer shell, gradients and redundant shadow or hatch paint; map to shared ql semantic colors.",
-      "Production regions, labels and anchors follow source roads, waterways and existing natural boundaries; all layout data is static."
+      "Production regions, labels and anchors follow source roads, waterways and existing natural boundaries; all layout data is static.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "shortTags": [
       "西幻",
@@ -460,7 +505,22 @@
       "田镇",
       "农田",
       "广场"
-    ]
+    ],
+    "width": 500,
+    "height": 500,
+    "squareViewport": {
+      "originalViewBox": [
+        0,
+        0,
+        800,
+        500
+      ],
+      "crop": [
+        150,
+        0,
+        500
+      ]
+    }
   },
   {
     "id": "modern-radial",
@@ -477,12 +537,13 @@
       1100,
       1000
     ],
-    "sha256": "35fad584c2f5f48067d041906274887973e6862e59c107436d5ee70d9fef9a37",
-    "bytes": 2575362,
+    "sha256": "3f9ce039707dac5529eb7ebd3ed7a0a90f4c1d2078ded103f61813065b62ebb8",
+    "bytes": 2575434,
     "modifications": [
       "Use the approved2Doriginal export and crop; source buildingModels/showFrame were disabled.",
       "Map original ground, water, parks, roads and building faces to the shared ql flat theme; retain every source polyline vertex.",
-      "Production regions, labels and anchors are static and follow the original street and shoreline structure."
+      "Production regions, labels and anchors are static and follow the original street and shoreline structure.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "shortTags": [
       "现代",
@@ -490,7 +551,22 @@
       "环向",
       "街网",
       "水岸"
-    ]
+    ],
+    "width": 1000,
+    "height": 1000,
+    "squareViewport": {
+      "originalViewBox": [
+        0,
+        0,
+        1100,
+        1000
+      ],
+      "crop": [
+        50,
+        0,
+        1000
+      ]
+    }
   },
   {
     "id": "modern-town-river",
@@ -507,12 +583,13 @@
       1100,
       1000
     ],
-    "sha256": "62fcc50b409e1010c08a8c2002793c14d0432f373f4987cda8df920d45a4a98a",
-    "bytes": 818480,
+    "sha256": "10c1a7f046f4e86b7b551b76f7652e036a2a5301606f2662f4910be224276581",
+    "bytes": 818552,
     "modifications": [
       "Use the approved2Doriginal export and crop; source buildingModels/showFrame were disabled.",
       "Map original ground, water, parks, roads and building faces to the shared ql flat theme; retain every source polyline vertex.",
-      "Production regions, labels and anchors are static and follow the original street and shoreline structure."
+      "Production regions, labels and anchors are static and follow the original street and shoreline structure.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "shortTags": [
       "现代",
@@ -520,7 +597,22 @@
       "水岸",
       "规整街区",
       "绿地"
-    ]
+    ],
+    "width": 1000,
+    "height": 1000,
+    "squareViewport": {
+      "originalViewBox": [
+        0,
+        0,
+        1100,
+        1000
+      ],
+      "crop": [
+        50,
+        0,
+        1000
+      ]
+    }
   },
   {
     "id": "modern-town-coast",
@@ -556,9 +648,9 @@
     "family": "palace",
     "layout": "courtyard",
     "file": "palace-courtyard-garden.svg",
-    "sha256": "46157fd19c13a86bfb1d6dd40f5fdff962960624fb5dff9b1ee1a5787bcb0df8",
-    "bytes": 1067748,
-    "width": 1200,
+    "sha256": "44a4c146641186d23f5afa2dc16679e09b24c49bdf2e7209744e16c64c2057b4",
+    "bytes": 1067847,
+    "width": 1096,
     "height": 1096,
     "source": "Gunterstein castle, gardens and park, Rijksmuseum RP-P-1899-A-21589",
     "sourceUrl": "https://iiif.micr.io/NyYTo/full/max/0/default.jpg",
@@ -575,14 +667,28 @@
     "modifications": [
       "Original estate engraving crop; paper and title/scale margins removed; local-contrast ink and low-density tonal masks; water tint follows source river and fountain.",
       "Theme declarations only: inherit published --ql-* palette, green→park, structure→contour.",
-      "Offline source-path/wall regions and land/floor anchors; no runtime map generation."
+      "Offline source-path/wall regions and land/floor anchors; no runtime map generation.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "shortTags": [
       "宫苑",
       "园林",
       "庄园",
       "庭院"
-    ]
+    ],
+    "squareViewport": {
+      "originalViewBox": [
+        0,
+        0,
+        1200,
+        1096
+      ],
+      "crop": [
+        52,
+        0,
+        1096
+      ]
+    }
   },
   {
     "id": "sci-fi-ring-life",
@@ -622,9 +728,9 @@
     "family": "palace",
     "layout": "honmaru",
     "file": "palace-courtyard-honmaru.svg",
-    "sha256": "3497ac3f4aeef2390debf762607595cf03c16ed84f6391738d509c3ebf35da61",
-    "bytes": 54753,
-    "width": 1000,
+    "sha256": "f87e63d642f65c6a643ea24d0c1bf507d14ce7edf2c49db78e2abb589a32334f",
+    "bytes": 54820,
+    "width": 723,
     "height": 723,
     "source": "OpenStreetMap Nijō Castle inner grounds",
     "sourceUrl": "https://api.openstreetmap.org/api/0.6/map?bbox=135.7435,35.0095,135.753,35.0175",
@@ -649,14 +755,28 @@
     "processing": "Source building footprints, footpaths, gardens, water and mapped trees; cropped outside streets and complete outer moat. No baked names, game art, invented buildings or generated tree texture. Original approved SVG retained byte-for-byte.",
     "modifications": [
       "Palette inherits existing --ql-* variables.",
-      "Offline regions follow source paths, courtyard boundaries and inner-moat banks. Smaller layouts merge complete adjacent regions; anchors stay off water/buildings/walls and near mapped paths."
+      "Offline regions follow source paths, courtyard boundaries and inner-moat banks. Smaller layouts merge complete adjacent regions; anchors stay off water/buildings/walls and near mapped paths.",
+      "Reframe the original artwork into a native square viewport without changing building, street or source-image proportions; update display anchors and regions to the same viewport."
     ],
     "shortTags": [
       "宫苑",
       "本丸",
       "和风",
       "日式院落"
-    ]
+    ],
+    "squareViewport": {
+      "originalViewBox": [
+        0,
+        0,
+        1000,
+        723
+      ],
+      "crop": [
+        0,
+        0,
+        723
+      ]
+    }
   },
   {
     "id": "campus-compact",

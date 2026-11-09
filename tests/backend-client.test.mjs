@@ -743,3 +743,56 @@ test('冷启动共享能力探测不被旧聊天取消，新聊天仍可接力�
     assert.equal(calls.some(url => url.includes('chat-old')), false, '旧聊天取消后不再请求记录');
   }
 });
+
+test('275批量POST复用完整读取长预算，响应头及body均受该预算且单条仍短预算', async t => {
+  const ids = Array.from({ length: 64 }, (_, index) => `v3-floor-memory-${index}`);
+  const records = ids.map(recordId => ({ recordId, status: 200, envelope: { revision: 1, data: { text: '中性夹具' } } }));
+  const delayed = (signal, value, milliseconds) => new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal.reason ?? new DOMException('Aborted', 'AbortError')); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(value); }, milliseconds);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  const untilAborted = signal => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError')), { once: true }));
+  for (const mode of ['headers', 'body', 'single', 'batchTimeout', 'cancel', 'legacy']) await t.test(mode, async () => {
+    const calls = [], controller = new AbortController();
+    const client = createBackendClient({ timeoutMs: 10, listTimeoutMs: mode === 'batchTimeout' ? 30 : 100,
+      fetchImpl: async (url, options) => {
+        if (url.endsWith('/health')) return { ok: true, status: 200, json: async () => ({ ok: true,
+          api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: mode !== 'legacy' } }) };
+        calls.push(options.method ?? 'GET');
+        const response = { ok: true, status: 200, json: () => {
+          if (mode === 'batchTimeout') return untilAborted(options.signal);
+          if (mode === 'cancel') { setTimeout(() => controller.abort(new DOMException('用户取消', 'AbortError')), 5); return untilAborted(options.signal); }
+          return mode === 'headers' ? Promise.resolve(records) : delayed(options.signal, options.method === 'POST' ? records : { revision: 1, data: {} }, 40);
+        } };
+        return mode === 'headers' ? delayed(options.signal, response, 40) : response;
+      } });
+    if (mode === 'single') {
+      await assert.rejects(client.get('chat', 'v3-root'), error => error.code === 'BACKEND_TIMEOUT');
+      assert.deepEqual(calls, ['GET']);
+    } else if (mode === 'legacy') {
+      await assert.rejects(client.getMany('chat', ids.slice(0, 2)), error => error.code === 'BACKEND_TIMEOUT');
+      assert.deepEqual(calls, ['GET', 'GET'], '旧服务逐条兼容保原短预算且不重发');
+    } else if (mode === 'batchTimeout' || mode === 'cancel') {
+      await assert.rejects(client.getMany('chat', ids, { signal: controller.signal }), error => mode === 'cancel'
+        ? error.name === 'AbortError' && error.code !== 'BACKEND_TIMEOUT' : error.code === 'BACKEND_TIMEOUT');
+      assert.deepEqual(calls, ['POST'], '真正超时和外部取消均不增加请求');
+      assert.equal(client.getDiagnosticSnapshot().latestRead.outcome, mode === 'cancel' ? 'aborted' : 'timeout');
+    } else {
+      assert.deepEqual(await client.getMany('chat', ids), records);
+      assert.deepEqual(calls, ['POST'], '慢头或慢正文只发一次批量请求');
+      assert.equal(client.getDiagnosticSnapshot().latestRead.outcome, 'success');
+    }
+  });
+});
+
+test('275默认批读120秒，普通health及单请求默认15秒', async () => {
+  const delays = [], originalSetTimeout = globalThis.setTimeout;
+  await withGlobals({ setTimeout(callback, delay, ...args) { delays.push(delay); return originalSetTimeout(callback, delay, ...args); } }, async () => {
+    const client = createBackendClient({ fetchImpl: async url => ({ ok: true, status: 200, json: async () => url.endsWith('/health')
+      ? { ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true } }
+      : [{ recordId: 'v3-floor-memory-neutral', status: 200, envelope: { revision: 1, data: {} } }] }) });
+    await client.getMany('chat', ['v3-floor-memory-neutral']);
+    assert.deepEqual(delays, [15000, 120000]);
+  });
+});

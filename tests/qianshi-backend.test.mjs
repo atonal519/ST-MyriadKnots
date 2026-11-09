@@ -248,6 +248,11 @@ test('编译分离局部动作与整线状态，倒叙进展保留事项链接�
   reachable.floorMemories = [memory('55555555-5555-4555-8555-555555555555', first, nonterminalOverride)];
   assert.equal(prepareQianshiCandidates(reachable, { canonicalContent: '继续归还旧书' }).request[0].status, 'inProgress',
     '人工非终态仍作为权威候选状态');
+  assert.equal(prepareQianshiCandidates(reachable).request[0].manualStatus, true, '候选向模型明确标出人工整线状态');
+  assert.equal(createQianshiCandidateIndex().prepare(reachable).request[0].manualStatus, true);
+  reachable.floorMemories[0].qianshiDelta.manualMatterStatusOverrides = [];
+  reachable.floorMemories[0].qianshiDelta.manualEventOverrides = [{ eventId: origin.id, status: 'planned' }];
+  assert.equal(prepareQianshiCandidates(reachable).request[0].manualStatus, true, '人工当前事件状态同样可识别');
 });
 
 test('progress 不能把一次性旧事件升级成事项，context 与先后端点仍可引用旧事件', async () => {
@@ -1824,6 +1829,11 @@ test('人工停止关注统一影响剧情进度、候选和待接续；恢复�
   }
   assert.equal(prepareQianshiCandidates(restored, { canonicalContent: '归还旧书' }).request[0].tracking, 'following');
   assert.equal(index.prepare(restored, { canonicalContent: '归还旧书' }).request[0].tracking, 'following', '自动已完成事项人工恢复后进入增量候选');
+  for (const value of [stopped, restored]) {
+    const growing = createQianshiCandidateIndex();
+    growing.prepare({ ...value, floors: [], floorMemories: [] });
+    assert.deepEqual(growing.prepare(value), prepareQianshiCandidates(value), '人工跟进覆盖随首次前缀增量加入，冷热候选一致');
+  }
 });
 
 test('删除独立事件的首条、中间、末条或全部后，仅投影剩余事件且不回填空楼', async () => {
@@ -2410,4 +2420,53 @@ test('following只由合法当前接续事件控制，背景和旧时进展不�
   assert.equal(projectQianshiGraph(value).matters[0].following, true);
   assert.equal(projectQianshiGraph(value).matters[0].status, 'inProgress');
   assert.throws(() => validateQianshiDelta({ ...first, events: [{ ...first.events[0], following: 'false' }] }), /QIANSHI_DELTA_INVALID/u);
+});
+
+import * as qianshiDomain from '../src/v3/qianshi-domain.js';
+import { deterministicUuid } from '../src/v3/foundation-domain.js';
+
+test('273已存复核按确定性身份冷读折回事实，状态及前缀有效，候选召回不重复行政正文', async () => {
+  const first = floor('11111111-1111-4111-8111-111111111111', 1), last = floor('22222222-2222-4222-8222-222222222222', 2);
+  const delta = await compileQianshiDelta({ floor: first, now: NOW, packet: { qianshi: { events: [{ key: 'old', title: '归还旧书',
+    description: '双方约定归还旧书。', status: 'planned', following: true, matter: true, storyTime: '2026年9月1日' }], order: [] } } });
+  const origin = delta.events[0];
+  const review = { ...origin, id: await deterministicUuid(['qianshi-followup-v1', last.id, origin.matterId, origin.id, 'completed', false]),
+    status: 'completed', following: false, description: '跟进复核(截至第 2 个 AI 楼):后楼明确完成。', sourceFloorId: last.id, continuesFromEventIds: [origin.id] };
+  const relation = { id: '33333333-3333-5333-8333-333333333333', type: 'progress', fromEventId: origin.id, toEventId: review.id, certainty: 'explicit' };
+  const source = { root: { chatId: CHAT, narrativeGeneration: GENERATION, headCheckpointId: last.id }, rootRevision: 1, floors: [first, last],
+    floorMemories: [memory('44444444-4444-4444-8444-444444444444', first, delta), memory('55555555-5555-4555-8555-555555555555', last,
+      { ...delta, events: [review], relations: [relation] })], entities: [] };
+  const serialized = JSON.stringify(source);
+  assert.equal(typeof qianshiDomain.annotateQianshiFollowingReviews, 'function');
+  const loaded = await qianshiDomain.annotateQianshiFollowingReviews(source);
+  assert.equal(JSON.stringify(source), serialized, '识别不修改旧档');
+  const snapshot = publicQianshiSnapshot(loaded);
+  assert.equal(snapshot.events.length, 2, '实际归属与原progress保持');
+  assert.deepEqual(snapshot.timeline.segments.flatMap(segment => segment.groups.flatMap(group => group.eventIds)), [origin.id]);
+  assert.equal(snapshot.matters[0].status, 'completed'); assert.equal(snapshot.matters[0].following, false);
+  assert.equal(snapshot.matters[0].currentNarrativeEventId, origin.id);
+  assert.equal(snapshot.matters[0].description, origin.description);
+  assert.equal(snapshot.events.find(event => event.id === origin.id).followingReviews.length, 1);
+  const candidate = prepareQianshiCandidates(loaded, { canonicalContent: '再次核对归还旧书。' });
+  assert.doesNotMatch(JSON.stringify(candidate.request), /跟进复核/u);
+  assert.doesNotMatch(JSON.stringify(createQianshiCandidateIndex().prepare(loaded, { canonicalContent: '再次核对归还旧书。' }).request), /跟进复核/u);
+  assert.doesNotMatch(JSON.stringify(prepareQianshiRecallCandidates(loaded, { queryContext: { text: '归还旧书' } }).candidates), /跟进复核/u);
+  const recall = projectQianshiRecall(loaded, { selectedEventIds: [origin.id, review.id] });
+  assert.deepEqual(recall.eventIds, [origin.id]);
+  const prefix = projectQianshiGraph({ ...loaded, floors: [first], floorMemories: [source.floorMemories[0]] });
+  assert.equal(prefix.matters[0].status, 'planned'); assert.equal(prefix.matters[0].following, true);
+  const fake = { ...review, id: '66666666-6666-4666-8666-666666666666' };
+  const ordinary = await qianshiDomain.annotateQianshiFollowingReviews({ ...source, floorMemories: [source.floorMemories[0],
+    { ...source.floorMemories[1], qianshiDelta: { ...delta, events: [fake], relations: [{ ...relation, toEventId: fake.id }] } }] });
+  assert.equal(ordinary.followingReviewEventIds.length, 0, '同描述/同标题不能猜为复核');
+  const edited = await qianshiDomain.annotateQianshiFollowingReviews({ ...loaded, floorMemories: [loaded.floorMemories[0],
+    { ...loaded.floorMemories[1], qianshiDelta: { ...loaded.floorMemories[1].qianshiDelta,
+      manualEventOverrides: [{ eventId: review.id, description: '用户改写的真实剧情。' }] } }] });
+  assert.deepEqual(edited.followingReviewEventIds, [], '沿用旧集合时仍重算，人工事实修订保持为剧情节点');
+  const statusEdited = await qianshiDomain.annotateQianshiFollowingReviews({ ...loaded, floorMemories: [loaded.floorMemories[0],
+    { ...loaded.floorMemories[1], qianshiDelta: { ...loaded.floorMemories[1].qianshiDelta, events: [{ ...review, status: 'inProgress' }],
+      manualEventOverrides: [{ eventId: review.id, status: 'inProgress' }] } }] });
+  assert.equal(projectQianshiGraph(statusEdited).matters[0].status, 'inProgress');
+  assert.equal(statusEdited.followingReviewEventIds.length, 1, '纯人工状态继续生效，说明保持在原事实详情');
+
 });

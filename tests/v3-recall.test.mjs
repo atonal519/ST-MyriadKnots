@@ -21,7 +21,7 @@ import { summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-sour
 import { readLocationReference } from '../src/v3/location-reference.js';
 import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
 import { createAutoHideController, AUTO_HIDE_MARKER_KEY } from '../src/v3/auto-hide.js';
-import { compileQianshiDelta, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiRecall } from '../src/v3/qianshi-domain.js';
+import { QIANSHI_RECALL_PROJECTION_VERSION, compileQianshiDelta, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiRecall } from '../src/v3/qianshi-domain.js';
 
 const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GEN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -4311,7 +4311,7 @@ test('runtime Q候选只用一次既有utility，provider初取与按所选ID复
         ...(Object.hasOwn(context, 'selectedEventIds') ? { selectedEventIds: [...context.selectedEventIds], selectedMatterIds: [...context.selectedMatterIds],
           pendingHeader: context.pendingHeader, scopeLine: context.scopeLine } : {}) });
       const selected = Object.hasOwn(context, 'selectedEventIds');
-      return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: 5,
+      return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION,
         text: selected ? `${context.scopeLine}\n\n${context.pendingHeader}\n- 仍需归还钟楼钥匙；尚未记录完成。`
           : '本轮千事资料来源截至：AI #50。\n\n[相关时间线]\n- 时间未知：已被R覆盖的钟楼旧日常\n\n[相关未完事项]\n- 仍需归还钟楼钥匙；尚未记录完成。',
         eventIds: selected ? [] : ['Q1-event'], matterIds: ['Q2-matter'],
@@ -4389,10 +4389,10 @@ test('no-current已完成背景事实经正式provider、utility与回执复用�
       const anchor = { narrativeGeneration: GEN, headCheckpointId: 'head' };
       if (Object.hasOwn(context, 'selectedEventIds')) {
         const recall = projectQianshiRecall(qReachable, { selectedEventIds: context.selectedEventIds, selectedMatterIds: context.selectedMatterIds });
-        return { anchor, projectionVersion: 5, ...recall };
+        return { anchor, projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, ...recall };
       }
       const prepared = prepareQianshiRecallCandidates(qReachable, { queryContext: context.queryContext });
-      return { anchor, projectionVersion: 5, ...projectQianshiCandidateSelection(prepared.candidates), candidates: prepared.candidates };
+      return { anchor, projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, ...projectQianshiCandidateSelection(prepared.candidates), candidates: prepared.candidates };
     },
     generateUtilityTask: async options => {
       utilityCalls += 1;
@@ -4414,7 +4414,7 @@ test('no-current已完成背景事实经正式provider、utility与回执复用�
   assert.doesNotMatch(receipt.qianshiProgress.text, /此后尚未记录完成/u);
   assert.doesNotMatch(receipt.injectionText, /此后尚未记录完成/u);
   assert.match(receipt.qianshiProgress.text, /本轮千事资料来源截至：AI #1。/u, '仅Q候选的正常runtime入口也保留实际来源截止');
-  assert.equal(receipt.qianshiProgress.projectionVersion, 5);
+  assert.equal(receipt.qianshiProgress.projectionVersion, QIANSHI_RECALL_PROJECTION_VERSION);
   assert.match(first.lastRecall.injectionText, /钟楼赴约背景动作/u);
 
   harness.runtime.invalidate('read-back-saved-receipt');
@@ -7691,10 +7691,15 @@ test('真实成员原文经 runtime/签名/冷读按成员楼展示；摘要revi
 });
 
 test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且迟到分支不继续读取', async t => {
-  for (const kind of ['identity', 'read', 'commitRoot']) await t.test(kind, async () => {
+  for (const kind of ['identity', 'read', 'commitRoot']) await t.test(kind, async sub => {
+    if (kind === 'identity') sub.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     const releases = []; let prepares = 0, reads = 0, selects = 0, aborts = 0;
-    const pending = () => new Promise(resolve => releases.push(resolve));
-    const harness = createRuntimeHarness({ preparationTimeoutMs: 10,
+    const pending = () => {
+      const value = new Promise(resolve => releases.push(resolve));
+      if (kind === 'identity') queueMicrotask(() => sub.mock.timers.tick(8000));
+      return value;
+    };
+    const harness = createRuntimeHarness({ preparationTimeoutMs: kind === 'identity' ? 120000 : 10,
       ...(kind === 'identity' ? { identityProjectionProvider: pending, prepareMemory: () => { prepares += 1; return { status: 'unavailable' }; } } : {}),
       ...(kind === 'commitRoot' ? { rootReader: pending, prepareMemory: () => { prepares += 1; return { status: 'unavailable' }; } } : {}),
       sourceReader: () => { reads += 1; return kind === 'read' ? pending() : runtimeFixture(); },
@@ -7727,7 +7732,7 @@ test('准备期限覆盖身份、独立来源和提交root，诊断分attempt且
   });
 });
 
-test('默认准备期限允许首轮与fresh提交来源各耗时6500ms并仍核验后注入', async t => {
+test('默认准备期限允许首轮与fresh提交来源各耗时9200ms并仍核验后注入', async t => {
   let tick = Date.now();
   t.mock.method(Date, 'now', () => tick);
   const { raw: initial, messages } = await retrySelectorReachable();
@@ -7743,7 +7748,7 @@ test('默认准备期限允许首轮与fresh提交来源各耗时6500ms并仍核
     },
     rootReader: async () => { rootCalls += 1; return { status: 'ready', revision: current.rootRevision, data: structuredClone(current.root) }; },
     reachableReader: async () => { reachableReads += 1; return structuredClone(reachableReads === 1 ? initial : current); },
-    sourceReader: async options => { sourceReads += 1; tick += 6500; return readRecallSource(options); },
+    sourceReader: async options => { sourceReads += 1; tick += 9200; return readRecallSource(options); },
   });
   harness.chat.splice(0, harness.chat.length, ...messages, harness.userMessage);
   const result = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
@@ -7754,7 +7759,7 @@ test('默认准备期限允许首轮与fresh提交来源各耗时6500ms并仍核
   assert.match(result.lastRecall.injectionText, /在钟楼等到天亮/u, '准备按时完成后仍需通过来源版本核验并实际注入已选事实');
   const attempts = result.lastRecall.timings.preparationAttempts;
   assert.deepEqual(attempts.map(record => record.phase), ['source', 'commit']);
-  assert.ok(attempts.every(record => record.status === 'ready' && record.budgetMs === 8000 && record.readMs === 6500));
+  assert.ok(attempts.every(record => record.status === 'ready' && record.budgetMs === 120000 && record.readMs === 9200));
 });
 
 test('默认准备期限超时仍只进行两次来源尝试，迟到结果不被注入', async t => {
@@ -7763,7 +7768,7 @@ test('默认准备期限超时仍只进行两次来源尝试，迟到结果不�
   const { raw } = await retrySelectorReachable();
   const harness = createRuntimeHarness({
     reachableReader: async () => { reachableReads += 1; return structuredClone(raw); },
-    sourceReader: async options => { sourceReads += 1; tick += 8001; return readRecallSource(options); },
+    sourceReader: async options => { sourceReads += 1; tick += 120001; return readRecallSource(options); },
     selector: options => { selectorCalls += 1; return selectRecall(options); },
   });
   let abortCalls = 0;
@@ -7777,7 +7782,7 @@ test('默认准备期限超时仍只进行两次来源尝试，迟到结果不�
   assert.equal(result.lastRecall.attemptDiagnostics.length, 2);
   assert.ok(result.lastRecall.attemptDiagnostics.every(attempt => {
     const record = attempt.timings.preparationAttempts.at(-1);
-    return record.budgetMs === 8000 && record.stage === 'read' && record.status === 'timeout';
+    return record.budgetMs === 120000 && record.stage === 'read' && record.status === 'timeout';
   }));
   assert.ok(harness.prompts.every(call => call[1] === ''));
 });
@@ -7793,7 +7798,7 @@ test('准备取消立即结束且迟到identity不得继续来源读取', async 
   harness.handlers.get('generation-stopped')(); const result = await pending;
   assert.equal(result.lastRecall.status, 'stale'); assert.deepEqual(result.lastRecall.skipReasons, ['stopped']);
   releaseIdentity(null); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(prepares, 1); assert.equal(reads, 1); assert.equal(harness.saves, 0);
+  assert.equal(prepares, 1); assert.equal(reads, 0, '辅助未完成前不预读整图'); assert.equal(harness.saves, 0);
   assert.equal(harness.prompts.some(call => call[1]?.includes('<qqj_recalled_context>')), false);
 });
 
@@ -8706,15 +8711,17 @@ test('自动当前方位覆盖旧五条进入正式召回DTO与候选，显式�
  assert.equal(historical.floorMemories[0].spatialFacts.relations.length,5);assert.equal(buildRecallHistoryCandidatePool({source:historical,queryContext}).candidates.filter(c=>c.value.kind==='spatialRelation').length,5);assert.equal(graph.floorMemories[0].spatialFacts.relations.length,5);
 });
 
-test('辅助来源沿原准备预算到期仅隔离未完成类别，迟到结果不再继续读', async t => {
-  for (const pending of ['people', 'places']) await t.test(pending, async () => {
+test('辅助来源独立8秒预算到期仅隔离未完成类别，迟到结果不再继续读', async t => {
+  for (const pending of ['people', 'places']) await t.test(pending, async sub => {
+    sub.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
     let release, captured, reads = 0, aborts = 0;
     const source = runtimeFixture();
     const workspace = { placesByEntityId: {}, foundation: { entities: [], facts: [] } };
-    const h = createRuntimeHarness({ preparationTimeoutMs: 20,
+    const h = createRuntimeHarness({
       sourceReader: async () => { reads++; return structuredClone(source); },
       identityProjectionProvider: (_identity, options) => {
         options.onPartial?.({ unavailableSources: [pending], ...(pending === 'people' ? { placeWorkspace: workspace } : {}) });
+        queueMicrotask(() => sub.mock.timers.tick(8000));
         return new Promise(resolve => { release = resolve; });
       }, selector: input => { captured = input.source; return selectRecall(input); } });
     const result = await h.runtime.intercept(h.chat, 12000, () => { aborts++; }, 'normal');
@@ -9225,4 +9232,140 @@ test('v31同源重复旧票历史逐字读，新v32重新选材一次并完整�
  const inline=projectInlineRecallReceipt(historical);assert.equal(inline.protocolRecognized,true);assert.equal(inline.objectItems.find(x=>x.placeEntityId).text.split('位于本馆走廊末端').length-1,2);assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY],before);
  await h.runtime.restorePersistedReceipt();assert.equal(h.runtime.getState().lastRecall.legacyReadOnly,true);await h.runtime.intercept(h.chat,12000,null,'regenerate');assert.equal(calls,2);const fresh=h.userMessage.extra[RECALL_RECEIPT_KEY];assert.equal(fresh.strategyVersion,'continuity-v32');assert.equal(fresh.injectionText.split('位于本馆走廊末端').length-1,1);assert.equal(fresh.receiptFingerprint,await receiptFingerprint(fresh));assert.ok(await projectHistoricalRecallReceipt(h.userMessage,{chatId:CHAT,userMessageIndex:1}));
  await h.runtime.intercept(h.chat,12000,null,'continue');assert.equal(calls,2);assert.equal(h.runtime.getState().lastRecall.reusedReceipt,true);
+});
+
+test('276真实9200ms提交读取保已完成选材，生产identity分支只有一次独立读', async () => {
+  const { raw: initial, messages } = await retrySelectorReachable();
+  const current = structuredClone(initial); current.rootRevision += 1;
+  current.root.headCheckpointId = 'head-276'; current.checkpoint = { id: 'head-276' };
+  let prepares = 0, selects = 0, sourceReads = 0, graphReads = 0, aborts = 0;
+  const h = createRuntimeHarness({
+    prepareMemory: async () => ++prepares === 1 ? { status: 'ready', reachable: initial } : { status: 'unavailable' },
+    rootReader: async () => ({ status: 'ready', revision: current.rootRevision, data: current.root }),
+    reachableReader: async () => { graphReads++; return current; },
+    identityProjectionProvider: async () => ({ unavailableSources: [] }),
+    sourceReader: async options => { sourceReads++; await new Promise(resolve => setTimeout(resolve, 9200)); return readRecallSource(options); },
+    selector: options => { selects++; return selectRecall(options); },
+  });
+  h.chat.splice(0, h.chat.length, ...messages, h.userMessage);
+  const result = await h.runtime.intercept(h.chat, 12000, () => { aborts++; }, 'normal');
+  assert.equal(result.lastRecall.status, 'ready', JSON.stringify(result.lastRecall));
+  assert.equal(selects, 1); assert.equal(sourceReads, 1); assert.equal(graphReads, 1); assert.equal(aborts, 0);
+  const commit = result.lastRecall.timings.preparationAttempts.find(row => row.phase === 'commit');
+  assert.equal(commit.budgetMs, 120000); assert.ok(commit.readMs >= 9000, '真实时间等待覆盖现场8.6～9.2秒读取');
+  assert.ok(result.lastRecall.injectionText);
+});
+
+test('276独立来源只读一次且实际投影应用人工身份与地点辅助资料', async () => {
+  const { raw, messages } = await retrySelectorReachable();
+  let reads = 0, sourceReads = 0, selected;
+  const target = '99999999-9999-4999-8999-999999999999';
+  raw.entities.push({ ...raw.entities[0], id: target, displayName: '人工保留姓名', aliases: [] });
+  raw.floorMemories[0].participants = [{ entityId: PERSON }];
+  const projection = { unavailableSources: [], identityRedirectsByEntityId: { [PERSON]: target },
+    manualAliasesByEntityId: { [target]: ['人工别名'] }, deletedEntityIds: [],
+    placeWorkspace: { foundation: { entities: [], facts: [{ itemId: 'manual-place', kind: 'feature',
+      placeEntityId: 'room', text: '人工地点资料', source: { kind: 'manual', locator: 'fixture' } }] } } };
+  const h = createRuntimeHarness({ prepareMemory: async () => ({ status: 'unavailable' }),
+    reachableReader: async () => { reads++; return raw; },
+    identityProjectionProvider: async () => projection,
+    sourceReader: async options => { sourceReads++; assert.equal(options.identityProjection, projection); return readRecallSource(options); },
+    selector: options => { selected = options.source; return selectRecall(options); },
+    rootReader: async () => ({ status: 'ready', revision: raw.rootRevision, data: raw.root }),
+  });
+  h.chat.splice(0, h.chat.length, ...messages, h.userMessage);
+  const result = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  assert.equal(result.lastRecall.status, 'ready', JSON.stringify(result.lastRecall));
+  assert.equal(sourceReads, 1); assert.equal(reads, 1);
+  assert.deepEqual(selected.placeWorkspace, projection.placeWorkspace);
+  assert.deepEqual(selected.unavailableSources ?? [], []);
+  assert.equal(selected.entities.some(item => item.entityId === PERSON), false);
+  assert.ok(selected.entities.find(item => item.entityId === target)?.aliases.includes('人工别名'));
+  assert.deepEqual(selected.floorMemories[0].participants.map(item => item.entityId), [target]);
+});
+
+
+test('276核心读取取消和120s真实期限沿signal停止后续批次及注入', async t => {
+  for (const kind of ['cancel', 'timeout']) await t.test(kind, async sub => {
+    if (kind === 'timeout') sub.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    let entered, reads = 0, aborted = 0, nextBatches = 0, selects = 0;
+    const started = new Promise(resolve => { entered = resolve; });
+    const h = createRuntimeHarness({ sourceReader: options => readRecallSource(options),
+      reachableReader: async ({ signal }) => {
+        reads++;
+        assert.ok(signal instanceof AbortSignal, 'sourceReader到store.readReachable沿用准备信号');
+        await new Promise(resolve => {
+          signal.addEventListener('abort', () => { aborted++; resolve(); }, { once: true });
+          entered();
+          if (kind === 'timeout') queueMicrotask(() => sub.mock.timers.tick(120000));
+        });
+        signal.throwIfAborted();
+        nextBatches++;
+        return rawReachableFromSource(runtimeFixture());
+      }, selector: options => { selects++; return selectRecall(options); } });
+    h.handlers.get('generation-started')('normal');
+    const pending = h.runtime.intercept(h.chat, 12000, null, 'normal');
+    await started;
+    if (kind === 'cancel') h.handlers.get('generation-stopped')();
+    const result = await pending;
+    assert.equal(result.lastRecall.status, kind === 'cancel' ? 'stale' : 'error');
+    if (kind === 'timeout') assert.equal(result.lastRecall.error.code, 'V3_RECALL_MEMORY_PREPARATION_TIMEOUT');
+    assert.equal(reads, kind === 'cancel' ? 1 : 2, '仅原有来源尝试，不新增重试');
+    assert.equal(aborted, reads); assert.equal(nextBatches, 0); assert.equal(selects, 0);
+    assert.equal(h.saves, 0); assert.ok(h.prompts.every(call => call[1] === ''));
+  });
+});
+
+test('276近期限辅助挂起仍保已确认同根或精确prepared核心，零额外图读取', async t => {
+  for (const kind of ['sameRoot', 'prepared', 'shortPrepared']) await t.test(kind, async sub => {
+    sub.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const { raw: initial, messages } = await retrySelectorReachable();
+    const current = structuredClone(initial);
+    current.rootRevision++; current.root.headCheckpointId = 'head-aux-deadline'; current.checkpoint.id = 'head-aux-deadline';
+    let auxiliaryCalls = 0, sourceReads = 0, selects = 0, prepares = 0;
+    const h = createRuntimeHarness({
+      preparationTimeoutMs: kind === 'shortPrepared' ? 20 : 120000,
+      ...(kind !== 'sameRoot' ? { prepareMemory: async () => {
+        prepares++;
+        if (prepares > 1 && kind !== 'shortPrepared') sub.mock.timers.tick(112500);
+        return { status: 'ready', reachable: prepares === 1 ? initial : current };
+      } } : {}),
+      sourceReader: options => { sourceReads++; return readRecallSource(options); },
+      reachableReader: async () => initial,
+      rootReader: async () => {
+        if (kind === 'sameRoot') sub.mock.timers.tick(112500);
+        const value = kind === 'sameRoot' ? initial : current;
+        return { status: 'ready', revision: value.rootRevision, data: value.root };
+      },
+      identityProjectionProvider: (_identity, options) => {
+        auxiliaryCalls++;
+        if (auxiliaryCalls === 1 && kind !== 'shortPrepared') return { unavailableSources: [] };
+        options.onPartial({ unavailableSources: ['places'] });
+        queueMicrotask(() => sub.mock.timers.tick(kind === 'shortPrepared' ? 20 : 7500));
+        return new Promise(() => {});
+      },
+      selector: options => { selects++; return selectRecall(options); },
+    });
+    h.chat.splice(0, h.chat.length, ...messages, h.userMessage);
+    const result = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    assert.equal(result.lastRecall.status, 'ready', JSON.stringify(result.lastRecall));
+    assert.equal(selects, 1); assert.equal(sourceReads, kind === 'sameRoot' ? 1 : 0);
+    assert.equal(auxiliaryCalls, 2); assert.ok(result.lastRecall.injectionText);
+    assert.equal(result.lastRecall.timings.preparationAttempts.at(-1).status, 'ready');
+  });
+});
+
+test('276成功核心读取的signal保后台缓存verifyRoot可用', async () => {
+  const { raw, messages } = await retrySelectorReachable();
+  let verifyRoot, verified = 0;
+  const h = createRuntimeHarness({ sourceReader: options => readRecallSource(options),
+    reachableReader: async ({ signal }) => {
+      verifyRoot = async () => { signal.throwIfAborted(); verified++; return { status: 'ready', revision: raw.rootRevision, data: raw.root }; };
+      return raw;
+    }, rootReader: async () => ({ status: 'ready', revision: raw.rootRevision, data: raw.root }) });
+  h.chat.splice(0, h.chat.length, ...messages, h.userMessage);
+  const result = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  assert.equal(result.lastRecall.status, 'ready');
+  assert.equal((await verifyRoot()).status, 'ready', '读取返回后缓存publish仍能核验root');
+  assert.equal(verified, 1);
 });

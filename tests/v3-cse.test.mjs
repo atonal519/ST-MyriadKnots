@@ -15,7 +15,7 @@ import { estimateRecallTokens } from '../src/v3/recall-selector.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
 import { projectCseStateIdentityReferences } from '../src/v3/entity-identity.js';
-import { buildEntityIdentityDirectory, deriveUserIdentityProjection, entitiesThroughFloorIds, resolveIdentityEntityId, reuseIdentityProjection } from '../src/v3/entity-identity.js';
+import { buildEntityIdentityDirectory, compatibleIdentityDirectories, deriveUserIdentityProjection, entitiesThroughFloorIds, resolveIdentityEntityId, reuseIdentityProjection } from '../src/v3/entity-identity.js';
 import { createCseRuntime, selectUserAdaptiveHistory } from '../src/v3/cse-runtime.js';
 import { createMigrationDescriptor } from '../src/v3/migration-prefix.js';
 import { createPeopleWorkspaceRuntime, createPeopleWorkspaceStore } from '../src/v3/people-workspace.js';
@@ -227,7 +227,7 @@ test('人物状态分析只要求人物身份工作区，地点故障不进入�
     },generateAnalysisTask:async()=>{requests++;return{jsonData:{noMaterialChange:true}};},
     now:()=>new Date(NOW),newUuid:uuidFactory(),logger:{warn(){}}});
   await runtime.load(graph); await runtime.analyzeFloor(graph.floors[0].id,{replaceExisting:true});
-  assert.equal(reads,1); assert.equal(requests,1); assert.equal(runtime.getState().lastCseError,null);
+  assert.equal(reads,2, '请求前与提交前分别读取人物身份，均不要求地点库'); assert.equal(requests,1); assert.equal(runtime.getState().lastCseError,null);
 });
 
 test('用户权威：旧明确user双ID在CSE加载与人工纠正中保留状态并统一归属', async () => {
@@ -4613,4 +4613,60 @@ test('USER Adaptive历史带对应保存USER，并同步可引用证据且合计
 
   const long = { ...historical, sourceUserInputSnapshot: { messages: [{ content: '长输入'.repeat(2500) }] } };
   assert.deepEqual(selectUserAdaptiveHistory({ floors: [floor(FLOOR1)], floorMemories: [long], targetIndex: 1, userEntityId: USER }), [], '不可只计AI长度再无限追加USER');
+});
+
+
+test('资料依赖解耦：CSE提交重读固定目标目录并区分自动别名与人工改名', async () => {
+  for (const change of ['自动别名', '人工改名']) {
+    const text = '阿青留在大厅。';
+    const h = runtimeHarness({ chat: [assistant(text), user('确认')],
+      cse: () => ({ jsonData: { noMaterialChange: true } }), extractor: () => ({ jsonData: { summary: text, people: [{ name: '阿青', presence: 'present' }] } }) });
+    await h.runtime.start();
+    await h.runtime.extractNext();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    const graph = await h.store.readReachable({ mode: 'runtime' });
+    const npc = graph.entities.find(entity => entity.displayName === '阿青');
+    const identity = { chatId: CHAT, hostChatId: 'host-chat', characterLocator: 'character.png', personaLocator: 'persona.png' };
+    let projection = {};
+    const providerTargets = [];
+    let markStarted, release;
+    const started = new Promise(resolve => { markStarted = resolve; });
+    const cse = createCseRuntime({ store: h.store, hostAdapter: h.hostAdapter, captureBusinessIdentity: () => identity,
+      identityProjectionProvider: async target => { providerTargets.push(target); return projection; },
+      generateAnalysisTask: () => new Promise(resolve => {
+        release = () => resolve({ jsonData: { subjects: [{ subject: '阿青', situational: [{ text: '留在大厅', visibility: 'observable', reason: '本楼明确停留' }] }] } });
+        markStarted();
+      }), now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    await cse.load(graph);
+    const running = cse.analyzeFloor(floorId, { replaceExisting: true });
+    await started;
+    projection = change === '自动别名'
+      ? { reviewedAliasesByEntityId: { [npc.id]: ['阿青', '青哥'] } }
+      : { currentNamesByEntityId: { [npc.id]: '青禾' } };
+    release();
+    await running;
+    assert.equal(providerTargets.length, 2, '提交时必须重读原捕获目标的最新身份投影');
+    assert.ok(providerTargets.every(target => target === identity), '在途任务的provider读取沿固定目标');
+    const after = await h.store.readReachable({ mode: 'runtime' });
+    if (change === '自动别名') {
+      assert.equal(cse.getState().lastCseError, null);
+      assert.equal(after.stateDeltas.length, 1, '原标签仍唯一绑定时正常自动别名增补不阻断CSE');
+    } else {
+      assert.equal(cse.getState().lastCseError?.code, 'V3_CSE_STALE', '当前人物被人工改名后不采用旧绑定结果');
+      assert.deepEqual(after.stateDeltas.map(item => item.id), graph.stateDeltas.map(item => item.id), '身份冲突保原图');
+    }
+  }
+});
+
+
+test('资料依赖解耦：新人物同名与新增别名占用仍拒绝旧身份绑定', () => {
+  const person = { id: A, entityType: 'person', displayName: '阿青', aliases: [{ name: '旧称' }], specialRole: 'none' };
+  const beforeDirectory = buildEntityIdentityDirectory({ entities: [person] });
+  const compatible = (entities, bindings = []) => compatibleIdentityDirectories({ beforeDirectory,
+    afterDirectory: buildEntityIdentityDirectory({ entities }), beforeProjection: {}, afterProjection: {}, entityIds: [A], bindings });
+  assert.equal(compatible([{ ...person, aliases: [...person.aliases, { name: '青哥' }] }]), true, '无冲突自动别名增补可兼容');
+  assert.equal(compatible([person, { ...person, id: B, aliases: [] }]), false, '新人物占用原名称时旧结果不能擅自选人');
+  assert.equal(compatible([person, { ...person, id: B, displayName: '青哥', aliases: [] }],
+    [{ entityId: A, entityType: 'person', labels: ['青哥'] }]), false, '迟到结果新增别名已归别人时必须拒绝');
+  assert.equal(compatible([{ ...person, aliases: [] }]), false, '原有别名被移除仍是实际绑定变化');
 });

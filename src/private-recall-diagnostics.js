@@ -175,12 +175,44 @@ function memoryDiagnostic(value) {
     lastExtractorError: memoryError(value?.lastExtractorError), lastAutomationError: memoryError(value?.lastAutomationError),
     extractorRequest: memoryRequest(value?.extractorRequest) };
 }
+const startupResourcePaths = new Map([
+  ['/script.js', 'hostScript'], ['/scripts/extensions.js', 'hostExtensions'], ['/api/extensions/discover', 'extensionDiscovery'],
+  ['/scripts/extensions/third-party/ST-QianQianJie/manifest.json', 'qqjManifest'],
+  ['/scripts/extensions/third-party/ST-QianQianJie/dist/qqj-app.js', 'qqjBundle'],
+]);
+const startupMarkNames = ['[init] start', '[init] batch1 done', '[init] batch2 done', '[init] batch3 done', '[init] complete', '[init] getSettings done', '[init] loader hidden'];
+const startupResourceFields = ['startTime', 'fetchStart', 'requestStart', 'responseStart', 'responseEnd', 'duration', 'transferSize', 'encodedBodySize', 'decodedBodySize'];
+function startupDiagnostic(performanceRef, origin) {
+  try {
+    if (typeof performanceRef?.getEntriesByType !== 'function') return null;
+    const navigation = performanceRef.getEntriesByType('navigation')[0];
+    const groups = new Map();
+    for (const entry of performanceRef.getEntriesByType('resource')) {
+      let url;
+      try { url = new URL(entry.name); } catch { continue; }
+      const kind = url.origin === origin ? startupResourcePaths.get(url.pathname) : null;
+      if (!kind) continue;
+      if (!groups.has(kind)) groups.set(kind, []);
+      groups.get(kind).push({ kind, ...counts(entry, startupResourceFields) });
+    }
+    return { timeOrigin: number(performanceRef.timeOrigin),
+      navigation: navigation ? counts(navigation, ['responseEnd', 'domInteractive', 'domContentLoadedEventStart', 'loadEventStart']) : null,
+      resources: [...groups.values()].map(rows => rows.sort((a, b) => (a.startTime ?? -1) - (b.startTime ?? -1)).at(-1)),
+      marks: performanceRef.getEntriesByType('mark').filter(entry => startupMarkNames.includes(entry.name))
+        .map(entry => ({ name: entry.name, startTime: number(entry.startTime) })).sort((a, b) => (a.startTime ?? -1) - (b.startTime ?? -1)).slice(-8) };
+  } catch { return null; }
+}
+
 function backendDiagnostic(value) {
   const entry = row => row ? { sequence: number(row.sequence), method: choose(row.method, ['GET', 'POST', 'PUT', 'DELETE']),
     recordType: choose(row.recordType, ['root', 'floor', 'floorMemory', 'run', 'checkpoint', 'entity', 'baseline', 'stateDelta', 'currentState', 'index', 'peopleWorkspace', 'binding', 'collection', 'memoryTransferRollback', 'unknown']),
     outcome: choose(row.outcome, ['success', 'timeout', 'httpError', 'aborted', 'failure']), elapsedMs: number(row.elapsedMs), completedAt: stamp(row.completedAt), code: code(row.code), httpStatus: httpStatus(row.httpStatus),
     bodyBytes: number(row.bodyBytes), encodedBodyBytes: number(row.encodedBodyBytes), contentEncoding: choose(row.contentEncoding, ['gzip', 'identity']) } : null;
-  return { sinceClientCreatedRequestCounts: counts(value?.sinceClientCreatedRequestCounts, ['get', 'put', 'delete']), latestRead: entry(value?.latestRead), latestWrite: entry(value?.latestWrite), lastFailure: entry(value?.lastFailure) };
+  const cache = value?.coreCache;
+  return { ...(cache ? { coreCache: { available: typeof cache.available === 'boolean' ? cache.available : null,
+    enabled: typeof cache.enabled === 'boolean' ? cache.enabled : null,
+    ...counts(cache, ['hits', 'misses', 'writes', 'writeFailures', 'corruptions', 'evictedRecords', 'estimatedBytes']) } } : {}),
+    sinceClientCreatedRequestCounts: counts(value?.sinceClientCreatedRequestCounts, ['get', 'put', 'delete']), latestRead: entry(value?.latestRead), latestWrite: entry(value?.latestWrite), lastFailure: entry(value?.lastFailure) };
 }
 
 // 临时失败不能依赖聊天回执落盘；独立诊断只投影白名单，绝不复制材料、异常消息或配置对象。
@@ -219,7 +251,7 @@ export function projectPrivateRecallDiagnostic(state, vectorState, { visibilityS
 }
 
 export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRuntime, fetchImpl = globalThis.fetch, documentRef = globalThis.document, isEnabled = () => true, policyUrl = PRIVATE_DIAGNOSTIC_POLICY,
-  session = null, memoryRuntime = null, backendDiagnosticProvider = null, bundleUrl = import.meta.url, random = Math.random, now = Date.now, pollMs = 5000, flushMs = 1000 } = {}) {
+  session = null, memoryRuntime = null, backendDiagnosticProvider = null, performanceRef = globalThis.performance, bundleUrl = import.meta.url, random = Math.random, now = Date.now, pollMs = 5000, flushMs = 1000 } = {}) {
   let enabled = false, disposed = false, starting = null, revision = null, sequence = 0, sent = 0, previous = null, pending = null, timer = null, poll = null;
   const events = [], failureSnapshots = [], cleanups = [];
   const recordId = `recall-live-${Math.min(SLOT_COUNT - 1, Math.max(0, Math.floor(random() * SLOT_COUNT)))}`;
@@ -281,6 +313,7 @@ export function createPrivateRecallDiagnostics({ client, recallRuntime, vectorRu
   const capture = () => {
     if (!enabled || disposed || !isEnabled()) return;
     const data = projectPrivateRecallDiagnostic(recallRuntime.getState(), vectorRuntime?.getState?.(), { visibilityState: documentRef?.visibilityState, sessionState: session?.getState?.(), memoryState: memoryRuntime?.getDiagnosticState?.(), backendState: backendDiagnosticProvider?.() });
+    data.startup = startupDiagnostic(performanceRef, documentRef?.location?.origin ?? globalThis.location?.origin);
     rememberFailure(data, new Date(now()).toISOString());
     const signature = JSON.stringify(data);
     if (signature === previous) return;

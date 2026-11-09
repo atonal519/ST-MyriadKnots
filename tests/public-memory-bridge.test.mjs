@@ -183,7 +183,7 @@ test('同版本候选的 readRoot 报错不把旧快照当成功，旧格式 CSE
   const fallback = await createPublicMemoryBridge({
     session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
     store: { readReachable: async options => {
-      assert.deepEqual(options, { mode: 'projection', allowRecallCseFallback: true });
+      assert.deepEqual(options, { mode: 'projection', allowRecallCseFallback: true, signal: null });
       return structuredClone(legacyCse);
     } },
     hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) },

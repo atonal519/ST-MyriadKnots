@@ -92,12 +92,12 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     const real=CITY_MAPS[currentSheet()?.assetId],generic=QIANCHUANG_MAP_ASSETS[basemap],asset=real??generic??QIANCHUANG_BASEMAPS[basemap],key=chatId+':'+activeSheetId+':'+(real?.id??basemap);
     if(assetDrawKey===key)return;assetDrawKey=key;
     const geometry=el('div','qqj-window-geometry');
-    map.style.setProperty('--qqj-window-map-aspect',`${asset.width} / ${asset.height}`);map.style.setProperty('--qqj-window-map-width',`${Math.min(1,asset.width/asset.height)*100}%`);map.setAttribute('data-basemap',real?.id??basemap);map.setAttribute('data-map-mode',real?'real':'generic');
+    map.style.setProperty('--qqj-window-map-aspect','1');map.style.setProperty('--qqj-window-map-width','100%');map.setAttribute('data-basemap',real?.id??basemap);map.setAttribute('data-map-mode',real?'real':'generic');
     map.setAttribute('data-map-library',String(!real&&!!generic));
     map.replaceChildren(geometry,regions,areas,points);copyright.replaceChildren();copyright.hidden=!real&&basemap!=='modern'&&generic?.id!=='modern-inland'&&generic?.id!=='palace-courtyard-honmaru'&&!['campus-compact','campus-garden','campus-university'].includes(generic?.id);if(!copyright.hidden)copyright.textContent='© OpenStreetMap contributors · ODbL';
     if(real||generic){
       geometry.setAttribute('aria-busy','true');
-      void (real?loadCityMap(real.id):loadGenericMap(generic.id)).then(svg=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.innerHTML=svg;geometry.setAttribute('aria-busy','false');},()=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.textContent=real?'城市底图暂时无法读取，可继续浏览地点资料。':'底图暂时无法读取，可继续浏览地点资料。';geometry.setAttribute('aria-busy','false');});
+      void (real?loadCityMap(real.id):loadGenericMap(generic.id)).then(svg=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.innerHTML=svg;geometry.querySelector('svg')?.setAttribute('preserveAspectRatio','xMidYMid meet');geometry.setAttribute('aria-busy','false');},()=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.textContent=real?'城市底图暂时无法读取，可继续浏览地点资料。':'底图暂时无法读取，可继续浏览地点资料。';geometry.setAttribute('aria-busy','false');});
     }else geometry.innerHTML=`<svg viewBox="0 0 ${asset.width} ${asset.height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${asset.markup}</svg>`;
   }
   function selectSheet(id){
@@ -308,12 +308,12 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     if(nextMarkerKey!==markerKey){
       closeUserAvatar(true);userAvatar=null;
       markerKey=nextMarkerKey;markers=new Map();visitMenus(areas,'unregister');areas.replaceChildren();points.replaceChildren();
-      const real=CITY_MAPS[currentSheet()?.assetId],layout=real?citySchematicLayout(real.id,mapBrowse.groups):qianchuangMapLayout(basemap,mapBrowse.groups,byId),asset=real??QIANCHUANG_MAP_ASSETS[basemap]??QIANCHUANG_BASEMAPS[basemap];
+      const real=CITY_MAPS[currentSheet()?.assetId],layout=real?citySchematicLayout(real.id,mapBrowse.groups):qianchuangMapLayout(basemap,mapBrowse.groups,byId);
       regions.innerHTML=`<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${layout.filter(region=>region.contour).map(region=>`<path class="qqj-window-region-outline" d="${region.contours.map(ring=>`M${ring.map(point=>point.join(',')).join('L')}Z`).join('')}" fill-rule="evenodd"/>`).join('')}</svg>`;
       for(const region of layout){
         if(region.entityId&&region.labelBox){
           const node=byId.get(region.entityId),label=button('qqj-window-area-open',node.displayName,()=>selectScope(region.entityId)),safe=region.labelBox;
-          const textUnits=Array.from(node.displayName).reduce((sum,char)=>sum+(char.codePointAt(0)>255?1:.65),0),fontSize=Math.min(safe.w/Math.max(1,textUnits*1.15),safe.h*asset.height/asset.width*.7);
+          const textUnits=Array.from(node.displayName).reduce((sum,char)=>sum+(char.codePointAt(0)>255?1:.65),0),fontSize=Math.min(safe.w/Math.max(1,textUnits*1.15),safe.h*.7);
           label.setAttribute('data-scope-id',region.entityId);label.style.left=`${safe.x}%`;label.style.top=`${safe.y}%`;label.style.width=`${safe.w}%`;label.style.height=`${safe.h}%`;label.style.setProperty('--qqj-window-area-font',`${fontSize}cqw`);areas.append(label);
         }
         for(const {id,x,y} of region.points){

@@ -358,3 +358,41 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, f
     });
   }));
 }
+
+
+// Compare the identities a result actually uses, allowing independent profile additions.
+export function compatibleIdentityDirectories({ beforeDirectory, afterDirectory, beforeProjection, afterProjection, entityIds = [], bindings = [] }) {
+  const oldDirectory = beforeDirectory, newDirectory = afterDirectory;
+  const oldById = new Map(oldDirectory.map(entry => [entry.entityId, entry]));
+  const newById = new Map(newDirectory.map(entry => [entry.entityId, entry]));
+  const owners = directory => {
+    const map = new Map();
+    for (const entry of directory) for (const label of entry.labels) {
+      const key = `${entry.entityType}:${identityLabelKey(label)}`;
+      const ids = map.get(key) ?? new Set(); ids.add(entry.entityId); map.set(key, ids);
+    }
+    return map;
+  };
+  const oldOwners = owners(oldDirectory), newOwners = owners(newDirectory);
+  const sameOwners = (a = new Set(), b = new Set()) => a.size === b.size && [...a].every(id => b.has(id));
+  const boundIds = new Set([...entityIds, ...bindings.map(binding => binding.entityId)]);
+  for (const id of boundIds) {
+    const oldId = resolveIdentityEntityId(id, beforeProjection), newId = resolveIdentityEntityId(id, afterProjection);
+    if (oldId !== newId || (afterProjection?.deletedEntityIds ?? []).includes(newId)) return false;
+    const prior = oldById.get(oldId);
+    if (!prior) continue; // A genuinely new entity is checked by its response labels below.
+    const current = newById.get(newId);
+    if (!current || prior.displayName !== current.displayName || prior.entityType !== current.entityType || prior.specialRole !== current.specialRole) return false;
+    const currentLabels = new Set(current.labels.map(identityLabelKey));
+    for (const label of prior.labels) {
+      const key = `${prior.entityType}:${identityLabelKey(label)}`;
+      if (!currentLabels.has(identityLabelKey(label)) || !sameOwners(oldOwners.get(key), newOwners.get(key))) return false;
+    }
+  }
+  for (const binding of bindings) for (const label of binding.labels) {
+    const key = `${binding.entityType}:${identityLabelKey(label)}`;
+    const prior = oldOwners.get(key), current = newOwners.get(key);
+    if (!sameOwners(prior, current) && (current?.size !== 1 || !current.has(resolveIdentityEntityId(binding.entityId, afterProjection)))) return false;
+  }
+  return true;
+}

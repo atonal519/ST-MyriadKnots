@@ -90,7 +90,7 @@ test('千结正常等待只在本楼提示，闲置反馈隐藏且真实处理�
   assert.match(flatten(container).map(node => node.textContent).join('|'), /等待下一条用户消息/);
   state = { ...state, unprocessedCount: 2, unregisteredCandidates: [{ messageIndex: 140, reason: 'waitingEarlierFloor' }] }; view.render(state);
   health = flatten(container).find(node => node.className.includes('qqj-page-health'));
-  assert.match(health.textContent, /待摘要 2 楼.*1 楼待确认/); assert.ok(health.className.includes('checking'));
+  assert.match(health.textContent, /待摘要 2 楼.*1 楼待登记/); assert.ok(health.className.includes('checking'));
   state = { ...state, memoryWorkBusy: true, activeMemoryWork: { kind: 'manual', phase: 'extracting' } }; view.render(state);
   assert.match(flatten(container).find(node => node.className.includes('qqj-page-health')).textContent, /正在处理摘要/);
   state = { ...state, memoryWorkBusy: false, activeMemoryWork: null, lastExtractorError: { floorId: 'floor', message: '请求超时，请重试。' } }; view.render(state);
@@ -1608,8 +1608,8 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmation = options; return true; } }); view.setPage('memories'); view.mount(container);
   openDetails(flatten(container).find(node => node.attributes['data-qqj-floor-id'] === 'floor-42'));
   let copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /已记忆 42\/42 楼.*2 楼待确认/);
-  assert.match(copy, /本次确认 2 个连续 AI 回复.*第 84 楼.*连续 AI，尚待确认/);
+  assert.match(copy, /已记忆 42\/42 楼.*2 楼待登记/);
+  assert.match(copy, /有 1 个 AI 楼需要确认.*本次登记范围共 2 楼.*确认后继续补齐当前聊天的历史摘要和人物状态.*第 84 楼.*连续 AI，尚待确认/);
   assert.match(copy, /第 85 楼.*等待前面楼层处理.*先确认前面的 AI 楼/);
   assert.match(copy, /第 87 楼.*等待下一条用户消息.*发送下一条用户消息后检查/);
   assert.match(copy, /旧摘要仍然可见/);
@@ -1617,7 +1617,7 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
   assert.ok(confirmConsecutive); confirmConsecutive.click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(consecutiveCalls, 1);
   assert.equal(receivedScope, state.consecutiveAssistantConfirmation, '弹窗必须把渲染时冻结的精确范围原样传入');
-  assert.deepEqual(confirmation, { title: '确认连续 AI 回复', body: '第 84–85 楼，共 2 个 AI 回复，将按顺序分别摘要；正文不删除或合并。最新 AI 楼等待下一条用户消息，不在本次范围内。', confirmText: '确认并分别记录', cancelText: '取消' });
+  assert.deepEqual(confirmation, { title: '确认连续 AI 回复', body: '第 84 楼需要确认，共 1 楼。本次登记范围共 2 楼，确认后继续补齐当前聊天的历史摘要和人物状态。最新 AI 楼等待下一条用户消息。', confirmText: '确认并分别记录', cancelText: '取消' });
   assert.equal(flatten(container).filter(node => node.textContent === '提取摘要').length, 0);
   assert.equal(extractCalls, 0);
 
@@ -1625,7 +1625,7 @@ test('摘要页列出全部尚未摘要候选并显示真实等待原因，无 f
   view.render(state);
   flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(confirmation.body, '第 84–85 楼，共 2 个 AI 回复，将按顺序分别摘要；正文不删除或合并。');
+  assert.equal(confirmation.body, '第 84 楼需要确认，共 1 楼。本次登记范围共 2 楼，确认后继续补齐当前聊天的历史摘要和人物状态。');
 
   runtime.confirmConsecutiveAssistants = async () => { throw Object.assign(new Error('连续 AI 确认范围已经变化，请重新查看后再确认。'), { code: 'V3_MEMORY_STALE' }); };
   flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
@@ -1677,6 +1677,71 @@ test('CSE 失败数、本楼错误与最近错误在 V3 面板可见，并保留
   const managementCopy = flatten(container).map(node => node.textContent).join('|');
   assert.match(managementCopy, /最近自动任务错误/);
   assert.match(managementCopy, /跨刷新自动任务错误/);
+});
+
+test('管理页健康条与两条提示使用相同共享圆角，字体缩放保留圆角token', async () => {
+  const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
+  for (const styles of [css, scaleCssFontSizes(css, '--qqj-ui-fixed-scale', true)]) {
+    const health = styles.match(/\.qqj-page-health\{([^}]*)\}/u)?.[1];
+    const notice = styles.match(/\.qqj-management-notice\{([^}]*)\}/u)?.[1];
+    const feedback = styles.match(/\.qqj-management-feedback\.error\{([^}]*)\}/u)?.[1];
+    assert.ok(health); assert.ok(notice); assert.ok(feedback);
+    const radii = [health, notice, feedback].map(rule => rule.match(/(?:^|;)border-radius:([^;]+)/u)?.[1]);
+    const expected = '0 var(--qqj-radius-card) var(--qqj-radius-card) 0';
+    assert.deepEqual(radii, [expected, expected, expected]);
+  }
+});
+
+test('74楼登记范围仅2楼需确认，取消零动作，确认传入原scope并说明完整历史补齐', async () => {
+  const candidates = Array.from({ length: 74 }, (_, index) => Object.freeze({ assistantSeq: 26 + index,
+    messageIndex: index === 0 ? 50 : index === 73 ? 195 : 51 + (index - 1) * 2,
+    confirmationRequired: index === 0 || index === 73 }));
+  const scope = Object.freeze({ chatId: CHAT, candidates: Object.freeze(candidates) });
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    stableCount: 25, rememberedCount: 25, unprocessedCount: 0, memoryWorkBusy: false, floors: [], consecutiveAssistantConfirmation: scope,
+    unregisteredCandidates: [...candidates.map(candidate => ({ ...candidate, reason: candidate.confirmationRequired ? 'consecutiveAssistant' : 'waitingEarlierFloor' })),
+      { assistantSeq: 100, messageIndex: 196, reason: 'waitingNextUser' }] };
+  let accepted = false, confirmation = null, calls = 0, receivedScope = null, extractCalls = 0;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    confirmConsecutiveAssistants: async value => { calls += 1; receivedScope = value; return state; }, extractFloor: async () => { extractCalls += 1; return state; } };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmation = options; return accepted; } });
+  view.setPage('memories'); view.mount(container);
+  let copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /74 楼待登记/);
+  assert.doesNotMatch(copy, /74 楼待确认|74 个连续 AI/);
+  assert.match(copy, /有 2 个 AI 楼需要确认.*本次登记范围共 74 楼.*确认后继续补齐当前聊天的历史摘要和人物状态/);
+  assert.match(copy, /最新 AI 楼等待下一条用户消息/);
+  flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 0); assert.equal(extractCalls, 0);
+  assert.equal(confirmation.body, '第 50、195 楼需要确认，共 2 楼。本次登记范围共 74 楼，确认后继续补齐当前聊天的历史摘要和人物状态。最新 AI 楼等待下一条用户消息。');
+  assert.doesNotMatch(confirmation.body, /50–195|正文不删除或合并|[；：]/);
+  accepted = true;
+  flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1); assert.equal(receivedScope, scope); assert.equal(extractCalls, 0);
+  assert.equal(scope.candidates.length, 74);
+  view.deactivate();
+});
+
+for (const indexes of [[12], [12, 13]]) test(`登记范围全部需确认时按实际${indexes.length}楼展示`, async () => {
+  const candidates = indexes.map((messageIndex, index) => ({ assistantSeq: index + 1, messageIndex, confirmationRequired: true }));
+  const scope = { chatId: CHAT, candidates };
+  const state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    stableCount: 0, rememberedCount: 0, unprocessedCount: 0, memoryWorkBusy: false, floors: [], consecutiveAssistantConfirmation: scope,
+    unregisteredCandidates: candidates.map(candidate => ({ ...candidate, reason: 'consecutiveAssistant' })) };
+  let confirmation = null;
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, confirmConsecutiveAssistants: async () => state };
+  const container = new Node('main');
+  const view = createV3FoundationView({ runtime, documentRef, confirmImpl: options => { confirmation = options; return false; } });
+  view.setPage('memories'); view.mount(container);
+  const copy = flatten(container).map(node => node.textContent).join('|');
+  assert.ok(copy.includes(`有 ${indexes.length} 个 AI 楼需要确认。本次登记范围共 ${indexes.length} 楼`));
+  flatten(container).find(node => node.textContent === '确认连续 AI 并分别记录').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(confirmation.body, `第 ${indexes.join('、')} 楼需要确认，共 ${indexes.length} 楼。本次登记范围共 ${indexes.length} 楼，确认后继续补齐当前聊天的历史摘要和人物状态。`);
+  view.deactivate();
 });
 
 test('千结与双丝网健康提示只显示各自进度和错误', () => {
@@ -2957,7 +3022,7 @@ test('人工原文知情人物按实体ID搜索多选，默认不含user或原�
 test('记忆阶段通知保留楼层节点并原位更新状态；离屏编辑草稿不冻结搜索结果，时间通知复用传入快照', async () => {
   let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
     memoryWorkBusy: false, stableCount: 2, rememberedCount: 2, unprocessedCount: 0,
-    unregisteredCandidates: [{ messageIndex: 0, reason: 'consecutiveAssistant' }], consecutiveAssistantConfirmation: { candidates: [{ messageIndex: 0 }] }, floors: [
+    unregisteredCandidates: [{ messageIndex: 0, reason: 'consecutiveAssistant' }], consecutiveAssistantConfirmation: { candidates: [{ messageIndex: 0, confirmationRequired: true }] }, floors: [
       { floorId: 'floor-a', assistantSeq: 2, messageIndex: 3, status: 'ready', memoryId: 'memory-a', summary: '可以搜索的摘要甲', memory: { chronology: {}, locations: [], participants: [] } },
       { floorId: 'floor-b', assistantSeq: 1, messageIndex: 1, status: 'ready', memoryId: 'memory-b', summary: '可以搜索的摘要乙', memory: { chronology: {}, locations: [], participants: [] } },
     ] };
@@ -4523,14 +4588,14 @@ test('记忆管理区分首页与身份已就绪的新聊天，空态各显示�
  state={...state,status:'uninitialized',lastError:null};session={status:'idle'};await view.activate();assert.equal((statusText().match(/请先打开一个聊天。/g)||[]).length,1);assert.doesNotMatch(statusText(),/当前聊天尚未开始记录/);view.deactivate();
 });
 
-test('跨页持久中文存储失败短投影且同源仅占一个可见槽，嵌管理保可见',async t=>{
+test('跨页持久楼层传输失败保待重试数量，嵌管理保可见',async t=>{
  const long='连续失败 1 次；最近：读取记忆失败，无法连接记忆存储服务。请稍后重试；仍失败时，请到“记忆管理”页点击“复制状态诊断”反馈。（2026-10-29T15:32:18.142Z）';
- const shown=node=>{for(let n=node;n;n=n.parentNode){if(n.hidden||n.parentNode?.tag==='details'&&!n.parentNode.open&&n.tag!=='summary')return false;if(n.parentNode?.className?.includes('qqj-view-heading')&&container.className==='qqj-settings-management'&&n.tag==='p')return false;}return true;};let container;
+ const shown=node=>{for(let n=node;n;n=n.parentNode){if(n.hidden||n.parentNode?.tag==='details'&&!n.parentNode.open&&n.tag!=='summary')return false;if(n.parentNode?.className?.includes('qqj-view-heading')&&container.className==='qqj-settings-management'&&n.tag==='p'&&!n.className.split(' ').includes('qqj-page-health'))return false;}return true;};let container;
  for(const page of ['people','memories','management'])for(const embedded of page==='management'?[false,true]:[false])await t.test(page+(embedded?' embedded':''),()=>{
   const error={floorId:'failed-floor',runId:'failed-run',code:'BACKEND_TIMEOUT',phase:'retryableError',count:1,lastFailedAt:'2026-10-29T15:32:18.142Z',message:long};
-  const state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',memorySnapshotStatus:'ready',memorySyncStatus:'idle',stableCount:1,rememberedCount:1,floors:[],cseSubjects:[],memoryEntities:[],csePendingCount:0,cseFailedCount:1,...(page==='people'?{lastCseError:error}:{lastExtractorError:error})};
+  const state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',memorySnapshotStatus:'ready',memorySyncStatus:'idle',stableCount:1,rememberedCount:1,floors:[],cseSubjects:[],memoryEntities:[],csePendingCount:0,cseFailedCount:1,...(page==='people'?{lastCseError:error}:{lastExtractorError:error,failedCount:1})};
   container=new Node('main');if(embedded)container.className='qqj-settings-management';const view=createV3FoundationView({runtime:{getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state},documentRef});view.mount(container,{page});
-  const visible=flatten(container).filter(shown).map(n=>n.textContent).filter(Boolean);assert.doesNotMatch(visible.join('|'),/连续失败|最近：|15:32:18|复制状态诊断.*反馈/);assert.equal(visible.filter(x=>x.includes(publicErrorMessage({code:'BACKEND_TIMEOUT'}))).length,1,visible.join('|'));view.deactivate();
+  const visible=flatten(container).filter(shown).map(n=>n.textContent).filter(Boolean);assert.doesNotMatch(visible.join('|'),/连续失败|最近：|15:32:18|复制状态诊断.*反馈/);assert.equal(visible.filter(x=>x.includes(publicErrorMessage({code:'BACKEND_TIMEOUT'}))).length,0,visible.join('|'));assert.match(visible.join('|'),/待重试 1 楼/);view.deactivate();
  });
 });
 
@@ -4597,4 +4662,69 @@ test('201近期事项紧凑短名沿原保存，千结不再提供新增待办',
  await flatten(container).find(n=>n.textContent==='近期事项（0）').click();const primary=flatten(editorContent()).find(n=>n.className==='qqj-recent-primary-actions');assert.deepEqual(primary.children.filter(n=>!n.hidden).map(n=>n.textContent),['新增','补查历史','已停止','批量管理']);assert.ok(primary.children.filter(n=>!n.hidden).every(n=>n.className.includes('compact')));await flatten(editorContent()).find(n=>n.textContent==='新增').click();assert.equal(activeEditorDialog.options.title,'新增事项');const identity=flatten(editorContent()).find(n=>n.tag==='section'&&flatten(n).some(c=>c.textContent==='人物归属'));assert.ok(identity);cancelEditor();assert.equal(writes.length,0);
  await flatten(editorContent()).find(n=>n.textContent==='新增').click();choose('人物归属',person);choose('事项类型','deadline');input('事项名称','人工约定');const description=input('观察描述','人工说明');await submitEditor();assert.equal(lastEditorDialogError.message,'模拟保存失败');assert.equal(description.value,'人工说明');await submitEditor();assert.equal(writes.at(-1)[0],'time');assert.equal(writes.at(-1)[1].type,'deadline');assert.equal(writes.at(-1)[1].subjectEntityId,person);
  cancelEditor();assert.equal(flatten(container).some(n=>n.textContent==='新增待办'),false);view.deactivate();
+});
+
+test('读取已恢复时楼层网络失败按任务待重试展示，诊断与补齐入口保留', async t => {
+  for (const task of ['cse', 'extractor']) for (const page of task === 'cse' ? ['people', 'management'] : ['memories', 'management']) await t.test(`${task} ${page}`, async () => {
+    const failure = { floorId: 'floor-106', code: 'BACKEND_NETWORK', phase: 'retryableError', message: '上次任务保存失败', count: 1 };
+    let state = { status: 'ready', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT,
+      memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', stableCount: 106, rememberedCount: 106,
+      unprocessedCount: 0, failedCount: task === 'extractor' ? 1 : 0, csePendingCount: 0, cseFailedCount: task === 'cse' ? 1 : 0,
+      cseReady: task !== 'cse', cseRebuildStatus: 'idle', rebuildStatus: 'partial', rebuildHasActionableWork: true,
+      floors: [], [task === 'cse' ? 'lastCseError' : 'lastExtractorError']: failure };
+    let copied = '';
+    const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, startHistoricalRebuild: async () => state };
+    const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef, navigatorRef: { clipboard: { async writeText(value) { copied = value; } } } });
+    view.mount(container, { page });
+    const health = () => flatten(container).find(node => node.className.includes('qqj-page-health'));
+    assert.doesNotMatch(health().textContent, /连接失败/);
+    assert.match(health().textContent, /待重试 1 楼/);
+    assert.match(health().className, /checking/);
+    if (page === 'management') {
+      assert.equal(flatten(container).find(node => node.textContent === '继续补齐').disabled, false);
+      const notice = flatten(container).find(node => node.className === 'qqj-management-notice');
+      if (task === 'cse') assert.equal(notice, undefined, '数量由health呈现，不重复缺口说明');
+      else assert.match(notice.textContent, /记忆尚未完整/);
+      await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+      const diagnostic = JSON.parse(copied);
+      assert.equal((task === 'cse' ? diagnostic.cse.lastError : diagnostic.memory.lastExtractorError).code, 'BACKEND_NETWORK');
+    }
+    assert.equal(state[task === 'cse' ? 'lastCseError' : 'lastExtractorError'], failure);
+    state = { ...state, memorySyncStatus: 'error', memorySyncError: { code: 'BACKEND_TIMEOUT', message: '本次读取超时' } };
+    view.render(state);
+    assert.match(health().textContent, /记忆存储请求超时/);
+    assert.match(health().className, /error/);
+    assert.doesNotMatch(health().textContent, /连接失败/);
+    state = { ...state, memorySyncStatus: 'idle', memorySyncError: null, failedCount: 0, cseFailedCount: 0, cseReady: true,
+      lastCseError: null, lastExtractorError: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false };
+    view.render(state);
+    assert.match(health().className, /healthy/);
+    assert.doesNotMatch(health().textContent, /失败|待重试/);
+    view.deactivate();
+  });
+});
+
+test('刚发生的楼层传输失败不冒充当前连接错误，当前读取和其它错误仍明确可见', () => {
+  for (const error of [
+    { floorId: 'floor-1', code: 'BACKEND_NETWORK', phase: 'retryableError' },
+    { floorId: 'floor-1', code: 'BACKEND_TIMEOUT', phase: 'retryableError' },
+    { floorId: null, code: 'BACKEND_NETWORK', phase: 'load' },
+    { floorId: 'floor-1', code: 'BACKEND_NETWORK', phase: 'anchor' },
+    { floorId: 'floor-1', code: 'BACKEND_HTTP', httpStatus: 503 },
+    { floorId: 'floor-1', code: 'BACKEND_INVALID_RESPONSE' },
+  ]) {
+    const state = { status: 'ready', foundationStatus: 'ready', pluginEnabled: true, chatId: CHAT,
+      memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', floors: [], stableCount: 1, rememberedCount: 1,
+      failedCount: 1, cseReady: true, lastExtractorError: { ...error, message: '任务未完成' }, rebuildStatus: 'partial', rebuildHasActionableWork: true };
+    const container = new Node('main'), view = createV3FoundationView({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, startHistoricalRebuild() {} }, documentRef });
+    view.mount(container, { page: 'management' });
+    const health = flatten(container).find(node => node.className.includes('qqj-page-health'));
+    const taskTransport = error.floorId && error.phase !== 'anchor' && ['BACKEND_NETWORK', 'BACKEND_TIMEOUT'].includes(error.code);
+    assert.match(health.className, taskTransport ? /checking/ : /error/);
+    if (taskTransport) {
+      assert.match(health.textContent, /摘要待重试 1 楼/);
+      assert.equal(flatten(container).find(node => node.textContent === '继续补齐').disabled, false);
+    }
+    view.deactivate();
+  }
 });

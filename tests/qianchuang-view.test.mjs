@@ -8,6 +8,15 @@ class Node {
  constructor(tag='div'){this.tag=tag;this.children=[];this.listeners={};this.attributes={};this.style={setProperty(k,v){this[k]=v;}};this.dataset={};this.className='';this.hidden=false;this.classList={add(){},remove(){}};}
  append(...nodes){for(const n of nodes){this.children.push(n);n.parentNode=this;}} replaceChildren(...nodes){this.children=[];this.append(...nodes);}
  setAttribute(k,v){this.attributes[k]=String(v);if(k==='class')this.className=String(v);}getAttribute(k){return this.attributes[k]??null;}addEventListener(k,f){this.listeners[k]=f;}fire(k,event={}){return this.listeners[k]?.({target:this,...event});}
+ querySelector(selector){
+  if(selector!=='svg'||!String(this.innerHTML??'').includes('<svg'))return null;
+  if(this.svgSource!==this.innerHTML){
+   this.svgSource=this.innerHTML;this.svgRoot=new SvgNode('svg');
+   const tag=this.innerHTML.match(/<svg\b[^>]*>/)?.[0]??'';
+   for(const match of tag.matchAll(/([\w:-]+)="([^"]*)"/g))this.svgRoot.setAttribute(match[1],match[2]);
+  }
+  return this.svgRoot;
+ }
  getBoundingClientRect(){const size=this.tag==='span'?27.2:this.tag==='button'?44:400;return{left:0,top:0,width:size,height:size,right:size,bottom:size};}
  contains(n){return flat(this).includes(n);}getRootNode(){return {activeElement:null};}focus(){this.focusCalls=(this.focusCalls??0)+1;}scrollIntoView(options){this.scrollOptions=options;}remove(){this.parentNode.children=this.parentNode.children.filter(n=>n!==this);}
 }
@@ -97,11 +106,11 @@ test('设施胶囊只从肯定stable文字取短标签、去重保原文，否�
 });
 test('撤手动底图入口，普通通知保SVG且切聊仍读取已存底图不写设置',async()=>{
  const h=harness();await h.view.activate();const map=h.find('qqj-window-map')[0],geometry=map.children[0],parent=h.find('qqj-window-leaf')[0];parent.open=false;
- assert.ok(geometry.innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));assert.equal(map.style['--qqj-window-map-aspect'],'1000 / 1000');assert.equal(h.find('qqj-window-navigation')[0].hidden,true);
+ assert.ok(geometry.innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(h.find('qqj-window-navigation')[0].hidden,true);
  assert.equal(h.created.some(node=>node.attributes['aria-label']==='千窗底图'),false);assert.equal(h.find('qqj-window-basemap-field').length,0);assert.equal(h.find('qqj-window-copyright')[0].hidden,false);
  h.emit({syncing:true});assert.equal(h.find('qqj-window-map')[0].children[0],geometry);assert.equal(h.find('qqj-window-leaf')[0],parent);assert.equal(parent.open,false);
- h.emit({chatId:other,projectionRevision:2,places:[place('new-root','旧共同父',['new-site']),place('new-site','旧场地',[],'new-root')],mapRootIds:['new-root'],unassignedPlaceIds:[]});assert.equal(h.find('qqj-window-copyright')[0].hidden,true,'旧town保存值仍读取');assert.equal(map.style['--qqj-window-map-aspect'],'590 / 540');assert.ok(map.children[0].innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));h.emit({projectionRevision:3,places:[],mapRootIds:[],unassignedPlaceIds:[]});assert.equal(h.find('qqj-window-marker').length,0);assert.equal(h.find('qqj-window-map-group')[0].hidden,true);assert.equal(h.writes.length,0);assert.equal(h.stored.apiModel,'keep');
- h.stored.qianchuangBasemaps.palaceChat='palace';h.emit({...initial,chatId:'palaceChat',projectionRevision:4});assert.equal(map.style['--qqj-window-map-aspect'],'1000 / 1000');assert.ok(map.children[0].innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));
+ h.emit({chatId:other,projectionRevision:2,places:[place('new-root','旧共同父',['new-site']),place('new-site','旧场地',[],'new-root')],mapRootIds:['new-root'],unassignedPlaceIds:[]});assert.equal(h.find('qqj-window-copyright')[0].hidden,true,'旧town保存值仍读取');assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.ok(map.children[0].innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));h.emit({projectionRevision:3,places:[],mapRootIds:[],unassignedPlaceIds:[]});assert.equal(h.find('qqj-window-marker').length,0);assert.equal(h.find('qqj-window-map-group')[0].hidden,true);assert.equal(h.writes.length,0);assert.equal(h.stored.apiModel,'keep');
+ h.stored.qianchuangBasemaps.palaceChat='palace';h.emit({...initial,chatId:'palaceChat',projectionRevision:4});assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.ok(map.children[0].innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));
 });
 test('冷准备结束后已关闭或已切聊不会把旧异步画回，主页不准备存档',async()=>{
  let release;const gate=new Promise(r=>release=r);const h=harness({prepareSession:()=>gate,sessionStateProvider:()=>({status:'preparing'})});const pending=h.view.activate();h.view.deactivate();release({status:'ready'});await pending;assert.equal(h.prepares,0);
@@ -285,8 +294,8 @@ test('主设施否定压住旧补充，人工清空不从旧补充复原',async(
 
 test('184旧sci-fi保存值与自动环境同走按需舰图及源比例',async()=>{
  const loads=[],h=harness({snapshot:{...initial,mapStyle:'sci-fi'},loadGenericMap:async id=>{loads.push(id);return'<svg data-ship="loaded"/>';}});await h.view.activate();await Promise.resolve();
- let map=h.find('qqj-window-map')[0];assert.equal(map.attributes['data-basemap'],'sci-fi-linear');assert.equal(map.style['--qqj-window-map-aspect'],'1120 / 1280');assert.deepEqual(loads,['sci-fi-linear']);
- h.stored.qianchuangBasemaps[chat]='sci-fi';h.emit({projectionRevision:2});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'sci-fi-linear');assert.equal(h.find('qqj-window-map')[0].style['--qqj-window-map-aspect'],'1120 / 1280');assert.equal(h.writes.length,0);
+ let map=h.find('qqj-window-map')[0];assert.equal(map.attributes['data-basemap'],'sci-fi-linear');assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.deepEqual(loads,['sci-fi-linear']);
+ h.stored.qianchuangBasemaps[chat]='sci-fi';h.emit({projectionRevision:2});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'sci-fi-linear');assert.equal(h.find('qqj-window-map')[0].style['--qqj-window-map-aspect'],'1');assert.equal(h.writes.length,0);
 });
 
 test('189方位单独成为本级折叠详情，和描述归一去重',async()=>{
@@ -325,4 +334,22 @@ test('头像现取现开，空白与离页关闭，错误图片不留破图且�
  url='/User Avatars/second.png';marker().fire('click');assert.equal(image().getAttribute('href'),url);assert.equal(reads,2);h.find('qqj-window-page')[0].fire('click',{target:h.find('qqj-window-map')[0]});assert.equal(marker().attributes['aria-expanded'],'false');
  marker().fire('click');h.find('qqj-window-page')[0].fire('keydown',{key:'Escape',preventDefault(){},stopPropagation(){}});assert.equal(marker().attributes['aria-expanded'],'false');assert.equal(marker().focusCalls,1);
  marker().fire('click');h.view.deactivate();assert.equal(avatar().hidden,true);await h.view.activate();assert.equal(marker().attributes['aria-expanded'],'false');marker().fire('click');h.emit({projectionRevision:2,userPosition:{status:'leftUnknown',placeEntityId:null,isCurrent:false}});assert.equal(h.find('qqj-window-current-pin').length,0);assert.equal(h.find('qqj-window-user-avatar').length,0);assert.equal(h.writes.length,0);
+});
+
+
+test('各类底图共用铺满正方形canvas，加载根SVG与区域使用同一百分比坐标',async()=>{
+ for(const style of ['modern','old-town','sci-fi']){
+  const h=harness({snapshot:{...initial,mapStyle:style},loadGenericMap:async()=>'<svg viewBox="0 0 500 500" preserveAspectRatio="xMidYMid meet" class="qqj-generic-basemap"></svg>'});
+  await h.view.activate();await Promise.resolve();
+  const map=h.find('qqj-window-map')[0],geometry=h.find('qqj-window-geometry')[0];
+  assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(map.style['--qqj-window-map-width'],'100%');
+  if(style==='modern')assert.ok(geometry.innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));
+  else assert.equal(geometry.querySelector('svg').getAttribute('preserveAspectRatio'),'xMidYMid meet');
+  for(const pin of h.find('qqj-window-marker')){assert.ok(parseFloat(pin.style.left)>=0&&parseFloat(pin.style.left)<=100);assert.ok(parseFloat(pin.style.top)>=0&&parseFloat(pin.style.top)<=100);}
+  assert.equal(h.writes.length,0);h.view.deactivate();
+ }
+ const data={...initial,places:[{...place('city','上海',['site']),mapLevel:'city'},{...place('site','场地',[],'city'),mapRole:'site'}],mapRootIds:['city'],unassignedPlaceIds:[]};
+ const h=harness({snapshot:data,loadCityMap:async()=>'<svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" class="qqj-real-basemap"></svg>'});
+ await h.view.activate();await Promise.resolve();const map=h.find('qqj-window-map')[0],svg=h.find('qqj-window-geometry')[0].querySelector('svg');
+ assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(map.style['--qqj-window-map-width'],'100%');assert.equal(svg.getAttribute('preserveAspectRatio'),'xMidYMid meet');assert.equal(svg.getAttribute('viewBox'),'0 0 1000 1000');assert.equal(h.writes.length,0);
 });

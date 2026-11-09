@@ -112,3 +112,52 @@ test('196只补缺证据地点精确firstSeen已存成员来源，同楼去重�
  const missingMember={...memory,sourceFloorSnapshots:memory.sourceFloorSnapshots.slice(1)};assert.deepEqual(await collectMissingPlaceSources({entities,entityKeys,bodySources,floors,memoriesByFloor:new Map([['f1',missingMember]])}),[]);
  assert.deepEqual(await collectMissingPlaceSources({entities,entityKeys,bodySources,floors:[floors[1]],memoriesByFloor}),[]);
 });
+
+test('无首见楼地点按已存location、position和containment引用补相邻上下文', async t => {
+  const text = ['开头闲谈。', '远处闲谈。', '楼层入口。', '甲楼二层设有借阅室。', '门边有导览牌。', '后续过渡。', '更远的无关人物闲聊。'].join('\n\n');
+  for (const field of ['location', 'position', 'containment']) await t.test(field, async () => {
+    const item = field === 'location' ? { entityId: 'room' } : { placeEntityId: 'room', ...(field === 'containment' ? { parentEntityId: 'building' } : {}) };
+    const memory = { id: 'memory', floorId: 'f1', sourceCanonicalContent: text, sourceUserInputSnapshot: { messages: [{ content: '借阅室位于甲楼二层。' }] },
+      ...(field === 'location' ? { locations: [item] } : { spatialFacts: { [field === 'position' ? 'positions' : 'containments']: [item] } }) };
+    const args = { entities: [{ id: 'room', entityType: 'place', firstSeenFloorId: null }], entityKeys: new Map([['room', 'place-1']]),
+      places: [{ entityId: 'room', displayName: '借阅室', aliases: [] }], bodySources: [], floors: [{ id: 'f1', assistantSeq: 1, content: { canonicalContent: text } }], memoriesByFloor: new Map([['f1', memory]]) };
+    const before = JSON.stringify(memory), rows = await placeEvidence.collectPlaceOrganizationSources(args);
+    assert.ok(rows.some(row => row.requiresExactQuote && row.sourceType === 'assistant' && row.canonicalContent.includes('甲楼二层设有借阅室')));
+    assert.ok(rows.some(row => row.sourceType === 'precedingUser' && row.canonicalContent === '借阅室位于甲楼二层。'));
+    assert.ok(rows.every(row => !row.canonicalContent.includes('更远的无关人物闲聊')));
+    assert.equal(rows.filter(row => row.sourceType === 'assistant').length, 1);
+    assert.equal(JSON.stringify(memory), before);
+  });
+});
+
+test('补地点来源沿canonical引用，已有首见或父边上下文不被旧位置引用扩大', async () => {
+  const text = '甲楼二层有借阅室。', other = '旧位置只有人物闲谈。';
+  const m1 = { id: 'm1', floorId: 'f1', sourceCanonicalContent: text };
+  const m2 = { id: 'm2', floorId: 'f2', sourceCanonicalContent: other, locations: [{ entityId: 'old-room' }] };
+  const args = { entities: [{ id: 'room', entityType: 'place', firstSeenFloorId: 'f1' }], entityKeys: new Map([['room', 'place-1']]), places: [{ entityId: 'room', displayName: '借阅室', aliases: [] }], bodySources: [],
+    floors: [{ id: 'f1', assistantSeq: 1, content: { canonicalContent: text } }, { id: 'f2', assistantSeq: 2, content: { canonicalContent: other } }],
+    memoriesByFloor: new Map([['f1', m1], ['f2', m2]]), resolveEntityId: id => id === 'old-room' ? 'room' : id };
+  const first = await placeEvidence.collectPlaceOrganizationSources(args);
+  assert.ok(first.every(row => row.floorId === 'f1'));
+  const parent = await placeEvidence.collectPlaceOrganizationSources({ ...args, entities: [], parentFacts: [{ placeEntityId: 'room', evidenceRefs: [{ floorId: 'f1' }] }] });
+  assert.deepEqual(parent, first);
+  const missing = await placeEvidence.collectPlaceOrganizationSources({ ...args, entities: [], memoriesByFloor: new Map([['f1', { ...m1, locations: [{ entityId: 'old-room' }] }]]) });
+  assert.ok(missing.some(row => row.floorId === 'f1' && row.requiresExactQuote));
+  assert.equal(missing.filter(row => row.sourceType === 'assistant').length, 1);
+});
+
+test('缺首见地点的聚合引用只展开有证据的成员，不借锚楼、外楼或缺失快照', async () => {
+  const first = '甲楼二层有借阅室。', second = '乙楼里有展厅。';
+  const memory = { id: 'aggregate', floorId: 'f2', sourceFloorIds: ['f1', 'f2'], sourceCanonicalContent: '不可借用的聚合全文', sourceUserInputSnapshot: { messages: [{ content: '不可借用的锚楼USER。' }] },
+    locations: [{ entityId: 'room', evidenceRefs: [{ floorId: 'f1' }] }, { entityId: 'unknown' }], spatialFacts: { positions: [{ placeEntityId: 'room', evidenceRefs: [{ floorId: 'foreign' }] }] },
+    sourceFloorSnapshots: [{ floorId: 'f1', canonicalContent: first, sourceUserInputSnapshot: { messages: [{ content: '借阅室在甲楼。' }] } }, { floorId: 'f2', canonicalContent: second, sourceUserInputSnapshot: { messages: [{ content: '展厅在乙楼。' }] } }] };
+  const args = { entities: [], entityKeys: new Map([['room', 'place-1'], ['unknown', 'place-2']]), places: [{ entityId: 'room', displayName: '借阅室', aliases: [] }, { entityId: 'unknown', displayName: '未定位地点', aliases: [] }], bodySources: [],
+    floors: [{ id: 'f1', assistantSeq: 1, content: { canonicalContent: first } }, { id: 'f2', assistantSeq: 2, content: { canonicalContent: second } }, { id: 'foreign', assistantSeq: 3, content: { canonicalContent: '异源借阅室。' } }], memoriesByFloor: new Map([['f1', memory], ['f2', memory]]) };
+  const rows = await placeEvidence.collectPlaceOrganizationSources(args);
+  assert.ok(rows.some(row => row.requiresExactQuote && row.sourceType === 'assistant' && row.floorId === 'f1'));
+  assert.ok(rows.some(row => row.sourceType === 'precedingUser' && row.canonicalContent === '借阅室在甲楼。'));
+  assert.ok(rows.every(row => row.floorId === 'f1' && !row.placeKeys.includes('place-2')));
+  for (const changed of [{ ...memory, sourceFloorSnapshots: memory.sourceFloorSnapshots.slice(1) }, { ...memory, sourceFloorSnapshots: [{ ...memory.sourceFloorSnapshots[0], canonicalContent: '被替换的旧原文。' }, memory.sourceFloorSnapshots[1]] }]) {
+    assert.deepEqual(await placeEvidence.collectPlaceOrganizationSources({ ...args, memoriesByFloor: new Map([['f1', changed], ['f2', changed]]) }), []);
+  }
+});

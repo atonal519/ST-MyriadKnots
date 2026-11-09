@@ -1,3 +1,4 @@
+import { annotateQianshiFollowingReviews } from './qianshi-domain.js';
 import { isUuid } from '../identity.js';
 import { recordWriteBatches } from '../backend-client.js';
 import {
@@ -614,6 +615,13 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
         const envelope = await client.put(collection(current), V3_ROOT_RECORD_ID, safe, expectedRevision, { signal });
         const saved = validateEnvelope(envelope, validateFoundationRoot, current.chatId);
         if (!sameJson(saved.data, safe)) fail('V3_STORE_RESPONSE_MISMATCH');
+        const reachable = await annotateQianshiFollowingReviews(buildReachableResult({
+          root: saved.data,
+          rootRevision: saved.revision,
+          ...validatedGraph,
+          indexesComplete: true,
+          readMode: V3_READ_MODES.full,
+        }));
         pruneConfirmed(current, saved.data, validatedGraph.checkpoint);
         const reachableCore = [
           ...validatedGraph.floorResults, ...validatedGraph.memoryResults, ...validatedGraph.entityResults,
@@ -639,13 +647,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
           status: 'saved',
           ...saved,
           recordId: V3_ROOT_RECORD_ID,
-          reachable: buildReachableResult({
-            root: saved.data,
-            rootRevision: saved.revision,
-            ...validatedGraph,
-            indexesComplete: true,
-            readMode: V3_READ_MODES.full,
-          }),
+          reachable,
         };
       } catch (error) {
         clearStagedIdentity(current);
@@ -848,7 +850,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
           () => verifyCacheRootGeneration(current, signal))).catch(() => {});
       }
     }
-    return reachable;
+    return annotateQianshiFollowingReviews(reachable);
     }, identityOverride, signal);
   }
   const forIdentity = identityValue => {

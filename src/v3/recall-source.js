@@ -323,9 +323,9 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   }), identityProjection);
 }
 
-export async function readRecallSource({ store, now = () => new Date(), hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjection = null, identityProjectionProvider = null } = {}) {
+export async function readRecallSource({ store, signal = null, now = () => new Date(), hostSnapshot = null, sanitizerOptions = {}, realtimeOrigin = false, identityProjection = null, identityProjectionProvider = null } = {}) {
   if (!store || typeof store.readReachable !== 'function') throw new TypeError('V3 recall source store 无效');
-  const source = await store.readReachable({ mode: 'projection', allowRecallCseFallback: true });
+  const source = await store.readReachable({ mode: 'projection', allowRecallCseFallback: true, signal });
   const attempts = exitPoint => Object.freeze({ reachableReads: 1, exitPoint });
   if (!['ready', 'needsReseal'].includes(source?.status) || !source.root || !source.checkpoint) {
     const exitPoint = source?.status === 'stale' ? 'stale' : 'unavailable';

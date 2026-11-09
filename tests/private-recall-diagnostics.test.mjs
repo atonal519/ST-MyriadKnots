@@ -375,3 +375,55 @@ test('CSE失败独立进入原私有槽并保当次后端行与请求归因',asy
  let failures=h.writes.at(-1).data.failures.filter(v=>v.failureSource==='lastCseError');assert.equal(failures.length,1);assert.equal(failures[0].memory.lastCseError.count,1);assert.equal(failures[0].memory.cseRequest.startedAt,1000);assert.equal(failures[0].backend.latestRead.recordType,'root');assert.doesNotMatch(JSON.stringify(h.writes),/SECRET/);
  backend={latestRead:{recordType:'checkpoint',method:'GET',outcome:'success',sequence:2},lastFailure:backend.lastFailure};memory={...memory,cseRequest:{runId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',phase:'fetch',startedAt:3000,outcome:'running'}};for(const fn of listeners)fn();await h.channel.flush();failures=h.writes.at(-1).data.failures.filter(v=>v.failureSource==='lastCseError');assert.equal(failures.length,1);assert.equal(failures[0].memory.cseRequest.startedAt,1000);assert.equal(failures[0].backend.latestRead.recordType,'root');
 });
+
+test('277私有启动计时仅捕获同域固定资源、白名单marks和有限数字', async t => {
+  const origin = 'https://neutral.invalid';
+  let resources = Array.from({ length: 10 }, (_, i) => ({ name: `${origin}/script.js?key=SECRET-${i}`, startTime: i,
+    fetchStart: i, requestStart: i + 1, responseStart: i + 2, responseEnd: i + 3, duration: 3, transferSize: 100, encodedBodySize: 90, decodedBodySize: 120, secret: 'SECRET' }));
+  resources.push({ ...resources[0], name: 'https://foreign.invalid/script.js?SECRET' },
+    { ...resources[0], name: `${origin}/api/private-story?SECRET` },
+    { ...resources[0], name: `${origin}/scripts/extensions/third-party/ST-QianQianJie/dist/qqj-app.js?v=SECRET`, duration: Infinity, transferSize: -1, decodedBodySize: 'SECRET' });
+  const performanceRef = { timeOrigin: 1790000000000, getEntriesByType(type) {
+    return type === 'navigation' ? [{ responseEnd: 100, domInteractive: 200, domContentLoadedEventStart: 300, loadEventStart: NaN, name: 'SECRET' }]
+      : type === 'resource' ? resources : [{ name: '[init] start', startTime: 30 }, { name: '[init] batch2 done', startTime: 300 }, { name: '[init] getSettings done', startTime: 350 }, { name: '[init] loader hidden', startTime: 380 }, { name: 'SECRET mark', startTime: 400 }];
+  } };
+  const h = harness({ performanceRef, documentRef: { location: { origin } } }); t.after(h.channel.dispose);
+  await h.channel.start(); await h.channel.flush();
+  let startup = h.writes.at(-1).data.events.at(-1).data.startup;
+  assert.equal(startup.timeOrigin, 1790000000000); assert.equal(startup.navigation.responseEnd, 100); assert.equal(startup.navigation.loadEventStart, null);
+  assert.deepEqual(startup.resources.filter(row => row.kind === 'hostScript').map(row => row.startTime), [9]);
+  assert.ok(startup.resources.length <= 8); assert.ok(startup.marks.length <= 8);
+  const bundle = startup.resources.find(row => row.kind === 'qqjBundle');
+  assert.equal(bundle.duration, null); assert.equal(bundle.transferSize, null); assert.equal(bundle.decodedBodySize, null);
+  assert.deepEqual(startup.marks, [{ name: '[init] start', startTime: 30 }, { name: '[init] batch2 done', startTime: 300 }, { name: '[init] getSettings done', startTime: 350 }, { name: '[init] loader hidden', startTime: 380 }]);
+  assert.doesNotMatch(JSON.stringify(h.writes), /SECRET|neutral\.invalid|foreign\.invalid|https:|requestUrl|entryType/u);
+  const count = h.writes.length; h.channel.capture(); assert.equal(await h.channel.flush(), false); assert.equal(h.writes.length, count);
+  resources = [...resources, { ...resources[0], name: `${origin}/scripts/extensions.js`, startTime: 500 }];
+  h.channel.capture(); await h.channel.flush(); startup = h.writes.at(-1).data.events.at(-1).data.startup;
+  assert.equal(startup.resources.find(row => row.kind === 'hostExtensions').startTime, 500);
+});
+
+test('277私有开关禁用不读performance，缺失或异常计时返回null', async t => {
+  let reads = 0;
+  const performanceRef = { getEntriesByType() { reads++; throw Error('SECRET'); } };
+  for (const options of [{ initiallyEnabled: false }, { policy: { enabled: false } }]) {
+    const h = harness({ ...options, performanceRef, backendDiagnosticProvider: () => assert.fail('禁用私有策略不能读缓存stats') }); t.after(h.channel.dispose);
+    assert.equal(await h.channel.start(), false); h.channel.capture(); assert.equal(await h.channel.flush(), false);
+  }
+  assert.equal(reads, 0);
+  for (const performanceRef of [null, { getEntriesByType() { throw Error('SECRET'); } }]) {
+    const h = harness({ performanceRef }); t.after(h.channel.dispose); await h.channel.start(); await h.channel.flush();
+    assert.equal(h.writes[0].data.events[0].data.startup, null); assert.doesNotMatch(JSON.stringify(h.writes), /SECRET/);
+  }
+});
+
+test('277后端私有投影只取已有缓存布尔值与有限计数', () => {
+  const backendState = { coreCache: { available: true, enabled: false, hits: 4, misses: 5, writes: 6, writeFailures: 0,
+    corruptions: 1, evictedRecords: 2, estimatedBytes: 91000000, credentials: 'SECRET' } };
+  const data = projectPrivateRecallDiagnostic(fixture(), null, { backendState });
+  assert.deepEqual(data.backend.coreCache, { available: true, enabled: false, hits: 4, misses: 5, writes: 6, writeFailures: 0, corruptions: 1, evictedRecords: 2, estimatedBytes: 91000000 });
+  backendState.coreCache.hits = Infinity; backendState.coreCache.available = 'SECRET';
+  const invalid = projectPrivateRecallDiagnostic(fixture(), null, { backendState });
+  assert.equal(invalid.backend.coreCache.hits, null); assert.equal(invalid.backend.coreCache.available, null);
+  assert.doesNotMatch(JSON.stringify(invalid), /SECRET|credentials/);
+});

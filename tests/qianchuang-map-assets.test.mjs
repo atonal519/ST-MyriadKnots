@@ -25,8 +25,8 @@ test('异星环境共用真实地表源，缺专属素材也不退成科幻设�
  assert.ok(qianchuangMapCandidates('terrain','grassland').every(asset=>asset.family==='terrain'));
 });
 
-test('184舰内裁取保稳定ID且按实际源比例读取',()=>{
- const asset=QIANCHUANG_MAP_ASSETS['sci-fi-linear'];assert.equal(asset.width,1120);assert.equal(asset.height,1280);
+test('舰内方形取景保稳定ID、来源和等比显示',()=>{
+ const asset=QIANCHUANG_MAP_ASSETS['sci-fi-linear'];assert.equal(asset.width,1120);assert.equal(asset.height,1120);
  const svg=readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url),'utf8');assert.match(svg,/Robert Pearce \/ Eric B\. Smith/u);assert.match(svg,/mask id="deck-water"/u);assert.doesNotMatch(svg,/<foreignObject|<script|href="https?:/u);
  assert.equal(selectQianchuangMapAsset({entityId:'arbitrary-facility',style:'sci-fi',layout:'ring',previousAssetId:asset.id}),asset.id);
 });
@@ -46,7 +46,7 @@ test('184新甲板按当前文件SHA单次读取，几何不进入主模块',asy
  });
 
  test('两张已验收新图可选，旧宫苑与舰图选择保持',()=>{
- const expected={'palace-courtyard-garden':'46157fd19c13a86bfb1d6dd40f5fdff962960624fb5dff9b1ee1a5787bcb0df8','sci-fi-ring-life':'16b53652141e4369e8bb724289cfcc58833ca5830ac1292475ff8c96b5043b96'};
+ const expected={'palace-courtyard-garden':'44a4c146641186d23f5afa2dc16679e09b24c49bdf2e7209744e16c64c2057b4','sci-fi-ring-life':'16b53652141e4369e8bb724289cfcc58833ca5830ac1292475ff8c96b5043b96'};
  for(const[id,sha]of Object.entries(expected)){const asset=QIANCHUANG_MAP_ASSETS[id];assert.ok(asset,id);assert.equal(asset.sha256,sha);assert.equal(createHash('sha256').update(readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url))).digest('hex'),sha);}
  assert.deepEqual(qianchuangMapCandidates('palace','courtyard').map(a=>a.id),['palace-courtyard-garden']);assert.deepEqual(qianchuangMapCandidates('sci-fi','ring').map(a=>a.id),['sci-fi-ring-life']);
  for(const[style,layout,previous]of[['palace','courtyard','palace-axial'],['sci-fi','ring','sci-fi-linear']])assert.equal(selectQianchuangMapAsset({entityId:'existing-root',style,layout,previousAssetId:previous}),previous);
@@ -58,8 +58,8 @@ test('本丸专用语义布局唯一命中，普通宫苑不随机混入，省�
  assert.deepEqual(qianchuangMapCandidates('palace','courtyard').map(a=>a.id),['palace-courtyard-garden']);
  assert.equal(qianchuangMapCandidates('palace').some(a=>a.id===id),false);assert.equal(qianchuangMapCandidates('palace','unknown').some(a=>a.id===id),false);
  assert.equal(selectQianchuangMapAsset({entityId:'scope',style:'palace',layout:'honmaru'}),id);assert.equal(selectQianchuangMapAsset({entityId:'renamed',style:'palace',previousAssetId:id}),id);
- const asset=QIANCHUANG_MAP_ASSETS[id];assert.equal(asset.anchors.all.length,31);assert.deepEqual(asset.anchors.layouts[5].map(a=>a.length),[9,5,5,5,7]);
- assert.equal(createHash('sha256').update(readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url))).digest('hex'),'3497ac3f4aeef2390debf762607595cf03c16ed84f6391738d509c3ebf35da61');
+ const asset=QIANCHUANG_MAP_ASSETS[id];assert.ok(asset.anchors.all.length>=24);assert.ok(asset.anchors.layouts[5].every(pool=>pool.length>=3));
+ assert.equal(createHash('sha256').update(readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url))).digest('hex'),'f87e63d642f65c6a643ea24d0c1bf507d14ce7edf2c49db78e2abb589a32334f');
 });
 
 test('校园三布局按实际空间选图且保已验SVG字节与旧图候选',()=>{
@@ -84,4 +84,22 @@ test('校园布局仅在mapLayout内归一明确中英文，不按普通学校�
  assert.equal(normalizeQianchuangMapLayout('综合大学','modern'),undefined);assert.equal(validQianchuangMapLayout('紧凑校园','campus'),false);
  for(const value of ['campus',' Campus ','校园','校区','学校','school',' SCHOOL '])assert.equal(normalizeQianchuangMapStyle(value),'campus');
  for(const value of ['高中','私立学校'])assert.equal(normalizeQianchuangMapStyle(value),undefined);
+});
+
+test('图库全部为原生方形，SVG画幅、元数据和可见点位共用坐标',()=>{
+ for(const asset of Object.values(QIANCHUANG_MAP_ASSETS)){
+  const svg=readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url),'utf8');
+  const viewport=svg.match(/<svg\b[^>]*\bviewBox="([^"]+)"/u)[1].split(/\s+/u).map(Number);
+  assert.equal(asset.width,asset.height,asset.id);
+  assert.equal(viewport[2],viewport[3],asset.id);
+  assert.equal(viewport[2],asset.width,asset.id);
+  assert.equal(createHash('sha256').update(svg).digest('hex'),asset.sha256,asset.id);
+  for(const point of [...asset.anchors.all,...asset.anchors.neutral,...Object.values(asset.anchors.layouts).flat(2)]){
+   assert.ok(point.every(value=>value>=0&&value<=100),asset.id+' '+point);
+  }
+  for(const rows of Object.values(asset.regions.layouts))for(const region of rows){
+   assert.ok(region.inset.w>0&&region.inset.h>0,asset.id);
+   for(const ring of region.contours)assert.ok(ring.every(point=>point.every(value=>value>=0&&value<=100)),asset.id);
+  }
+ }
 });

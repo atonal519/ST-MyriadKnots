@@ -434,6 +434,11 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
           && (parentId ? pathParents.get(binding.entityId)?.has(parentId) : !pathParents.get(binding.entityId)?.size));
         if (matches.length === 1) entityId = matches[0].entityId;
       }
+      if (!entityId && segment.mapLevel === 'city') {
+        // A newly supplied country can extend an existing root city's ancestry.
+        const matches = (scope.placeCatalogBindings ?? []).filter(binding => (binding.labels ?? []).some(value => label(value) === label(name)));
+        if (matches.length === 1 && !originalParents.get(matches[0].entityId)?.size) entityId = matches[0].entityId;
+      }
       if (!entityId) {
         entityId = await deterministicUuid(['v3-place-path', scope.chatId, scope.narrativeGeneration, scope.batchId, parentId, label(name)]);
       }

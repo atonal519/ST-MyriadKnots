@@ -410,3 +410,66 @@ test('地点合并父链：保target有效外父，折叠中间成员越过自�
   const revised={...workspace,foundation:{schemaVersion:1,entities:[],facts:[{itemId:id(397),kind:'containment',placeEntityId:target,parentEntityId:alternate,identityChange:'ownershipChanged',knownFromFloorId:f2,source:{kind:'body',floorId:f2,quote:'明确新父。'}}]}};
   assert.deepEqual([...foundation.projectPlaceParentLinks([memory(f1,[edge(target,outer,398)])],revised,seq,Infinity,Infinity,{resolve}).get(target).parents.keys()],[alternate]);
 });
+
+const cityAncestorFixture = () => {
+  const entities = [seed(1,'甲城'),seed(2,'甲宫'),seed(3,'城东'),seed(4,'甲府'),seed(5,'乙府')];
+  const node = n => ({name:entities[n-1].displayName,sameAsPlaceKey:`place-${n}`});
+  const city = () => ({name:'甲城',mapLevel:'city'}), country = () => ({name:'甲国',mapLevel:'country'});
+  const paths = [[country(),city(),{name:'内城'},node(3)],[country(),city(),node(2)],[city(),node(2)],
+    [city(),node(3)],[city(),node(3),node(4)],[city(),node(3),node(5)]];
+  return {entities,paths};
+};
+
+test('显式城市补新国家祖先与原城市根路径共用唯一旧ID，粗细6路径不互相隔离', async () => {
+  const {entities,paths}=cityAncestorFixture();
+  const sources=paths.map((_,index)=>({sourceKey:`worldbook-${index+1}`,locator:`地图:${index}`,fingerprint:'sha256:abc',content:'甲国包含甲城。甲城内城的东侧是城东，甲府乙府属于城东。甲宫属于甲城。'}));
+  const expanded=await foundation.expandPlacePaths({packet:{placePaths:paths.map((path,index)=>({path,source:'worldbook',sourceKey:sources[index].sourceKey,exactQuote:sources[index].content}))},
+    envelope:{request:{task:'organizePlaces'},scope:{...envelope.scope,placeWorldbookSources:sources,
+      placeCatalogBindings:entities.map((entity,index)=>({entityKey:`place-${index+1}`,entityId:entity.id,labels:[entity.displayName]})),
+      parentEntityIdsByPlaceId:new Map([[id(4),new Set([id(3)])],[id(5),new Set([id(3)])]])}},existingEntities:entities,now:'2026-11-09T00:00:00Z',persistBodyPaths:true});
+  assert.deepEqual(expanded.isolated,[]);
+  assert.equal(expanded.entities.filter(entity=>entity.displayName==='甲城').length,1);
+  assert.equal(expanded.entities.find(entity=>entity.displayName==='甲城').id,id(1));
+  const workspace=foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),expanded.foundationPatch);
+  const parents=foundation.projectPlaceParentLinks([],workspace,new Map());
+  assert.equal(parents.get(id(2)).parents.keys().next().value,id(1));
+  const inner=expanded.entities.find(entity=>entity.displayName==='内城');
+  assert.equal(parents.get(id(3)).parents.keys().next().value,inner.id);
+  assert.equal(parents.get(inner.id).parents.keys().next().value,id(1));
+});
+
+test('城市补祖先只复用无相反父的唯一旧城市，普通房间、同名歧义和人工父保持各自身份', async t => {
+  const run=async({entities,parents=new Map(),child,workspace=emptyPlaceWorkspace(id(90))})=>{
+    const source={sourceKey:'worldbook-1',locator:'中性地图:1',fingerprint:'sha256:abc',content:'甲国记录甲城。新馆里有阅览室。'};
+    const expanded=await foundation.expandPlacePaths({packet:{placePaths:[{path:[{name:'新上级'},child],source:'worldbook',sourceKey:source.sourceKey,exactQuote:source.content}]},
+      envelope:{request:{task:'organizePlaces'},scope:{...envelope.scope,placeCatalogBindings:entities.map((entity,index)=>({entityKey:`place-${index+1}`,entityId:entity.id,labels:[entity.displayName]})),parentEntityIdsByPlaceId:parents,placeWorldbookSources:[source],identityProjection:{placeWorkspace:workspace}}},
+      existingEntities:entities,now:'2026-11-09T00:00:00Z',persistBodyPaths:true});
+    return {expanded,workspace:foundation.mergePlaceFoundation(workspace,expanded.foundationPatch)};
+  };
+  await t.test('已有相反父级',async()=>{
+    const {expanded}=await run({entities:[seed(1,'甲城'),seed(6,'旧国家')],parents:new Map([[id(1),new Set([id(6)])]]),child:{name:'甲城',mapLevel:'city'}});
+    assert.equal(expanded.entities.filter(entity=>entity.displayName==='甲城').length,2);
+    assert.ok(expanded.foundationPatch.facts.filter(fact=>fact.kind==='containment').every(fact=>fact.placeEntityId!==id(1)));
+  });
+  await t.test('多个同名城市',async()=>{
+    const {expanded}=await run({entities:[seed(1,'甲城'),seed(6,'甲城')],child:{name:'甲城',mapLevel:'city'}});
+    assert.equal(expanded.entities.filter(entity=>entity.displayName==='甲城').length,3);
+    assert.ok(expanded.foundationPatch.facts.filter(fact=>fact.kind==='containment').every(fact=>![id(1),id(6)].includes(fact.placeEntityId)));
+  });
+  await t.test('普通同名房间',async()=>{
+    const {expanded}=await run({entities:[seed(1,'阅览室')],child:{name:'阅览室',mapRole:'interior'}});
+    assert.equal(expanded.entities.filter(entity=>entity.displayName==='阅览室').length,2);
+    assert.ok(expanded.foundationPatch.facts.filter(fact=>fact.kind==='containment').every(fact=>fact.placeEntityId!==id(1)));
+  });
+  await t.test('显式sameAs优先',async()=>{
+    const {expanded}=await run({entities:[seed(1,'甲城'),seed(6,'甲城')],child:{name:'甲城',mapLevel:'city',sameAsPlaceKey:'place-2'}});
+    assert.equal(expanded.entities.filter(entity=>entity.displayName==='甲城').length,2);
+    assert.ok(expanded.foundationPatch.facts.some(fact=>fact.kind==='containment'&&fact.placeEntityId===id(6)));
+  });
+  await t.test('人工顶层null',async()=>{
+    const manual={...emptyPlaceWorkspace(id(90)),placesByEntityId:{[id(1)]:{parentEntityId:null,scopes:{parentEntityId:{knownThroughFloorId:id(93),coveredFloorIds:[id(93)],coveredItemIds:[]}}}}};
+    const {expanded,workspace}=await run({entities:[seed(1,'甲城')],child:{name:'甲城',mapLevel:'city'},workspace:manual});
+    assert.equal(expanded.entities.filter(entity=>entity.displayName==='甲城').length,1);
+    assert.equal(foundation.projectPlaceParentLinks([],workspace,new Map()).get(id(1)).parents.size,0);
+  });
+});

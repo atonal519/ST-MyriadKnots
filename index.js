@@ -367,7 +367,9 @@ v3RecallRuntime = createV3RecallRuntime({
 const privateRecallDiagnostics = createPrivateRecallDiagnostics({
   client: createBackendClient({ headers: () => hostContext()?.getRequestHeaders?.() ?? {}, timeoutMs: 5000 }),
   recallRuntime: v3RecallRuntime, vectorRuntime: vectorIndex, session, isEnabled: settings.isEnabled,
-  memoryRuntime: v3MemoryRuntime, backendDiagnosticProvider: () => backendClient.getDiagnosticSnapshot(),
+  memoryRuntime: v3MemoryRuntime, backendDiagnosticProvider: () => ({ ...backendClient.getDiagnosticSnapshot(), coreCache: {
+    ...(coreRecordCache?.getStats?.() ?? { available: false }), enabled: Boolean(coreRecordCache),
+  } }),
 });
 if (globalThis.location?.origin) void privateRecallDiagnostics.start();
 globalThis.addEventListener?.('beforeunload', privateRecallDiagnostics.dispose, { once: true });

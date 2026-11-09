@@ -169,3 +169,34 @@ test('旧远端目录没有本丸时保内置专用ID并读取已批准本地SVG
  const id='palace-courtyard-honmaru',assets={...QIANCHUANG_MAP_ASSETS},calls=[],rows=Object.values(assets).filter(a=>a.id!==id),client=catalogModule.createQianchuangMapCatalog({genericAssets:assets,cityAssets:{...CITY_MAPS},sanitizeSvg:s=>s,fetchImpl:async url=>{calls.push(url);return url.endsWith('/maps-library/catalog.json')?response(rows):response({cities:Object.values(CITY_MAPS)});}});
  await client.prepare();assert.equal(assets[id],QIANCHUANG_MAP_ASSETS[id]);let local=0;const svg=readFileSync(new URL('../assets/maps-library/'+assets[id].file,import.meta.url),'utf8');assert.equal(await client.load('generic',assets[id],async()=>{local++;return svg;}),svg);assert.equal(local,1);assert.equal(calls.length,2);
 });
+
+test('远端旧长方形同ID目录沿新本地方图读取，新长方图不加入候选',async()=>{
+ const generic=structuredClone(QIANCHUANG_MAP_ASSETS['old-town-plain']),city=structuredClone(CITY_MAPS.beijing),calls=[];
+ const oldGeneric={...generic,width:800,height:500,sha256:'9b4278a56b7119a34351b4406832bd75d65ec768d3296cf353c11818864fe549'};
+ const oldCity={...city,width:1000,height:1122,sha256:'907fff302b4bf375cd3c25eda6a50f4c8404620b81fc1d5cdade6d5cee166dc2'};
+ const genericAssets={[generic.id]:generic},cityAssets={[city.id]:city};
+ const client=catalogModule.createQianchuangMapCatalog({genericAssets,cityAssets,sanitizeSvg:value=>value,
+  fetchImpl:async url=>{calls.push(url);return response(url.includes('maps-real')?{cities:[oldCity,{...oldCity,id:'rectangular-city',file:'rectangular-city.svg'}]}:[oldGeneric,{...oldGeneric,id:'rectangular-town',file:'rectangular-town.svg'}]);},
+ });
+ await client.prepare();
+ assert.equal(await client.load('generic',generic,async()=>'local-square-town'),'local-square-town');
+ assert.equal(await client.load('city',city,async()=>'local-square-city'),'local-square-city');
+ assert.equal(calls.length,2);assert.deepEqual(Object.keys(genericAssets),[generic.id]);assert.deepEqual(Object.keys(cityAssets),[city.id]);
+});
+
+test('真实城市方形画幅与投影边界同步，可见槽与分区始终落在画幅内',()=>{
+ const cities=JSON.parse(readFileSync(new URL('../assets/maps-real/catalog.json',import.meta.url))).cities;
+ for(const city of cities){
+  assert.equal(city.width,city.height,city.id);
+  const svg=readFileSync(new URL('../assets/maps-real/'+city.file,import.meta.url),'utf8');
+  assert.ok(svg.includes(`viewBox="0 0 ${city.width} ${city.height}"`),city.id);
+  assert.equal(digest(svg),city.sha256,city.id);
+  const {scale,translate}=city.projection;
+  const project=([lon,lat])=>[lon*Math.PI/180*scale+translate[0],-Math.log(Math.tan(Math.PI/4+lat*Math.PI/360))*scale+translate[1]];
+  const [west,south,east,north]=city.bounds,topLeft=project([west,north]),bottomRight=project([east,south]);
+  assert.ok(Math.abs(topLeft[0])<1e-6&&Math.abs(topLeft[1])<1e-6,city.id);
+  assert.ok(Math.abs(bottomRight[0]-city.width)<1e-6&&Math.abs(bottomRight[1]-city.height)<1e-6,city.id);
+  for(const point of [...city.slots,...city.groups.flatMap(group=>group.slots)])assert.ok(point.every(value=>value>=5&&value<=95),city.id);
+  for(const {labelBox:b}of city.groups)assert.ok(b.x>=0&&b.y>=0&&b.x+b.w<=100&&b.y+b.h<=100,city.id);
+ }
+});

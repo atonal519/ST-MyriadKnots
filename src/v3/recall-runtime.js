@@ -51,7 +51,8 @@ export function recallReceiptSelectionLimits(strategyVersion) {
   return EXPANDED_RECALL_SELECTION_STRATEGIES.has(strategyVersion) ? EXPANDED_RECALL_RECEIPT_LIMITS : LEGACY_RECALL_RECEIPT_LIMITS;
 }
 // 单次来源准备共用一个期限覆盖身份、root、读取与投影；期限内结束仍须完成后续来源版本核验。
-const DEFAULT_PREPARATION_TIMEOUT_MS = 8000;
+const DEFAULT_PREPARATION_TIMEOUT_MS = 120000;
+const AUXILIARY_PREPARATION_TIMEOUT_MS = 8000;
 const RECALL_PRIORITY_STATUSES = new Set(['missing', 'empty', 'invalid', 'applied', 'timeGuard']);
 const safePriorityKeys = values => Array.isArray(values) && values.length <= 8
   && values.every(key => typeof key === 'string' && /^[RC]\d{1,4}$/u.test(key))
@@ -1317,7 +1318,30 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const timeout = Symbol('memoryPreparationTimeout'), stale = Symbol('memoryPreparationStale');
     let timer = null, closed = false, stepStarted = null, abortListener, auxiliaryFallback = null;
     let auxiliaryProjection = { unavailableSources: ['people', 'places'] };
-    const readAuxiliary = () => readAuxiliaryProjection(value => { if (!closed) auxiliaryProjection = value; });
+    const preparationController = new AbortController();
+    const readAuxiliary = async () => {
+      if (typeof identityProjectionProvider !== 'function') return null;
+      let partial = { unavailableSources: ['people', 'places'] };
+      let accepting = true, auxiliaryTimer, auxiliaryAbort;
+      try {
+        return await Promise.race([
+          readAuxiliaryProjection(value => { if (accepting && !closed) auxiliaryProjection = partial = value; }).then(value => {
+            if (accepting && !closed && value) auxiliaryProjection = value;
+            return value;
+          }),
+          new Promise(resolve => { auxiliaryTimer = setTimeout(() => resolve(partial),
+            Math.min(AUXILIARY_PREPARATION_TIMEOUT_MS, Math.max(0, budgetMs - (Date.now() - started)))); }),
+          new Promise(resolve => {
+            auxiliaryAbort = () => resolve(partial);
+            preparationController.signal.addEventListener('abort', auxiliaryAbort, { once: true });
+          }),
+        ]);
+      } finally {
+        accepting = false;
+        clearTimeout(auxiliaryTimer);
+        preparationController.signal.removeEventListener('abort', auxiliaryAbort);
+      }
+    };
     // 最终fresh核验只留来源版本与阶段，不复制材料；这份诊断不参与来源比较。
     const sourceVerification = sourceToVerify ? { phase: 'commit', mode: fresh ? 'fresh' : 'cached', step: 'root', sourceStatus: sourceToVerify.status,
       preparationStatus: null, rootStatus: null, rootVerified: null, selectedSource: sourceVersion(sourceToVerify), checkedRoot: null } : null;
@@ -1328,7 +1352,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     };
     const check = () => {
       if (operation && (operation.token !== epoch || operation.controller.signal.aborted)) throw stale;
-      if (closed || Date.now() - started >= budgetMs) throw timeout;
+      if (closed || Date.now() - started >= budgetMs) { preparationController.abort(timeout); throw timeout; }
     };
     const step = async (stage, read) => {
       check(); timing.stage = stage; stepStarted = Date.now();
@@ -1358,8 +1382,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         if (rootError) throw rootError;
       }
       if (sourceToVerify && matchesSourceRoot(sourceToVerify, latestRoot)) {
-        auxiliaryFallback = () => applyAuxiliaryProjection(sourceToVerify, auxiliaryProjection);
-        const projection = await readAuxiliary();
+        auxiliaryFallback = () => {
+          updateSourceVerification({ rootVerified: true });
+          return applyAuxiliaryProjection(sourceToVerify, auxiliaryProjection);
+        };
+        const projection = typeof identityProjectionProvider === 'function' ? await step('identity', readAuxiliary) : null;
         updateSourceVerification({ sourceStatus: sourceToVerify.status, rootVerified: true, step: 'root' });
         if (projection && typeof prepareMemory === 'function') {
           const prepared = await step('prepare', () => prepareMemory({ preferCached: true, rootResult: latestRoot, allowRefresh: false }));
@@ -1378,13 +1405,18 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         // 已确认尚未建立记忆时，没有可投影的记录；不再触发依赖身份的存储读取。
         if (prepared?.status === 'uninitialized') return prepared;
       }
-      if (prepared?.status === 'ready' && prepared.reachable?.root) {
-        auxiliaryFallback = async () => isolateRecallAuxiliarySources(await projectRecallSource(prepared.reachable, now,
-          Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }), snapshot, sanitizerSnapshot, hasRealtimeOrigin(),
-          auxiliaryProjection), auxiliaryProjection);
-      } else if (typeof identityProjectionProvider === 'function') {
-        const base = await step('read', () => sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin() }));
-        if (base?.status === 'ready') auxiliaryFallback = () => applyAuxiliaryProjection(base, auxiliaryProjection);
+      const preparedReachable = prepared?.status === 'ready' ? prepared.reachable : null;
+      if (preparedReachable?.root && (!sourceToVerify || preparedReachable.checkpoint?.id === latestRoot?.data?.headCheckpointId
+        && preparedReachable.rootRevision === latestRoot?.revision
+        && preparedReachable.root.chatId === latestRoot?.data?.chatId
+        && preparedReachable.root.narrativeGeneration === latestRoot?.data?.narrativeGeneration
+        && preparedReachable.root.headCheckpointId === latestRoot?.data?.headCheckpointId
+        && preparedReachable.root.sourceSnapshotFingerprint === latestRoot?.data?.sourceSnapshotFingerprint)) {
+        auxiliaryFallback = () => {
+          if (sourceToVerify) updateSourceVerification({ rootVerified: true });
+          return projectRecallSource(preparedReachable, now, Object.freeze({ reachableReads: 0, exitPoint: 'validatedSnapshot' }),
+            snapshot, sanitizerSnapshot, hasRealtimeOrigin(), auxiliaryProjection);
+        };
       }
       const identityProjection = await step('identity', readAuxiliary);
       if (prepared) {
@@ -1393,7 +1425,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         } else if (['disabled', 'stale'].includes(prepared?.status)) return prepared;
       }
       if (!result) {
-        result = await step('read', () => sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection }));
+        result = await step('read', () => sourceReader({ store, now, hostSnapshot: snapshot, sanitizerOptions: sanitizerSnapshot, realtimeOrigin: hasRealtimeOrigin(), identityProjection: identityProjection?.data ?? identityProjection, signal: preparationController.signal }));
         if (typeof prepareMemory === 'function' && !['ready', 'stale'].includes(result?.status) && !result?.error) {
           result = Object.freeze({ status: prepared?.status === 'error' ? 'unavailable' : prepared?.status ?? 'unavailable', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparation' }) });
         }
@@ -1412,15 +1444,20 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (sourceToVerify) updateSourceVerification({ sourceStatus: result?.status ?? 'unavailable', rootVerified: canReadRoot ? (matchesSourceRoot(result, latestRoot) ? true : false) : null });
       return applyAuxiliaryProjection(result, identityProjection);
     };
+    const finishAuxiliaryFallback = async () => {
+      if (operation && (operation.token !== epoch || operation.controller.signal.aborted)) return Object.freeze({ status: 'stale' });
+      const value = await auxiliaryFallback();
+      return operation && (operation.token !== epoch || operation.controller.signal.aborted) ? Object.freeze({ status: 'stale' }) : value;
+    };
     let result;
     try {
       // 全部准备等待共用期限；同步执行仍可能延后计时器。超时/取消后每个 await 边界阻止迟到分支启动后续读取。
-      result = await Promise.race([Promise.resolve().then(run), new Promise(resolve => { timer = setTimeout(() => resolve(timeout), budgetMs); }),
-        ...(operation ? [new Promise(resolve => { abortListener = () => resolve(stale); operation.controller.signal.addEventListener('abort', abortListener, { once: true }); })] : [])]);
-      if (result === timeout && timing.stage === 'identity' && auxiliaryFallback) result = await auxiliaryFallback();
+      result = await Promise.race([Promise.resolve().then(run), new Promise(resolve => { timer = setTimeout(() => { resolve(timeout); preparationController.abort(timeout); }, budgetMs); }),
+        ...(operation ? [new Promise(resolve => { abortListener = () => { resolve(stale); preparationController.abort(stale); }; operation.controller.signal.addEventListener('abort', abortListener, { once: true }); })] : [])]);
+      if (result === timeout && timing.stage === 'identity' && auxiliaryFallback) result = await finishAuxiliaryFallback();
       if (result === timeout || result === stale) result = Object.freeze({ status: result === timeout ? 'timeout' : 'stale', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: result === timeout ? 'memoryPreparationTimeout' : 'stale' }) });
     } catch (error) {
-      if (error === timeout && timing.stage === 'identity' && auxiliaryFallback) result = await auxiliaryFallback();
+      if (error === timeout && timing.stage === 'identity' && auxiliaryFallback) result = await finishAuxiliaryFallback();
       else result = error === timeout || error === stale
         ? Object.freeze({ status: error === timeout ? 'timeout' : 'stale', sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: error === timeout ? 'memoryPreparationTimeout' : 'stale' }) })
         : Object.freeze({ status: 'unavailable', error: Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_SOURCE_UNAVAILABLE', 120), message: clean(error?.message ?? '记忆准备失败。') }), sourceReadAttempts: Object.freeze({ reachableReads: 0, exitPoint: 'memoryPreparationFailed' }) });

@@ -20,7 +20,7 @@ function geometryValid(asset, kind) {
 }
 function descriptorValid(asset, kind) {
   return asset && /^[a-z0-9][a-z0-9-]*$/u.test(asset.id) && /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.svg$/u.test(asset.file)
-    && typeof asset.label === 'string' && asset.label.trim() && Number.isFinite(asset.width) && asset.width > 0 && Number.isFinite(asset.height) && asset.height > 0
+    && typeof asset.label === 'string' && asset.label.trim() && Number.isFinite(asset.width) && asset.width > 0 && Number.isFinite(asset.height) && asset.height === asset.width
     && /^[a-f0-9]{64}$/u.test(asset.sha256) && (kind === 'city' || asset.family !== 'town' && validQianchuangMapStyle(asset.family) && validQianchuangMapLayout(asset.layout, asset.family));
 }
 function metadataFor(row, kind, bundled) {

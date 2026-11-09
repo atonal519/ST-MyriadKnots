@@ -230,7 +230,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       if (negotiate) await negotiateCapabilities();
       if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       if (capabilities?.recordBatchRead) {
-        const body = await request(recordBatchKey(collection), { method: 'POST', body: JSON.stringify({ recordIds }), signal }, { method: 'POST', recordType: 'collection' });
+        const body = await request(recordBatchKey(collection), { method: 'POST', body: JSON.stringify({ recordIds }), signal }, { method: 'POST', recordType: 'collection' }, listTimeoutMs);
         return batchResponse(body, recordIds);
       }
       const results = new Array(recordIds.length); let cursor = 0, firstError = null;

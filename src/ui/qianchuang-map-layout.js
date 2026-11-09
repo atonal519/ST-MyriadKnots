@@ -41,7 +41,7 @@ function placeCampusSlots(ids,slots,pool,byId,used,fallback,labelBoxes=[]){
  return ids.map(id=>positions.get(id));
 }
 export function qianchuangMapLayout(basemap,groups,byId=null){
- const profile=QIANCHUANG_MAP_ASSETS[basemap]?.regions??QIANCHUANG_MAP_REGIONS[basemap]??QIANCHUANG_MAP_REGIONS.modern,aspect=QIANCHUANG_MAP_ASSETS[basemap]?QIANCHUANG_MAP_ASSETS[basemap].width/QIANCHUANG_MAP_ASSETS[basemap].height:basemap==='town'?590/540:1,named=groups.filter(g=>g.entityId),count=Math.min(5,named.length),anchors=QIANCHUANG_MAP_ASSETS[basemap]?.anchors??QIANCHUANG_MAP_ANCHORS[basemap]??QIANCHUANG_MAP_ANCHORS.modern;
+ const profile=QIANCHUANG_MAP_ASSETS[basemap]?.regions??QIANCHUANG_MAP_REGIONS[basemap]??QIANCHUANG_MAP_REGIONS.modern,aspect=QIANCHUANG_MAP_ASSETS[basemap]?QIANCHUANG_MAP_ASSETS[basemap].width/QIANCHUANG_MAP_ASSETS[basemap].height:1,named=groups.filter(g=>g.entityId),count=Math.min(5,named.length),anchors=QIANCHUANG_MAP_ASSETS[basemap]?.anchors??QIANCHUANG_MAP_ANCHORS[basemap]??QIANCHUANG_MAP_ANCHORS.modern;
  const placements=QIANCHUANG_MAP_ASSETS[basemap]?.family==='campus'?anchors.placements:null,used=[];
  const labelOnly=named.length>0&&named.every(group=>!group.siteIds.length)&&groups.some(group=>!group.entityId&&group.siteIds.length);
  const directCount=groups.filter(g=>!g.entityId).reduce((sum,g)=>sum+g.siteIds.length,0),reserve=count>0&&directCount>anchors.neutral.length,faceCount=reserve?Math.min(5,count+1):count;

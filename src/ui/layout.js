@@ -10,7 +10,8 @@ const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, v
 const viewportSize = (width, height) => ({ width: Math.max(0, Number(width) || 0), height: Math.max(0, Number(height) || 0) });
 
 export function mobilePanelRect(width, height, safeTop = 0, safeBottom = 0) {
-  const top = Math.max(40, safeTop), bottom = Math.max(40, safeBottom);
+  const verticalMargins = Math.max(40, safeTop) + Math.max(40, safeBottom);
+  const top = Math.max(20, safeTop), bottom = verticalMargins - top;
   return { left: 10, width: Math.max(0, width - 20), right: 10, top, height: Math.max(0, height - top - bottom), bottom };
 }
 
@@ -41,7 +42,7 @@ export function desktopPanelPosition(width, height, panelWidth, panelHeight, sav
   const minimumTop = Math.min(PANEL_SAFETY_MARGIN, availableY);
   const maximumTop = Math.max(minimumTop, availableY - PANEL_SAFETY_MARGIN);
   const defaultLeft = clamp(availableX - 20, minimumLeft, maximumLeft);
-  const defaultTop = clamp(80, minimumTop, maximumTop);
+  const defaultTop = clamp(70, minimumTop, maximumTop);
   return {
     left: clamp(finite(saved?.left) ? Number(saved.left) : defaultLeft, minimumLeft, maximumLeft),
     top: clamp(finite(saved?.top) ? Number(saved.top) : defaultTop, minimumTop, maximumTop),

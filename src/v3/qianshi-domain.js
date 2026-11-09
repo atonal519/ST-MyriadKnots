@@ -13,7 +13,7 @@ export const QIANSHI_CANDIDATE_CHARACTER_BUDGET = 24000;
 export const QIANSHI_PROGRESS_CHARACTER_BUDGET = 3200;
 export const QIANSHI_HISTORY_INPUT_TOKENS = 70000;
 export const QIANSHI_HISTORY_OUTPUT_TOKENS = 30000;
-export const QIANSHI_RECALL_PROJECTION_VERSION = 5;
+export const QIANSHI_RECALL_PROJECTION_VERSION = 6;
 export const QIANSHI_RECALL_PENDING_HEADER = '[相关跟进事项]';
 export const QIANSHI_RECALL_LEGACY_PENDING_HEADER = '[当前待接续]';
 const QIANSHI_RECALL_PENDING_HEADERS = new Set([QIANSHI_RECALL_PENDING_HEADER, '[相关未完事项]', QIANSHI_RECALL_LEGACY_PENDING_HEADER]);
@@ -352,6 +352,40 @@ export function qianshiDeletedEvents(reachable) {
   });
 }
 
+// 273复核没有独立存储标记。只读重算其确定性ID，不能按同名标题或任意说明隐藏剧情。
+export async function annotateQianshiFollowingReviews(reachable) {
+  if (!reachable?.root) return reachable;
+  const rows = activeMemories(reachable), floors = new Map((reachable.floors ?? []).map(floor => [floor.id, floor]));
+  const events = new Map(rows.flatMap(({ memory }) => (memory.qianshiDelta?.events ?? []).map(event => [event.id, event])));
+  const ids = [], deletedIds = new Set(rows.flatMap(({ memory }) => memory.qianshiDelta?.deletedEventIds ?? []));
+  for (const { memory } of rows) for (const event of memory.qianshiDelta?.events ?? []) {
+    if (deletedIds.has(event.id) || event.continuesFromEventIds?.some(id => deletedIds.has(id))) continue;
+    const manual = memory.qianshiDelta.manualEventOverrides?.find(override => override.eventId === event.id);
+    if (memory.qianshiDelta.manualEventIds?.includes(event.id) || manual && ['title', 'description', 'object', 'people', 'storyTime', 'scheduledTime'].some(key => Object.hasOwn(manual, key))) continue;
+    const match = String(event.description ?? '').normalize('NFKC').match(/^跟进复核\(截至第 ([0-9]+) 个 AI 楼\):/u);
+    if (!match || !event.matterId || !event.updatesMatter || typeof event.following !== 'boolean'
+      || event.continuesFromEventIds?.length !== 1 || floors.get(event.sourceFloorId)?.assistantSeq !== Number(match[1])) continue;
+    const prior = events.get(event.continuesFromEventIds[0]);
+    if (!prior?.updatesMatter || prior.matterId !== event.matterId
+      || !memory.qianshiDelta.relations.some(relation => relation.type === 'progress' && relation.fromEventId === prior.id && relation.toEventId === event.id)) continue;
+    const statuses = manual && Object.hasOwn(manual, 'status') ? ['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown'] : [event.status];
+    for (const status of statuses) if (event.id === await deterministicUuid(['qianshi-followup-v1', event.sourceFloorId, event.matterId, prior.id, status, event.following])) {
+      ids.push(event.id); break;
+    }
+  }
+  if (Array.isArray(reachable.followingReviewEventIds) && reachable.followingReviewEventIds.length === ids.length
+    && ids.every((id, index) => reachable.followingReviewEventIds[index] === id)) return reachable;
+  return { ...reachable, followingReviewEventIds: ids };
+}
+
+function narrativeQianshiEvent(event, events) {
+  const seen = new Set();
+  while (event?.followingReviewOfEventId && !seen.has(event.id)) {
+    seen.add(event.id); event = events.get(event.followingReviewOfEventId);
+  }
+  return event;
+}
+
 export function projectQianshiGraph(reachable, { identityProjection = null, progressCharacters = QIANSHI_PROGRESS_CHARACTER_BUDGET,
   calendar = reachable?.calendar ?? null, partition = null } = {}) {
   const graph = new MultiDirectedGraph({ allowSelfLoops: false });
@@ -366,6 +400,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const danglingRelations = [], danglingContinuations = [];
   const legacyReviewConflicts = [];
   const eventById = new Map();
+  const followingReviewIds = new Set(reachable?.followingReviewEventIds ?? []);
   const eventMemoryFloorById = new Map();
   const relationById = new Map();
   const matterEvents = new Map();
@@ -405,6 +440,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
     const eventData = structuredClone(raw);
     delete eventData.important;
+    if (followingReviewIds.has(raw.id)) eventData.followingReviewOfEventId = raw.continuesFromEventIds[0];
     if(memory.qianshiDelta?.manualEventIds?.includes(raw.id)){eventData.manuallyCreated=true;eventData.timeManuallyEdited=true;}
     const manualEventOverride = memory.qianshiDelta?.manualEventOverrides?.find(item => item.eventId === raw.id);
     if (manualEventOverride) {
@@ -564,7 +600,7 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
     const advancing = values.filter(event => event.updatesMatter);
     const { records, current } = deriveQianshiLine(values, sourceIndex);
     // 历史进展边只作证据；事项状态取最后一条有效接续记录（无接续时取最后记录），人工整线状态优先。
-    const representative = current ?? records.at(-1);
+    const representative = narrativeQianshiEvent(current ?? records.at(-1), eventById) ?? records.at(-1);
     const origin = [...(advancing.length ? advancing : records)].sort((left, right) => left.assistantSeq - right.assistantSeq || left.id.localeCompare(right.id))[0];
     const synthetic = values.every(event => event.matterId === null);
     const trackingOverride = synthetic ? null : trackingOverrides.has(matterId) ? trackingOverrides.get(matterId) : null;
@@ -574,10 +610,10 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       || current.statusManuallyEdited && TERMINAL_STATUSES.has(current.status))
       ? false : trackingOverride ?? current.following ?? !TERMINAL_STATUSES.has(currentStatus)) : false;
     matterDtos.push(frozen({ matterId, synthetic, title: representative.title, object: representative.object, status: currentStatus,
-      manualStatusOverride, currentStatusManuallyEdited: Boolean(current?.statusManuallyEdited), currentEventId: current?.id ?? null, trackingOverride, following,
+      manualStatusOverride, currentStatusManuallyEdited: Boolean(current?.statusManuallyEdited), currentEventId: current?.id ?? null, currentNarrativeEventId: representative?.id ?? null, trackingOverride, following,
       people: frozen(representative.people.map(person => frozen({ ...person }))), latestEventIds: frozen(current ? [current.id] : []),
       recordIds: frozen(records.map(event => event.id)), eventIds: frozen(records.map(event => event.id)),
-      sourceFloorId: representative.sourceFloorId, sourceAssistantSeq: representative.assistantSeq,
+      sourceFloorId: current?.sourceFloorId ?? representative.sourceFloorId, sourceAssistantSeq: current?.assistantSeq ?? representative.assistantSeq,
       storyTime: representative.storyTime, scheduledTime: representative.scheduledTime, description: representative.description,
       origin: frozen({ eventId: origin.id, title: origin.title, description: origin.description, storyTime: origin.storyTime, scheduledTime: origin.scheduledTime,
         sourceFloorId: origin.sourceFloorId, sourceAssistantSeq: origin.assistantSeq, ...(origin.manuallyCreated?{manuallyCreated:true}:{}) }) }));
@@ -782,7 +818,21 @@ function timelineSegmentLabel(segment, groups) {
 
 // 完整年表可将同一具名纪年的数字年月日放在同一排序域；召回仍保留原时间身份分组。
 function fullPageTimelineTime(event, calendar = null) {
-  const view = recallTimelineTime(event, calendar), identity = view.time?.monthIdentity;
+  let view = recallTimelineTime(event, calendar);
+  if (!view.time?.date) {
+    const raw = String(event.storyTime || event.parsedStoryTime?.raw || '').normalize('NFKC').trim();
+    const separator = STORY_TIME_RANGE.exec(raw), start = separator ? raw.slice(0, separator.index).trim() : raw;
+    const prefix = start.match(/^([^，,。：:;；!?！？\n]+?年\s*[^，,。：:;；!?！？\n]+?月\s*(?:初)?[0-9零〇一二两兩三四五六七八九十拾廿卄卅卌]+(?:日|号|號)?)(.*)$/u);
+    // 只为完整年表保明确日期；未识别的时刻后缀不参与钟点排序。
+    if (prefix && !/^(?:大约|大約|大概|约莫|约|約)/u.test(start)
+      && !/^[\s，,（(]*(?:(?:之|以)?[前后後]|左右|上下|大约|大約|大概|约莫|约|約)/u.test(prefix[2])) {
+      const dated = recallTimelineTime({ ...event, storyTime: prefix[1] }, calendar);
+      if (Number.isInteger(dated.time?.year) && Number.isInteger(dated.time?.monthDay)) {
+        view = { ...dated, time: { ...dated.time, raw, minute: null, clock: null }, second: undefined };
+      }
+    }
+  }
+  const identity = view.time?.monthIdentity;
   if (!identity || view.time?.calendar) return view;
   try {
     const [era, year, monthName] = JSON.parse(identity);
@@ -797,7 +847,7 @@ function fullPageTimelineTime(event, calendar = null) {
 
 /** Full-page projection: one parsed key per event, with no pairwise event comparison. */
 export function projectQianshiTimeline(projection, calendar = null) {
-  const events = Array.isArray(projection?.events) ? projection.events : [];
+  const events = Array.isArray(projection?.events) ? projection.events.filter(event => !event.followingReviewOfEventId) : [];
   const views = new Map(events.map(event => [event.id, fullPageTimelineTime(event, calendar)]));
   const segmentFor = view => {
     const tuple = timelineDateTuple(view);
@@ -865,7 +915,7 @@ function recallSelection(projection, queryContext) {
   const eventById = new Map(projection.events.map(event => [event.id, event]));
   const documents = [
     ...projection.matters.filter(matter => !matter.synthetic).map(matter => ({ id: `matter:${matter.matterId}`, text: relevanceText(matter) })),
-    ...projection.events.map(event => ({ id: `event:${event.id}`, text: relevanceText(event) })),
+    ...projection.events.filter(event => !event.followingReviewOfEventId).map(event => ({ id: `event:${event.id}`, text: relevanceText(event) })),
   ];
   const ranked = rankRecallDocuments({ documents, queries: recallQueries(queryContext) });
   const rankById = new Map(ranked.map(item => [item.id, item]));
@@ -896,8 +946,9 @@ function recallSelection(projection, queryContext) {
     const matterDirect = matched(rankById.get(`matter:${matter.matterId}`));
     const seeds = matterDirect ? matter.eventIds : directSeeds.length ? directSeeds : [...(matter.latestEventIds ?? []), matter.origin?.eventId].filter(Boolean);
     const connected = connectedProgressEventIds(seeds, projection.relations);
-    const ordered = (matter.eventIds ?? []).filter(id => connected.has(id));
-    return representativeEventIds(ordered.length ? ordered : seeds, eventById);
+    const ordered = (matter.eventIds ?? []).filter(id => connected.has(id) && !eventById.get(id)?.followingReviewOfEventId);
+    const facts = seeds.map(id => narrativeQianshiEvent(eventById.get(id), eventById)?.id).filter(Boolean);
+    return representativeEventIds(ordered.length ? ordered : facts, eventById);
   };
   const independent = projection.events.filter(event => event.matterId === null && matched(eventMatches.get(event.id)))
     .sort((left, right) => (eventMatches.get(right.id)?.branchScores?.latestUser ?? 0) - (eventMatches.get(left.id)?.branchScores?.latestUser ?? 0)
@@ -964,8 +1015,8 @@ function projectSelectedQianshi(projection, eventIds, matterIds, characterBudget
   const events = new Map(projection.events.map(event => [event.id, event]));
   const matters = new Map(projection.matters.map(matter => [matter.matterId, matter]));
   const statusByMatter = recallCurrentMatterStatuses(projection, events);
-  const eventRows = [...new Set(eventIds ?? [])].map((id, order) => events.has(id)
-    ? eventRecallRow(events.get(id), statusByMatter.get(events.get(id).matterId) ?? null, order) : null).filter(Boolean);
+  const selectedEvents = [...new Map((eventIds ?? []).map(id => narrativeQianshiEvent(events.get(id), events)).filter(Boolean).map(event => [event.id, event])).values()];
+  const eventRows = selectedEvents.map((event, order) => eventRecallRow(event, statusByMatter.get(event.matterId) ?? null, order));
   const pendingRows = [...new Set(matterIds ?? [])].map(id => matters.get(id))
     .filter(matter => matter?.following && ['planned', 'inProgress', 'completed'].includes(matter.status))
     .map(matter => pendingRecallRow(matter, events.get(matter.currentEventId)?.assistantSeq ?? matter.sourceAssistantSeq));
@@ -1119,7 +1170,8 @@ function prepareQianshiCandidatesFromMatters(matters, { canonicalContent = '', p
   for (const { matter } of scored) {
     const key = `candidate-${request.length + 1}`;
     const value = { key, candidateType: 'matter', title: matter.title, status: matter.status, following: matter.following,
-      ...(matter.trackingOverride === true ? { tracking: 'following' } : {}), people: matter.people.map(person => person.name), object: matter.object,
+      ...(matter.trackingOverride === true ? { tracking: 'following' } : {}),
+      ...(matter.manualStatusOverride || matter.currentStatusManuallyEdited ? { manualStatus: true } : {}), people: matter.people.map(person => person.name), object: matter.object,
       origin: { title: matter.origin.title, description: matter.origin.description, storyTime: matter.origin.storyTime,
         scheduledTime: matter.origin.scheduledTime, sourceAssistantSeq: matter.origin.sourceAssistantSeq, ...(matter.origin.manuallyCreated?{source:'manual'}:{}) },
       latestProgress: { title: matter.title, description: matter.description, storyTime: matter.storyTime,
@@ -1204,6 +1256,7 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
         storyTime: projectedEvent.storyTime, scheduledTime: projectedEvent.scheduledTime, sourceFloorId: event.sourceFloorId, sourceAssistantSeq: assistantSeq, ...(projectedEvent.manuallyCreated?{manuallyCreated:true}:{}) },
         title: projectedEvent.title, object: projectedEvent.object, status: projectedEvent.status, currentEventId: null, people: [], latestEventIds: [], recordIds: [], eventIds: [], _frontier: [] };
       if (!prior) current.manualStatusOverride = delta.manualMatterStatusOverrides?.find(item => item.matterId === event.matterId)?.status ?? null;
+      current.trackingOverride = delta.trackingOverrides?.find(item => item.matterId === event.matterId)?.following ?? prior?.trackingOverride ?? null;
       state.matters.set(event.matterId, addLineRecord(current, projectedEvent));
       affected.add(event.matterId);
     }
@@ -1265,7 +1318,7 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
       const samePrefix = snapshot && snapshot.chatId === root.chatId && snapshot.generation === root.narrativeGeneration
         && snapshot.identityKey === identityKey(options) && snapshot.keys.length <= keys.length
         && snapshot.calendarIdentity === calendarIdentity(reachable)
-        && !extendsLegacyReviewPrefix
+        && !extendsLegacyReviewPrefix && !(reachable.followingReviewEventIds?.length && keys.length > snapshot.keys.length)
         && snapshot.keys.every((key, index) => key.every((part, partIndex) => part === keys[index][partIndex]));
       if (!samePrefix) {
         const projection = projector(reachable, { identityProjection: options.identityProjection, calendar: reachable?.calendar ?? null });
@@ -1483,9 +1536,19 @@ export function publicQianshiSnapshot(reachable, history = null, identityProject
   const partition = migrationPartition(reachable);
   const projection = projectQianshiGraph(reachable, { identityProjection, calendar, partition });
   const floorById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
+  const eventMap = new Map(projection.events.map(event => [event.id, event]));
+  const reviewsByFact = new Map();
+  for (const review of projection.events.filter(event => event.followingReviewOfEventId)) {
+    const fact = narrativeQianshiEvent(review, eventMap);
+    if (fact) reviewsByFact.set(fact.id, [...(reviewsByFact.get(fact.id) ?? []), { eventId: review.id,
+      sourceAssistantSeq: review.assistantSeq, sourceMessageIndex: floorById.get(review.sourceFloorId)?.hostLocator?.messageIndex ?? null,
+      status: review.status, following: review.following, description: review.description }]);
+  }
   const publicEvent = event => ({ id: event.id, matterId: event.matterId, title: event.title, description: event.description, status: event.status,
     actionStatus: event.actionStatus ?? null, statusManuallyEdited: event.statusManuallyEdited === true,
-    timeManuallyEdited: event.timeManuallyEdited === true, ...(event.manuallyCreated?{manuallyCreated:true}:{}),
+    timeManuallyEdited: event.timeManuallyEdited === true,
+    ...(event.followingReviewOfEventId ? { followingReviewOfEventId: event.followingReviewOfEventId } : {}),
+    ...(reviewsByFact.has(event.id) ? { followingReviews: reviewsByFact.get(event.id) } : {}), ...(event.manuallyCreated?{manuallyCreated:true}:{}),
     updatesMatter: event.updatesMatter, storyTime: event.storyTime, scheduledTime: event.scheduledTime, people: event.people.map(person => ({ ...person })), object: event.object,
     sourceFloorId: event.sourceFloorId, sourceFloorMemoryId: event.floorMemoryId, sourceAssistantSeq: event.assistantSeq,
     ...(partition.isFrozenFloor(event.sourceFloorId) ? { frozen: true, sourceOrigin: partition.originForFloor(event.sourceFloorId) } : {}),

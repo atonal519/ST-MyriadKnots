@@ -320,3 +320,24 @@ test('同范围与未分初正子时只允许同楼当下观察，隔楼不假�
   assert.match(compiled.changes[0].reviewAssessment.reason,/范围先后未明/); assert.equal(compiled.changes[0].projection,null);
   }
 });
+
+test('初刻正刻末刻完整消费，明确纪年日期保留且不提高钟点精度', () => {
+  for (const [suffix, bounds] of [['初刻', { min: 1140, max: 1200, kind: 'range' }], ['正刻', { min: 1200, max: 1260, kind: 'range' }], ['末刻', null]]) {
+    const raw = `大梁二十九年十二月十四戌时${suffix}`;
+    const time = projectTime(raw);
+    assert.equal(time.year, 29, raw); assert.equal(time.month, 12, raw); assert.equal(time.monthDay, 14, raw);
+    assert.equal(time.minute, null); assert.deepEqual(storyTimeBounds(time), bounds);
+    const fields = storyTimeFields(raw); assert.equal(fields.day, '14'); assert.equal(fields.clock, `戌时${suffix}`);
+    assert.equal(formatStoryTimeFields(fields), '大梁29年12月14日 戌时' + suffix);
+    assert.equal(projectTime(`戌时${suffix}`).date, null, '纯时辰不创建日期');
+    const range = raw + '至亥时', rangeFields = storyTimeFields(range);
+    assert.equal(rangeFields.year, '29'); assert.equal(rangeFields.day, '14'); assert.equal(rangeFields.clock, `戌时${suffix}至亥时`);
+    assert.equal(projectTime(range).date, null, '时间范围仍沿原合同保未知单点');
+    assert.equal(formatStoryTimeFields(rangeFields), `大梁29年12月14日 戌时${suffix}~亥时`);
+  }
+  for (const half of ['初', '正']) for (const quarter of ['一', '二', '三']) {
+    const time = projectTime(`昭元二年六月廿三卯时${half}${quarter}刻`);
+    assert.equal(time.year, 2); assert.equal(time.monthDay, 23); assert.ok(storyTimeBounds(time));
+  }
+  assert.equal(projectTime('大梁二十九年十二月二十一未时二刻').monthDay, 21);
+});

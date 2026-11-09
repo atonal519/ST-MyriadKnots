@@ -396,6 +396,11 @@ test('正文状态栏古法钟点与中文纪年由实际extractor入口完整�
   const value = inferCanonicalCurrentTime('<status><date>嘉靖三年正月初五</date><time>卯時</time></status>');
   assert.equal(value?.text, '嘉靖三年正月初五 卯時');
   assert.equal(inferCanonicalCurrentTime('<status><date>正月初五</date><time>卯时</time></status>')?.text,'正月初五 卯时');
+  for (const clock of ['戌时初刻', '戌时正刻', '戌时末刻']) {
+    const raw = `大梁二十九年十二月十四${clock}`;
+    assert.equal(inferCanonicalCurrentTime(`<status><date>大梁二十九年十二月十四</date><time>${clock}</time></status>`)?.text, `大梁二十九年十二月十四 ${clock}`);
+    assert.equal(inferCanonicalCurrentTime(raw)?.text, `大梁二十九年十二月十四 ${clock}`);
+  }
   for (const raw of ['任务尚未正式开始','人物张子正正在等候']) assert.equal(projectTime(`2026年10月23日 ${raw}`).clock,null,raw);
   assert.equal(inferCanonicalCurrentTime('2026年10月23日，任务尚未正式开始')?.text,'2026年10月23日');
   for (const raw of ['约辰时','辰时（左右）']) {

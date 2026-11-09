@@ -28,6 +28,7 @@ export function locatePlaceQuote(content, quote, { allowWhitespace = false, allo
 }
 import { projectVectorSources } from './vector-source.js';
 import { storedSourceUserInput } from './user-input-source.js';
+import { memorySourceFloorIds } from './memory-schema.js';
 
 
 export async function collectMissingPlaceSources({ entities, entityKeys, bodySources, floors, memoriesByFloor }) {
@@ -75,7 +76,7 @@ function paragraphContext(content, names, quotes) {
   return ranges.map(({start,end})=>({content:content.slice(start,end),offset:start}));
 }
 
-export async function collectPlaceOrganizationSources({entities,entityKeys,places,bodySources,contextSources=bodySources,floors,memoriesByFloor,parentFacts=[]}) {
+export async function collectPlaceOrganizationSources({entities,entityKeys,places,bodySources,contextSources=bodySources,floors,memoriesByFloor,parentFacts=[],resolveEntityId=id=>id}) {
   const keysByFloor=new Map(),available=new Set(floors.map(floor=>floor.id));
   const add=(floorId,ids)=>{
     if(!available.has(floorId))return;
@@ -88,6 +89,20 @@ export async function collectPlaceOrganizationSources({entities,entityKeys,place
     const ids=[fact.placeEntityId,fact.parentEntityId];
     for(const ref of fact.evidenceRefs??[])add(ref.floorId,ids);
     for(const ref of fact.source?[fact.source,...(fact.source.references??[])]:[])if(ref.kind==='body')add(ref.floorId,ids);
+  }
+  const coveredKeys=new Set([...keysByFloor.values()].flatMap(keys=>[...keys]));
+  // Library identities can lack a first-seen floor. Their saved mentions still
+  // locate the missing context without expanding places already covered above.
+  for(const memory of new Set(memoriesByFloor.values())){
+    const sourceIds=memorySourceFloorIds(memory);
+    for(const item of [...(memory.locations??[]),...Object.values(memory.spatialFacts??{}).filter(Array.isArray).flat()]){
+      const ids=[item.entityId,item.placeEntityId,item.parentEntityId,...(item.referencePlaceEntityIds??[])].map(resolveEntityId)
+        .filter(id=>entityKeys.has(id)&&!coveredKeys.has(entityKeys.get(id)));
+      if(!ids.length)continue;
+      const sourceFloorIds=item.evidenceRefs?.length?item.evidenceRefs.map(ref=>ref.floorId).filter(id=>sourceIds.includes(id))
+        :sourceIds.length===1?sourceIds:[];
+      for(const floorId of sourceFloorIds)add(floorId,ids);
+    }
   }
   const memories=[...new Map([...keysByFloor.keys()].flatMap(floorId=>{
     const memory=memoriesByFloor.get(floorId);return memory?[[memory.id,memory]]:[];

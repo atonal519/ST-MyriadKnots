@@ -1,6 +1,6 @@
 const BRANCHES = '子丑寅卯辰巳午未申酉戌亥';
-const QUARTER = '(?:[零〇一二三四五六七八九十初0-9]+刻)?';
-export const TRADITIONAL_CLOCK_PATTERN = `(?:[子丑寅卯辰巳午未申酉戌亥][时時][初正]?${QUARTER}|(?:(?<![\\p{L}\\p{N}])|(?<=[日号號约約]))[子丑寅卯辰巳午未申酉戌亥][初正]${QUARTER}(?=$|[^\\p{L}\\p{N}]|左右|前后|前後|上下|至|到))`;
+const QUARTER = '(?:[零〇一二三四五六七八九十初0-9]+刻|(?<=[初正末])刻)?';
+export const TRADITIONAL_CLOCK_PATTERN = `(?:[子丑寅卯辰巳午未申酉戌亥][时時](?:[初正]|末(?=刻))?${QUARTER}|(?:(?<![\\p{L}\\p{N}])|(?<=[日号號约約]))[子丑寅卯辰巳午未申酉戌亥](?:[初正]|末(?=刻))${QUARTER}(?=$|[^\\p{L}\\p{N}]|左右|前后|前後|上下|至|到))`;
 const normalize = value => String(value ?? '').replace(/[０-９]/gu, char => String(char.charCodeAt(0) - 0xFF10)).replace(/：/gu, ':');
 const APPROXIMATE_PREFIX = /(?:大约|大約|大概|约莫|约|約)\s*$/u;
 const APPROXIMATE_SUFFIX = /^\s*(?:左右|前后|前後|上下|[（(]\s*(?:左右|前后|前後|上下|约|約)\s*[）)])/u;
@@ -21,7 +21,7 @@ export function parseStoryClockSpan(value) {
         minute: hour * 60 + Number(numeric[3]), clock: `${String(hour).padStart(2, '0')}:${numeric[3]}`, traditional: false };
     }
   }
-  const pattern = /([子丑寅卯辰巳午未申酉戌亥])(?:[时時])?([初正])?(?:([零〇一二三四五六七八九十初0-9]+)刻)?/gu;
+  const pattern = /([子丑寅卯辰巳午未申酉戌亥])(?:[时時])?([初正]|末(?=刻))?(?:([零〇一二三四五六七八九十初0-9]+)刻|(?<=[初正末])刻)?/gu;
   for (const match of raw.matchAll(pattern)) {
     const marked = match[0].length > 1;
     if (!marked && !(raw.trim() === match[0] || /[\s，,:：日号號]$/u.test(raw.slice(0, match.index)) && /^(?:\s*(?:至|到|[~～—–-])|\s*$)/u.test(raw.slice(match.index + match[0].length)))) continue;
@@ -35,6 +35,7 @@ export function parseStoryClockSpan(value) {
     const quarter = match[3] === undefined ? null : ({ 零: 0, 〇: 0, 初: 0, 一: 1, 二: 2, 三: 3 })[match[3]] ?? (/^\d$/u.test(match[3]) ? Number(match[3]) : NaN);
     const ambiguousDate = match[1] === '子' && !half;
     let min = start + (half === '正' ? 60 : 0), max = min + (half ? 60 : 120);
+    if (half === '末') min = max = null;
     if (half === '正' && min === 1440) { min = 0; max = 60; }
     // 未注明初正的刻、越过该半时辰的刻，不猜成某一钟点。
     if (quarter !== null) {

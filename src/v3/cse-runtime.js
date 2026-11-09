@@ -1,3 +1,4 @@
+import { identityBriefFields } from './identity-brief.js';
 import { memoriesBySourceFloor, storedSourceUserInput } from './user-input-source.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
@@ -11,12 +12,12 @@ import {
 } from './cse-engine.js';
 import { sanitizeDiagnosticValue, sanitizeSensitiveText } from './safe-metadata.js';
 import {
-  buildEntityIdentityDirectory, deriveUserIdentityProjection, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection, reuseIdentityProjection,
+  buildEntityIdentityDirectory, compatibleIdentityDirectories, deriveUserIdentityProjection, entitiesThroughFloorIds, identityLabelKey, normalizeIdentityProjection, reuseIdentityProjection,
   projectCseStateIdentityReferences, projectFloorMemoryIdentityReferences, resolveIdentityEntityId,
 } from './entity-identity.js';
 import { captureCseRequestSources } from '../cse-source-selection.js';
 import { PREQUEL_METADATA_KEY, selectPrequel } from './recall-prequel.js';
-import { memorySourceFloorIds, validateEntityRecord } from './memory-schema.js';
+import { collectStateDeltaEntityIds, memorySourceFloorIds, validateEntityRecord } from './memory-schema.js';
 import { floorProvenanceForReachable, migrationPartition } from './migration-prefix.js';
 
 const emptyManifest = () => ({ floor: [], entity: [], event: [], claim: [], knowledge: [], episode: [], thread: [], state: [], anchor: [], reverseRef: [] });
@@ -167,7 +168,7 @@ async function dependencySnapshot(value, floorId, entities, previousState, coreU
     displayName: entry.displayName,
     identityBrief: identityBriefTargets.has(entry.entityId) ? entry.identityBrief ?? null : null,
     identityBriefSource: identityBriefTargets.has(entry.entityId) ? entry.identityBriefSource ?? null : null,
-    labels: [...entry.labels].map(label => [identityLabelKey(label), label]).sort((left, right) => left[0].localeCompare(right[0]) || left[1].localeCompare(right[1])),
+    labels: [...entry.labels].sort((left, right) => identityLabelKey(left).localeCompare(identityLabelKey(right)) || left.localeCompare(right)),
   })).sort((left, right) => left.entityId.localeCompare(right.entityId));
   return {
     chatId: value.root.chatId,
@@ -185,7 +186,14 @@ async function dependencySnapshot(value, floorId, entities, previousState, coreU
   };
 }
 
-const sameDependencySnapshot = (left, right) => Boolean(left && right && JSON.stringify(left) === JSON.stringify(right));
+function sameDependencySnapshot(left, right, result) {
+  if (!left || !right) return false;
+  const { identityDirectory: beforeDirectory, identityProjection: beforeProjection, ...before } = left;
+  const { identityDirectory: afterDirectory, identityProjection: afterProjection, ...after } = right;
+  if (JSON.stringify(before) !== JSON.stringify(after)) return false;
+  return compatibleIdentityDirectories({ beforeDirectory, afterDirectory, beforeProjection, afterProjection,
+    entityIds: [...collectStateDeltaEntityIds(result.delta), ...(result.identityBriefUpdates ?? []).map(update => update.entityId)] });
+}
 
 export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isEnabled = true, promptGuidance = () => '', processingPrompt = () => '', filterWorldInfoSources = sources => sources, sanitizerOptions = () => ({}), onGraphCommitted = null, onFailureHint = null, commitGate = task => task(), captureBusinessIdentity = null, storeForIdentity = null, identityProjectionProvider = null, now = () => new Date(), newUuid = newIdentityUuid, logger = console } = {}) {
   if (!store || ['readReachable', 'putRecord', 'commitRoot', 'recordKey'].some(name => typeof store[name] !== 'function')) throw new TypeError('V3 CSE store 无效');
@@ -641,10 +649,14 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const dependencyPreviousState = dependencyPrecedingDeltas.length
       ? await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline?.id, floors: dependencyPrecedingFloors, floorMemories: dependencyPrecedingMemories, stateDeltas: dependencyPrecedingDeltas, now: nowIso(now) })
       : null;
+    const currentProjection = deriveUserIdentityProjection({ entities: [...dependencyEntitiesById.values()], baseline: current.baseline,
+      identityProjection: typeof identityProjectionProvider === 'function'
+        ? await identityProjectionProvider(operation.targetIdentity, { includePlaces: false }) : currentIdentityProjection() });
     const coreUserEditedSubjectEntityIds = [...new Set((await coreUserEditedSubjects(dependencyPrecedingDeltas, targetStore, operation.coreUserEditedSubjectReadCache))
-      .map(id => resolveIdentityEntityId(id, operation.identityProjection)))];
-    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, coreUserEditedSubjectEntityIds, operation.identityProjection, operation.identityBriefTargetIds);
-    if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency)) throw errorWith('V3_CSE_STALE', '此前楼层、摘要或人物资料已变化，请刷新后重新分析。');
+      .map(id => resolveIdentityEntityId(id, currentProjection)))];
+    const currentDependency = await dependencySnapshot(current, operation.floorId, [...dependencyEntitiesById.values()], dependencyPreviousState, coreUserEditedSubjectEntityIds, currentProjection, operation.identityBriefTargetIds);
+    if (!sameDependencySnapshot(operation.dependencySnapshot, currentDependency, result)) throw errorWith('V3_CSE_STALE', '此前楼层、摘要或人物资料已变化，请刷新后重新分析。');
+    operation.identityProjection = currentProjection;
 
     const floorOrder = new Map(current.floors.map((item, index) => [item.id, index]));
     const deltas = filterReachableDeltas({ floors: current.floors, floorMemories: current.floorMemories, stateDeltas: current.stateDeltas })
@@ -654,6 +666,9 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     const entitiesById = new Map(current.entities.map(entity => [entity.id, entity]));
     for (const entity of roleEntities) if (!entitiesById.has(entity.id) && [current.baseline.userPersona.entityId, current.baseline.characterCard.entityId].includes(entity.id)) entitiesById.set(entity.id, entity);
     for (const update of result.identityBriefUpdates ?? []) {
+      const beforeProfile = operation.dependencySnapshot.identityDirectory.find(entry => entry.entityId === update.entityId);
+      const currentProfile = currentDependency.identityDirectory.find(entry => entry.entityId === update.entityId);
+      if (JSON.stringify(identityBriefFields(beforeProfile)) !== JSON.stringify(identityBriefFields(currentProfile))) continue;
       const target = entitiesById.get(update.entityId);
       if (!target || target.entityType !== 'person' || target.specialRole !== 'none' || typeof update.identityBrief !== 'string' || !update.identityBrief.trim()) continue;
       const entityId = await deterministicUuid(['v3-cse-entity-identity-update', target.id, floor.id, result.delta.id, update.identityBriefSource]);
