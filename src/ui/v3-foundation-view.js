@@ -173,7 +173,7 @@ const DIAGNOSTIC_PHASE = new Set(['preparing', 'migrating', 'loading', 'inspecti
 const DIAGNOSTIC_KIND = new Set(['manual', 'auto', 'unknown']);
 const DIAGNOSTIC_REVIEW_REASON = new Set(['missingRoot', 'indexNeedsReseal', 'stableCountMismatch', 'candidateCountMismatch', 'locatorMismatch', 'markerMismatch', 'fingerprintMismatch']);
 const DIAGNOSTIC_MARKER_STATUS = new Set(['none', 'valid', 'foreign', 'invalid']);
-const DIAGNOSTIC_BINDING_ISSUE = new Set(['markerConflict', 'duplicateMarker', 'duplicateBinding', 'markerRejected']);
+const DIAGNOSTIC_BINDING_ISSUE = new Set(['markerConflict', 'duplicateMarker', 'duplicateBinding', 'markerRejected', 'ambiguousLocatorCanonical', 'ambiguousFingerprint', 'archiveFloorMissing']);
 const VECTOR_RUNTIME_STATUS = new Set(['idle', 'building', 'ready', 'error']);
 const VECTOR_BUILD_STATUS = new Set(['building', 'ready', 'failed', 'cancelled', 'skipped']);
 const VECTOR_BUILD_PHASE = new Set(['source', 'cache', 'embedding', 'verification', 'save', 'complete']);
@@ -527,7 +527,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     stableCount: state?.stableCount ?? null, rememberedCount: state?.rememberedCount ?? null,
     unprocessedCount: state?.unprocessedCount ?? null, failedCount: state?.failedCount ?? null,
     pendingAssistantSeq: state?.pending?.assistantSeq ?? null, pendingMessageIndex: state?.pending?.messageIndex ?? null,
-    unregisteredCandidates: state?.unregisteredCandidates, consecutiveAssistantConfirmation: state?.consecutiveAssistantConfirmation,
+    unregisteredCandidates: state?.unregisteredCandidates, consecutiveAssistantConfirmation: state?.consecutiveAssistantConfirmation, bindingIssues: state?.bindingIssues,
     lastExtractorError: state?.lastExtractorError,
     lastCseError: state?.lastCseError ? `${state.lastCseError.floorId ?? ''}|${state.lastCseError.code ?? ''}|${state.lastCseError.message ?? ''}|${state.lastCseError.lastFailedAt ?? ''}` : '',
     lastError: state?.lastError, lastAutoMemory: state?.lastAutoMemory });
@@ -552,7 +552,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (!floor) return;
     const userEdited = floor.summarySource === 'user' && floor.status === 'ready';
     view.card.className = `qqj-memory-card status-${floor.status}`;
-    view.statusNode.textContent = running ? workPhaseCopy(state) : userEdited ? '人工修订' : statusCopy(floor.status);
+    view.statusNode.textContent = running ? workPhaseCopy(state) : floor.sourceUnavailable ? '来源待核' : userEdited ? '人工修订' : statusCopy(floor.status);
     view.statusNode.className = `v3-memory-status${userEdited ? ' is-user' : ''}`;
   };
   const updateMemoryFloorStatuses = state => {
@@ -567,6 +567,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   const managementBusy = state => Boolean(workBusy(state) || managementState?.workBusy || ['deleting', 'failed'].includes(managementState?.status));
   const reviewCopy = state => {
     const reason = state?.reviewReason;
+    if (state?.memorySnapshotStatus === 'ready' && (state.bindingIssues?.length || state.floors?.some(floor => floor.sourceUnavailable))) {
+      return '异常楼已跳过，原记录保留。其余已确认楼可继续摘要。可在本页查看对应楼，或复制状态诊断。';
+    }
     const copy = ({ stableCountMismatch: '当前消息楼与已存记忆尚未同步。', markerMismatch: '有消息的记忆标记无法对应。', candidateCountMismatch: '有已存记忆楼尚未对应当前消息。', locatorMismatch: '有已存记忆楼的位置尚未对应。', fingerprintMismatch: '有消息与已存记录的正文版本依据不一致。', memoryExclusionChanged: '无需记录的楼标记尚未同步。', indexNeedsReseal: '记忆索引尚待同步。', missingRoot: '当前记忆记录尚未就绪。' })[reason?.code] || '当前记忆的对应关系尚未确认。';
     return copy + (managementBusy(state) || pluginActivity.busy ? '当前任务仍在进行，请等待结束后再刷新状态。'
       : '请点击“刷新状态”。');
@@ -806,6 +809,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         chatIdPresent: presenceDiagnostic(memory, 'chatId'),
         headCheckpointPresent: presenceDiagnostic(memory, 'headCheckpointId'),
         reviewReason: reviewReasonDiagnostic(memory?.reviewReason, memoryKnown),
+        bindingIssues: (memory?.bindingIssues ?? []).map(issue => ({ code: enumDiagnostic(issue.code, DIAGNOSTIC_BINDING_ISSUE),
+          messageIndex: countDiagnostic(issue.messageIndex), assistantSeq: countDiagnostic(issue.assistantSeq),
+          markerStatus: enumDiagnostic(issue.markerStatus, DIAGNOSTIC_MARKER_STATUS) })),
         activeRun: memoryKnown ? operationDiagnostic(memory.activeRun) : { present: 'unknown', phase: 'unknown' },
         lastError: errorDiagnostic(memory?.lastError, memoryKnown),
       },
@@ -1180,7 +1186,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const memory = floor.memory;
     const times = floorTimeDisplay(memory, floor) || '时间未明确';
     const timeNode = element('span', 'qqj-floor-time', times); timeNode.setAttribute('title', times);
-    const floorStatus = floor.frozen ? '来源归档 · 只读' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
+    const floorStatus = floor.frozen ? '来源归档 · 只读' : floor.sourceUnavailable ? '来源待核' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
     const statusNode = element('span', `v3-memory-status${floor.summarySource === 'user' && floor.status === 'ready' ? ' is-user' : ''}`, floorStatus);
     const chevron = element('span', 'qqj-memory-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
     const numberNode = element('strong', 'qqj-floor-number', title);
@@ -1197,6 +1203,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         const sourceName = typeof floor.sourceOrigin?.sourceHostChatId === 'string' ? floor.sourceOrigin.sourceHostChatId : '';
         body.append(element('p', 'settings-hint qqj-memory-source', `来源：${sourceName || '未记录'}；来源聊天的已保存资料在此只读展示。`));
       }
+      if (floor.sourceUnavailable) body.append(element('p', 'settings-hint', '本楼来源暂无法确认，自动任务已跳过，原记录保留。其余已确认楼可继续处理。'));
       if (memory) {
         const locations = (memory.locations ?? []).map((item, index) => locationLabelsByFloor.get(floor.floorId)?.[index] ?? item.name).filter(Boolean).join('、') || '未提取';
         const names = new Map((currentState.memoryEntities ?? []).flatMap(entity => [entity.entityId, ...(entity.memberEntityIds ?? [])].map(id => [id, entity.displayName])));
@@ -2363,7 +2370,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const body = element('div', 'qqj-management-drawer-body'), details = element('dl', 'v3-foundation-grid');
     if (feedback.includes('历史召回回执已独立处理')) details.append(row('最近读取结果', feedback));
     const rebuildCopy = ({ rebuilding: '正在重建', paused: '已暂停', waitingRealtime: '等待新楼', failed: '失败', caughtUp: '已追平', pendingRebuild: '等待开始', notReady: '覆盖待确认' })[state.rebuildStatus] ?? '尚未判断';
-    details.append(row('当前聊天编号', state.chatId), row('记忆状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('当前记忆快照', state.headCheckpointId), row('最近记忆错误', errorMessage(state.lastExtractorError) || errorMessage(state.lastError) || '无'), row('最近自动任务错误', errorMessage(state.lastAutomationError) || '无'), row('最近 CSE 错误', errorMessage(state.lastCseError) || '无')); body.append(details);
+    details.append(row('当前聊天编号', state.chatId), row('记忆状态', statusCopy(effectiveStatus(state))), row('待核对原因', reviewReasonCopy(state.reviewReason)), row('自动维护新楼', state.autoMemoryEnabled ? '已开启 · 每楼更新' : '已关闭'), row('历史重建', `${rebuildCopy} · ${state.rebuildCompletedCount ?? 0}/${state.rebuildTotalCount ?? state.stableCount ?? 0}`), row('CSE 待分析 / 失败', `${state.csePendingCount ?? 0} / ${state.cseFailedCount ?? 0}`), row('当前记忆快照', state.headCheckpointId), row('最近记忆错误', errorMessage(state.lastExtractorError) || errorMessage(state.lastError) || '无'), row('最近自动任务错误', errorMessage(state.lastAutomationError) || '无'), row('最近 CSE 错误', errorMessage(state.lastCseError) || '无'));
+    for (const issue of state.bindingIssues ?? []) details.append(row('来源待核', reviewReasonCopy({ ...issue, code: 'markerMismatch', bindingIssue: issue.code })));
+    body.append(details);
     const stateDiagnosticAction = element('div', 'qqj-ui-diagnostic-action');
     const copyState = element('button', 'secondary-action', '复制状态诊断'); copyState.type = 'button';
     copyState.addEventListener('click', () => { void copyStateDiagnostic(); });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { QIANSHI_RECALL_PROJECTION_VERSION, compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, orderQianshiLineRecords, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, projectQianshiTimeline, publicQianshiSnapshot } from '../src/v3/qianshi-domain.js';
+import { QIANSHI_RECALL_PROJECTION_VERSION, compileQianshiDelta, createQianshiCandidateIndex, effectiveQianshiDelta, hasUnfinishedQianshiHistory, orderQianshiLineRecords, prepareQianshiCandidates, prepareQianshiRecallCandidates, projectQianshiCandidateSelection, projectQianshiGraph, projectQianshiRecall, projectQianshiTimeline, publicQianshiSnapshot } from '../src/v3/qianshi-domain.js';
 import { projectTime, timeDistance, formatStoryTimeFields, storyTimeFields } from '../src/v3/time-engine.js';
 import { createExtractorEnvelope, runExtractorRequest } from '../src/v3/extractor.js';
 import { createPublicQianshiBridge } from '../src/v3/public-qianshi-bridge.js';
@@ -2469,4 +2469,24 @@ test('273已存复核按确定性身份冷读折回事实，状态及前缀有�
   assert.equal(projectQianshiGraph(statusEdited).matters[0].status, 'inProgress');
   assert.equal(statusEdited.followingReviewEventIds.length, 1, '纯人工状态继续生效，说明保持在原事实详情');
 
+});
+
+
+test('存量纯归线保护按已处理读取，混合错误与真实pending继续未完成，旧汇总pending不盖duplicate决定', async () => {
+  const source = floor('11111111-1111-4111-8111-111111111111', 1);
+  const base = await compileQianshiDelta({ floor: source, now: NOW, packet: { qianshi: { events: [{ key: 'old', title: '约定', description: '原约定。', status: 'planned', matter: true }], order: [] } } });
+  const reason = '1 条旧记录仍被范围外引用，归线结构沿用原值；有效状态和跟进判断已接收。';
+  const value = { qianshiDelta: { ...base, status: 'partial', reason } };
+  assert.equal(hasUnfinishedQianshiHistory(value), false);
+  assert.equal(hasUnfinishedQianshiHistory(value, true), true, '图降级仍阻止尾审');
+  value.qianshiDelta.reason += '；1 条旧记录缺少完整状态。';
+  assert.equal(hasUnfinishedQianshiHistory(value), true);
+  value.qianshiDelta.reason = reason;
+  const candidate = { candidateId: base.events[0].id, decision: 'duplicate', event: base.events[0], relations: [],
+    recommendedEventId: base.events[0].id, matchBasis: ['同一事件'] };
+  value.qianshiDelta.historyReview = { rawFingerprint: 'sha256:' + 'a'.repeat(64), priorStatus: 'partial', priorReason: null,
+    reconciliationStatus: 'pending', reconciliationReason: null, candidates: [candidate] };
+  assert.equal(hasUnfinishedQianshiHistory(value), false, 'duplicate已决，旧汇总pending不制造新缺口');
+  candidate.decision = 'pending';
+  assert.equal(hasUnfinishedQianshiHistory(value), true);
 });

@@ -4791,3 +4791,23 @@ test('整理启动TypeError短技术详情可复制，敏感URL和token整句隐
   detail = 'x'.repeat(600); assert.equal((await copy()).detail.length, 500);
   view.deactivate();
 });
+
+test('局部来源待核提示可继续健康楼，复制诊断包含各楼问题且面板不持续忙', async () => {
+  let copied;
+  const state = { status: 'needsReview', foundationStatus: 'ready', pluginEnabled: true, chatId: 'local-review',
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'needsReview', stableCount: 3, rememberedCount: 1,
+    rebuildStatus: 'partial', rebuildHasActionableWork: true, floors: [], cseFloors: [],
+    reviewReason: { code: 'markerMismatch', messageIndex: 1, markerStatus: 'foreign', bindingIssue: 'markerRejected' },
+    bindingIssues: [{ code: 'markerRejected', messageIndex: 1, markerStatus: 'foreign' },
+      { code: 'duplicateMarker', messageIndex: 3, markerStatus: 'valid' }] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    startHistoricalRebuild: async () => state };
+  const view = createV3FoundationView({ runtime, documentRef, navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  const container = new Node('main'); view.mount(container, { page: 'management' });
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /异常楼已跳过.*其余.*继续/u);
+  assert.equal(flatten(container).find(node => node.textContent === '继续补齐').disabled, false);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  const issues = JSON.parse(copied).foundation.bindingIssues;
+  assert.deepEqual(issues.map(issue => [issue.code, issue.messageIndex]), [['markerRejected', 1], ['duplicateMarker', 3]]);
+  view.deactivate();
+});

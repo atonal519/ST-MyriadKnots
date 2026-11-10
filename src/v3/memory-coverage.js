@@ -2,7 +2,7 @@ import { filterReachableDeltas } from './cse-engine.js';
 import { memorySourceFloorIds } from './memory-schema.js';
 import { isHostNarratorMessage, scanAssistantCandidates, selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
-import { matchFloorCandidates } from './floor-binding.js';
+import { matchFloorCandidates, unregisteredTailCandidates } from './floor-binding.js';
 import { migrationPartition, partitionScannedCandidates } from './migration-prefix.js';
 import { isMemoryExcludedFloor, isMemoryExcludedMessage } from './memory-exclusion.js';
 
@@ -46,11 +46,13 @@ export function diagnosticsWithRealtimeOrigin(diagnostics, realtimeOrigin = null
 }
 
 function captureHostGuard(snapshot, hostCandidates, hostProof = null) {
+  if (!hostProof) return null;
+  const confirmed = new Set([...hostProof.candidateByFloorId.values(), ...hostProof.unregistered]);
   const expectedFloorByCandidate = new Map();
   for (const [floorId, candidate] of hostProof?.candidateByFloorId ?? []) expectedFloorByCandidate.set(candidate, floorId);
   return Object.freeze({
     chatId: currentChatId(snapshot),
-    candidates: Object.freeze(hostCandidates.filter(candidate => candidate.archiveCandidate !== true).map(candidate => Object.freeze({
+    candidates: Object.freeze(hostCandidates.filter(candidate => candidate.archiveCandidate !== true && confirmed.has(candidate)).map(candidate => Object.freeze({
       messageIndex: candidate.hostLocator.messageIndex,
       swipeId: candidate.hostLocator.swipeId,
       selectedSwipeIndex: candidate.hostLocator.selectedSwipeIndex,
@@ -68,7 +70,12 @@ function captureHostGuard(snapshot, hostCandidates, hostProof = null) {
 export function coverageHostGuardCurrent(readiness, snapshot) {
   const guard = readiness?.[HOST_GUARD];
   if (!guard || guard.chatId !== currentChatId(snapshot) || !Array.isArray(guard.candidates) || !Array.isArray(snapshot?.chat)) return false;
-  const currentFloorIds = new Set();
+  const currentFloorIds = new Map();
+  for (const message of snapshot.chat) {
+    if (message?.is_user !== false || isHostNarratorMessage(message) || message.is_system === true && message.extra?.type) continue;
+    const anchor = inspectMessageFloorAnchor(message, guard.chatId);
+    if (anchor.status === 'valid') currentFloorIds.set(anchor.anchor.floorId, (currentFloorIds.get(anchor.anchor.floorId) ?? 0) + 1);
+  }
   return guard.candidates.every(expected => {
     const current = snapshot.chat[expected.messageIndex];
     const selected = selectAssistantMessage(current);
@@ -77,8 +84,7 @@ export function coverageHostGuardCurrent(readiness, snapshot) {
       || visibleAssistant(current) !== expected.visible || isMemoryExcludedMessage(current) !== expected.memoryExcluded
       || !['none', 'valid'].includes(anchor.status)) return false;
     if (anchor.status === 'valid') {
-      if (currentFloorIds.has(anchor.anchor.floorId)) return false;
-      currentFloorIds.add(anchor.anchor.floorId);
+      if (currentFloorIds.get(anchor.anchor.floorId) !== 1) return false;
     }
     if (expected.anchorStatus === 'valid') return anchor.status === 'valid' && anchor.anchor.floorId === expected.floorId;
     if (selected.rawContent !== expected.rawContent) return false;
@@ -100,23 +106,12 @@ function activeMemoriesByFloor(reachable) {
 function hostCoverageProof(reachable, snapshot, hostCandidates) {
   if (!reachable?.root?.chatId || currentChatId(snapshot) !== reachable.root.chatId || !Array.isArray(hostCandidates)) return null;
   const bindings = matchFloorCandidates(reachable.floors ?? [], hostCandidates);
-  // A conflicting claim invalidates its floor, not independent successful matches.
-  const claims = new Map();
-  for (const candidate of hostCandidates) {
-    const floorId = candidate.archiveCandidate ? candidate.archiveFloorId
-      : candidate.messageAnchor?.status === 'valid' ? candidate.messageAnchor.anchor.floorId : null;
-    if (floorId) claims.set(floorId, (claims.get(floorId) ?? 0) + 1);
-  }
-  const matches = bindings.matches.filter(match => (claims.get(match.floor.id) ?? 0) <= 1);
-  const matchedCandidates = new Set(matches.map(match => match.candidate));
+  const matches = bindings.matches;
   const candidateByFloorId = new Map();
   for (const match of matches) candidateByFloorId.set(match.floor.id, match.candidate);
-  const liveCandidates = hostCandidates.filter(candidate => candidate.archiveCandidate !== true);
-  const lastMatchedIndex = Math.max(-1, ...[...matchedCandidates].filter(candidate => candidate.archiveCandidate !== true).map(candidate => candidate.hostLocator.messageIndex));
   const unmatchedFloorIds = Object.freeze((reachable.floors ?? []).filter(floor => !candidateByFloorId.has(floor.id)).map(floor => floor.id));
-  // Partial correspondence is a read concern, not a new extraction queue.
-  const unregistered = unmatchedFloorIds.length ? [] : liveCandidates.filter(candidate => !matchedCandidates.has(candidate) && candidate.memoryExcluded !== true
-    && candidate.messageAnchor?.status === 'none' && candidate.hostLocator.messageIndex > lastMatchedIndex);
+  const unregistered = unregisteredTailCandidates(reachable.floors ?? [], hostCandidates, bindings)
+    .filter(candidate => candidate.memoryExcluded !== true);
   return Object.freeze({ unregistered: Object.freeze(unregistered), candidateByFloorId, unmatchedFloorIds });
 }
 

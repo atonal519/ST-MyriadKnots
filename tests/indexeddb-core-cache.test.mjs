@@ -386,3 +386,64 @@ test('旧I/O的late observer不覆盖之后发生的last failure', async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(cache.getStats().lastFailure, laterFailure, '旧record完成只更新其own token，不替换较新的last failure');
 });
+
+test('发布写故障只停止后续发布，同页旧精确manifest和合法记录仍可读', async () => {
+  const { h, cache, scope, records } = await publishedBatch(2);
+  h.failNextPut(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }), 'r:');
+  const next = { ...witness, revision: witness.revision + 1 };
+  const added = { recordId: 'v3-floor-floor-new', envelope: { ...floorEnvelope(), data: { ...floorEnvelope().data, id: 'floor-new' } } };
+  assert.equal(await cache.publish(scope, next, [added], { floor: [added.recordId] }), false);
+  assert.equal(cache.getStats().available, true);
+  const manifest = await cache.readManifest(scope, witness);
+  assert.ok(manifest);
+  assert.deepEqual(await cache.readRecords(scope, witness, 'floor', records.map(record => record.recordId), manifest), records.map(record => record.envelope));
+  assert.equal(await cache.readManifest(scope, next), null);
+  const transactions = h.transactions.length;
+  assert.equal(await cache.publish(scope, next, [added], { floor: [added.recordId] }), false);
+  assert.equal(h.transactions.length, transactions, '本页后续发布不再排队');
+  assert.equal(await cache.invalidateScope(scope), true);
+  assert.equal(await cache.readManifest(scope, witness), null, '真实删除的失效屏障仍工作');
+});
+
+test('发布原生读写事务串行完成，同一store不同时排队十六个事务', async () => {
+  const h = localForageHarness();
+  let active = 0, maximum = 0, recordDelayMs = 1;
+  const indexedDBProvider = () => ({ open(name) {
+    const source = h.indexedDB.open(name), request = {};
+    source.onsuccess = () => {
+      const database = source.result;
+      request.result = { ...database, transaction(...args) {
+        const transaction = database.transaction(...args), trace = h.transactions.at(-1);
+        active += 1; maximum = Math.max(maximum, active);
+        let completed;
+        Object.defineProperty(transaction, 'oncomplete', { get: () => () => setTimeout(() => { active -= 1; completed?.(); }, trace.gets[0]?.startsWith('r:') ? recordDelayMs : 1), set: value => { completed = value; } });
+        return transaction;
+      } };
+      request.onsuccess?.();
+    };
+    return request;
+  } });
+  const cache = createIndexedDbCoreRecordCache({ localForage: h.localForage, ...cacheOptions(h), indexedDBProvider,
+    accountHandleProvider: () => 'user', originProvider: () => 'https://tavern.invalid', ioTimeoutMs: 20 });
+  const scope = await cache.scopeFor({ chatId: '123e4567-e89b-42d3-a456-426614174000' });
+  const records = Array.from({ length: 16 }, (_, index) => {
+    const envelope = floorEnvelope(`summary-${index}`); envelope.data.id = `floor-${index}`;
+    return { recordId: `v3-floor-floor-${index}`, envelope };
+  });
+  assert.equal(await cache.publish(scope, witness, records, { floor: records.map(row => row.recordId) }), true);
+  assert.equal(maximum, 1);
+  recordDelayMs = 60;
+  const next = { ...witness, revision: witness.revision + 1 };
+  const envelope = floorEnvelope('new'); envelope.data.id = 'floor-new';
+  assert.equal(await cache.publish(scope, next, [{ recordId: 'v3-floor-floor-new', envelope }], { floor: ['v3-floor-floor-new'] }), false);
+  assert.equal(cache.getStats().available, true);
+  const manifest = await cache.readManifest(scope, witness);
+  assert.ok(manifest);
+  assert.deepEqual(await cache.readRecord(scope, witness, 'floor', records[0].recordId, manifest), records[0].envelope);
+  assert.equal(await cache.invalidateScope(scope), true);
+  await new Promise(resolve => setTimeout(resolve, 70));
+  assert.equal(cache.getStats().lastFailure.phase, 'publish-record-transaction');
+  assert.equal(cache.getStats().lastFailure.lateResult, 'fulfilled');
+  assert.equal(await cache.readManifest(scope, witness), null);
+  assert.equal(await cache.readManifest(scope, next), null, '迟到写事务没有重新发布已失效manifest');
+});

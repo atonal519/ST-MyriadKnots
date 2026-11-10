@@ -82,6 +82,16 @@ export function preserveManualQianshiEvents(prior, next) {
     status:['ready','partial'].includes(next.status)?next.status:next.status==='empty'?'ready':'partial'};
 }
 
+export function hasUnfinishedQianshiHistory(memory, degraded = false) {
+  const delta = memory?.qianshiDelta;
+  // 旧版这一条程序诊断表示有效判断已接收；只认完整固定串，混合错误仍待处理。
+  const referenceProtected = delta?.status === 'partial'
+    && /^[1-9][0-9]* 条旧记录仍被范围外引用，归线结构沿用原值；有效状态和跟进判断已接收。$/u.test(delta.reason ?? '')
+    && effectiveQianshiDelta(memory).conflicts.length === 0;
+  return degraded || (!['ready', 'empty'].includes(delta?.status) && !referenceProtected)
+    || (delta?.historyReview?.candidates ?? []).some(candidate => candidate.decision === 'pending');
+}
+
 export function effectiveQianshiDelta(memory) {
   const delta = memory?.qianshiDelta;
   const formalEvents = ['ready', 'partial'].includes(delta?.status) ? (delta.events ?? []) : [];

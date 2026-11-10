@@ -3475,3 +3475,87 @@ test('HTML正文空源手动零请求保旧摘要CSE，正常extractNext跳过�
   const done=requests.length;await memory.extractNext();assert.equal(requests.length,done);
  }
 });
+
+test('正文选择兼容宿主可见mes与未就绪swipes，有效明确回复和真实空白保持', async () => {
+  const values = [
+    { message: { ...assistant('可见正文'), swipes: [''] }, expected: '可见正文' },
+    { message: { ...assistant('可见正文'), swipes: [] }, expected: '可见正文' },
+    { message: { ...assistant('可见正文'), swipes: ['旧回复'], swipe_id: 9 }, expected: '可见正文' },
+    { message: { ...assistant('可见正文'), swipes: ['   '] }, expected: '可见正文' },
+    { message: { ...assistant('显示滞后的正文'), swipes: ['旧回复', '明确选中的回复'], swipe_id: 1 }, expected: '明确选中的回复' },
+    { message: { ...assistant('  '), swipes: ['  '], extra: { display_text: '只读派生显示' } }, expected: null },
+  ];
+  for (const { message, expected } of values) {
+    const candidates = await scanAssistantCandidates([message, user('稳定')], { captureRawContent: true });
+    assert.equal(candidates.length, expected ? 1 : 0);
+    if (expected) assert.equal(candidates[0].rawContent, expected);
+  }
+});
+
+test('局部坏楼保留原图并登记健康新尾楼，未确认的旧末楼只限制新尾资格', async () => {
+  for (const badKind of ['foreignMiddle', 'foreignLast', 'unmarkedChangedMiddle', 'unmarkedChangedConsecutive']) {
+    const badLast = badKind === 'foreignLast';
+    const h = harness([assistant('甲'), user('确认甲'), assistant('乙'), user('确认乙'), assistant('丙'), user('确认丙')], { modernAnchors: true });
+    await h.runtime.start(); const original = await h.store.readReachable({ mode: 'runtime' });
+    for (const floor of original.floors) h.context.chat[floor.hostLocator.messageIndex].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floor.id };
+    if (badKind.startsWith('unmarkedChanged')) {
+      delete h.context.chat[2].extra.qianqianjie_floor;
+      h.context.chat[2].mes = h.context.chat[2].swipes[0] = '无法绑定的已改旧正文';
+      if (badKind === 'unmarkedChangedConsecutive') h.context.chat.splice(3, 1);
+    } else {
+      h.context.chat[badLast ? 4 : 2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: OTHER_CHAT, floorId: original.floors[badLast ? 2 : 1].id };
+    }
+    h.context.chat.push(assistant('健康的新尾正文'), user('确认新尾'));
+    const result = await h.runtime.refreshStatus();
+    assert.equal(result.status, 'needsReview'); assert.equal(result.activeRun, null);
+    const saved = await h.store.readReachable({ mode: 'runtime' });
+    assert.deepEqual(saved.floors.slice(0, 3).map(floor => [floor.id, floor.content]), original.floors.map(floor => [floor.id, floor.content]));
+    assert.equal(saved.floors.length, badLast ? 3 : 4);
+    if (!badLast) assert.equal(saved.floors.at(-1).content.canonicalContent, '健康的新尾正文');
+    assert.equal((await h.runtime.confirmLatest()).status, 'needsReview');
+  }
+});
+
+test('局部坏标正文清空仍保旧存档，不能被当成消息已删', async () => {
+  const h = harness([assistant('旧正文'), user('确认')], { modernAnchors: true });
+  await h.runtime.start(); const original = await h.store.readReachable({ mode: 'runtime' });
+  h.context.chatMetadata.integrity = 'complete';
+  h.context.chat[0].mes = ''; h.context.chat[0].swipes[0] = '';
+  h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: OTHER_CHAT, floorId: original.floors[0].id };
+  const state = await h.runtime.refreshStatus();
+  assert.equal(state.status, 'needsReview');
+  const after = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(after.floors.map(floor => [floor.id, floor.content]), original.floors.map(floor => [floor.id, floor.content]));
+});
+
+test('局部坏标追加遇CAS冲突仍保原完整root与旧楼，不发布staged结果', async () => {
+  const h = harness([assistant('甲'), user('确认甲'), assistant('乙'), user('确认乙')], { modernAnchors: true });
+  await h.runtime.start(); const original = await h.store.readReachable({ mode: 'runtime' });
+  for (const floor of original.floors) h.context.chat[floor.hostLocator.messageIndex].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: floor.id };
+  h.context.chat[0].extra.qianqianjie_floor.chatId = OTHER_CHAT;
+  h.context.chat.push(assistant('待追加的新尾'), user('确认新尾'));
+  h.backend.setConflictRoot(true);
+  const state = await h.runtime.refreshStatus(); assert.equal(state.status, 'conflict'); assert.equal(state.activeRun, null);
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.rootRevision, original.rootRevision); assert.deepEqual(saved.floors, original.floors);
+});
+
+test('保存期间仅楼标变坏仍保健康提交，终态使用提交后证明待核', async () => {
+  const h = harness([assistant('既有正文'), user('确认既有')], { modernAnchors: true });
+  await h.runtime.start();
+  const original = await h.store.readReachable({ mode: 'runtime' });
+  h.context.chat[0].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: original.floors[0].id };
+  h.context.chat.push(assistant('健康新尾'), user('确认新尾'));
+  h.backend.setBeforePut(({ key }) => {
+    if (key === 'v3-root') h.context.chat[0].extra.qianqianjie_floor.chatId = OTHER_CHAT;
+  });
+  const state = await h.runtime.refreshStatus();
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(saved.floors.length, 2);
+  assert.deepEqual(saved.floors[0].content, original.floors[0].content);
+  assert.equal(saved.floors.at(-1).content.canonicalContent, '健康新尾');
+  assert.equal(state.status, 'needsReview');
+  assert.equal(state.activeRun, null);
+  assert.equal(state.reviewReason.code, 'markerMismatch');
+  assert.equal(state.bindingIssues[0].code, 'markerRejected');
+});

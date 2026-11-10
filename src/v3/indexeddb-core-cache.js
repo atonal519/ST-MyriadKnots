@@ -5,7 +5,7 @@ const FORMAT = 'qqj-v3-core-cache-1';
 const CORE_TYPES = new Set(['floor', 'floorMemory', 'entity', 'stateDelta', 'index']);
 const MAX_BYTES = 128 * 1024 * 1024;
 const IO_TIMEOUT_MS = 900;
-const WRITE_CONCURRENCY = 16;
+const METADATA_READ_CONCURRENCY = 16;
 const encoder = new TextEncoder();
 const DB_NAME = 'qqj-v3-core-cache';
 const STORE_NAME = 'core_records';
@@ -493,8 +493,8 @@ export function createIndexedDbCoreRecordCache({
       let total = 0;
       const keys = await boundedIo(db.keys(), 'budget-key-list');
       const metadataKeys = Array.isArray(keys) ? keys.filter(key => typeof key === 'string' && key.startsWith('s:')) : [];
-      for (let offset = 0; offset < metadataKeys.length; offset += WRITE_CONCURRENCY) {
-        const values = await boundedIo(Promise.all(metadataKeys.slice(offset, offset + WRITE_CONCURRENCY).map(key => db.getItem(key))), 'budget-metadata-read');
+      for (let offset = 0; offset < metadataKeys.length; offset += METADATA_READ_CONCURRENCY) {
+        const values = await boundedIo(Promise.all(metadataKeys.slice(offset, offset + METADATA_READ_CONCURRENCY).map(key => db.getItem(key))), 'budget-metadata-read');
         for (const value of values) if (Number.isSafeInteger(value?.bytes) && value.bytes >= 0) total += value.bytes;
       }
       const result = await nativeTransaction('budget-initialize', (store, transaction, setResult) => {
@@ -731,7 +731,8 @@ export function createIndexedDbCoreRecordCache({
   async function publishNow(scope, witness, records, recordRefs, expectedVersion, verifyRoot) {
     const db = await ensureReady();
     if (!db || !scope || !witness?.generationId || !Array.isArray(records)) return false;
-    if (!await migrateLegacyDirectories() || ioUnavailable || publishUnavailable) return false;
+    if (!await migrateLegacyDirectories()) { publishUnavailable = true; return false; }
+    if (ioUnavailable || publishUnavailable) return false;
     const requestedRefs = normalizeRecordRefs(recordRefs);
     let observedDirectory, observedInvalidation;
     try {
@@ -757,7 +758,7 @@ export function createIndexedDbCoreRecordCache({
     await hydrateBudget(db);
     let cursor = 0;
     async function worker() {
-      while (!publishUnavailable && cursor < records.length) {
+      while (!publishUnavailable && publicationVersionIsCurrent(scope, expectedVersion) && cursor < records.length) {
         const record = records[cursor++];
         const recordType = record?.envelope?.data?.recordType;
         const recordId = record?.recordId;
@@ -770,11 +771,12 @@ export function createIndexedDbCoreRecordCache({
           if (Number.isSafeInteger(outcome?.estimatedBytes)) stats.estimatedBytes = outcome.estimatedBytes;
           if (outcome?.wrote) { stats.writes += 1; wroteRecords = true; }
           if (outcome?.repairedMetadata) wroteRecords = true;
-        } catch (error) { stats.writeFailures += 1; recordIoFailure('publish-record', error, 0, 0, 'rejected'); disableIo(); }
+        } catch (error) { stats.writeFailures += 1; recordIoFailure('publish-record', error, 0, 0, 'rejected'); publishUnavailable = true; }
       }
     }
     try {
-      await Promise.all(Array.from({ length: Math.min(WRITE_CONCURRENCY, records.length) }, worker));
+      // Native readwrite transactions share one store lock; queue the next only after this one completes.
+      await worker();
       if (ioUnavailable || publishUnavailable) return false;
       const manifestKey = `v:${scope}:${await sha256(witnessKey(witness))}`;
       if (!publicationVersionIsCurrent(scope, expectedVersion)) return false;
@@ -786,7 +788,7 @@ export function createIndexedDbCoreRecordCache({
     } catch (error) {
       stats.writeFailures += 1;
       recordIoFailure('publish', error, 0, 0, 'rejected');
-      disableIo();
+      publishUnavailable = true;
       return false;
     }
   }

@@ -189,6 +189,13 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
   const restore = () => {
     finish();
     if (!panel) return;
+    const host = panel.getRootNode?.().host;
+    if (host) {
+      // 保持子面板的视口坐标，抵消宿主根包含块的文档滚动原点。
+      host.style.transform = 'translate(0px, 0px)';
+      const origin = host.getBoundingClientRect();
+      host.style.transform = `translate(${-origin.left}px, ${-origin.top}px)`;
+    }
     const view = dimensions();
     for (const property of ['left', 'top', 'width', 'height']) panel.style.setProperty(`--qqj-panel-bounds-${property}`, `${view[property]}px`);
     if (!isDesktop()) {
@@ -208,7 +215,7 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
   const bindings = [
     [dragHandle, 'pointerdown', onDragDown], [dragHandle, 'pointermove', onDragMove], [dragHandle, 'pointerup', onPointerUp], [dragHandle, 'pointercancel', onPointerCancel], [dragHandle, 'lostpointercapture', onPointerCancel],
     [resizeHandle, 'pointerdown', onResizeDown], [resizeHandle, 'pointermove', onResizeMove], [resizeHandle, 'pointerup', onPointerUp], [resizeHandle, 'pointercancel', onPointerCancel], [resizeHandle, 'lostpointercapture', onPointerCancel],
-    [viewport, 'resize', onViewportChange], [viewport, 'orientationchange', onViewportChange],
+    [viewport, 'resize', onViewportChange], [viewport, 'scroll', onViewportChange], [viewport, 'orientationchange', onViewportChange],
     [viewport?.visualViewport, 'resize', onViewportChange], [viewport?.visualViewport, 'scroll', onViewportChange],
   ];
   for (const [target, name, listener] of bindings) target?.addEventListener?.(name, listener);

@@ -85,8 +85,10 @@ export function selectAssistantMessage(message) {
   if (Array.isArray(message.swipes)) {
     const selectedSwipeIndex = Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0;
     const selected = message.swipes[selectedSwipeIndex];
-    if (typeof selected !== 'string') return null;
-    return { rawContent: normalizeRaw(selected), swipeId: message.swipe_id ?? selectedSwipeIndex, selectedSwipeIndex };
+    const rawContent = typeof selected === 'string' && selected.trim() ? selected
+      : typeof message.mes === 'string' && message.mes.trim() ? message.mes : selected;
+    if (typeof rawContent !== 'string') return null;
+    return { rawContent: normalizeRaw(rawContent), swipeId: message.swipe_id ?? selectedSwipeIndex, selectedSwipeIndex };
   }
   if (typeof message.mes !== 'string') return null;
   return { rawContent: normalizeRaw(message.mes), swipeId: message.swipe_id ?? null, selectedSwipeIndex: null };
@@ -130,7 +132,7 @@ export async function scanAssistantCandidates(chat, {
     if (!selected) continue;
     const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
     const messageAnchor = inspectMessageFloorAnchor(source[messageIndex], chatId);
-    if (!canonicalContent && (!chatId || messageAnchor.status !== 'valid' || messageAnchor.anchor.chatId !== chatId)) continue;
+    if (!canonicalContent && (!chatId || messageAnchor.status === 'none')) continue;
     assistantSeq += 1;
     const [rawFingerprint, canonicalFingerprint] = await Promise.all([
       prefixedHash(selected.rawContent),

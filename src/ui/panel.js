@@ -32,7 +32,7 @@ if (snapshot.status === 'ready') {
   const people = snapshot.people.items;
 }`;
 
-const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:auto;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:70px;right:20px;width:360px;height:600px;max-width:calc(100dvw - 20px);max-height:calc(100dvh - 20px);display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(min-width:641px){:host{pointer-events:none}}@media(max-width:640px){.panel{top:calc(var(--qqj-panel-bounds-top,0px) + max(20px,env(safe-area-inset-top,0px)));left:calc(var(--qqj-panel-bounds-left,0px) + var(--qqj-panel-bounds-width,100dvw)/2);right:auto;transform:translateX(-50%);width:max(0px,calc(var(--qqj-panel-bounds-width,100dvw) - 20px));max-width:calc(var(--qqj-panel-bounds-width,100dvw) - 20px);height:max(0px,calc(var(--qqj-panel-bounds-height,100dvh) - max(40px,env(safe-area-inset-top,0px)) - max(40px,env(safe-area-inset-bottom,0px))));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
+const shellCss = ':host{position:fixed;inset:0;z-index:4000;width:100dvw;height:100dvh;pointer-events:none;background:transparent;text-shadow:none!important;isolation:isolate}:host([hidden]){display:none!important}.panel{position:fixed;top:70px;right:20px;width:360px;height:600px;max-width:calc(100dvw - 20px);max-height:calc(100dvh - 20px);display:grid;grid-template-rows:auto auto minmax(0,1fr) 24px;pointer-events:auto}.body{min-height:0;overflow-y:auto;scrollbar-gutter:stable;touch-action:pan-y}.tabs{overflow-x:auto;flex-wrap:nowrap}.tab{flex:0 0 auto}@media(min-width:641px){:host{pointer-events:none}}@media(max-width:640px){.panel{top:calc(var(--qqj-panel-bounds-top,0px) + max(20px,env(safe-area-inset-top,0px)));left:calc(var(--qqj-panel-bounds-left,0px) + var(--qqj-panel-bounds-width,100dvw)/2);right:auto;transform:translateX(-50%);width:max(0px,calc(var(--qqj-panel-bounds-width,100dvw) - 20px));max-width:calc(var(--qqj-panel-bounds-width,100dvw) - 20px);height:max(0px,calc(var(--qqj-panel-bounds-height,100dvh) - max(40px,env(safe-area-inset-top,0px)) - max(40px,env(safe-area-inset-bottom,0px))));max-height:none;grid-template-rows:auto auto minmax(0,1fr)}.panel-resize-handle{display:none}.tabs{scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}}';
 
 export function createPanel({
   settings,
@@ -619,11 +619,18 @@ export function createPanel({
   }, { passive: false });
   body?.addEventListener?.('touchcancel', () => { swipeGesture = null; }, { passive: true });
 
+  const isForeignWindow = event => {
+    const path = event.composedPath?.();
+    if (path?.includes(panel)) return false;
+    return path?.some(node => node?.matches?.('button,input,textarea,select,a[href],label,summary,[contenteditable]:not([contenteditable="false"]),[tabindex]:not([tabindex="-1"]),[role~="button"],[role~="link"],[role~="checkbox"],[role~="radio"],[role~="switch"],[role~="textbox"],dialog,[role~="dialog"],[role~="alertdialog"],[role~="menu"],[role~="listbox"],[role~="combobox"]')
+      || ['true', 'menu', 'listbox', 'tree', 'grid', 'dialog'].includes(node?.getAttribute?.('aria-haspopup'))
+      || typeof node?.popover === 'string' && node.matches?.(':popover-open')
+      || node?.nodeType === 11 && node.host !== host
+      && documentRef.defaultView?.getComputedStyle?.(node.host)?.position === 'fixed');
+  };
   const isBackdrop = event => {
     const path = event.composedPath?.();
-    const foreignWindow = path?.some(node => node?.nodeType === 11 && node.host !== host
-      && documentRef.defaultView?.getComputedStyle?.(node.host)?.position === 'fixed');
-    return mobile() && !host.hidden && !dialog?.hasActive?.() && !foreignWindow
+    return mobile() && !host.hidden && !dialog?.hasActive?.() && !isForeignWindow(event)
       && !(path?.includes(panel) ?? panel?.contains?.(event.target));
   };
   const moveBackdrop = event => {
@@ -661,7 +668,12 @@ export function createPanel({
     settings.update({ fabShow: showFab }); syncHeader(appearance.getState()); onFabShowChange?.(showFab);
   });
   tabs.forEach(tab => tab.addEventListener('click', () => selectTab(tab.dataset.tab)));
-  documentRef.addEventListener?.('keydown', event => { if (event.key !== 'Escape' || host.hidden) return; if (dialog?.hasActive?.()) { dialog.cancelTop(); event.preventDefault?.(); return; } close(); });
+  documentRef.addEventListener?.('keydown', event => {
+    if (event.key !== 'Escape' || host.hidden || event.defaultPrevented || event.isComposing) return;
+    if (isForeignWindow(event)) return;
+    if (dialog?.hasActive?.()) { dialog.cancelTop(); event.preventDefault?.(); return; }
+    close();
+  });
 
   return Object.freeze({ setActivity,
     host,

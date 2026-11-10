@@ -197,7 +197,7 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   assert.match(root.innerHTML, /\.panel\{[^}]*pointer-events:auto/);
   assert.ok(calls.some(([kind]) => kind === 'profiles-activate'));
   let preventedOutside = 0, stoppedOutside = 0;
-  const background = new Node('button');
+  const background = new Node('div');
   const outsideEvent = inside => ({ button: 0, pointerId: 1, clientX: 5, clientY: 5, target: inside ? host : background, composedPath: () => inside ? [close, panelNode, root, host] : [background, documentRef], preventDefault() { preventedOutside += 1; }, stopImmediatePropagation() { stoppedOutside += 1; } });
   const pointerSequence = (downInside, upInside) => {
     documentEvents['pointerdown']?.(outsideEvent(downInside));
@@ -222,6 +222,23 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   const foreignHost = new Node('foreign-host'), foreignRoot = { nodeType: 11, host: foreignHost };
   for (const type of ['pointerdown', 'pointerup', 'click']) documentEvents[type]?.({ ...outsideEvent(false), composedPath: () => [foreignRoot, foreignHost, documentRef] });
   assert.equal(panel.getState().open, true, '其它fixed Shadow窗口内部点击不被当前窗口抢先关闭');
+  for (const selector of ['button', 'input', 'textarea', 'a[href]', 'label', 'summary', '[role~="button"]', '[tabindex]:not([tabindex="-1"])', 'dialog', 'select', 'input[list]', '[role~="dialog"]', '[role~="alertdialog"]', '[role~="menu"]', '[role~="listbox"]', '[role~="combobox"]', '[aria-haspopup]', '[popover]']) {
+    const popup = selector === '[popover]' ? { popover: 'auto', matches: value => value === ':popover-open' }
+      : selector === '[aria-haspopup]' ? { getAttribute: name => name === 'aria-haspopup' ? 'menu' : null }
+        : { matches: selectors => selectors.split(',').map(value => value.trim()).includes(selector === 'input[list]' ? 'input' : selector) };
+    let blocked = false;
+    for (const type of ['pointerdown', 'pointerup', 'click']) documentEvents[type]?.({ ...outsideEvent(false),
+      composedPath: () => [{}, popup, documentRef], preventDefault: () => { blocked = true; } });
+    assert.equal(panel.getState().open, true, `外来标准弹窗不关闭千千结 ${selector}`);
+    assert.equal(blocked, false, `外来弹窗点击送回原控件 ${selector}`);
+    documentEvents.keydown({ key: 'Escape', composedPath: () => [{}, popup, documentRef] });
+    assert.equal(panel.getState().open, true, `外来弹窗Escape保留千千结 ${selector}`);
+    dialogActive = true;
+    documentEvents.keydown({ key: 'Escape', composedPath: () => [{}, popup, documentRef] });
+    assert.equal(dialogActive, true, '外来弹窗Escape不取消我方已打开的子窗');
+    dialogActive = false;
+  }
+
   dialogActive = true; pointerSequence(false, false);
   assert.equal(panel.getState().open, true, '子弹窗活跃时外侧事件不穿透关闭主面板');
   dialogActive = false;
@@ -642,6 +659,11 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   assert.equal(panel.getState().activeTab, 'profiles');
   const profileDeactivationsBeforeClose = calls.filter(([kind]) => kind === 'profiles-deactivate').length;
 
+  for (const flags of [{ defaultPrevented: true }, { isComposing: true }]) {
+    documentEvents.keydown({ key: 'Escape', ...flags });
+    assert.equal(panel.getState().open, true, '已消费或组字中的Escape不关闭主面板');
+  }
+
   dialogActive = true;
   documentEvents.keydown({ key: 'Escape', preventDefault() {} });
   assert.equal(dialogCancels, 1); assert.equal(panel.getState().open, true, 'Esc 应先关顶层自绘弹窗，不连带关闭面板');
@@ -821,4 +843,25 @@ test('手机再上抬10px受安全区约束，桌面默认与已存拖动位置�
   assert.equal(saved.writes.length, 0); saved.controller.destroy();
   const source = await readFile(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
   assert.ok(source.includes('top:calc(var(--qqj-panel-bounds-top,0px) + max(20px,env(safe-area-inset-top,0px)))'));
+});
+
+
+test('主宿主补偿文档包含块原点，滚动后仍保持原视口坐标', () => {
+  const f = panelGeometryFixture();
+  let origin = { left: -40, top: -500 };
+  const host = { style: {}, getBoundingClientRect() {
+    const values = this.style.transform?.match(/translate\(([-\d.]+)px, ([-\d.]+)px\)/);
+    return { left: origin.left + Number(values?.[1] ?? 0), top: origin.top + Number(values?.[2] ?? 0) };
+  } };
+  f.panel.getRootNode = () => ({ host });
+  f.controller.restore();
+  assert.deepEqual(host.getBoundingClientRect(), { left: 0, top: 0 });
+  assert.deepEqual(f.panel.getBoundingClientRect(), { left: 820, top: 70, width: 360, height: 600 });
+  origin = { left: -90, top: -750 };
+  f.viewport.fire('scroll');
+  assert.deepEqual(host.getBoundingClientRect(), { left: 0, top: 0 });
+  assert.equal(f.writes.length, 0);
+  f.controller.destroy();
+  origin = { left: -100, top: -900 }; f.viewport.fire('scroll');
+  assert.notDeepEqual(host.getBoundingClientRect(), { left: 0, top: 0 }, '销毁配对解除文档滚动监听');
 });

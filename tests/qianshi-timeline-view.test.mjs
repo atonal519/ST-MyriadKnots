@@ -1859,7 +1859,7 @@ test('重判进度和保存结果接管启动提示，不同时显示未来暂�
   assert.doesNotMatch(copy(h.container), /正在启动|结果将先暂存/u);
   snapshot.history = { ...snapshot.history, status: 'partial', committing: false, message: '千事重判完成；整组已一次提交。', commitStatus: 'saved', savedFloors: 1, savedCompleteFloors: 0, savedPartialFloors: 1, totalFloors: 1, processedFloors: 1, outcomes: [{ status: 'saved-partial', reasonCode: 'QIANSHI_REJUDGE_PARTIAL', messageIndex: 0, assistantSeq: 9, message: '本楼部分记录已保存。' }] };
   h.emit(snapshot);
-  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /已保存 1 楼，1 楼部分旧判断沿用原值；整理留空可继续。/u);
+  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /已保存 1 楼，1 楼部分旧判断沿用原值。整理留空可继续。/u);
   assert.doesNotMatch(copy(h.container), /整组正在提交|正在启动|结果将先暂存|第 0 楼/u);
 });
 
@@ -2263,7 +2263,7 @@ test('已提交的部分重判显示保存楼数和沿用原值，不把101楼�
     savedCompleteFloors: 38, savedPartialFloors: 63, processedFloors: 101, totalFloors: 101 };
   const h = harness({ initialSnapshot: snapshot });
   const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
-  assert.equal(health.textContent, '已保存 101 楼，63 楼部分旧判断沿用原值；整理留空可继续。');
+  assert.equal(health.textContent, '已保存 101 楼，63 楼部分旧判断沿用原值。整理留空可继续。');
   assert.equal(health.className, 'qqj-page-health checking');
   assert.doesNotMatch(health.textContent, /可重试|未保存|未提交/u);
   assert.equal(h.rejudgeCalls().startCalls, 0);
@@ -2288,7 +2288,7 @@ test('刷新后仅有partial覆盖计数仍显示部分整理，待覆盖和关�
     degradedFloors: 0, unavailableFloors: 0 };
   const h = harness({ initialSnapshot: snapshot });
   assert.equal(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent,
-    '有 63 楼部分旧判断沿用原值；整理留空可继续。');
+    '有 63 楼部分旧判断沿用原值。整理留空可继续。');
   snapshot.coverage = { eligibleFloors: 101, completeFloors: 101, readyFloors: 38, emptyFloors: 0, partialFloors: 0,
     pendingFloors: 0, degradedFloors: 0, unavailableFloors: 0 };
   const floors = Array.from({ length: 101 }, (_, index) => ({ floorId: `floor-${index}`, memory: {
@@ -2297,7 +2297,7 @@ test('刷新后仅有partial覆盖计数仍显示部分整理，待覆盖和关�
     { memory: { recordStatus: 'invalidated', qianshiDelta: { status: 'partial' } } });
   h.emit(snapshot, { status: 'ready', floors });
   assert.equal(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent,
-    '有 63 楼部分旧判断沿用原值；整理留空可继续。', '有事件的partial已计入complete时，沿既有逐楼memory状态显示真实部分楼');
+    '有 63 楼部分旧判断沿用原值。整理留空可继续。', '有事件的partial已计入complete时，沿既有逐楼memory状态显示真实部分楼');
   snapshot.coverage.pendingFloors = 2;
   snapshot.coverage.completeFloors = 99;
   h.emit(snapshot);
@@ -2540,4 +2540,34 @@ test('整理程序异常主提示指向现有详细诊断，技术详情留在�
   const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
   assert.match(health.textContent, /程序异常.*设置→记忆管理→详细诊断.*复制状态诊断/u);
   assert.doesNotMatch(health.textContent, /Cannot read|未记录到具体原因/u);
+});
+
+test('历史保存后清楚区分末尾未执行与缺判断原因，留空沿当轮缺口继续', () => {
+  for (const followup of [
+    { status: 'deferred', calls: 0, remainingFloors: 11, message: '历史仍有 11 楼待完成，本轮未执行末尾跟进复核。' },
+    { status: 'partial', evaluated: 0, missing: 2, reasonCode: 'QIANSHI_FOLLOWUP_PARTIAL', message: '2 项未获完整有效判断（模型未返回对应事项的判断），原判断保留。' },
+  ]) {
+    const snapshot = fixture();
+    snapshot.history = { mode: 'rejudge', status: 'partial', commitStatus: 'saved', savedFloors: 20, savedPartialFloors: 11, followup,
+      ...(followup.status === 'partial' ? { failure: { stage: 'followup', code: followup.reasonCode, message: followup.message } } : {}) };
+    const h = harness({ initialSnapshot: snapshot });
+    const health = flatten(h.container).find(node => node.className.includes('qqj-page-health')).textContent;
+    assert.match(health, /已保存 20 楼/u);
+    assert.match(health, followup.status === 'deferred' ? /本轮未执行.*留空.*历史/u : /模型未返回对应事项的判断.*留空/u);
+    if (followup.status === 'deferred') assert.doesNotMatch(health, /跟进复核 0 项/u);
+    h.view.deactivate();
+  }
+});
+
+test('整理预览明确历史完成条件与未完成时跳过末尾的原因', async () => {
+  const h = harness({ confirm: false, promptValues: [''], plan: { historyApiCalls: 1, apiCalls: 4, batchCount: 1,
+    followup: { status: 'conditional', apiCalls: 3, totalMatters: 2, message: '全部历史楼完成后才执行末尾跟进复核；仍有缺口时先保存历史。' } } });
+  byText(h.container, '整理').fire('click');
+  await tick(); await tick();
+  const confirmation = h.confirms.find(options => options.title === '确认整理千事');
+  assert.match(confirmation.body, /历史.*1.*跟进.*3/u);
+  assert.match(confirmation.body + confirmation.note, /全部历史楼完成后才.*末尾/u);
+  assert.match(confirmation.note, /缺口.*保存历史/u);
+  assert.equal(h.rejudgeCalls().startCalls, 0);
+  h.view.deactivate();
 });

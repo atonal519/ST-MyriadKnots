@@ -1,3 +1,5 @@
+import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
+import { assessMemoryCoverageFromHost, coverageHostGuardCurrent } from '../src/v3/memory-coverage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { matchFloorCandidates } from '../src/v3/floor-binding.js';
@@ -110,4 +112,43 @@ test('后置坏 marker 会保留错误，同时不抹掉前方无 marker 的可�
   assert.equal(result.issue.candidateIndex, 1);
   assert.equal(result.candidateMatches.get(0).floor.id, 'floor-a');
   assert.equal(result.candidateMatches.get(0).kind, 'locatorCanonical');
+});
+
+test('局部绑定收集全部错误，重复楼标双方隔离且独立健康楼继续匹配', () => {
+  const marker = id => ({ status: 'valid', anchor: { floorId: id } });
+  const result = matchFloorCandidates([floor('a', 0, 'a'), floor('b', 2, 'b'), floor('c', 4, 'c')], [
+    candidate(0, 'a', 'a', marker('a')), candidate(2, 'b', 'b', marker('a')),
+    candidate(4, 'c', 'c', marker('c')), candidate(6, 'foreign', 'foreign', { status: 'foreign', anchor: { floorId: 'outside' } }),
+  ]);
+  assert.deepEqual(result.matches.map(match => match.floor.id), ['c']);
+  assert.deepEqual(result.unmatchedFloorIndexes, [0, 1]);
+  assert.deepEqual(result.issues.map(issue => issue.code), ['duplicateMarker', 'markerRejected']);
+  assert.equal(result.issue.code, 'duplicateMarker');
+});
+
+test('局部外来当前楼不能夺走已验证归档来源的绑定', () => {
+  const archived = { ...candidate(0, 'old'), archiveCandidate: true, archiveFloorId: 'a' };
+  const claimant = candidate(5, 'new', 'new', { status: 'valid', anchor: { floorId: 'a' } });
+  const result = matchFloorCandidates([floor('a', 0, 'old')], [archived, claimant]);
+  assert.equal(result.issue.code, 'duplicateMarker');
+  assert.deepEqual(result.matches.map(match => match.kind), ['archive']);
+  assert.deepEqual(result.unmatchedCandidateIndexes, [1]);
+});
+
+
+test('局部来源guard只核健康证明，旁支后来重复声明健康楼仍使guard失效', async () => {
+  const chatId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', other = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const chat = ids.map((id, index) => ({ is_user: false, is_system: false, mes: `正文${index}`, extra: {
+    qianqianjie_floor: { schemaVersion: 1, chatId, floorId: id } } }));
+  const candidates = await scanAssistantCandidates(chat, { chatId });
+  const floors = candidates.map((candidate, index) => ({ id: ids[index], assistantSeq: index + 1,
+    hostLocator: candidate.hostLocator, content: candidate }));
+  chat[1].extra.qianqianjie_floor.chatId = other;
+  const snapshot = { chat, context: { chatMetadata: { qianqianjie: { chatId } } } };
+  const readiness = await assessMemoryCoverageFromHost({ reachable: { root: { chatId }, floors, floorMemories: [], stateDeltas: [] },
+    snapshot, captureGuard: true });
+  assert.equal(coverageHostGuardCurrent(readiness, snapshot), true);
+  chat[1].extra.qianqianjie_floor = { schemaVersion: 1, chatId, floorId: ids[0] };
+  assert.equal(coverageHostGuardCurrent(readiness, snapshot), false);
 });
