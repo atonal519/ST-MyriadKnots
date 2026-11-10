@@ -62,6 +62,22 @@ function harness({snapshot=initial,prepareSession=async()=>({status:'ready'}),se
  const created=[];assert.equal(typeof module.createQianchuangView,'function');const view=module.createQianchuangView({runtime,settings,prepareSession,sessionStateProvider,worldInfoProvider,dialog,loadCityMap,loadGenericMap,userAvatarProvider,documentRef:{createElementNS:(_,tag)=>{const n=new SvgNode(tag);created.push(n);return n;},createElement:t=>{const n=new Node(t);created.push(n);return n;}}}),container=new Node();view.mount(container);
  return {view,container,runtime,writes,stored,created,get prepares(){return prepares;},emit(patch){value={...value,...patch};for(const f of listeners)f();},find:cls=>flat(container).filter(n=>n.className?.split(' ').includes(cls))};
 }
+
+test('切页快照同revision只画一次地点树，重挂复用已解析底图', async () => {
+ let loads=0;
+ const h=harness({snapshot:{...initial,mapStyle:'sci-fi'},loadGenericMap:async()=>{loads++;return '<svg data-parsed="cached"></svg>';}});
+ const entry=h.find('qqj-window-entry')[0];
+ await h.view.activate();
+ assert.equal(h.find('qqj-window-entry')[0],entry);
+ await Promise.resolve();await Promise.resolve();
+ const geometry=h.find('qqj-window-geometry')[0];
+ h.view.deactivate();h.view.mount(h.container);await h.view.activate();
+ assert.equal(h.find('qqj-window-geometry')[0],geometry);
+ assert.equal(loads,1);
+ h.emit({projectionRevision:2,places:initial.places.map(node=>({...node,displayName:node.displayName+'改'}))});
+ assert.notEqual(h.find('qqj-window-entry')[0],entry);
+ assert.equal(h.find('qqj-window-geometry')[0],geometry);
+});
 test('196地图胶囊同聊天点击刷新重开保持横滚，切聊归零且不写设置',async()=>{
  const places=Array.from({length:8},(_,i)=>({...place(`scope-${i}`,`独立范围${i}`),mapLevel:'scope',mapRole:'area'})),data={...initial,places,mapRootIds:places.map(p=>p.entityId),unassignedPlaceIds:[]},h=harness({snapshot:data});await h.view.activate();
  const bar=()=>h.find('qqj-window-city-switcher')[0],page=()=>h.find('qqj-window-page')[0];bar().scrollLeft=156;bar().fire('scroll');h.find('qqj-window-city-tab').at(-1).fire('click');

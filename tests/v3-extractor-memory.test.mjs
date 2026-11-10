@@ -446,6 +446,68 @@ const registeredGraphCaughtUp = state => state.stableCount > 0
   && state.rebuildCompletedCount === state.stableCount
   && ['caughtUp', 'waitingRealtime'].includes(state.rebuildStatus);
 
+test('切页快照复用楼层派生，工作状态与人工摘要变化仍即时可见', async () => {
+  let release;
+  const h = harness({ initialChat: [assistant('合成人物与用户在庭院交谈。'), user('确认本楼')], utility: () => new Promise(resolve => { release = resolve; }) });
+  await h.runtime.start();
+  const idle = h.runtime.getState(), floorId = idle.floors[0].floorId;
+  assert.equal(h.runtime.getState().floors, idle.floors);
+  assert.equal(h.runtime.getState().cseFloors, idle.cseFloors);
+  h.setAutomation({ enabled: true, batchSize: 3 });
+  assert.equal(h.runtime.getState().autoMemoryEnabled, true);
+  const pending = h.runtime.extractFloor(floorId, { analyzeState: false });
+  await waitFor(() => typeof release === 'function');
+  const busy = h.runtime.getState();
+  assert.equal(busy.memoryWorkBusy, true);
+  assert.equal(busy.floors[0].status, 'running');
+  assert.notEqual(busy.floors, idle.floors);
+  release({ jsonData: { summary: '完成后的合成摘要。', people: [{ name: '合成人物' }] }, taskMetadata: { source: 'fixture', model: 'fixture-model' } });
+  await pending;
+  const completed = h.runtime.getState();
+  assert.equal(completed.memoryWorkBusy, false);
+  assert.equal(completed.floors[0].summary, '完成后的合成摘要。');
+  assert.ok(Object.isFrozen(completed.floors[0].counts));
+  assert.ok(Object.isFrozen(completed.floors[0].api));
+  assert.equal(completed.floors[0].api.model, 'fixture-model');
+  assert.throws(() => { completed.floors[0].api.model = 'polluted'; }, TypeError);
+  assert.throws(() => { completed.floors[0].counts.actions = 999; }, TypeError);
+  assert.equal(h.runtime.getState().floors, completed.floors);
+  await h.runtime.editSummary(floorId, '人工修改后的摘要。');
+  const edited = h.runtime.getState();
+  assert.notEqual(edited.floors, completed.floors);
+  assert.equal(edited.floors[0].summary, '人工修改后的摘要。');
+  assert.equal(completed.floors[0].summary, '完成后的合成摘要。');
+  const person = edited.memoryEntities.find(entity => entity.specialRole !== 'user');
+  h.runtime.setIdentityProjection({ currentNamesByEntityId: { [person.entityId]: '缓存后改名' } });
+  assert.equal(h.runtime.getState().memoryEntities.find(entity => entity.entityId === person.entityId).displayName, '缓存后改名');
+  assert.notEqual(person.displayName, '缓存后改名');
+  h.runtime.invalidate();
+  assert.equal(h.runtime.getState().floors.length, 0);
+});
+
+test('切页快照复用期间实际请求elapsed继续增长，完成后忙态立即复位', async () => {
+  let started, release;
+  const ready = new Promise(resolve => { started = resolve; });
+  const client = createCompactApiClient({ timeoutMs: () => 10000, fetchImpl: async () => ({ ok: true, json: () => new Promise(resolve => {
+    release = () => resolve({ choices: [{ message: { content: JSON.stringify({ summary: '等待后保存的摘要。' }) }, finish_reason: 'stop' }] }); started();
+  }) }) });
+  const h = harness({ initialChat: [assistant('合成等待原文'), user('确认')], utility: options => client.generateTask({ ...options,
+    config: { url: 'https://offline.test', key: 'fixture', model: 'fixture', timeoutSec: 10 } }) });
+  await h.runtime.start();
+  const pending = h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  try {
+    await ready;
+    const first = h.runtime.getState();
+    await new Promise(resolve => setTimeout(resolve, 15));
+    const next = h.runtime.getState();
+    assert.equal(next.floors, first.floors);
+    assert.equal(next.memoryWorkBusy, true);
+    assert.ok(next.extractorRequest.elapsedMs > first.extractorRequest.elapsedMs);
+  } finally { release(); await pending; }
+  assert.equal(h.runtime.getState().memoryWorkBusy, false);
+  assert.equal(h.runtime.getState().extractorRequest.outcome, 'completed');
+});
+
 async function primeRealtimeTail(h) {
   await h.runtime.start();
   assert.equal(h.calls.length, 0, 'runtime 启动只检测历史覆盖，不得调用记忆 API');

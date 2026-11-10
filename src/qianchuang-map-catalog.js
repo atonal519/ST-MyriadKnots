@@ -114,13 +114,14 @@ export function createQianchuangMapCatalog({ genericAssets, cityAssets, fetchImp
   return Object.freeze({ prepare, load });
 }
 
-let current = null;
+let current = null, catalogRevision = 0;
 const listeners = new Set();
 export function startQianchuangMapCatalog(options) {
   if (current) return current;
   current = createQianchuangMapCatalog(options);
-  void current.prepare().then(() => { for (const listener of listeners) listener(); });
+  void current.prepare().then(() => { catalogRevision += 1; for (const listener of listeners) listener(); });
   return current;
 }
+export function qianchuangMapCatalogRevision() { return catalogRevision; }
 export function subscribeQianchuangMapCatalog(listener) { listeners.add(listener); return () => listeners.delete(listener); }
 export function loadQianchuangMapAsset(kind, asset, readLocal) { return current ? current.load(kind, asset, readLocal) : readLocal(); }

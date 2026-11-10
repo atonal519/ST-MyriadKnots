@@ -125,6 +125,18 @@ export function normalizeVectorConfig(value = {}) {
   return Object.freeze({ url: endpoint.href.replace(/\/+$/u, ''), key, model, dimensions: /^Qwen\/Qwen3-Embedding-/u.test(model) ? 1024 : null });
 }
 
+// 请求容量与索引的16行存储分片独立，百炼v4的官方兼容接口每次最多10行。
+export function vectorRequestBatchSize(config) {
+  if (config?.model !== 'text-embedding-v4') return 16;
+  try {
+    const endpoint = new URL(config.url);
+    const officialHost = ['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com', 'dashscope-us.aliyuncs.com', 'cn-hongkong.dashscope.aliyuncs.com'].includes(endpoint.hostname)
+      || /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.maas\.aliyuncs\.com$/u.test(endpoint.hostname);
+    return officialHost && endpoint.protocol === 'https:' && !endpoint.port && !endpoint.username && !endpoint.password
+      && !endpoint.search && !endpoint.hash && endpoint.pathname === '/compatible-mode/v1' ? 10 : 16;
+  } catch { return 16; }
+}
+
 export function usesNativeXfyunProxy(url) {
   try {
     const endpoint = new URL(String(url ?? '').trim().replace(/\/+$/u, '').replace(/\/embeddings$/u, ''));

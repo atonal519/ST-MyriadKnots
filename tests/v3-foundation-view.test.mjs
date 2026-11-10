@@ -75,6 +75,28 @@ const editorContent = () => activeEditorDialog?.content ?? null;
 const submitEditor = () => activeEditorDialog?.submit() ?? Promise.resolve(null);
 const cancelEditor = () => activeEditorDialog?.cancel() ?? false;
 
+test('切页快照激活入口和异步准备完成后均取最新状态', async () => {
+  let reads = 0, state = { status: 'ready', pluginEnabled: true, chatId: 'snapshot-chat', foundationStatus: 'ready', rootRevision: 1,
+    memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', stableCount: 0, rememberedCount: 0, floors: [], cseReady: true };
+  const runtime = { getState() { reads++; return state; }, subscribe: () => () => {}, confirmLatest: async () => state,
+    async prepareCurrent() { state = { ...state, rootRevision: 2 }; return { status: 'ready' }; }, refreshStatus: async () => state };
+  const view = createV3FoundationView({ runtime, documentRef });
+  reads = 0;
+  view.mount(new Node('section'), { page: 'memories' });
+  const result = await view.activate();
+  assert.equal(reads, 3);
+  assert.equal(result.rootRevision, 2);
+  view.deactivate();
+  let finish;
+  runtime.prepareCurrent = () => new Promise(resolve => { finish = resolve; });
+  state = { ...state, rootRevision: 3, memoryWorkBusy: true };
+  const before = reads, reopening = view.activate();
+  assert.equal(reads, before + 1, '关闭后重开在异步准备之前读取最新忙态');
+  finish({ status: 'ready' });
+  assert.equal((await reopening).rootRevision, 3);
+  view.deactivate();
+});
+
 test('千结正常等待只在本楼提示，闲置反馈隐藏且真实处理与失败保留', async () => {
   let state = { status: 'ready', pluginEnabled: true, chatId: 'notice-chat', foundationStatus: 'ready',
     memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', stableCount: 71, rememberedCount: 71,

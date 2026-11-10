@@ -125,6 +125,9 @@ async function once(size, instrument) {
   assert.equal(started.stableCount, size);
   assert.equal(started.floors.length, size);
 
+  const warmed = h.runtime.getState();
+  assert.deepEqual(stateShape(warmed), stateShape(started), 'explicit warm read preserves prepared state');
+
   let iteratorCalls = 0;
   let yieldedElements = 0;
   if (instrument) {
@@ -171,8 +174,8 @@ test('actual memory runtime getState ordinary unmerged floors: compare one measu
     const uninstrumented = await once(size, false);
     const measured = await once(size, true);
     assert.deepEqual(measured.shape, uninstrumented.shape, `${size} floors: read-only instrumentation preserves the full serialized getState output`);
-    assert.equal(measured.iteratorCalls, 1, `${size} floors: getState builds one local migration partition`);
-    assert.equal(measured.yieldedElements, size, `${size} floors: the local partition copies each floor once`);
+    assert.equal(measured.iteratorCalls, 0, `${size} floors: unchanged getState reuses the prepared migration partition`);
+    assert.equal(measured.yieldedElements, 0, `${size} floors: unchanged getState does not traverse historical floors`);
     assert.deepEqual(measured.storeCallDelta, { readReachable: 0, readRecord: 0, putRecord: 0, commitRoot: 0, invalidate: 0, network: 0, hostSnapshot: 0 });
     assert.deepEqual(measured.foundationCallDelta, { foundationStateReads: 1, inspectCalls: 0 });
     results.push({ floors: size, outputMatchesUninstrumented: true, iteratorCalls: measured.iteratorCalls,

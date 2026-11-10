@@ -2626,7 +2626,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     }
     const prepare = page === 'management' || typeof runtime.prepareCurrent !== 'function'
       ? runtime.refreshStatus({ preferCached: page !== 'management' })
-      : runtime.prepareCurrent({ preferCached: true }).then(() => runtime.getState());
+      : runtime.prepareCurrent({ preferCached: true });
     const [foundationOutcome, receiptOutcome] = await Promise.allSettled([prepare, recallRuntime?.restorePersistedReceipt?.()]);
     if (!active || mine !== epoch) return { status: 'stale' };
     const peopleOutcome = page === 'people' && peopleRuntime?.refresh

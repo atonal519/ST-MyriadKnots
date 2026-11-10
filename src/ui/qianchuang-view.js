@@ -1,4 +1,4 @@
-import {subscribeQianchuangMapCatalog} from '../qianchuang-map-catalog.js';
+import {subscribeQianchuangMapCatalog,qianchuangMapCatalogRevision} from '../qianchuang-map-catalog.js';
 import {projectQianchuangSheets,snapshotForCitySheet,placeMapLevel} from './qianchuang-city-sheets.js';
 import {CITY_MAPS,createCityMapLoader,citySchematicLayout} from './qianchuang-city-maps.js';
 import { projectQianchuangBrowse } from './qianchuang-browse.js';
@@ -28,6 +28,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   let organizationController=null,organizeAction=null;
   let sheets=null,activeSheetId=null,sheetSnapshot=null,displayById=new Map(),sheetRow=null,assetDrawKey=null;
   let sheetSwitcher=null,sheetScrollLeft=0,lastCurrentSheetId=null;
+  let sheetProjectionSource=null,sheetProjection=null,basemapGeometry=null,catalogRevision=qianchuangMapCatalogRevision();
   const currentSheet=()=>sheets?.sheets.find(sheet=>sheet.id===activeSheetId);
   const browseFor=id=>{
     const source=sheetSnapshot??snapshot,root=currentSheet()?.rootPlaceId??currentSheet()?.cityId;
@@ -91,14 +92,16 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     mapGroup.hidden=false;
     const real=CITY_MAPS[currentSheet()?.assetId],generic=QIANCHUANG_MAP_ASSETS[basemap],asset=real??generic??QIANCHUANG_BASEMAPS[basemap],key=chatId+':'+activeSheetId+':'+(real?.id??basemap);
     if(assetDrawKey===key)return;assetDrawKey=key;
-    const geometry=el('div','qqj-window-geometry');
+    const reusedGeometry=basemapGeometry?.key===key;
+    const geometry=reusedGeometry?basemapGeometry.node:el('div','qqj-window-geometry');
     map.style.setProperty('--qqj-window-map-aspect','1');map.style.setProperty('--qqj-window-map-width','100%');map.setAttribute('data-basemap',real?.id??basemap);map.setAttribute('data-map-mode',real?'real':'generic');
     map.setAttribute('data-map-library',String(!real&&!!generic));
     map.replaceChildren(geometry,regions,areas,points);copyright.replaceChildren();copyright.hidden=!real&&basemap!=='modern'&&generic?.id!=='modern-inland'&&generic?.id!=='palace-courtyard-honmaru'&&!['campus-compact','campus-garden','campus-university'].includes(generic?.id);if(!copyright.hidden)copyright.textContent='© OpenStreetMap contributors · ODbL';
+    if(reusedGeometry)return;
     if(real||generic){
       geometry.setAttribute('aria-busy','true');
-      void (real?loadCityMap(real.id):loadGenericMap(generic.id)).then(svg=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.innerHTML=svg;geometry.querySelector('svg')?.setAttribute('preserveAspectRatio','xMidYMid meet');geometry.setAttribute('aria-busy','false');},()=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.textContent=real?'城市底图暂时无法读取，可继续浏览地点资料。':'底图暂时无法读取，可继续浏览地点资料。';geometry.setAttribute('aria-busy','false');});
-    }else geometry.innerHTML=`<svg viewBox="0 0 ${asset.width} ${asset.height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${asset.markup}</svg>`;
+      void (real?loadCityMap(real.id):loadGenericMap(generic.id)).then(svg=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.innerHTML=svg;geometry.querySelector('svg')?.setAttribute('preserveAspectRatio','xMidYMid meet');geometry.setAttribute('aria-busy','false');basemapGeometry={key,node:geometry};},()=>{if(assetDrawKey!==key||map.children[0]!==geometry)return;geometry.textContent=real?'城市底图暂时无法读取，可继续浏览地点资料。':'底图暂时无法读取，可继续浏览地点资料。';geometry.setAttribute('aria-busy','false');});
+    }else {geometry.innerHTML=`<svg viewBox="0 0 ${asset.width} ${asset.height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${asset.markup}</svg>`;basemapGeometry={key,node:geometry};}
   }
   function selectSheet(id){
     if(!sheets?.sheets.some(sheet=>sheet.id===id))return;
@@ -117,6 +120,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     if (chatId === next) return;
     if(active && !(preparing && chatId===null && next!==null)) { epoch++; preparing=false; failure=null; }
     organizationController?.abort();closeUserAvatar(true);userAvatar=null;
+    sheetProjectionSource=null;sheetProjection=null;basemapGeometry=null;
     chatId = next;sheets=null;activeSheetId=null;sheetSnapshot=null;displayById=new Map();assetDrawKey=null;sheetSwitcher=null;sheetScrollLeft=0;lastCurrentSheetId=null; highlightedMapRootId = null; renderedRevision = null; openIds = new Set(); localSelections = new Map(); unassignedOpen=false;query='';if(search)search.value='';browseScopeId=undefined;browse=null;mapBrowse=null;markerKey=null;positionKey=null;byId = new Map();
     basemap = QIANCHUANG_BASEMAPS[settings?.get?.()?.qianchuangBasemaps?.[chatId]] ? settings.get().qianchuangBasemaps[chatId] : 'modern';
     drawBasemap();
@@ -296,7 +300,7 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   }
   function renderData() {
     byId=new Map((snapshot.places??[]).map(node=>[node.entityId,node]));
-    sheets=projectQianchuangSheets(snapshot);if(!sheets.sheets.some(sheet=>sheet.id===activeSheetId)){activeSheetId=sheets.defaultSheetId;browseScopeId=undefined;}
+    sheets=sheetProjection;if(!sheets.sheets.some(sheet=>sheet.id===activeSheetId)){activeSheetId=sheets.defaultSheetId;browseScopeId=undefined;}
     sheetSnapshot=snapshotForCitySheet(snapshot,sheets,activeSheetId);const unassigned=snapshotForCitySheet(snapshot,sheets,null),drawerIds=[...new Set([...(sheetSnapshot.unassignedPlaceIds??[]),...(unassigned.unassignedPlaceIds??[])])];
     displayById=new Map([...sheetSnapshot.places,...unassigned.places].map(node=>[node.entityId,node]));
     browse=browseFor(browseScopeId);mapBrowse=browseFor(undefined);
@@ -335,7 +339,15 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
   function update() {
     if(!container)return;
     const base=runtime.getQianchuangSnapshot();resetChat(base.chatId ?? null);
-    const chosen=settings?.get?.()?.qianchuangBasemaps?.[chatId],projection=projectQianchuangSheets(base),sheet=projection.sheets.find(sheet=>sheet.id===activeSheetId)??projection.sheets.find(sheet=>sheet.id===projection.defaultSheetId),hint=base.places.find(place=>place.entityId===sheet?.rootPlaceId),automatic=hint?.mapStyle?selectQianchuangMapAsset({entityId:hint.entityId,style:hint.mapStyle,layout:hint.mapLayout,previousAssetId:sheet?.mapAssetId}):QIANCHUANG_MAP_ASSETS[sheet?.mapAssetId]?.id;
+    const nextCatalogRevision=qianchuangMapCatalogRevision();
+    if(catalogRevision!==nextCatalogRevision){
+      catalogRevision=nextCatalogRevision;sheetProjectionSource=null;basemapGeometry=null;assetDrawKey=null;markerKey=null;renderedRevision=null;
+    }
+    if(!sheetProjectionSource||sheetProjectionSource.chatId!==base.chatId||sheetProjectionSource.projectionRevision!==base.projectionRevision
+      ||sheetProjectionSource.places!==base.places||sheetProjectionSource.mapRootIds!==base.mapRootIds||sheetProjectionSource.userPosition!==base.userPosition){
+      sheetProjectionSource=base;sheetProjection=projectQianchuangSheets(base);
+    }
+    const chosen=settings?.get?.()?.qianchuangBasemaps?.[chatId],projection=sheetProjection,sheet=projection.sheets.find(sheet=>sheet.id===activeSheetId)??projection.sheets.find(sheet=>sheet.id===projection.defaultSheetId),hint=base.places.find(place=>place.entityId===sheet?.rootPlaceId),automatic=hint?.mapStyle?selectQianchuangMapAsset({entityId:hint.entityId,style:hint.mapStyle,layout:hint.mapLayout,previousAssetId:sheet?.mapAssetId}):QIANCHUANG_MAP_ASSETS[sheet?.mapAssetId]?.id;
     const selectedBasemap=QIANCHUANG_BASEMAPS[chosen]||QIANCHUANG_MAP_ASSETS[chosen]?chosen:(QIANCHUANG_MAP_ASSETS[automatic]?automatic:null)??(QIANCHUANG_BASEMAPS[base.mapStyle]?base.mapStyle:qianchuangMapCandidates(hint?.mapStyle??base.mapStyle)[0]?.id??'modern');
     const nextBasemap=selectedBasemap==='sci-fi'?'sci-fi-linear':selectedBasemap;
     const styleChanged=basemap!==nextBasemap;basemap=nextBasemap;
@@ -367,12 +379,12 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
     map=el('div','qqj-window-map');regions=el('div','qqj-window-regions');areas=el('div','qqj-window-areas');points=el('div','qqj-window-points');copyright=el('small','qqj-window-copyright');contents=el('div','qqj-window-contents');
     markerKey=null;positionKey=null;assetDrawKey=null;rootRegion=el('section','qqj-window-active-place');drawer=el('details','qqj-window-unassigned');drawerHead=el('summary','qqj-window-unassigned-summary');directory=el('div','qqj-window-directory');drawerHead.addEventListener('click',()=>{unassignedOpen=!drawer.open;});drawer.addEventListener('toggle',()=>{unassignedOpen=drawer.open;});drawer.append(drawerHead,directory);contents.append(rootRegion,drawer);
     mapGroup=el('div','qqj-window-map-group');const viewport=el('div','qqj-window-map-viewport');viewport.append(map);mapGroup.append(viewport,copyright);
-    sheetRow=el('div','qqj-window-sheet-row');page.append(health,searchRow,toolbar,sheetRow,mapGroup,navigation,contents);container.replaceChildren(page);drawBasemap();renderedRevision=null;update();
+    sheetRow=el('div','qqj-window-sheet-row');page.append(health,searchRow,toolbar,sheetRow,mapGroup,navigation,contents);container.replaceChildren(page);renderedRevision=null;update();
   }
   async function activate() {
-    if(active){update();return {status:snapshot.status};}active=true;renderedRevision=null;visitMenus(page,'register');operationMenus.activate();const mine=++epoch;
+    if(active){update();return {status:snapshot.status};}active=true;visitMenus(page,'register');operationMenus.activate();const mine=++epoch;
     unsubscribe=runtime.subscribe(()=>{if(active)update();});
-    unsubscribeCatalog=subscribeQianchuangMapCatalog(()=>{if(active){renderedRevision=null;assetDrawKey=null;markerKey=null;update();}});preparing=true;failure=null;update();
+    unsubscribeCatalog=subscribeQianchuangMapCatalog(()=>{if(active){renderedRevision=null;sheetProjectionSource=null;basemapGeometry=null;assetDrawKey=null;markerKey=null;update();}});preparing=true;failure=null;update();
     try{
       const session=sessionStateProvider?.();
       if(session?.status==='error')throw session.error;

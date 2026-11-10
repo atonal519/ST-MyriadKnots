@@ -274,6 +274,13 @@ function coveredMemoryMap(reachable) {
   return result;
 }
 function floorProvenance(reachable) { return floorProvenanceForReachable(reachable); }
+function freezeStateProvenance(value) {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freezeStateProvenance(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 function sameHostLocator(left, right) {
   return left?.messageIndex === right?.messageIndex && left?.swipeId === right?.swipeId && left?.selectedSwipeIndex === right?.selectedSwipeIndex;
 }
@@ -1247,7 +1254,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       ...(inheritedSource ? { inherited: true } : {}),
       sourceFloorIds: Object.freeze([...sourceFloorIds]), sourceAssistantSeqs: Object.freeze(sourceFloors.map(item => item.assistantSeq)),
       sourceMessageIndexes: Object.freeze(sourceFloors.map(item => item.hostLocator.messageIndex)),
-      canonicalFingerprint: floor.content.canonicalFingerprint, rawFingerprint: floor.content.rawFingerprint, status, memoryId: memory?.id ?? null, summary: effectiveSummary(memory) ?? '', summarySource: memory?.summary?.effectiveSource ?? null, aiSummary: memory?.summary?.aiText ?? '', revisionNote: memory?.summary?.revisionNote ?? null, extractorVersion: memory?.extractorVersion ?? EXTRACTOR_VERSION, counts: counts(memory), api: meta?.api ?? null, attempts: meta?.attempts ?? 0, runId: meta?.runId ?? null, checkpointId: reachable?.checkpoint?.id ?? null, manualTime, timeFallback: timeFallbackByFloor.get(floor.id) ?? '', error: failureError ?? (memory?.recordStatus === 'invalidated' ? '该楼记忆已标记错误，可重新提取。' : null), memory });
+      canonicalFingerprint: floor.content.canonicalFingerprint, rawFingerprint: floor.content.rawFingerprint, status, memoryId: memory?.id ?? null, summary: effectiveSummary(memory) ?? '', summarySource: memory?.summary?.effectiveSource ?? null, aiSummary: memory?.summary?.aiText ?? '', revisionNote: memory?.summary?.revisionNote ?? null, extractorVersion: memory?.extractorVersion ?? EXTRACTOR_VERSION, counts: Object.freeze(counts(memory)), api: meta?.api ?? null, attempts: meta?.attempts ?? 0, runId: meta?.runId ?? null, checkpointId: reachable?.checkpoint?.id ?? null, manualTime, timeFallback: timeFallbackByFloor.get(floor.id) ?? '', error: failureError ?? (memory?.recordStatus === 'invalidated' ? '该楼记忆已标记错误，可重新提取。' : null), memory });
   }
   function persistedCseRebuildPlan(value) {
     const saved = value?.run?.diagnostics?.cseRebuild;
@@ -1285,11 +1292,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     completedFloorIds: plan.targets.slice(0, completedCount).map(target => target.floorId),
     status: completedCount >= plan.targets.length ? 'completed' : 'active',
   });
-  function getState(cseSnapshot = null) {
-    const foundation = foundationRuntime.getState();
+  function projectStateFloors(rawCse) {
     const memoryMap = currentMemoryMap(reachable);
     const coverageMap = coveredMemoryMap(reachable);
-    const provenance = floorProvenance(reachable);
+    const provenance = freezeStateProvenance(floorProvenance(reachable));
     const floorById = new Map((reachable?.floors ?? []).map(floor => [floor.id, floor]));
     const partition = migrationPartition(reachable), liveFloors = liveFloorsFor(reachable, partition);
     const inheritedSourcesByFloorId = new Map((reachable?.migrationDescriptor?.summarySources ?? [])
@@ -1302,7 +1308,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       .map(floor => floorState(floor, memoryMap, provenance, floorById, inheritedSourcesByFloorId, partition));
     const stableCount = liveFloors.length;
     const rememberedCount = liveFloors.filter(floor => coverageMap.has(floor.id)).length;
-    const rawCse = cseSnapshot ?? cseRuntime.getState();
     const savedCseFailures = failureScopeMatches(reachable?.root) ? failureScope.cseFailures : {};
     const visibleFloorIds = new Set(floors.filter(item => item.memoryExcluded !== true).map(item => item.floorId));
     const liveFloorIds = new Set(liveFloors.map(floor => floor.id));
@@ -1314,10 +1319,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const latestSavedCse = Object.entries(savedCseFailures).reduce((latest, current) => !latest || String(current[1].lastFailedAt).localeCompare(String(latest[1].lastFailedAt)) >= 0 ? current : latest, null);
     const savedCseError = latestSavedCse ? Object.freeze({ floorId: latestSavedCse[0], code: latestSavedCse[1].code, count: latestSavedCse[1].count, lastFailedAt: latestSavedCse[1].lastFailedAt,
       ...Object.fromEntries(['name', 'runId', 'httpStatus'].filter(key => latestSavedCse[1][key] !== undefined).map(key => [key, latestSavedCse[1][key]])), message: savedFailureMessage(latestSavedCse[1]), phase: 'retryableError',
-      diagnostics: { subjectResolution: latestSavedCse[1].subjectResolution } }) : null;
+      diagnostics: Object.freeze({ subjectResolution: latestSavedCse[1].subjectResolution }) }) : null;
     const rawCseHint = rawCse.lastCseError ? savedCseFailures[rawCse.lastCseError.floorId] : null;
     const cseError = rawCse.lastCseError && rawCseHint ? Object.freeze({ ...rawCse.lastCseError, count: rawCseHint.count, lastFailedAt: rawCseHint.lastFailedAt }) : rawCse.lastCseError ?? savedCseError;
-    const cse = Object.freeze({ ...rawCse, cseFloors: Object.freeze(cseFloors), csePendingCount: cseFloors.filter(item => item.status === 'pending').length, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, lastCseError: cseError });
+    const cse = Object.freeze({ cseFloors: Object.freeze(cseFloors), csePendingCount: cseFloors.filter(item => item.status === 'pending').length, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, lastCseError: cseError });
     const cseByFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
     const memoryEntities = projectMemoryPersonEntities(reachable?.entities ?? [], identityProjection);
@@ -1339,6 +1344,22 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const memory = coverageMap.get(floor.id);
       return memory?.recordStatus !== 'active' || !cseByMemoryFloor.get(memory.floorId)?.deltaId;
     })?.assistantSeq ?? null;
+    return { failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, combinedFloors: Object.freeze(combinedFloors), cse, migrationAliases,
+      stableCount, rememberedCount, memoryEntities, memoryPlaceEntities, memoryGroupEntities, rebuildCompletedCount, rebuildNextAssistantSeq };
+  }
+  let stateProjectionCache = null;
+  function getState(cseSnapshot = null) {
+    const foundation = foundationRuntime.getState();
+    const rawCse = cseSnapshot ?? cseRuntime.getState();
+    // 只复用图与楼层状态的派生。工作信息、请求耗时和设置在下面逐次读取。
+    const inputs = [reachable, identityProjection, timeFallbackByFloor, failureScope, lastFailure,
+      active?.floorId, active?.phase, rawCse.cseFloors, rawCse.lastCseError];
+    if (!stateProjectionCache || inputs.some((value, index) => value !== stateProjectionCache.inputs[index])) {
+      stateProjectionCache = { inputs, value: projectStateFloors(rawCse) };
+    }
+    const { failedCount, combinedFloors, migrationAliases, stableCount, rememberedCount, memoryEntities,
+      memoryPlaceEntities, memoryGroupEntities, rebuildCompletedCount, rebuildNextAssistantSeq } = stateProjectionCache.value;
+    const cse = { ...rawCse, ...stateProjectionCache.value.cse };
     const summaryCompletedCount = Math.min(coverage.summaryCompleted ?? rememberedCount, stableCount);
     const cseRebuildResumable = ['paused', 'failed'].includes(cseRebuildPlan?.status);
     const rebuildHasActionableWork = (coverage.status !== 'unknown' && coverage.completed < coverage.total)
@@ -1354,7 +1375,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const savedAutomation = failureScopeMatches(reachable?.root) ? failureScope.automationFailure : null;
     const lastAutomationError = savedAutomation ? Object.freeze({ code: savedAutomation.code, name: savedAutomation.name, message: savedFailureMessage(savedAutomation), phase: savedAutomation.phase, prepareStep: savedAutomation.prepareStep, detail: savedAutomation.detail, location: savedAutomation.location, count: savedAutomation.count, lastFailedAt: savedAutomation.lastFailedAt }) : null;
     const activity = projectActivityState(foundation, cse, stableCount);
-    return Object.freeze({ ...foundation, ...cse, ...activity, ...(migrationAliases ? { migrationAliases } : {}), rootRevision: reachable?.rootRevision ?? null, narrativeGeneration: reachable?.root?.narrativeGeneration ?? null, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount: floors.filter(item => ['error', 'failed'].includes(item.status)).length, floors: Object.freeze(combinedFloors), memoryEntities, memoryPlaceEntities, memoryGroupEntities, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    return Object.freeze({ ...foundation, ...cse, ...activity, ...(migrationAliases ? { migrationAliases } : {}), rootRevision: reachable?.rootRevision ?? null, narrativeGeneration: reachable?.root?.narrativeGeneration ?? null, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount, floors: combinedFloors, memoryEntities, memoryPlaceEntities, memoryGroupEntities, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.nextIndex ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
 
   const projectActivityState = (foundation, cse, stableCount) => {

@@ -219,7 +219,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     lastRequest = { ...value, attempts: operation.transportBudget.used, runId: operation.runId };
   };
   let identityProjection = normalizeIdentityProjection();
-  let historyProjectionCache = null;
+  let historyProjectionCache = null, floorStatusCache = null;
   const subscribers = new Set();
   const enabled = () => { try { return (typeof isEnabled === 'function' ? isEnabled() : isEnabled) === true; } catch { return false; } };
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
@@ -389,10 +389,10 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
   function getState() {
     const floors = reachable?.floors ?? [];
     const projectedState = projectCseStateIdentityReferences(replayed, identityProjection);
-    const entities = new Map(buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection })
-      .map(entry => [entry.entityId, entry.entity]));
-    const memoryByFloor = new Map((reachable?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
     if (historyProjectionCache?.reachable !== reachable || historyProjectionCache?.identityProjection !== identityProjection) {
+      const entities = new Map(buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], identityProjection })
+        .map(entry => [entry.entityId, entry.entity]));
+      const memoryByFloor = new Map((reachable?.floorMemories ?? []).filter(memory => memory.recordStatus === 'active').map(memory => [memory.floorId, memory]));
       const reachableDeltas = filterReachableDeltas({ floors, floorMemories: reachable?.floorMemories ?? [], stateDeltas: reachable?.stateDeltas ?? [] });
       const deltaByFloor = new Map(reachableDeltas.map(delta => [delta.floorId, delta]));
       const timelineByFloor = new Map(deriveCseTimeline(reachableDeltas).map(item => [item.floorId, item]));
@@ -445,17 +445,28 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
           }))),
         }));
       }
-      // Cache only immutable historical records; live status and the mutable current-state projection stay fresh per read.
-      historyProjectionCache = { reachable, identityProjection, deltaByFloor, recordByFloor, reachableDeltas, floorSeq };
+      const anchorFloorIndex = floors.findIndex(floor => floor.id === reachableDeltas.at(-1)?.floorId);
+      const anchorFloorIds = new Set(floors.slice(0, anchorFloorIndex + 1).map(floor => floor.id));
+      const cseTowardCandidates = Object.freeze(buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], floorIds: anchorFloorIds, identityProjection })
+        .filter(entry => entry.entityType === 'person')
+        .map(entry => Object.freeze({ entityId: entry.entityId, displayName: entry.displayName })));
+      // 历史与身份目录随已验证图失效，当前状态投影和请求耗时仍逐次读取。
+      historyProjectionCache = { reachable, identityProjection, entities, memoryByFloor, deltaByFloor, recordByFloor, floorSeq, cseTowardCandidates };
     }
-    const { deltaByFloor, recordByFloor, reachableDeltas, floorSeq } = historyProjectionCache;
-    const cseFloors = floors.map(floor => {
-      const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id), record = recordByFloor.get(floor.id) ?? null;
-      const running = active?.floorId === floor.id;
-      const failure = lastFailure?.floorId === floor.id ? lastFailure : null;
-      const status = running ? 'running' : delta ? ((record?.noMaterialChange ?? true) ? 'noChange' : 'ready') : !memory ? 'notApplicable' : failure ? 'failed' : 'pending';
-      return Object.freeze({ floorId: floor.id, floorMemoryId: delta?.floorMemoryId ?? memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: record?.noMaterialChange ?? false, record, error: failure?.message ?? null });
-    });
+    const { entities, memoryByFloor, deltaByFloor, recordByFloor, floorSeq, cseTowardCandidates } = historyProjectionCache;
+    const activeFloorId = active?.floorId ?? null;
+    if (floorStatusCache?.history !== historyProjectionCache || floorStatusCache?.activeFloorId !== activeFloorId || floorStatusCache?.failure !== lastFailure) {
+      const cseFloors = Object.freeze(floors.map(floor => {
+        const memory = memoryByFloor.get(floor.id), delta = deltaByFloor.get(floor.id), record = recordByFloor.get(floor.id) ?? null;
+        const running = active?.floorId === floor.id;
+        const failure = lastFailure?.floorId === floor.id ? lastFailure : null;
+        const status = running ? 'running' : delta ? ((record?.noMaterialChange ?? true) ? 'noChange' : 'ready') : !memory ? 'notApplicable' : failure ? 'failed' : 'pending';
+        return Object.freeze({ floorId: floor.id, floorMemoryId: delta?.floorMemoryId ?? memory?.id ?? null, status, deltaId: delta?.id ?? null, noMaterialChange: record?.noMaterialChange ?? false, record, error: failure?.message ?? null });
+      }));
+      floorStatusCache = { history: historyProjectionCache, activeFloorId, failure: lastFailure, cseFloors,
+        pendingCount: cseFloors.filter(item => item.status === 'pending').length, failedCount: cseFloors.filter(item => item.status === 'failed').length };
+    }
+    const { cseFloors, pendingCount, failedCount } = floorStatusCache;
     const subjects = (projectedState?.subjects ?? []).map(subject => ({
       subjectEntityId: subject.subjectEntityId,
       displayName: entities.get(subject.subjectEntityId)?.displayName ?? (subject.subjectEntityId === reachable?.baseline?.userPersona?.entityId ? reachable.baseline.userPersona.name : reachable?.baseline?.characterCard?.name) ?? '未知人物',
@@ -463,17 +474,11 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       adaptive: subject.adaptive.map(item => ({ ...item, towardDisplayName: entities.get(item.towardEntityId)?.displayName ?? null, sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null })),
       situational: subject.situational.map(item => ({ ...item, towardDisplayName: entities.get(item.towardEntityId)?.displayName ?? null, sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null })),
     }));
-    const pendingCount = cseFloors.filter(item => item.status === 'pending').length;
     const mainCharacterEntityId = resolveIdentityEntityId(reachable?.baseline?.characterCard?.entityId, identityProjection) ?? null;
     const mainCharacterDisplayName = mainCharacterEntityId
       ? entities.get(mainCharacterEntityId)?.displayName ?? reachable?.baseline?.characterCard?.name ?? null
       : null;
-    const anchorFloorIndex = floors.findIndex(floor => floor.id === reachableDeltas.at(-1)?.floorId);
-    const anchorFloorIds = new Set(floors.slice(0, anchorFloorIndex + 1).map(floor => floor.id));
-    const cseTowardCandidates = buildEntityIdentityDirectory({ entities: reachable?.entities ?? [], floorIds: anchorFloorIds, identityProjection })
-      .filter(entry => entry.entityType === 'person')
-      .map(entry => Object.freeze({ entityId: entry.entityId, displayName: entry.displayName }));
-    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: projectedState, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, cseRequest: requestSnapshot(), lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
+    return Object.freeze({ cseReady: reachable?.root?.capabilities?.cseReady === true, baselineId: reachable?.baseline?.id ?? null, mainCharacterEntityId, mainCharacterDisplayName, currentStateId: replayed?.id ?? null, currentStateFingerprint: replayed?.fingerprint ?? null, replayedCurrentState: projectedState, cseTowardCandidates: Object.freeze(cseTowardCandidates), cseSubjects: Object.freeze(subjects), cseFloors: Object.freeze(cseFloors), csePendingCount: pendingCount, cseFailedCount: failedCount, activeCse: active ? { floorId: active.floorId, runId: active.runId, phase: active.phase } : null, cseRequest: requestSnapshot(), lastCseError: lastFailure, cseReplayDiagnostic: replayDiagnostic, csePromptVersion: CSE_PROMPT_VERSION, cseCompilerVersion: CSE_COMPILER_VERSION });
   }
 
   function getActivityState() {
@@ -918,7 +923,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
     notify();
     return true;
   }
-  function clearView() { lastRequest = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
-  function invalidate() { lastRequest = null; epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; historyProjectionCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
+  function clearView() { lastRequest = null; reachable = null; replayed = null; historyProjectionCache = null; floorStatusCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
+  function invalidate() { lastRequest = null; epoch += 1; active?.controller.abort(); active = null; reachable = null; replayed = null; historyProjectionCache = null; floorStatusCache = null; lastFailure = null; replayDiagnostic = null; notify(); }
   return Object.freeze({ load, analyzeFloor, correctSubjectState, cancelActive, clearView, invalidate, setIdentityProjection, getState, getActivityState, getDiagnosticState, getCurrentSubjectStates, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } });
 }

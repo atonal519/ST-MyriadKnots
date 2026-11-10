@@ -1,6 +1,6 @@
 import { sha256 } from '../identity.js';
 import { recordWriteBatches } from '../backend-client.js';
-import { normalizeVector } from '../vector-api.js';
+import { normalizeVector, vectorRequestBatchSize } from '../vector-api.js';
 import { rawWitnessShape, rawWitnessValid, vectorWitnessShape } from './vector-source.js';
 import { createRawSourceLookup, projectVectorSources, rawSourceKey } from './vector-source.js';
 import { selectRecallMemories } from './recall-source.js';
@@ -358,6 +358,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       notify({ status: 'building', completed: 0, total: chunks.length, error: null, background: incremental, cancelled: false });
       const rows = [], shardIds = [];
       const previousShardIds = new Set(previous?.data?.shardIds ?? []);
+      const requestBatchSize = vectorRequestBatchSize(operation.configValue);
       let dimensions = null;
       for (let start = 0; start < chunks.length; start += BATCH) {
         guard(source);
@@ -389,15 +390,21 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
         } else {
           const missing = batch.filter((value, index) => !cachedBatchRows[index] || !witnessMatches(cachedBatchRows[index].witness, witnesses[index]));
           phase = 'embedding';
-          const inputCharacters = missing.reduce((sum, value) => sum + value.text.length, 0);
-          updateBuildDiagnostic(operation, { phase, batchNumber: Math.floor(start / BATCH) + 1, completedChunks: rows.length,
-            totalChunks: chunks.length, inputCount: missing.length, inputCharacters,
-            longestInputCharacters: missing.reduce((max, value) => Math.max(max, value.text.length), 0), request: null });
-          const newVectors = missing.length ? await api.embed(operation.configValue, missing.map(value => value.text), {
-            signal: operation.controller.signal,
-            onProgress: value => updateBuildDiagnostic(operation, { request: value }),
-            onDiagnostic: value => updateBuildDiagnostic(operation, { request: value, httpStatus: value.httpStatus ?? operation.buildDiagnostic?.httpStatus }),
-          }) : [];
+          const newVectors = [];
+          for (let offset = 0; offset < missing.length; offset += requestBatchSize) {
+            guard(source);
+            const request = missing.slice(offset, offset + requestBatchSize);
+            updateBuildDiagnostic(operation, { phase, batchNumber: Math.floor(start / BATCH) + 1, completedChunks: rows.length,
+              totalChunks: chunks.length, inputCount: request.length, inputCharacters: request.reduce((sum, value) => sum + value.text.length, 0),
+              longestInputCharacters: request.reduce((max, value) => Math.max(max, value.text.length), 0), httpStatus: null, request: null });
+            const vectors = await api.embed(operation.configValue, request.map(value => value.text), {
+              signal: operation.controller.signal,
+              onProgress: value => updateBuildDiagnostic(operation, { request: value }),
+              onDiagnostic: value => updateBuildDiagnostic(operation, { request: value, httpStatus: value.httpStatus ?? operation.buildDiagnostic?.httpStatus }),
+            });
+            guard(source);
+            newVectors.push(...vectors);
+          }
           let nextVector = 0;
           const vectors = batch.map((value, index) => {
             const cachedRow = cachedBatchRows[index];

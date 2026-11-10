@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVectorApiClient, normalizeVectorConfig, resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
+import { createVectorApiClient, normalizeVectorConfig, resolveVectorConfig, vectorRequestBatchSize, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
 import { createVectorIndex, rawSourceChunks, VECTOR_INDEX_ID, VECTOR_SHARD_PREFIX } from '../src/v3/vector-index.js';
 import { createVectorAutoUpdater } from '../src/v3/vector-auto-update.js';
 import { createRawSourceLookup, projectVectorSources, rawWitnessValid, summaryCandidateText, summaryWitnessValid } from '../src/v3/vector-source.js';
@@ -2562,4 +2562,104 @@ test('HTML正文聚合只凭每个成员snapshot自己的raw，不借anchor或�
  memory.sourceFloorSnapshots.pop();result = await projectVectorSources([memory], floors);assert.deepEqual(result.rawSources.map(s=>s.floorId), ['member-a']);
  memory.sourceFloorSnapshots.push({ floorId: 'member-b', canonicalContent: '第二楼故事', rawFingerprint: rawB });result = await projectVectorSources([memory], floors);assert.deepEqual(result.rawSources.map(s=>s.canonicalContent), ['第一楼故事','第二楼故事']);
  assert.equal(rawSourceChunks(result).map(chunk=>chunk.text).join('|'), '第一楼故事|第二楼故事');
+});
+
+test('百炼v4官方兼容端点按10条请求，保16行分片及顺序和缓存', async t => {
+  for (const url of ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    'https://dashscope-us.aliyuncs.com/compatible-mode/v1', 'https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1',
+    ...['cn-beijing', 'ap-southeast-1', 'cn-hongkong', 'eu-central-1', 'ap-northeast-1', 'us-east-1'].map(region => `https://workspace-123.${region}.maas.aliyuncs.com/compatible-mode/v1`)]) {
+    await t.test(url, async () => {
+      const source = await sourceFixture();
+      source.rawSources = await Promise.all(Array.from({ length: 17 }, (_, index) => rawFloor(source, index + 1, `batch-row-${index + 1}`)));
+      const requests = [];
+      const api = createVectorApiClient({ fetchImpl: async (target, options) => {
+        const body = JSON.parse(options.body); requests.push({ target, body });
+        if (body.input.length > 10) return Response.json({ error: { code: 'InvalidParameter' } }, { status: 400 });
+        return Response.json({ data: body.input.map((text, index) => ({ index, embedding: [Number(text.split('-').at(-1)), 1] })).reverse() });
+      } });
+      const h = harness(source, { api }); h.setConfig(normalizeVectorConfig({ url, key: 'fixture-key', model: 'text-embedding-v4' }));
+      assert.equal((await h.index.build()).status, 'ready');
+      assert.deepEqual(requests.map(request => request.body.input.length), [10, 6, 1]);
+      assert.ok(requests.every(request => request.target === `${url}/embeddings`));
+      assert.deepEqual(requests.flatMap(request => request.body.input), source.rawSources.map(raw => raw.canonicalContent));
+      const manifest = h.records.get(VECTOR_INDEX_ID).data;
+      assert.equal(manifest.chunkCount, 17); assert.equal(manifest.dimensions, 2);
+      const shards = manifest.shardIds.map(id => h.records.get(id).data);
+      assert.deepEqual(shards.map(shard => shard.rows.length), [16, 1]);
+      for (const [index, row] of shards.flatMap(shard => shard.rows).entries()) {
+        assert.equal(row.witness.floorId, source.rawSources[index].floorId);
+        assert.equal(Buffer.from(row.vector, 'base64').readFloatLE(0), Math.fround((index + 1) / Math.hypot(index + 1, 1)));
+      }
+      const oldIds = [...manifest.shardIds], before = requests.length;
+      assert.equal((await h.index.build()).status, 'ready');
+      assert.equal(requests.length, before);
+      assert.deepEqual(h.records.get(VECTOR_INDEX_ID).data.shardIds, oldIds);
+    });
+  }
+});
+
+test('百炼v4请求容量只应用官方HTTPS兼容地址和精确模型', async () => {
+  const official = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  for (const url of ['https://vector.invalid/v1', 'http://dashscope.aliyuncs.com/compatible-mode/v1',
+    'https://dashscope.aliyuncs.com:8443/compatible-mode/v1', 'https://dashscope.aliyuncs.com/v1',
+    'https://dashscope.aliyuncs.com/compatible-mode/v1?other=1', 'https://dashscope.aliyuncs.com/compatible-mode/v1#other',
+    'https://user:pass@dashscope.aliyuncs.com/compatible-mode/v1', 'https://sub.dashscope.aliyuncs.com/compatible-mode/v1',
+    'https://dashscope.aliyuncs.com.invalid/compatible-mode/v1', 'https://extra.workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+    'https://cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'not a URL']) {
+    assert.equal(vectorRequestBatchSize({ url, model: 'text-embedding-v4' }), 16, url);
+  }
+  for (const model of ['text-embedding-v3', 'TEXT-EMBEDDING-V4', 'vendor/text-embedding-v4', 'Qwen/Qwen3-Embedding-8B']) {
+    assert.equal(vectorRequestBatchSize({ url: official, model }), 16, model);
+  }
+  for (const [url, model] of [['https://vector.invalid/v1', 'text-embedding-v4'], [official, 'text-embedding-v3']]) {
+    const source = await sourceFixture();
+    source.rawSources = await Promise.all(Array.from({ length: 16 }, (_, index) => rawFloor(source, index + 1)));
+    const counts = [], api = createVectorApiClient({ fetchImpl: async (_target, options) => {
+      const body = JSON.parse(options.body); counts.push(body.input.length);
+      return Response.json({ data: body.input.map((_, index) => ({ index, embedding: [1, 0] })) });
+    } });
+    const h = harness(source, { api }); h.setConfig(normalizeVectorConfig({ url, key: 'fixture', model }));
+    assert.equal((await h.index.build()).status, 'ready');
+    assert.deepEqual(counts, [16]);
+  }
+});
+
+test('百炼v4部分缓存仅嵌缺项，子请求失败或取消保原16行原子分片', async t => {
+  const route = normalizeVectorConfig({ url: 'https://workspace.cn-hongkong.maas.aliyuncs.com/compatible-mode/v1', key: 'fixture', model: 'text-embedding-v4' });
+  const source = await sourceFixture();
+  source.rawSources = await Promise.all(Array.from({ length: 16 }, (_, index) => rawFloor(source, index + 1)));
+  const counts = [];
+  const api = createVectorApiClient({ fetchImpl: async (_target, options) => {
+    const body = JSON.parse(options.body); counts.push(body.input.length);
+    return Response.json({ data: body.input.map((_, index) => ({ index, embedding: [1, 0] })) });
+  } });
+  const h = harness(source, { api }); h.setConfig(route);
+  await h.index.build();
+  const changed = { ...source, rawSources: await Promise.all(source.rawSources.map((raw, index) => index < 11 ? rawFloor(source, index + 1, '修改后的原文'+index) : raw)) };
+  h.setSource(changed); await h.index.build();
+  assert.deepEqual(counts, [10, 6, 10, 1]);
+  assert.equal(h.records.get(h.records.get(VECTOR_INDEX_ID).data.shardIds[0]).data.rows.length, 16);
+
+  for (const interruption of ['http400', 'cancel', 'changedConfig']) await t.test(interruption, async () => {
+    let index, currentRoute = route;
+    const requests = [];
+    const api = createVectorApiClient({ fetchImpl: async (_target, options) => {
+      const body = JSON.parse(options.body); requests.push(body.input);
+      if (interruption === 'http400' && requests.length === 2) return Response.json({ error: { code: 'InvalidParameter' } }, { status: 400 });
+      if (requests.length === 1) {
+        if (interruption === 'cancel') index.abortAll();
+        if (interruption === 'changedConfig') currentRoute = { ...route, model: 'different-model' };
+      }
+      return Response.json({ data: body.input.map((_, position) => ({ index: position, embedding: [1, 0] })) });
+    } });
+    const saved = harness(source);
+    index = createVectorIndex({ client: saved.client, api, configProvider: () => currentRoute, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+    await assert.rejects(index.build(), { code: interruption === 'http400' ? 'VECTOR_HTTP_ERROR' : 'VECTOR_ABORTED' });
+    assert.deepEqual(requests.map(input => input.length), interruption === 'http400' ? [10, 6] : [10]);
+    assert.equal(saved.records.size, 0);
+    if (interruption === 'http400') {
+      const diagnostic = index.getState().buildDiagnostic;
+      assert.equal(diagnostic.inputCount, 6); assert.equal(diagnostic.httpStatus, 400);
+    }
+  });
 });
