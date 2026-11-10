@@ -3,15 +3,16 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createDialogManager } from '../src/ui/dialog.js';
 
-function fakeDom({ withContextChange = false } = {}) {
+function fakeDom({ withContextChange = false, viewport } = {}) {
   let uid = 0;
   const mounted = [];
-  const documentRef = { activeElement: null };
+  const documentRef = { activeElement: null, defaultView: viewport };
   class Element {
     constructor({ tag = 'div', classes = [], attrs = {} } = {}) {
       this.uid = ++uid; this.tag = tag; this.classes = new Set(classes); this.attrs = { ...attrs }; this.value = attrs.value ?? '';
       this.handlers = new Map(); this.children = []; this.parent = null; this.removed = false; this.htmlValue = ''; this.style = { setProperty: (name, value) => { this.style[name] = value; } };
     }
+    getBoundingClientRect() { return { left: (Number.parseFloat(this.style.left) || 0) - (viewport?.scrollX || 0), top: (Number.parseFloat(this.style.top) || 0) - (viewport?.scrollY || 0) }; }
     focus(options) { documentRef.activeElement = this; this.focused = (this.focused ?? 0) + 1; this.focusOptions = options; }
     select() { this.selected = true; }
     setAttribute(name, value) { this.attrs[name] = String(value); }
@@ -257,4 +258,50 @@ test('共享弹窗仅在遮罩内按下并松开时外部关闭，跨边界拖�
  fire('pointerdown',overlay);fire('pointerup',sheet);fire('click',overlay);assert.equal(h.manager.hasActive(),true,'跨入弹窗后的共同祖先click也不能关闭');
  fire('pointerdown',overlay);fire('pointercancel',overlay);fire('click',overlay);assert.equal(h.manager.hasActive(),true,'取消的触屏手势不能成为遮罩点击');
  assert.equal(h.find('.sp-dialog-custom')[0].children[0],content);fire('pointerdown',overlay);fire('pointerup',overlay);fire('click',overlay);assert.equal(await pending,null);assert.equal(h.manager.hasActive(),false);
+});
+
+
+test('内部弹窗按可视视口定位并随关闭释放所有视口监听', async () => {
+  const win = new EventTarget(), visual = new EventTarget();
+  Object.assign(win, { innerWidth: 820, innerHeight: 1180, scrollX: 0, scrollY: 0, visualViewport: visual });
+  Object.assign(visual, { width: 820, height: 1180, offsetLeft: 0, offsetTop: 0 });
+  const listeners = new Set();
+  for (const [label, target] of [['window', win], ['visual', visual]]) {
+    const add = target.addEventListener.bind(target), remove = target.removeEventListener.bind(target);
+    target.addEventListener = (type, listener) => { listeners.add(`${label}:${type}`); add(type, listener); };
+    target.removeEventListener = (type, listener) => { listeners.delete(`${label}:${type}`); remove(type, listener); };
+  }
+  const h = fakeDom({ withContextChange: true, viewport: win });
+  assert.equal(listeners.size, 0);
+  assert.match(h.shadow.innerHTML, /\.sp-dialog-overlay\{position:absolute;inset:0;width:auto;height:auto;/u);
+  assert.match(h.shadow.innerHTML, /max-height:min\(80dvh,100%\)/u);
+  const first = h.manager.confirm({ title: '定位' });
+  assert.equal(h.manager.host.style.width, '820px');
+  assert.equal(h.manager.host.style.height, '1180px');
+  assert.equal(listeners.size, 5);
+  Object.assign(visual, { width: 400, height: 420, offsetLeft: 30, offsetTop: 70 });
+  Object.assign(win, { scrollX: 15, scrollY: 220 });
+  visual.dispatchEvent(new Event('resize'));
+  assert.equal(h.manager.host.style.width, '400px');
+  assert.equal(h.manager.host.style.height, '420px');
+  assert.equal(h.manager.host.style.left, '45px');
+  assert.equal(h.manager.host.style.top, '290px');
+  const replacement = h.manager.prompt({ title: '替换' });
+  assert.equal(await first, false);
+  assert.equal(listeners.size, 5);
+  h.fireContextChange();
+  assert.equal(await replacement, null);
+  assert.equal(listeners.size, 0);
+  const closed = h.manager.confirm({ title: '再次打开' });
+  h.manager.closeAll();
+  assert.equal(await closed, false);
+  assert.equal(listeners.size, 0);
+  win.visualViewport = undefined;
+  const fallback = h.manager.confirm({ title: '完整视口' });
+  assert.equal(h.manager.host.style.width, '820px');
+  assert.equal(h.manager.host.style.height, '1180px');
+  assert.equal(listeners.size, 3);
+  h.manager.cancelTop();
+  assert.equal(await fallback, false);
+  assert.equal(listeners.size, 0);
 });

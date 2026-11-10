@@ -31073,7 +31073,7 @@ async function jd({ store: e, targetIdentity: t, cachedReachable: n = null, getR
 }
 //#endregion
 //#region manifest.json
-var Md = "1.1.7", Nd = "CHANGELOG.md", Pd = /* @__PURE__ */ new Set([
+var Md = "1.1.8", Nd = "CHANGELOG.md", Pd = /* @__PURE__ */ new Set([
 	"bodyVersion",
 	"replySelection",
 	"timeEvidence",
@@ -93588,8 +93588,8 @@ var Dj = `${tm}${SD}
 .sp-day{--sp-shadow:0 8px 40px rgba(0,0,0,.12),0 2px 10px rgba(0,0,0,.07)}
 @media(max-width:640px){.sp-root{position:fixed;top:0;left:0;right:auto;bottom:auto;width:100dvw;height:100dvh;pointer-events:none}}
 @keyframes sp-wi-fullview-in{from{opacity:0}to{opacity:1}}
-.sp-dialog-overlay{position:fixed;inset:0;box-sizing:border-box;z-index:2000002;pointer-events:auto;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px;animation:sp-wi-fullview-in var(--qqj-motion-fast) ease-out}
-.sp-dialog-sheet{background-color:var(--sp-sheet-bg-legacy);background-image:linear-gradient(var(--sp-sheet-bg),var(--sp-sheet-bg));border-radius:var(--qqj-radius-dialog);width:min(400px,calc(100vw - 40px));max-width:100%;max-height:calc(100dvh - 40px * var(--qqj-ui-scale,1));overflow-y:auto;overscroll-behavior:contain;padding:16px 18px 14px;box-shadow:var(--sp-shadow);display:flex;flex-direction:column;gap:10px}
+.sp-dialog-overlay{position:absolute;inset:0;width:auto;height:auto;box-sizing:border-box;z-index:2000002;pointer-events:auto;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px;animation:sp-wi-fullview-in var(--qqj-motion-fast) ease-out}
+.sp-dialog-sheet{background-color:var(--sp-sheet-bg-legacy);background-image:linear-gradient(var(--sp-sheet-bg),var(--sp-sheet-bg));border-radius:var(--qqj-radius-dialog);width:400px;max-width:100%;max-height:100%;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:16px 18px 14px;box-shadow:var(--sp-shadow);display:flex;flex-direction:column;gap:10px}
 .sp-dialog-sheet>.sp-dialog-head,.sp-dialog-sheet>.sp-dialog-input,.sp-dialog-sheet>.sp-dialog-input-error,.sp-dialog-sheet>.sp-dialog-actions{flex:0 0 auto}
 .sp-dialog-head{min-width:0;overflow-wrap:anywhere;font-size:var(--sp-fs-95);font-weight:600;color:var(--sp-on-surface)}
 .sp-dialog-content{display:grid;min-height:0;gap:10px;overflow-y:auto;overscroll-behavior:contain}
@@ -93607,10 +93607,10 @@ var Dj = `${tm}${SD}
 .sp-dialog-input-error i{color:inherit;margin-right:3px}
 .sp-dialog-sheet-custom{overflow:hidden}
 .sp-dialog-custom{min-height:0;overflow-y:auto;overscroll-behavior:contain}
-.sp-dialog-sheet-custom:has(.qqj-editor-dialog){max-height:min(80dvh,calc(100dvh - 40px))}
+.sp-dialog-sheet-custom:has(.qqj-editor-dialog){max-height:min(80dvh,100%)}
 .sp-dialog-sheet-custom:has(.qqj-editor-dialog)>.sp-dialog-custom{flex:1 1 auto;min-height:0}
 .sp-dialog-sheet-custom:has(.qqj-editor-dialog)>.sp-dialog-head,.sp-dialog-sheet-custom:has(.qqj-editor-dialog)>.sp-dialog-input-error,.sp-dialog-sheet-custom:has(.qqj-editor-dialog)>.sp-dialog-actions{flex:0 0 auto}
-@media(max-height:540px){.sp-dialog-overlay:has(.qqj-editor-dialog){padding:10px}.sp-dialog-sheet-custom:has(.qqj-editor-dialog){max-height:calc(100dvh - 20px * var(--qqj-ui-scale,1));padding:12px 14px;gap:8px}.sp-dialog-sheet-custom:has(.qqj-editor-dialog)>.sp-dialog-input-error:empty{display:none}}
+@media(max-height:540px){.sp-dialog-overlay:has(.qqj-editor-dialog){padding:10px}.sp-dialog-sheet-custom:has(.qqj-editor-dialog){max-height:100%;padding:12px 14px;gap:8px}.sp-dialog-sheet-custom:has(.qqj-editor-dialog)>.sp-dialog-input-error:empty{display:none}}
 .qqj-editor-dialog{display:grid;min-width:0;gap:12px;color:var(--sp-on-surface);font-family:var(--sp-font);font-size:var(--sp-fs-83);line-height:1.55}
 .qqj-qianshi-todo{gap:8px}.qqj-qianshi-todo-scroll{display:grid;max-height:min(58dvh,480px);gap:4px;overflow-y:auto;overscroll-behavior:contain;padding:2px;border:1px solid var(--sp-divider);border-radius:var(--qqj-radius-field)}.qqj-qianshi-todo-row{appearance:none;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;width:100%;min-width:0;margin:0;padding:8px 9px;border:0;border-radius:var(--qqj-radius-option);background:var(--qqj-control-bg,transparent);color:var(--qqj-control-fg,var(--qqj-item-color));font:inherit;font-size:var(--sp-fs-83);line-height:1.45;text-align:left;cursor:pointer;border-color:var(--qqj-control-border,transparent)}.qqj-qianshi-todo-row:hover,.qqj-qianshi-todo-row:focus-visible{background:var(--qqj-control-bg,transparent);color:var(--qqj-control-fg,var(--qqj-item-color))}.qqj-qianshi-todo-title{min-width:0;overflow-wrap:anywhere}.qqj-qianshi-todo-status{color:var(--sp-subtle);white-space:nowrap}.qqj-qianshi-todo-pager{display:flex;justify-content:space-between;gap:8px}.qqj-qianshi-todo-empty{margin:0;padding:10px;color:var(--sp-subtle);text-align:center}
 .qqj-editor-intro{margin:0;padding:8px 10px;border-left:2px solid var(--sp-primary);border-radius:var(--qqj-radius-option);background:var(--sp-hover-bg);color:var(--sp-subtle);font-size:var(--sp-fs-75);overflow-wrap:anywhere}
@@ -93816,7 +93816,30 @@ function Aj({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? 
 	});
 	let a = i.attachShadow({ mode: "open" });
 	a.innerHTML = `<style>${hm(Dj)}</style>`;
-	let o = "day", s = "", c = null, l = Ej({
+	let o = "day", s = "", c = null, l = e.defaultView, u = () => {
+		if (!l) return () => {};
+		let e = l.visualViewport, t = () => {
+			Object.assign(i.style, {
+				left: "0px",
+				top: "0px",
+				width: `${e?.width || l.innerWidth}px`,
+				height: `${e?.height || l.innerHeight}px`
+			});
+			let t = i.getBoundingClientRect();
+			i.style.left = `${(e?.offsetLeft || 0) - t.left}px`, i.style.top = `${(e?.offsetTop || 0) - t.top}px`;
+		}, n = [
+			[l, "resize"],
+			[l, "scroll"],
+			[l, "orientationchange"],
+			[e, "resize"],
+			[e, "scroll"]
+		];
+		t();
+		for (let [e, r] of n) e?.addEventListener(r, t);
+		return () => {
+			for (let [e, r] of n) e?.removeEventListener(r, t);
+		};
+	}, d = Ej({
 		$: t,
 		mount: { appendChild: (e) => a.appendChild(e) },
 		removeOverlay: () => {
@@ -93827,15 +93850,20 @@ function Aj({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? 
 		captureFocus: () => Oj(e),
 		restoreFocus: kj,
 		schedule: n,
-		subscribeContextChange: r
+		subscribeContextChange: (e) => {
+			let t = u(), n = r?.(e);
+			return () => {
+				t(), n?.();
+			};
+		}
 	});
 	return Object.freeze({
 		host: i,
-		confirm: l.confirm,
-		choose: l.choose,
-		prompt: l.prompt,
-		custom: l.custom,
-		info: ({ title: e = "", body: t = "", note: n = "", confirmText: r = "知道了" } = {}) => l.choose({
+		confirm: d.confirm,
+		choose: d.choose,
+		prompt: d.prompt,
+		custom: d.custom,
+		info: ({ title: e = "", body: t = "", note: n = "", confirmText: r = "知道了" } = {}) => d.choose({
 			title: e,
 			body: t,
 			note: n,
@@ -93845,9 +93873,9 @@ function Aj({ documentRef: e = globalThis.document, $: t = globalThis.jQuery ?? 
 				primary: !0
 			}]
 		}).then((e) => e === !0),
-		hasActive: l.hasActive,
-		cancelTop: l.cancelActive,
-		closeAll: l.cancelActive,
+		hasActive: d.hasActive,
+		cancelTop: d.cancelActive,
+		closeAll: d.cancelActive,
 		setAppearance({ mode: t = "auto", effectiveTheme: n = "day", palette: r = {}, scale: l, fixedScale: u = 1, family: d = "", fontCssUrl: f = "" } = {}) {
 			o = n === "night" ? "night" : "day", i.setAttribute("data-theme-mode", t), i.setAttribute("data-effective-theme", o), i.style?.setProperty?.("--qqj-ui-scale", String(Number.isFinite(Number(l)) ? Number(l) : Number.isFinite(Number(u)) ? Number(u) * .85 : 1)), i.style?.setProperty?.("--qqj-dialog-scale", String(Number.isFinite(Number(u)) ? Number(u) : 1));
 			for (let [e, t] of Object.entries({

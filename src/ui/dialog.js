@@ -16,6 +16,22 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
   root.innerHTML = `<style>${scaleCssSpacing(gouhuaDialogCss)}</style>`;
   let effectiveTheme = 'day';
   let dialogFontUrl = '', dialogFontLink = null;
+  const viewport = documentRef.defaultView;
+  const bindDialogViewport = () => {
+    if (!viewport) return () => {};
+    const visual = viewport.visualViewport;
+    const sync = () => {
+      Object.assign(host.style, { left: '0px', top: '0px', width: `${visual?.width || viewport.innerWidth}px`, height: `${visual?.height || viewport.innerHeight}px` });
+      // 宿主 html 的 transform 会改变 fixed 原点，补偿后仍对齐可视视口。
+      const origin = host.getBoundingClientRect();
+      host.style.left = `${(visual?.offsetLeft || 0) - origin.left}px`;
+      host.style.top = `${(visual?.offsetTop || 0) - origin.top}px`;
+    };
+    const listeners = [[viewport, 'resize'], [viewport, 'scroll'], [viewport, 'orientationchange'], [visual, 'resize'], [visual, 'scroll']];
+    sync();
+    for (const [target, type] of listeners) target?.addEventListener(type, sync);
+    return () => { for (const [target, type] of listeners) target?.removeEventListener(type, sync); };
+  };
   const core = createGouhuaDialogCore({
     $,
     mount: { appendChild: element => root.appendChild(element) },
@@ -24,7 +40,11 @@ export function createDialogManager({ documentRef = globalThis.document, $ = glo
     captureFocus: () => deepestActiveElement(documentRef),
     restoreFocus,
     schedule,
-    subscribeContextChange,
+    subscribeContextChange: close => {
+      const stopViewport = bindDialogViewport();
+      const stopContext = subscribeContextChange?.(close);
+      return () => { stopViewport(); stopContext?.(); };
+    },
   });
   const info = ({ title = '', body = '', note = '', confirmText = '知道了' } = {}) => core.choose({ title, body, note, choices: [{ value: true, label: confirmText, primary: true }] }).then(value => value === true);
   return Object.freeze({
