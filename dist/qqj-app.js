@@ -31109,7 +31109,7 @@ async function Fd({ store: e, targetIdentity: t, cachedReachable: n = null, getR
 }
 //#endregion
 //#region manifest.json
-var Id = "1.1.14", Ld = "CHANGELOG.md", Rd = /* @__PURE__ */ new Set([
+var Id = "1.1.15", Ld = "CHANGELOG.md", Rd = /* @__PURE__ */ new Set([
 	"bodyVersion",
 	"replySelection",
 	"timeEvidence",
@@ -64474,7 +64474,18 @@ function hm({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.
 		e.style.width = `${o.width}px`, e.style.height = `${o.height}px`, e.style.maxWidth = `${o.maxWidth}px`, e.style.maxHeight = `${o.maxHeight}px`, e.style.bottom = "auto", e.style.transform = "none";
 		let s = pm(r, om), d = u(i, o.width, o.height, s);
 		e.style.top = `${d.top}px`, e.style.left = `${d.left}px`, e.style.right = "auto";
-	}, M = () => j(), N = [
+	}, M = (t) => {
+		let n = e?.getRootNode?.()?.activeElement, r = n?.isContentEditable || !n?.readOnly && (n?.tagName === "TEXTAREA" || n?.tagName === "INPUT" && [
+			"text",
+			"search",
+			"url",
+			"tel",
+			"email",
+			"password",
+			"number"
+		].includes(n.type));
+		!c() && t?.type !== "orientationchange" && e?.contains?.(n) && r || j();
+	}, N = [
 		[
 			t,
 			"pointerdown",

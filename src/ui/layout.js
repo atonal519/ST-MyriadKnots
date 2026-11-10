@@ -192,7 +192,7 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
     const desktop = isDesktop();
     const host = panel.getRootNode?.().host;
     if (host) {
-      // 手机零偏移时保留原 fixed 层级，真实文档偏移仍按原点补偿。
+      // 手机零原点保留原 fixed 层级，非零原点沿既有补偿。
       host.style.transform = desktop ? 'translate(0px, 0px)' : '';
       const origin = host.getBoundingClientRect();
       if (desktop || origin.left !== 0 || origin.top !== 0) {
@@ -214,7 +214,13 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
     panel.style.top = `${position.top}px`;
     panel.style.left = `${position.left}px`; panel.style.right = 'auto';
   };
-  const onViewportChange = () => restore();
+  const onViewportChange = event => {
+    const focused = panel?.getRootNode?.()?.activeElement;
+    const editing = focused?.isContentEditable || !focused?.readOnly && (focused?.tagName === 'TEXTAREA'
+      || focused?.tagName === 'INPUT' && ['text', 'search', 'url', 'tel', 'email', 'password', 'number'].includes(focused.type));
+    if (!isDesktop() && event?.type !== 'orientationchange' && panel?.contains?.(focused) && editing) return;
+    restore();
+  };
   const bindings = [
     [dragHandle, 'pointerdown', onDragDown], [dragHandle, 'pointermove', onDragMove], [dragHandle, 'pointerup', onPointerUp], [dragHandle, 'pointercancel', onPointerCancel], [dragHandle, 'lostpointercapture', onPointerCancel],
     [resizeHandle, 'pointerdown', onResizeDown], [resizeHandle, 'pointermove', onResizeMove], [resizeHandle, 'pointerup', onPointerUp], [resizeHandle, 'pointercancel', onPointerCancel], [resizeHandle, 'lostpointercapture', onPointerCancel],

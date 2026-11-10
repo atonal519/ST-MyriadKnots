@@ -896,3 +896,37 @@ test('主宿主补偿文档包含块原点，滚动后仍保持原视口坐标',
   origin = { left: -100, top: -900 }; f.viewport.fire('scroll');
   assert.notDeepEqual(host.getBoundingClientRect(), { left: 0, top: 0 }, '销毁配对解除文档滚动监听');
 });
+
+test('手机内部文本编辑保主窗几何，失焦旋转与主动定位沿原更新', () => {
+  const f = panelGeometryFixture({ width: 390, height: 844, visual: { offsetLeft: 0, offsetTop: 0, width: 390, height: 844 } });
+  const root = { activeElement: null, host: { style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) } };
+  f.panel.getRootNode = () => root; f.panel.contains = node => node === root.activeElement;
+  f.controller.restore();
+  const before = Object.fromEntries(f.variables);
+  for (const control of [{ tagName: 'TEXTAREA' }, { tagName: 'INPUT', type: 'text' }, { tagName: 'INPUT', type: 'password' }, { isContentEditable: true }]) {
+    root.activeElement = control;
+    Object.assign(f.viewport.visualViewport, { offsetTop: 260, height: 350 });
+    f.viewport.fire('resize', { type: 'resize' }); f.viewport.visualViewport.fire('scroll', { type: 'scroll' });
+    assert.deepEqual(Object.fromEntries(f.variables), before);
+    assert.equal(root.host.style.transform, '');
+  }
+  root.activeElement = null; f.viewport.fire('resize', { type: 'resize' });
+  assert.equal(f.variables.get('--qqj-panel-bounds-height'), '350px');
+  for (const control of [...['checkbox', 'radio', 'range', 'button', 'color', 'file'].map(type => ({ tagName: 'INPUT', type })),
+    { tagName: 'TEXTAREA', readOnly: true }, { tagName: 'INPUT', type: 'text', readOnly: true }, { tagName: 'SELECT' }]) {
+    root.activeElement = control; f.viewport.visualViewport.height++;
+    f.viewport.visualViewport.fire('resize', { type: 'resize' });
+    assert.equal(f.variables.get('--qqj-panel-bounds-height'), `${f.viewport.visualViewport.height}px`, JSON.stringify(control));
+  }
+  f.panel.contains = () => false; root.activeElement = { tagName: 'TEXTAREA' }; f.viewport.visualViewport.height = 390;
+  f.viewport.fire('resize', { type: 'resize' }); assert.equal(f.variables.get('--qqj-panel-bounds-height'), '390px', '外部host文本框不暂停');
+  f.panel.contains = node => node === root.activeElement;
+  root.activeElement = { tagName: 'TEXTAREA' }; f.viewport.visualViewport.height = 400;
+  f.viewport.fire('orientationchange', { type: 'orientationchange' });
+  assert.equal(f.variables.get('--qqj-panel-bounds-height'), '400px');
+  f.viewport.visualViewport.height = 450; f.controller.restore();
+  assert.equal(f.variables.get('--qqj-panel-bounds-height'), '450px');
+  f.viewport.innerWidth = 1200; f.viewport.visualViewport.width = 1200; f.viewport.visualViewport.height = 600;
+  f.viewport.fire('resize', { type: 'resize' }); assert.equal(f.variables.get('--qqj-panel-bounds-height'), '600px');
+  f.controller.destroy();
+});
