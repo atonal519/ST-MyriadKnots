@@ -16768,3 +16768,115 @@ test('整理读取原档即失败时记录启动阶段与安全原因，零模�
   assert.equal(technical.failure.detail, "Cannot read properties of undefined (reading 'matters')");
   assert.match(technical.failure.message, /程序异常/u);
 });
+
+async function manualSourceRejudgeHarness(onRejudge = () => {}) {
+  let h, rejudging = false;
+  h = harness({ modernAnchors: true, initialChat: [user('开始'), assistant('第一楼归档正文。'), user('继续'), assistant('第二楼归档正文。'), user('稳定')],
+    captureBusinessIdentity: () => h ? ({ hostChatId: h.context.chatId, chatId: h.context.chatMetadata.qianqianjie.chatId,
+      characterLocator: 'character.png', personaLocator: 'persona.png' }) : null,
+    utility: async options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      if (!rejudging) return { jsonData: { summary: '归档摘要。', qianshi: { events: [{ key: 'e', title: '归档事项', description: '原事实。', status: 'occurred', matter: false }], order: [] } } };
+      await onRejudge(request, h);
+      return rejudgeBatchResponse(request, row => ({ events: row.records.map(record => ({ key: record.key,
+        status: 'completed', actionStatus: 'completed', matter: false })), order: [] }));
+    } });
+  await h.runtime.start();
+  for (const floor of h.runtime.getState().floors) {
+    await h.runtime.extractFloor(floor.floorId, { analyzeState: false });
+    h.context.chat[floor.messageIndex].extra = { qianqianjie_floor: { schemaVersion: 1, chatId: CHAT, floorId: floor.floorId } };
+  }
+  rejudging = true;
+  return h;
+}
+
+const setRejudgeSource = (h, index, raw) => { h.context.chat[index].mes = raw; h.context.chat[index].swipes[0] = raw; };
+
+test('重判双基线允许预览前已确认正文修订，新正文与人工校准进入请求并保留', async () => {
+  const requests = [];
+  const h = await manualSourceRejudgeHarness(request => requests.push(request));
+  const first = h.runtime.getState().floors[0], before = await h.store.readReachable({ mode: 'runtime' });
+  await h.runtime.editSummary(first.floorId, '人工确认摘要。');
+  const event = h.runtime.getQianshiSnapshot().events[0];
+  await h.runtime.editQianshiEventText({ eventId: event.id, expected: { memoryId: event.sourceFloorMemoryId,
+    title: event.title, description: event.description, object: event.object }, title: '人工确认事项', description: event.description,
+    object: event.object, status: 'inProgress' });
+  const calibrated = await h.store.readReachable({ mode: 'runtime' });
+  setRejudgeSource(h, 1, '第一楼人工确认的新正文。'); setRejudgeSource(h, 3, '第二楼人工确认的新正文。');
+  const calls = h.calls.length;
+  const previousPlan = await h.runtime.prepareQianshiRejudge({ fromMessageIndex: 1, toMessageIndex: 1 });
+  setRejudgeSource(h, 3, '第二楼再次确认的新正文。');
+  const cutoffPlan = await h.runtime.prepareQianshiRejudge({ fromMessageIndex: 1, toMessageIndex: 1 });
+  assert.notEqual(previousPlan.planId, cutoffPlan.planId, '跟进落点的新见证也使旧预览失效');
+  setRejudgeSource(h, 1, '第一楼再次确认的新正文。');
+  const plan = await h.runtime.prepareQianshiRejudge({ fromMessageIndex: 1, toMessageIndex: 1 });
+  assert.notEqual(cutoffPlan.planId, plan.planId, '新预览绑定新的正文见证');
+  await assert.rejects(h.runtime.startQianshiRejudge(previousPlan.planId), { code: 'QIANSHI_REJUDGE_PLAN_STALE' });
+  assert.equal(h.calls.length, calls, '重新预览不调用模型');
+  const result = await h.runtime.startQianshiRejudge(plan.planId);
+  assert.equal(result.status, 'completed', JSON.stringify(result));
+  assert.equal(requests[0].floors[0].source, '第一楼再次确认的新正文。');
+  assert.equal(requests[0].floors[0].summary, '人工确认摘要。');
+  assert.equal(requests[0].floors[0].records[0].title, '人工确认事项');
+  assert.equal(requests[0].floors[0].records[0].status, 'inProgress');
+  const after = await h.store.readReachable({ mode: 'runtime' }), memory = after.floorMemories.find(item => item.floorId === first.floorId);
+  assert.deepEqual(after.floors, before.floors, '归档正文指纹保持');
+  assert.equal(memory.sourceCanonicalContent, '第一楼归档正文。');
+  assert.deepEqual(memory.summary, calibrated.floorMemories.find(item => item.floorId === first.floorId).summary);
+  assert.deepEqual(memory.qianshiDelta.manualEventOverrides, calibrated.floorMemories.find(item => item.floorId === first.floorId).qianshiDelta.manualEventOverrides);
+  assert.equal(h.runtime.getQianshiSnapshot().events.find(item => item.id === event.id).status, 'inProgress');
+  assert.deepEqual(after.stateDeltas, before.stateDeltas);
+});
+
+test('重判双基线拒绝预览后及运行期间再次改正文，所选楼和跟进落点均不提交', async () => {
+  for (const duringRequest of [false, true]) for (const index of [1, 3]) {
+    const h = await manualSourceRejudgeHarness((request, current) => {
+      if (duringRequest) setRejudgeSource(current, index, '请求期间再次变化。');
+    });
+    setRejudgeSource(h, 1, '预览前已确认的正文。');
+    const plan = await h.runtime.prepareQianshiRejudge({ fromMessageIndex: 1, toMessageIndex: 1 });
+    const puts = h.backend.calls.filter(call => call[0] === 'put').length;
+    if (!duringRequest) setRejudgeSource(h, index, '确认后再次变化。');
+    const result = await h.runtime.startQianshiRejudge(plan.planId);
+    assert.equal(result.status, 'failed'); assert.equal(result.commitStatus, 'notAttempted');
+    assert.equal(result.failure.code, 'QIANSHI_REJUDGE_SOURCE_CHANGED');
+    assert.equal(result.calls, duringRequest ? 1 : 0);
+    assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, puts);
+  }
+});
+
+test('重判双基线拒绝错楼标、重复楼标、换swipe及明确清空，不借旧正文继续', async () => {
+  for (const mutation of ['wrongFloor', 'foreignFloor', 'duplicateFloor', 'swipe', 'blank', 'unmarkedChange']) {
+    const h = await manualSourceRejudgeHarness();
+    if (mutation === 'wrongFloor') h.context.chat[1].extra.qianqianjie_floor.floorId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    if (mutation === 'foreignFloor') h.context.chat[1].extra.qianqianjie_floor.chatId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    if (mutation === 'duplicateFloor') h.context.chat[3].extra.qianqianjie_floor = { ...h.context.chat[1].extra.qianqianjie_floor };
+    if (mutation === 'swipe') { h.context.chat[1].swipes.push(h.context.chat[1].mes); h.context.chat[1].swipe_id = 1; }
+    if (mutation === 'blank') setRejudgeSource(h, 1, '   ');
+    if (mutation === 'unmarkedChange') { delete h.context.chat[1].extra.qianqianjie_floor; setRejudgeSource(h, 1, '没有身份依据的新正文。'); }
+    const calls = h.calls.length, puts = h.backend.calls.filter(call => call[0] === 'put').length;
+    await assert.rejects(h.runtime.prepareQianshiRejudge({ fromMessageIndex: 1, toMessageIndex: 1 }),
+      error => ['QIANSHI_REJUDGE_SOURCE_CHANGED', 'QIANSHI_REJUDGE_SOURCE_EMPTY'].includes(error.code), mutation);
+    assert.equal(h.calls.length, calls); assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, puts);
+  }
+});
+
+test('重判双基线切聊后保存原目标，离页准备沿原目标归档取材', async () => {
+  for (const switchBeforePreview of [false, true]) {
+    const requests = [], h = await manualSourceRejudgeHarness(request => requests.push(request));
+    const targetIdentity = h.runtime.captureBusinessIdentity(), originalStore = h.store.forIdentity(targetIdentity);
+    setRejudgeSource(h, 1, 'A预览时人工确认的正文。');
+    const switchChat = () => { h.context.chat = [user('B输入'), assistant('B正文'), user('B稳定')];
+      h.context.chatId = 'host-b'; h.context.chatMetadata = { qianqianjie: { schemaVersion: 1, chatId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } }; };
+    try {
+      if (switchBeforePreview) switchChat();
+      const plan = await h.runtime.prepareQianshiRejudge({ targetIdentity, fromMessageIndex: 1, toMessageIndex: 1 });
+      if (!switchBeforePreview) switchChat();
+      const result = await h.runtime.startQianshiRejudge(plan.planId);
+      assert.equal(result.status, 'completed', JSON.stringify(result));
+      assert.equal(requests[0].floors[0].source, switchBeforePreview ? '第一楼归档正文。' : 'A预览时人工确认的正文。');
+      const saved = await originalStore.readReachable({ mode: 'runtime' }); assert.equal(saved.root.chatId, CHAT);
+      assert.equal(h.context.chat[1].mes, 'B正文');
+    } finally { originalStore.release(); }
+  }
+});

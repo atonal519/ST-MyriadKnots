@@ -301,6 +301,28 @@ function rawSelectionFromSnapshot(snapshot, floor) {
   return reboundSelected;
 }
 
+// 预览冻结所选正文与楼标，避免等待存储期间借入后来切换的聊天或回复。
+function captureQianshiRejudgeSources(snapshot, chatId) {
+  const byFloorId = new Map(), byMessageIndex = new Map();
+  for (const [messageIndex, message] of (snapshot.chat ?? []).entries()) {
+    const selected = selectAssistantMessage(message);
+    if (!selected) continue;
+    const anchor = inspectMessageFloorAnchor(message, chatId);
+    const entry = { ...selected, messageIndex, anchorStatus: anchor.status, floorId: anchor.anchor?.floorId ?? null };
+    byMessageIndex.set(messageIndex, entry);
+    if (anchor.status === 'valid') byFloorId.set(entry.floorId, byFloorId.has(entry.floorId) ? null : entry);
+  }
+  return { byFloorId, byMessageIndex };
+}
+
+function qianshiRejudgeSourceSelection(sources, floor) {
+  const selected = sources.byFloorId.has(floor.id) ? sources.byFloorId.get(floor.id)
+    : sources.byMessageIndex.get(floor.hostLocator?.messageIndex);
+  if (!selected || selected.anchorStatus !== 'none' && (selected.anchorStatus !== 'valid' || selected.floorId !== floor.id)
+    || selected.swipeId !== floor.hostLocator?.swipeId || selected.selectedSwipeIndex !== floor.hostLocator?.selectedSwipeIndex) return null;
+  return selected;
+}
+
 function capturePrecedingUserInputSnapshot(hostAdapter, floor, options) {
   return capturePrecedingUserInputFromSnapshot(hostAdapter.snapshot(), floor, options);
 }
@@ -1920,14 +1942,16 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const liveIdentity = captureTargetIdentity(), targetIdentity = plan.targetIdentity;
     if (targetIdentity && liveIdentity && ['chatId', 'hostChatId', 'characterLocator', 'personaLocator']
       .every(key => String(liveIdentity[key] ?? '') === String(targetIdentity[key] ?? ''))) {
-      const snapshot = hostAdapter.snapshot();
+      const sources = captureQianshiRejudgeSources(hostAdapter.snapshot(), plan.chatId);
       for (const item of plan.snapshotItems ?? plan.items) {
-        const floor = floors.get(item.floorId), selected = rawSelectionFromSnapshot(snapshot, floor);
+        if (!item.liveRawFingerprint) continue;
+        const floor = floors.get(item.floorId), selected = qianshiRejudgeSourceSelection(sources, floor);
         const prior = operation.qianshiRejudgeRawWitnesses?.get(item.floorId);
         const fingerprint = reuseVerifiedMemorySnapshot && selected && prior?.rawContent === selected.rawContent
           ? prior.fingerprint : selected ? `sha256:${await sha256(selected.rawContent)}` : null;
-        if (!selected || fingerprint !== item.rawFingerprint) {
-          throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `${qianshiFloorLabel(item)}原文已被人工修改；整组未提交，旧记录保持不变。`);
+        if (!selected || fingerprint !== item.liveRawFingerprint
+          || selected.anchorStatus !== 'valid' && fingerprint !== item.rawFingerprint) {
+          throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `${qianshiFloorLabel(item)}正文或所选回复在预览后已变化；整组未提交，旧记录保持不变。`);
         }
         operation.qianshiRejudgeRawWitnesses?.set(item.floorId, { rawContent: selected.rawContent, fingerprint });
       }
@@ -5135,6 +5159,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   async function performPrepareQianshiRejudge({ fromMessageIndex = null, toMessageIndex = null, onlyIncomplete = false, maxInputTokens = QIANSHI_HISTORY_INPUT_TOKENS, maxOutputTokens = QIANSHI_HISTORY_OUTPUT_TOKENS, targetIdentity = captureTargetIdentity() } = {}) {
     if (qianshiHistoryRun) throw errorWith('QIANSHI_HISTORY_RUNNING', '千事历史操作正在运行。');
+    const liveSources = targetIdentity && sameTargetIdentity(targetIdentity, captureTargetIdentity())
+      ? captureQianshiRejudgeSources(hostAdapter.snapshot(), targetIdentity.chatId) : null;
     const targetStore = storeForTargetIdentity(targetIdentity);
     let keepTargetStore = false;
     try {
@@ -5143,7 +5169,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const source = loadedSource?.root ? { ...loadedSource, calendar: storyCalendarProvider(loadedSource.root.chatId) } : loadedSource;
     if (!source?.root || source.status !== 'ready'
       || targetIdentity?.chatId && source.root.chatId !== targetIdentity.chatId) throw errorWith('QIANSHI_REJUDGE_UNAVAILABLE', '原目标没有可用的千事存档。');
-    const memories = currentMemoryMap(source), unavailable = [], candidates = [];
+    const memories = currentMemoryMap(source), floorsById = new Map(source.floors.map(floor => [floor.id, floor])), unavailable = [], candidates = [];
+    const captureLiveSource = async (item, floor) => {
+      if (!liveSources) return null;
+      const selected = qianshiRejudgeSourceSelection(liveSources, floor);
+      if (!selected) throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `${qianshiFloorLabel(item)}当前正文无法确认属于原楼及所选回复，请重新核对范围。`);
+      const fingerprint = `sha256:${await sha256(selected.rawContent)}`;
+      if (selected.anchorStatus !== 'valid' && fingerprint !== item.rawFingerprint) {
+        throw errorWith('QIANSHI_REJUDGE_SOURCE_CHANGED', `${qianshiFloorLabel(item)}正文与归档不同且缺少原楼标识，请先核对来源。`);
+      }
+      item.liveRawFingerprint = fingerprint;
+      return selected.rawContent;
+    };
     const identitySnapshot = await readIdentityProjection(targetIdentity, source);
     const manualProjection = qianshiGraphProjector(source, { calendar: source.calendar, identityProjection: identitySnapshot });
     const manualStatusByMatter = new Map(manualProjection.matters.filter(matter => typeof matter.manualStatusOverride === 'string')
@@ -5200,6 +5237,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       for (const item of candidates) item.selected = selectedIds.has(item.floorId);
     }
     const items = candidates.filter(item => item.selected !== false);
+    for (const item of items) {
+      const rawContent = await captureLiveSource(item, floorsById.get(item.floorId));
+      if (rawContent === null) continue;
+      const canonicalContent = sanitizeMemoryContent(rawContent, sanitizerOptions());
+      if (!canonicalContent.trim()) throw errorWith('QIANSHI_REJUDGE_SOURCE_EMPTY', `${qianshiFloorLabel(item)}当前正文清洗后为空，请确认正文后重新预览。`);
+      item.input.sourceCanonicalContent = canonicalContent;
+    }
     const externalReferences = await qianshiExternalReferences(source.root.chatId, source);
     const externalReferenceSignature = JSON.stringify(externalReferences.map(item => [item.id, item.matterId, item.originEventId])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
@@ -5270,12 +5314,14 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const snapshotItems = [...items];
     if (cutoffFloor && !items.some(item => item.floorId === cutoffFloor.id) && memorySourceFloorIds(memories.get(cutoffFloor.id)).length === 1) {
       const memory = memories.get(cutoffFloor.id);
-      snapshotItems.push({ floorId: cutoffFloor.id, assistantSeq: cutoffFloor.assistantSeq,
+      const cutoffItem = { floorId: cutoffFloor.id, assistantSeq: cutoffFloor.assistantSeq,
         rawFingerprint: cutoffFloor.content.rawFingerprint, canonicalFingerprint: cutoffFloor.content.canonicalFingerprint,
-        memoryId: memory.id, memorySignature: JSON.stringify(memory) });
+        memoryId: memory.id, memorySignature: JSON.stringify(memory) };
+      await captureLiveSource(cutoffItem, cutoffFloor);
+      snapshotItems.push(cutoffItem);
     }
     const planId = await deterministicUuid(['qianshi-rejudge-plan-v1', source.root.chatId, source.root.narrativeGeneration,
-      source.rootRevision, source.root.headCheckpointId, onlyIncomplete === true, items.map(item => [item.floorId, item.memoryId, item.rawFingerprint]), maxInput, maxOutput, budgetSystemPrompt, externalReferenceSignature]);
+      source.rootRevision, source.root.headCheckpointId, onlyIncomplete === true, snapshotItems.map(item => [item.floorId, item.memoryId, item.rawFingerprint, item.liveRawFingerprint ?? null]), maxInput, maxOutput, budgetSystemPrompt, externalReferenceSignature]);
     releaseUnstartedQianshiPlans();
     qianshiHistoryPlan = null;
     qianshiRejudgePlan = { planId, chatId: source.root.chatId, targetIdentity, store: targetStore, sourceReachable: source,
