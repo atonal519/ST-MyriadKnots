@@ -189,16 +189,19 @@ export function createPanelGeometryController({ panel, dragHandle, resizeHandle,
   const restore = () => {
     finish();
     if (!panel) return;
+    const desktop = isDesktop();
     const host = panel.getRootNode?.().host;
     if (host) {
-      // 保持子面板的视口坐标，抵消宿主根包含块的文档滚动原点。
-      host.style.transform = 'translate(0px, 0px)';
+      // 手机零偏移时保留原 fixed 层级，真实文档偏移仍按原点补偿。
+      host.style.transform = desktop ? 'translate(0px, 0px)' : '';
       const origin = host.getBoundingClientRect();
-      host.style.transform = `translate(${-origin.left}px, ${-origin.top}px)`;
+      if (desktop || origin.left !== 0 || origin.top !== 0) {
+        host.style.transform = `translate(${-origin.left}px, ${-origin.top}px)`;
+      }
     }
     const view = dimensions();
     for (const property of ['left', 'top', 'width', 'height']) panel.style.setProperty(`--qqj-panel-bounds-${property}`, `${view[property]}px`);
-    if (!isDesktop()) {
+    if (!desktop) {
       for (const property of ['left', 'top', 'right', 'bottom', 'width', 'height', 'maxWidth', 'maxHeight', 'transform', 'willChange']) panel.style[property] = '';
       return;
     }

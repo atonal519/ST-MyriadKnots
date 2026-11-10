@@ -31109,7 +31109,7 @@ async function Fd({ store: e, targetIdentity: t, cachedReachable: n = null, getR
 }
 //#endregion
 //#region manifest.json
-var Id = "1.1.13", Ld = "CHANGELOG.md", Rd = /* @__PURE__ */ new Set([
+var Id = "1.1.14", Ld = "CHANGELOG.md", Rd = /* @__PURE__ */ new Set([
 	"bodyVersion",
 	"replySelection",
 	"timeEvidence",
@@ -64442,20 +64442,20 @@ function hm({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.
 		a && w(e) && y();
 	}, j = () => {
 		if (y(), !e) return;
-		let t = e.getRootNode?.().host;
-		if (t) {
-			t.style.transform = "translate(0px, 0px)";
-			let e = t.getBoundingClientRect();
-			t.style.transform = `translate(${-e.left}px, ${-e.top}px)`;
+		let t = c(), n = e.getRootNode?.().host;
+		if (n) {
+			n.style.transform = t ? "translate(0px, 0px)" : "";
+			let e = n.getBoundingClientRect();
+			(t || e.left !== 0 || e.top !== 0) && (n.style.transform = `translate(${-e.left}px, ${-e.top}px)`);
 		}
-		let n = l();
+		let i = l();
 		for (let t of [
 			"left",
 			"top",
 			"width",
 			"height"
-		]) e.style.setProperty(`--qqj-panel-bounds-${t}`, `${n[t]}px`);
-		if (!c()) {
+		]) e.style.setProperty(`--qqj-panel-bounds-${t}`, `${i[t]}px`);
+		if (!t) {
 			for (let t of [
 				"left",
 				"top",
@@ -64470,10 +64470,10 @@ function hm({ panel: e, dragHandle: t, resizeHandle: n, storage: r = globalThis.
 			]) e.style[t] = "";
 			return;
 		}
-		let i = pm(r, sm), a = dm(n.width, n.height, i);
-		e.style.width = `${a.width}px`, e.style.height = `${a.height}px`, e.style.maxWidth = `${a.maxWidth}px`, e.style.maxHeight = `${a.maxHeight}px`, e.style.bottom = "auto", e.style.transform = "none";
-		let o = pm(r, om), s = u(n, a.width, a.height, o);
-		e.style.top = `${s.top}px`, e.style.left = `${s.left}px`, e.style.right = "auto";
+		let a = pm(r, sm), o = dm(i.width, i.height, a);
+		e.style.width = `${o.width}px`, e.style.height = `${o.height}px`, e.style.maxWidth = `${o.maxWidth}px`, e.style.maxHeight = `${o.maxHeight}px`, e.style.bottom = "auto", e.style.transform = "none";
+		let s = pm(r, om), d = u(i, o.width, o.height, s);
+		e.style.top = `${d.top}px`, e.style.left = `${d.left}px`, e.style.right = "auto";
 	}, M = () => j(), N = [
 		[
 			t,
