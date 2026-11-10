@@ -31109,7 +31109,7 @@ async function Fd({ store: e, targetIdentity: t, cachedReachable: n = null, getR
 }
 //#endregion
 //#region manifest.json
-var Id = "1.1.12", Ld = "CHANGELOG.md", Rd = /* @__PURE__ */ new Set([
+var Id = "1.1.13", Ld = "CHANGELOG.md", Rd = /* @__PURE__ */ new Set([
 	"bodyVersion",
 	"replySelection",
 	"timeEvidence",
@@ -66864,7 +66864,7 @@ function Lg({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Ng, timeoutM
 	};
 }
 //#endregion
-//#region node_modules/graphology/dist/graphology.mjs
+//#region ../../../../../public/scripts/extensions/third-party/ST-QianQianJie/node_modules/graphology/dist/graphology.mjs
 var Rg = (/* @__PURE__ */ S(((e, t) => {
 	var n = typeof Reflect == "object" ? Reflect : null, r = n && typeof n.apply == "function" ? n.apply : function(e, t, n) {
 		return Function.prototype.apply.call(e, t, n);
@@ -70512,7 +70512,7 @@ function jv(e) {
 }
 jv(Tv), jv(Ev), jv(Dv), jv(Ov), jv(kv), jv(Av), Tv.Graph = Tv, Tv.DirectedGraph = Ev, Tv.UndirectedGraph = Dv, Tv.MultiGraph = Ov, Tv.MultiDirectedGraph = kv, Tv.MultiUndirectedGraph = Av, Tv.InvalidArgumentsGraphError = Zg, Tv.NotFoundGraphError = Qg, Tv.UsageGraphError = $g;
 //#endregion
-//#region node_modules/graphology-utils/is-graph.js
+//#region ../../../../../public/scripts/extensions/third-party/ST-QianQianJie/node_modules/graphology-utils/is-graph.js
 var Mv = /* @__PURE__ */ S(((e, t) => {
 	/**
 	* Graphology isGraph
@@ -84604,10 +84604,10 @@ function AD({ settings: e, apiTools: t, vectorApi: n, vectorIndex: r, pluginUpda
 		let t = { status: "ready" };
 		return L === "settings" ? ve() : t = ge(), k.querySelector(".close")?.focus?.(), t;
 	}
-	function be() {
+	function be({ restoreFocus: e = !0 } = {}) {
 		q?.dispose(), q = null, Z(), V += 1, W?.dispose?.(), W = null, ee?.dispose(), ee = null, G?.dispose(), G = null, K?.dispose(), K = null, o.deactivate(), s.deactivate(), c.deactivate(), l.deactivate(), u.deactivate(), F.cancelGesture(), re = null, Y = null, C?.closeAll?.(), O.hidden = !0, O.setAttribute("aria-hidden", "true");
-		let e = B;
-		B = null, e?.focus?.();
+		let t = B;
+		B = null, e && t?.focus?.();
 	}
 	function xe() {
 		if (L !== "settings") return !1;
@@ -84672,8 +84672,8 @@ function AD({ settings: e, apiTools: t, vectorApi: n, vectorIndex: r, pluginUpda
 			"dialog"
 		].includes(e?.getAttribute?.("aria-haspopup")) || typeof e?.popover == "string" && e.matches?.(":popover-open") || e?.nodeType === 11 && e.host !== O && E.defaultView?.getComputedStyle?.(e.host)?.position === "fixed");
 	}, De = (e) => {
-		let t = e.composedPath?.();
-		return Ce() && !O.hidden && !C?.hasActive?.() && !Ee(e) && !(t?.includes(A) ?? A?.contains?.(e.target));
+		let t = e.composedPath?.(), n = t?.some((e) => e !== A && (e?.matches?.("dialog,[role~=\"dialog\"],[role~=\"alertdialog\"],[role~=\"menu\"],[role~=\"listbox\"],[role~=\"combobox\"]") || typeof e?.popover == "string" && e.matches?.(":popover-open")) || e?.nodeType === 11 && e.host !== O && E.defaultView?.getComputedStyle?.(e.host)?.position === "fixed"), r = t?.includes(A) ?? A?.contains?.(e.target), i = r ? A?.getBoundingClientRect?.() : null, a = i && (e.clientX < i.left || e.clientX > i.left + i.width || e.clientY < i.top || e.clientY > i.top + i.height);
+		return Ce() && !O.hidden && !C?.hasActive?.() && !n && (!r || a);
 	}, Oe = (e) => {
 		Y?.id === e.pointerId && Math.hypot(e.clientX - Y.x, e.clientY - Y.y) > 5 && (Y.moved = !0);
 	};
@@ -84694,8 +84694,8 @@ function AD({ settings: e, apiTools: t, vectorApi: n, vectorIndex: r, pluginUpda
 	}, !0), E.addEventListener?.("pointercancel", () => {
 		Y = null;
 	}, !0), E.addEventListener?.("click", (e) => {
-		let t = Y?.up && !Y.moved && De(e);
-		Y = null, t && (e.preventDefault?.(), e.stopImmediatePropagation?.(), be());
+		let t = Y?.up && !Y.moved && Ce() && !O.hidden && !C?.hasActive?.();
+		Y = null, t && (e.composedPath?.().includes(A) && (e.preventDefault?.(), e.stopImmediatePropagation?.()), be({ restoreFocus: !1 }));
 	}, !0), k.querySelector(".close")?.addEventListener("click", be), te?.addEventListener("click", () => {
 		let t = e.get().appearanceTheme ?? "auto";
 		e.update({ appearanceTheme: t === "auto" ? "day" : t === "day" ? "night" : "auto" }), le.apply();

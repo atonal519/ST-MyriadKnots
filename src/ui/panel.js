@@ -544,7 +544,7 @@ export function createPanel({
     return result;
   }
 
-  function close() {
+  function close({ restoreFocus = true } = {}) {
     memoryTransferView?.dispose(); memoryTransferView = null;
     rememberScroll();
     activationEpoch += 1;
@@ -565,7 +565,7 @@ export function createPanel({
     host.setAttribute('aria-hidden', 'true');
     const previous = trigger;
     trigger = null;
-    previous?.focus?.();
+    if (restoreFocus) previous?.focus?.();
   }
 
   function openVectorSettings() {
@@ -630,8 +630,15 @@ export function createPanel({
   };
   const isBackdrop = event => {
     const path = event.composedPath?.();
-    return mobile() && !host.hidden && !dialog?.hasActive?.() && !isForeignWindow(event)
-      && !(path?.includes(panel) ?? panel?.contains?.(event.target));
+    const foreignWindow = path?.some(node => node !== panel && (node?.matches?.('dialog,[role~="dialog"],[role~="alertdialog"],[role~="menu"],[role~="listbox"],[role~="combobox"]')
+      || typeof node?.popover === 'string' && node.matches?.(':popover-open'))
+      || node?.nodeType === 11 && node.host !== host
+      && documentRef.defaultView?.getComputedStyle?.(node.host)?.position === 'fixed');
+    const inside = path?.includes(panel) ?? panel?.contains?.(event.target);
+    const rect = inside ? panel?.getBoundingClientRect?.() : null;
+    const outsidePoint = rect && (event.clientX < rect.left || event.clientX > rect.left + rect.width
+      || event.clientY < rect.top || event.clientY > rect.top + rect.height);
+    return mobile() && !host.hidden && !dialog?.hasActive?.() && !foreignWindow && (!inside || outsidePoint);
   };
   const moveBackdrop = event => {
     if (backdropGesture?.id === event.pointerId && Math.hypot(event.clientX - backdropGesture.x, event.clientY - backdropGesture.y) > 5) backdropGesture.moved = true;
@@ -648,12 +655,14 @@ export function createPanel({
   }, true);
   documentRef.addEventListener?.('pointercancel', () => { backdropGesture = null; }, true);
   documentRef.addEventListener?.('click', event => {
-    const outsideClick = backdropGesture?.up && !backdropGesture.moved && isBackdrop(event);
+    const outsideClick = backdropGesture?.up && !backdropGesture.moved && mobile() && !host.hidden && !dialog?.hasActive?.();
     backdropGesture = null;
     if (outsideClick) {
-      event.preventDefault?.();
-      event.stopImmediatePropagation?.();
-      close();
+      if (event.composedPath?.().includes(panel)) {
+        event.preventDefault?.();
+        event.stopImmediatePropagation?.();
+      }
+      close({ restoreFocus: false });
     }
   }, true);
   root.querySelector('.close')?.addEventListener('click', close);
