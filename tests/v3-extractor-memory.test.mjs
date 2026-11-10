@@ -16726,3 +16726,45 @@ test('含非空复核的CAS返回与独立full读取等价，热投影保同一�
   assert.equal(snapshot.events.filter(event => event.followingReviewOfEventId).length, 1);
   assert.equal(snapshot.events.find(event => event.followingReviewOfEventId).id, fresh.followingReviewEventIds[0]);
 });
+
+
+test('整理读取原档即失败时记录启动阶段与安全原因，零模型零写且新计划清除旧失败', async () => {
+  let fail = false;
+  const h = harness({ initialChat: [user('开始'), assistant('一条原事实。'), user('稳定')],
+    identityProjectionProvider: async () => {
+      if (fail === 'technical') throw new TypeError("Cannot read properties of undefined (reading 'matters')");
+      if (fail === 'unknown') throw new TypeError('读取失败 https://private.test sk-private-token');
+      if (fail) throw Object.assign(new Error('读取失败 https://private.test sk-private-token'), { code: 'BACKEND_TIMEOUT' });
+      return {};
+    },
+    utility: options => {
+      const request = JSON.parse(options.taskMessages[0].content);
+      return request.task === 'rejudgeStoredQianshiV1'
+        ? rejudgeBatchResponse(request, row => ({ events: row.records.map(record => ({ key: record.key, status: 'occurred', matter: false })), order: [] }))
+        : { jsonData: { summary: '原摘要。', qianshi: { events: [{ key: 'e', title: '原事实', description: '事实。', status: 'occurred', matter: false }], order: [] } } };
+    } });
+  await h.runtime.start(); await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  const plan = await h.runtime.prepareQianshiRejudge(), before = h.calls.length;
+  const writes = h.backend.calls.filter(call => call[0] === 'put').length;
+  fail = true;
+  const result = await h.runtime.startQianshiRejudge(plan.planId);
+  assert.equal(result.status, 'failed'); assert.equal(result.commitStatus, 'notAttempted');
+  assert.equal(result.request, null); assert.deepEqual(result.outcomes, []);
+  assert.equal(result.failure.stage, 'preparing'); assert.equal(result.failure.code, 'BACKEND_TIMEOUT');
+  assert.match(result.failure.message, /记忆存储请求超时/u); assert.doesNotMatch(JSON.stringify(result), /private/u);
+  assert.equal(h.calls.length, before); assert.equal(h.backend.calls.filter(call => call[0] === 'put').length, writes);
+  assert.equal(h.runtime.getQianshiStatus().history.failure.code, 'BACKEND_TIMEOUT');
+  fail = false;
+  const next = await h.runtime.prepareQianshiRejudge();
+  const completed = await h.runtime.startQianshiRejudge(next.planId);
+  assert.equal(completed.status, 'completed', JSON.stringify(completed)); assert.equal(completed.failure, undefined);
+  const unknownPlan = await h.runtime.prepareQianshiRejudge(); fail = 'unknown';
+  const unknown = await h.runtime.startQianshiRejudge(unknownPlan.planId);
+  assert.equal(unknown.failure.name, 'TypeError'); assert.match(unknown.failure.message, /程序异常/u);
+  assert.equal(unknown.failure.detail, '[REDACTED]');
+  assert.doesNotMatch(JSON.stringify(unknown), /private/u);
+  fail = false; const technicalPlan = await h.runtime.prepareQianshiRejudge(); fail = 'technical';
+  const technical = await h.runtime.startQianshiRejudge(technicalPlan.planId);
+  assert.equal(technical.failure.detail, "Cannot read properties of undefined (reading 'matters')");
+  assert.match(technical.failure.message, /程序异常/u);
+});

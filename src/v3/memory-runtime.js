@@ -5300,7 +5300,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const controller = new AbortController(), jobId = await deterministicUuid(['qianshi-rejudge-job-v1', plan.planId, newUuid()]);
     const rejudgeValidation = { qianshiRejudge: plan, qianshiRejudgeRawWitnesses: new Map() };
     const operation = { jobId, controller, store: plan.store, targetIdentity: plan.targetIdentity, pinnedTarget: true }, epochAtStart = epoch;
-    let calls = 0, attemptedFloors = 0;
+    let calls = 0, attemptedFloors = 0, stage = 'preparing';
     let followupResult = { status: 'pending', totalMatters: plan.followup.totalMatters, estimatedApiCalls: plan.followup.apiCalls, calls: 0 };
     const followupSummary = () => followupResult.status === 'failed'
       ? `全局跟进复核未成（${followupResult.message}）。`
@@ -5336,6 +5336,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         const protectedEventIds = new Set(plan.protectedEventIds);
         const originalProgressIds = new Set(originalProjection.relations.filter(relation => relation.type === 'progress').map(relation => relation.id));
         for (const [batchIndex, batch] of plan.batches.entries()) {
+          stage = 'history';
           if (controller.signal.aborted) break;
           currentItem = batch.items[0]; currentBatchItems = batch.items;
           targetReachable = await verifyCurrent();
@@ -5570,6 +5571,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         }
         if (staged.length !== plan.items.length) throw errorWith('QIANSHI_REJUDGE_INCOMPLETE', '有楼未完成重判；整组未提交，原千事保持不变。');
         currentItem = null; currentBatchItems = [];
+        stage = 'followup';
         try {
           const stagedByFloor = new Map(staged.map(memory => [memory.floorId, memory]));
           const stagedSource = await annotateQianshiFollowingReviews({ ...original, followingReviewEventIds: undefined, floorMemories: original.floorMemories.map(memory => stagedByFloor.get(memory.floorId) ?? memory) });
@@ -5642,7 +5644,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           // 真正来源或外部状态变化仍使整组失效；模型或本阶段容量问题保留已付费的有效历史结果。
           await verifyCurrent();
           followupResult = { ...followupResult, status: 'failed', reasonCode: error.code ?? 'QIANSHI_FOLLOWUP_FAILED',
-            message: safeErrorMessage(error.message), totalMatters: error.totalMatters ?? followupResult.totalMatters,
+            message: safeErrorMessage(publicErrorMessage(error, { fallback: '跟进复核未成。' })), totalMatters: error.totalMatters ?? followupResult.totalMatters,
             missing: error.totalMatters ?? followupResult.totalMatters ?? plan.followup.totalMatters };
           finishQianshiRequest(operation, 'failed', error);
         }
@@ -5657,6 +5659,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           publish(makeState(status, 0, `历史无需重判。${followupSummary()}没有需要保存的变更。`, outcomes));
           return structuredClone(qianshiHistoryState);
         }
+        stage = 'validating';
         markQianshiRequest(operation, 'validating');
         targetReachable = await verifyCurrent();
         const commitOperation = { jobId, controller, epoch: epochAtStart, store: plan.store, pinnedTarget: true, floorIds: staged.map(item => item.floorId),
@@ -5668,6 +5671,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         operation.commitOperation = commitOperation;
         const priorAudit = floorProvenance(targetReachable)[staged[0].floorId] ?? {};
         // Root CAS is the atomic boundary; once entered, stop cannot promise that no write occurred.
+        stage = 'saving';
         operation.committing = true; operation.commitStatus = 'attempted';
         publish(makeState('running', staged.length, '正在一次提交整组结果；此阶段不能取消。', outcomes));
         operation.requestActive = true;
@@ -5689,7 +5693,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       } catch (error) {
         const stopped = controller.signal.aborted;
         finishQianshiRequest(operation, stopped ? 'cancelled' : 'failed', error);
-        const reason = safeErrorMessage(error?.message || '千事重判失败。');
+        const reason = publicErrorMessage({ code: error?.code, name: error?.name,
+          httpStatus: error?.httpStatus ?? error?.status, message: sanitizeSensitiveText(error?.message) },
+        { fallback: ['TypeError', 'ReferenceError', 'RangeError', 'SyntaxError'].includes(error?.name)
+          ? '整理发生程序异常。' : '本次未记录到具体原因。' });
+        const failure = { stage, code: error?.code ?? null, name: error?.name ?? null, message: reason,
+          detail: sanitizeSensitiveText(error?.message).slice(0, 500) };
+        const failedState = (status, processedFloors, message, results) => ({
+          ...makeState(status, processedFloors, message, results), failure,
+        });
         if (currentItem && !stopped && !operation.committing) {
           const completedFloorIds = new Set(outcomes.map(item => item.floorId));
           for (const item of currentBatchItems.filter(item => !completedFloorIds.has(item.floorId))) outcomes.push({ floorId: item.floorId,
@@ -5711,7 +5723,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const committedOutcomes = outcomes.map(item => ({ ...item, status: item.status === 'staged-partial' ? 'saved-partial' : 'saved-complete', message: item.status === 'staged-partial'
             ? item.message.replace('本组尚未提交。', '整组已提交。') : '本楼完整结果已保存。' }));
           const hasPartialFloors = outcomes.some(item => item.status === 'staged-partial');
-          publish(makeState(hasPartialFloors || followupResult.status !== 'completed' ? 'partial' : 'completed', outcomes.length,
+          publish(failedState(hasPartialFloors || followupResult.status !== 'completed' ? 'partial' : 'completed', outcomes.length,
             `${followupSummary()}整组结果已确认保存，但提交后的界面刷新失败；请刷新千事页检查展示。系统不会自动重试。`, committedOutcomes));
           qianshiRejudgePlan = null;
         } else if (commit?.rootCommitAttempted && !definitelyUncommitted) {
@@ -5719,9 +5731,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           const pendingOutcomes = outcomes.map(item => ({ ...item, status: 'commit-unknown',
             reasonCode: item.reasonCode ?? 'QIANSHI_REJUDGE_COMMIT_AMBIGUOUS',
             message: '本楼结果已暂存，但是否保存需要刷新确认。' }));
-          publish(makeState('failed', staged.length,
+          publish(failedState('failed', staged.length,
             `${reason}；整组保存状态待核对，请刷新千事页确认。系统不会自动重试。`, pendingOutcomes));
-        } else { operation.commitStatus = commit?.rootCommitConflict || error?.code === 'V3_MEMORY_CAS_CONFLICT' ? 'conflict' : 'notAttempted'; publish(makeState(stopped ? 'stopped' : 'failed', staged.length,
+        } else { operation.commitStatus = commit?.rootCommitConflict || error?.code === 'V3_MEMORY_CAS_CONFLICT' ? 'conflict' : 'notAttempted'; publish(failedState(stopped ? 'stopped' : 'failed', staged.length,
           `${reason}；整组未提交，原千事保持不变。`, outcomes));
         }
         return structuredClone(qianshiHistoryState);

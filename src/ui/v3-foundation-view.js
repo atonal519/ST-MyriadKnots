@@ -1,3 +1,4 @@
+import { sanitizeSensitiveText } from '../v3/safe-metadata.js';
 import { preparationContextDiagnostic } from '../v3/preparation-diagnostic.js';
 import { projectCseSubjectDiagnostic } from '../v3/cse-failure-diagnostic.js';
 import { safePrefixDifference } from '../v3/memory-prefix-diagnostic.js';
@@ -725,6 +726,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         history: history ? {
           status: enumDiagnostic(history.status, new Set(['idle', 'running', 'completed', 'partial', 'stopped', 'failed'])),
           request: requestDiagnostic(history.request),
+          failure: history.failure ? { ...errorDiagnostic(history.failure),
+            detail: typeof history.failure.detail === 'string' ? sanitizeSensitiveText(history.failure.detail).slice(0, 500) : null,
+            stage: enumDiagnostic(history.failure.stage, new Set(['preparing', 'history', 'followup', 'validating', 'saving'])) } : null,
           mode: enumDiagnostic(history.mode, new Set(['history', 'rejudge'])),
           committing: booleanDiagnostic(history.committing),
           commitStatus: enumDiagnostic(history.commitStatus, new Set(['notAttempted', 'attempted', 'saved', 'unknown', 'conflict'])),

@@ -2276,7 +2276,7 @@ test('重判未提交失败和提交状态未知分别提示，不从partial计�
       savedPartialFloors: 63, processedFloors: 101, totalFloors: 101 };
     const h = harness({ initialSnapshot: snapshot });
     const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
-    assert.equal(health.textContent, commitStatus === 'unknown' ? '上次整理保存状态待核对，请刷新后确认。' : '上次整理未提交，原记录保留。');
+    assert.match(health.textContent, commitStatus === 'unknown' ? /保存状态待核对.*先刷新/u : /未提交，原记录保留.*复制状态诊断.*整理.*重新预览/u);
     assert.doesNotMatch(health.textContent, /已保存|可重试/u);
   }
 });
@@ -2436,4 +2436,108 @@ test('完整年表只取开头明确年月日，未知时刻不拖坏日期且�
   assert.equal(JSON.stringify(events), before);
   const day27 = timeline.segments.flatMap(segment => segment.groups).find(group => group.eventIds.includes('prefix-0'));
   assert.deepEqual(new Set(day27.eventIds), new Set(['prefix-0', 'prefix-1']));
+});
+
+
+test('整理即时启动失败保留具体原因和原保存状态，旧未完成楼独立说明', async () => {
+  const h = harness({ confirm: true, rejudgeStartResult: { status: 'failed', commitStatus: 'notAttempted', committing: false,
+    processedFloors: 0, totalFloors: 8, calls: 0, attemptedFloors: 0, savedFloors: 0, request: null, outcomes: [],
+    failure: { stage: 'preparing', code: 'BACKEND_TIMEOUT', message: '记忆存储请求超时，请稍后重试。' },
+    message: '记忆存储请求超时；整组未提交，原千事保持不变。' } });
+  const current = fixture();
+  current.coverage = { eligibleFloors: 258, readyFloors: 250, completeFloors: 258, partialFloors: 0, unavailableFloors: 0 };
+  h.emit(current, { floors: Array.from({ length: 8 }, (_, index) => ({ floorId: `old-${index}`, messageIndex: index * 2,
+    memory: { recordStatus: 'active', qianshiDelta: { status: 'partial', reason: '旧记录缺少判断。' } } })) });
+  byText(h.container, '整理').fire('click'); await tick(); await tick();
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /整理未开始.*记忆存储请求超时/u);
+  assert.match(health.textContent, /原记录保留.*整理.*重新预览/u);
+  assert.doesNotMatch(copy(h.container), /正在启动/u);
+  assert.match(copy(h.container), /已存档的未完成楼/u);
+  assert.ok(byText(h.container, '查看未完成楼（8）'));
+  assert.equal(h.rejudgeCalls().startCalls, 1);
+});
+
+test('整理失败使用已有request安全原因，保存未知先刷新核对且不自动重跑', () => {
+  const snapshot = fixture();
+  snapshot.history = { mode: 'rejudge', status: 'failed', commitStatus: 'unknown',
+    request: { phase: 'saving', error: { code: 'BACKEND_NETWORK', message: '保存失败 https://private.test sk-private-token' } } };
+  const h = harness({ initialSnapshot: snapshot });
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /记忆存储连接失败/u);
+  assert.match(health.textContent, /保存状态待核对.*先刷新.*核对/u);
+  assert.doesNotMatch(health.textContent, /private|原记录保留|重新预览/u);
+  assert.equal(h.rejudgeCalls().startCalls, 0);
+});
+
+test('整理启动抛错显示安全原因和重新预览动作，切聊离页后错误不覆盖新页', async () => {
+  for (const leave of ['none', 'chat', 'page']) {
+    const h = harness({ confirm: true }); let rejectStart;
+    h.runtime.startQianshiRejudge = () => new Promise((resolve, reject) => { rejectStart = reject; });
+    byText(h.container, '整理').fire('click'); await tick(); await tick();
+    if (leave === 'chat') h.emit({ ...fixture(), identity: { qqjChatId: 'chat-b' } });
+    if (leave === 'page') h.view.deactivate();
+    rejectStart(Object.assign(new Error('认证失败 https://private.test sk-private-token'), { code: 'QQJ_AUTH' }));
+    await tick();
+    if (leave === 'page') await h.view.activate();
+    if (leave === 'none') {
+      assert.match(copy(h.container), /API 认证失败.*整理.*重新预览/u);
+      assert.doesNotMatch(copy(h.container), /private/u);
+    } else assert.doesNotMatch(copy(h.container), /API 认证失败/u);
+  }
+});
+
+
+test('保存已确认但刷新失败仍提示核对，旧状态缺保存信息不推断未提交', () => {
+  const snapshot = fixture();
+  snapshot.history = { mode: 'rejudge', status: 'partial', commitStatus: 'saved', savedFloors: 2, savedPartialFloors: 1,
+    failure: { stage: 'saving', code: 'BACKEND_NETWORK', message: '记忆存储连接失败。' } };
+  const h = harness({ initialSnapshot: snapshot });
+  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /已保存 2 楼.*1 楼.*记忆存储连接失败.*刷新/u);
+  snapshot.history = { mode: 'rejudge', status: 'failed' }; h.emit(snapshot);
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /保存状态.*刷新/u); assert.doesNotMatch(health.textContent, /原记录保留/u);
+});
+
+test('旧整理状态的request只有内部码时仍展示已记录中文原因，保存结论不重复', () => {
+  const snapshot = fixture();
+  snapshot.history = { mode: 'rejudge', status: 'failed', commitStatus: 'conflict',
+    request: { phase: 'validating', error: { code: 'QIANSHI_REJUDGE_SOURCE_CHANGED' } },
+    message: '本次范围的原文已经变化，请重新准备。；整组未提交，原千事保持不变。' };
+  const h = harness({ initialSnapshot: snapshot });
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /原文已经变化.*整理.*重新预览/u);
+  assert.equal(health.textContent.match(/未提交/gu).length, 1);
+  assert.doesNotMatch(health.textContent, /未记录到具体原因/u);
+});
+
+
+test('整理准备阶段敏感未知错误给出现有详细诊断路径', async () => {
+  const h = harness({ confirm: true });
+  h.runtime.startQianshiRejudge = async () => { throw new Error('读取失败 https://private.test sk-private-token'); };
+  byText(h.container, '整理').fire('click'); await tick(); await tick();
+  assert.match(copy(h.container), /未记录到具体原因.*设置→记忆管理→详细诊断/u);
+  assert.doesNotMatch(copy(h.container), /private|REDACTED/u);
+});
+
+test('旧计划失效原因不重复附加原producer的未提交尾句', () => {
+  const snapshot = fixture();
+  snapshot.history = { mode: 'rejudge', status: 'failed', commitStatus: 'notAttempted',
+    message: '原存档已变化；本次重判未提交，旧记录保持不变。' };
+  const h = harness({ initialSnapshot: snapshot });
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /原存档已变化/u);
+  assert.equal(health.textContent.match(/未提交/gu).length, 1);
+});
+
+
+test('整理程序异常主提示指向现有详细诊断，技术详情留在复制诊断中', () => {
+  const snapshot = fixture();
+  snapshot.history = { mode: 'rejudge', status: 'failed', commitStatus: 'notAttempted',
+    failure: { stage: 'preparing', name: 'TypeError', message: '整理发生程序异常。',
+      detail: "Cannot read properties of undefined (reading 'matters')" } };
+  const h = harness({ initialSnapshot: snapshot });
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /程序异常.*设置→记忆管理→详细诊断.*复制状态诊断/u);
+  assert.doesNotMatch(health.textContent, /Cannot read|未记录到具体原因/u);
 });

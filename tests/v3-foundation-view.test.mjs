@@ -4750,3 +4750,44 @@ test('刚发生的楼层传输失败不冒充当前连接错误，当前读取�
     view.deactivate();
   }
 });
+
+
+test('整理尚未建立请求也能复制失败阶段和错误码，诊断不带原因正文', async () => {
+  let copied;
+  const secret = 'PRIVATE_START_FAILURE';
+  const view = createV3FoundationView({ runtime: {
+    getState: () => ({ status: 'ready', pluginEnabled: true, floors: [] }),
+    refreshStatus: async () => {}, confirmLatest: async () => {},
+    getQianshiStatus: () => ({ status: 'ready', history: { status: 'failed', mode: 'rejudge', request: null,
+      commitStatus: 'notAttempted', failure: { stage: 'preparing', code: 'BACKEND_NETWORK', message: secret, url: secret } } }),
+  }, documentRef, navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  const container = new Node('main'); view.mount(container);
+  await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+  const history = JSON.parse(copied).qianshi.history;
+  assert.equal(history.request, null); assert.equal(history.failure.stage, 'preparing');
+  assert.equal(history.failure.code, 'BACKEND_NETWORK'); assert.doesNotMatch(copied, new RegExp(secret));
+  view.deactivate();
+});
+
+
+test('整理启动TypeError短技术详情可复制，敏感URL和token整句隐藏', async () => {
+  let copied, detail = "Cannot read properties of undefined (reading 'matters')";
+  const view = createV3FoundationView({ runtime: {
+    getState: () => ({ status: 'ready', pluginEnabled: true, floors: [] }),
+    refreshStatus: async () => {}, confirmLatest: async () => {},
+    getQianshiStatus: () => ({ status: 'ready', history: { status: 'failed', mode: 'rejudge', request: null,
+      commitStatus: 'notAttempted', failure: { stage: 'preparing', name: 'TypeError', message: '本次未记录到具体原因。', detail } } }),
+  }, documentRef, navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
+  const container = new Node('main'); view.mount(container);
+  const copy = async () => {
+    await flatten(container).find(node => node.textContent === '复制状态诊断').click();
+    return JSON.parse(copied).qianshi.history.failure;
+  };
+  let failure = await copy(); assert.equal(failure.name, 'TypeError'); assert.equal(failure.detail, detail);
+  for (const secret of ['https://private.test', 'sk-private-token']) {
+    detail = `Cannot read properties of undefined ${secret}`;
+    failure = await copy(); assert.equal(failure.detail, '[REDACTED]'); assert.equal(copied.includes(secret), false);
+  }
+  detail = 'x'.repeat(600); assert.equal((await copy()).detail.length, 500);
+  view.deactivate();
+});
