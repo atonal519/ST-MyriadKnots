@@ -1,8 +1,8 @@
 import { identityBriefFields } from './identity-brief.js';
-import { memoriesBySourceFloor, storedSourceUserInput } from './user-input-source.js';
+import { memoriesBySourceFloor, selectedUserInput, storedSourceUserInput } from './user-input-source.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
 import { buildFoundationIndexes } from './foundation-runtime.js';
-import { createCheckpointInputFingerprints, deterministicUuid } from './foundation-domain.js';
+import { createCheckpointInputFingerprints, deterministicUuid, selectAssistantMessage } from './foundation-domain.js';
 import { validateFoundationCheckpoint, validateFoundationRoot, validateFoundationRun, V3_INDEX_LAYOUT_FLOOR_ORDER } from './foundation-schema.js';
 import { validateCseGraph } from './cse-schema.js';
 import { diagnosticsWithRealtimeOrigin, realtimeOriginFromReachable } from './memory-coverage.js';
@@ -247,8 +247,8 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const copy = { ...(Object.hasOwn(message, 'is_user') ? { is_user: message.is_user } : {}),
         ...(Object.hasOwn(message, 'is_system') ? { is_system: message.is_system } : {}),
         ...(message.extra?.type ? { extra: { type: message.extra.type } } : {}) };
-      const selectedIndex = Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0;
-      const selected = Array.isArray(message.swipes) ? message.swipes[selectedIndex] : message.mes;
+      const selected = message.is_user === false ? selectAssistantMessage(message)?.rawContent
+        : selectedUserInput(message)?.content;
       if (typeof selected === 'string') { copy.mes = selected; copy.swipes = [selected]; copy.swipe_id = 0; }
       return Object.freeze(copy);
     };

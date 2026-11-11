@@ -1,11 +1,12 @@
 import { selectUserStabilityAnchor, selectAssistantMessage } from './foundation-domain.js';
 import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 
-function selectedUserInput(message) {
+export function selectedUserInput(message) {
   if (!selectUserStabilityAnchor(message)) return null;
   if (Array.isArray(message.swipes)) {
     const selectedSwipeIndex = Number.isSafeInteger(message.swipe_id) ? message.swipe_id : 0;
-    const content = message.swipes[selectedSwipeIndex];
+    const selected = message.swipes[selectedSwipeIndex];
+    const content = typeof selected === 'string' ? selected : message.mes;
     if (typeof content !== 'string') return null;
     return Object.freeze({ content: content.replace(/\r\n?/g, '\n'), swipeId: message.swipe_id ?? selectedSwipeIndex, selectedSwipeIndex });
   }

@@ -1093,7 +1093,15 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         ...(draft.peopleText !== draft.originalParticipantNames.join('、') ? { participantNames: splitPeople(draft.peopleText) } : {}),
         exactAnchors: draft.exactAnchors, revisionNote: draft.note };
       if (unchangedDraft(draft, payload)) { saved = true; drafts.delete(key); return true; }
-      const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, payload) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
+      const changes = {
+        ...(String(payload.summary ?? '').trim() !== String(draft.originalSummary ?? '').trim() ? { summary: payload.summary } : {}),
+        ...(payload.timeChanged ? { timeText: payload.timeText, originalTimeText: payload.originalTimeText, timeChanged: true } : {}),
+        ...(!sameList(comparableLocations(payload.locations), comparableLocations(draft.originalLocations)) ? { locations: payload.locations } : {}),
+        ...(Object.hasOwn(payload, 'participantNames') ? { participantNames: payload.participantNames } : {}),
+        ...(!sameList(payload.exactAnchors, draft.originalExactAnchors) ? { exactAnchors: payload.exactAnchors } : {}),
+        ...(payload.revisionNote ? { revisionNote: payload.revisionNote } : {}),
+      };
+      const task = typeof runtime.editMemory === 'function' ? () => runtime.editMemory(floor.floorId, changes) : () => runtime.editSummary(floor.floorId, payload.summary, payload.revisionNote);
       let failure = null;
       await run('保存本楼记忆', task, { after: () => { drafts.delete(key); saved = true; return true; }, failed: error => { draft.saveError = `保存失败：${publicErrorMessage(error, { fallback: '本楼记忆没有保存，请重试。' })}`; failure = error; return true; } });
       if (failure) { draw(); throw failure; }

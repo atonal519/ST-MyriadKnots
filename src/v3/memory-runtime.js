@@ -1201,7 +1201,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   const invalidate = ({ deletedChatId = null } = {}) => { lastExtractorRequest = null; if (deletedChatId) clearChatFailures(deletedChatId); placeWorkspaceStore?.invalidate?.(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '', request: null }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun?.controller?.abort('memoryInvalidated'); workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(state => notify(state));
   function runManualWork(reason, task) {
-    if (workRun) return Promise.resolve(getState());
+    if (workRun) return reason === 'revising'
+      ? Promise.reject(errorWith('V3_MEMORY_BUSY', '当前记忆任务尚未结束，本次修改未保存。请保留草稿，任务结束后再保存。'))
+      : Promise.resolve(getState());
     const operation = { kind: 'manual', reason, phase: reason, floorIds: [], promise: null, startedAt: nowIso(now), startedMonotonic: monotonicNow() };
     workRun = operation;
     notify();
@@ -1890,7 +1892,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
 
   async function latestCompatibleReachable(operation, preparedReachable = null) {
     const current = await latestReachableForCommit(operation, preparedReachable);
-    if (operation.pinnedTarget || operation.qianshiHistory || operation.qianshiTextEdit || operation.qianshiCreate || operation.qianshiRejudge) return current;
+    if (operation.manualRevision || operation.pinnedTarget || operation.qianshiHistory || operation.qianshiTextEdit || operation.qianshiCreate || operation.qianshiRejudge) return current;
     let unavailable = null;
     const dependency = await extractorDependencySnapshot(current, operation.floorId, {
       userIdentity: currentUserIdentity(),
@@ -2059,34 +2061,21 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (operation.qianshiRejudge) await assertQianshiRejudgeSnapshot(current, operation);
     let qianshiRejected = false, qianshiRejectReason = null;
     const expectedTargetMemory = operation.qianshiHistory || operation.qianshiTextEdit || operation.qianshiCreate ? currentMemoryMap(current).get(operation.floorId) : null;
-    if (operation.manualRevision && currentMemoryMap(current).get(operation.floorId)?.id !== operation.manualRevisionTargetMemoryId) {
-      throw errorWith('V3_MEMORY_STALE', '原目标楼记忆在修订期间已由其他操作更新，本次没有覆盖。');
-    }
+
     if (operation.qianshiHistory && (expectedTargetMemory?.id !== operation.qianshiHistoryTargetMemoryId
       || JSON.stringify(expectedTargetMemory) !== operation.qianshiHistoryTargetMemorySignature)) {
       const targetFloor = current.floors.find(item => item.id === operation.floorId);
       throw errorWith('QIANSHI_HISTORY_TARGET_CHANGED', `${qianshiFloorLabel(targetFloor)}千事档案在请求期间已更新；原档案保持不变，本次旧结果未保存。`);
     }
     if(operation.qianshiCreate&&expectedTargetMemory?.id!==operation.qianshiCreate.memoryId)throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED','登记位置已变化，请刷新后重试。');
-    if (operation.qianshiTextEdit && (expectedTargetMemory?.id !== operation.qianshiTextEdit.memoryId
-      || JSON.stringify(expectedTargetMemory) !== operation.qianshiTextEdit.memorySignature)) {
-      throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案在保存期间已变化；当前记录保持不变，请刷新后重新编辑。');
-    }
     const floor = current.floors.find(item => item.id === replacement.floorId);
-    const liveTarget = operation.manualRevision && sameTargetIdentity(operation.targetIdentity, captureTargetIdentity());
     const selected = operation.extractionTarget ? assertExtractionTarget(operation.extractionTarget).selected
       : !operation.qianshiHistory && !operation.qianshiRejudge && floor
-      && (!operation.manualRevision || liveTarget) ? currentRawSelection(hostAdapter, floor) : null;
+      && !operation.manualRevision && !operation.qianshiTextEdit ? currentRawSelection(hostAdapter, floor) : null;
     const liveRawFingerprint = selected ? `sha256:${await sha256(selected.rawContent)}` : null;
     // Historical completion is based on the archived floor snapshot. Live edits/swipes do not invalidate that evidence.
-    const revisionSourceChanged = operation.manualRevision
-      ? floor?.content?.rawFingerprint !== operation.archiveRawFingerprint
-        || floor?.content?.canonicalFingerprint !== operation.archiveCanonicalFingerprint
-        || floor?.narrativeGeneration !== operation.archiveNarrativeGeneration
-        || JSON.stringify(floor?.hostLocator) !== operation.archiveHostLocator
-        || liveTarget && (!selected || liveRawFingerprint !== operation.floorRawFingerprint
-          || selected.swipeId !== operation.startedSwipeId || selected.selectedSwipeIndex !== operation.startedSelectedSwipeIndex)
-      : !operation.qianshiHistory && operation.floorRawFingerprint && liveRawFingerprint !== operation.floorRawFingerprint;
+    const revisionSourceChanged = !operation.manualRevision && !operation.qianshiHistory
+      && operation.floorRawFingerprint && liveRawFingerprint !== operation.floorRawFingerprint;
     if (!floor || floor.narrativeGeneration !== replacement.narrativeGeneration || revisionSourceChanged) {
       throw operation.qianshiHistory
         ? errorWith('QIANSHI_HISTORY_SOURCE_CHANGED', `第 ${replacement.assistantSeq ?? floor?.assistantSeq ?? '?'} 楼身份已变化；本次历史结果未保存，旧档案保持不变。`)
@@ -2095,22 +2084,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         : errorWith('V3_MEMORY_PREFIX_CHANGED', '正文分支、稳定锚或时间戳已变化，本次结果已作废。');
     }
     if (operation.qianshiTextEdit) {
-      const targetEvent = expectedTargetMemory?.qianshiDelta?.events?.find(event => event.id === operation.qianshiTextEdit.eventId);
-      if (!targetEvent || qianshiTextEventSignature(targetEvent) !== operation.qianshiTextEdit.eventSignature
-        || targetEvent.title !== operation.qianshiTextEdit.expected.title || targetEvent.description !== operation.qianshiTextEdit.expected.description
-        || targetEvent.object !== operation.qianshiTextEdit.expected.object) {
-        throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件文字已被其他操作修改；当前记录保持不变，请刷新后重新编辑。');
-      }
       const sourceFloor = current.floors.find(item => item.id === operation.qianshiTextEdit.sourceFloorId);
-      const sourceSelection = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
-      const actualSourceFingerprint = sourceSelection ? `sha256:${await sha256(sourceSelection.rawContent)}` : null;
       if (!sourceFloor || sourceFloor.narrativeGeneration !== current.root.narrativeGeneration
-        || !memorySourceFloorIds(expectedTargetMemory).includes(operation.qianshiTextEdit.sourceFloorId)
-        || JSON.stringify(sourceFloor.hostLocator) !== JSON.stringify(operation.qianshiTextEdit.sourceBaseline.hostLocator)
-        || !sourceSelection || actualSourceFingerprint !== operation.qianshiTextEdit.sourceBaseline.rawFingerprint
-        || sourceSelection.swipeId !== operation.qianshiTextEdit.sourceBaseline.swipeId
-        || sourceSelection.selectedSwipeIndex !== operation.qianshiTextEdit.sourceBaseline.selectedSwipeIndex) {
-        throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件来源楼或当前分支已变化；没有保存文字，请刷新后确认原文楼层仍有效。');
+        || !memorySourceFloorIds(expectedTargetMemory).includes(sourceFloor.id)) {
+        throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件所属楼已不在原存档中，请确认当前目标后重试。');
       }
     }
     if (!operation.qianshiRejudge && operation.qianshiCandidateSnapshot?.length) {
@@ -2136,6 +2113,109 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     const memoryByFloor = currentMemoryMap(current);
     const oldTarget = memoryByFloor.get(revisionReplacement.floorId);
+    if (operation.manualRevision) {
+      if (!oldTarget || oldTarget.chatId !== operation.manualRevisionBase.chatId
+        || oldTarget.narrativeGeneration !== operation.manualRevisionBase.narrativeGeneration
+        || JSON.stringify(memorySourceFloorIds(oldTarget)) !== JSON.stringify(memorySourceFloorIds(operation.manualRevisionBase))) {
+        throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '原目标记忆已不在可修订的存档中。');
+      }
+      const baseline = operation.manualRevisionBase, merged = { ...oldTarget };
+      const ownership = floorProvenance(current)[oldTarget.floorId] ?? {};
+      for (const field of operation.manualRevisionFields) {
+        const changed = JSON.stringify(oldTarget[field]) !== JSON.stringify(baseline[field]);
+        const summaryChanges = field === 'summary' ? Object.fromEntries(Object.entries(revisionReplacement.summary)
+          .filter(([key, value]) => key !== 'aiText' && JSON.stringify(value) !== JSON.stringify(baseline.summary[key]))) : null;
+        const manualConflict = field === 'summary'
+          ? Object.hasOwn(summaryChanges, 'userText') && oldTarget.summary.userText !== baseline.summary.userText
+          : (field === 'chronology' && ownership.timeEdited || field === 'locations' && ownership.locationsEdited
+            || field === 'participants' && ownership.participantsEdited) && changed;
+        if (manualConflict) throw errorWith('V3_MEMORY_STALE', '本次修改的人工字段已被另一操作修改，请保留草稿并确认当前值。');
+        merged[field] = field === 'summary' ? { ...oldTarget.summary, ...summaryChanges } : revisionReplacement[field];
+        if (['exactAnchors', 'commitments', 'informationTransfers', 'eventFragments', 'privateCognition'].includes(field)) {
+          const idKey = field === 'exactAnchors' ? 'anchorId' : 'itemId';
+          const beforeItems = new Map((baseline[field] ?? []).map(item => [item[idKey], item]));
+          const desiredItems = new Map(revisionReplacement[field].map(item => [item[idKey], item]));
+          const currentIds = new Set(oldTarget[field].map(item => item[idKey]));
+          merged[field] = oldTarget[field].flatMap(item => {
+            const before = beforeItems.get(item[idKey]), desired = desiredItems.get(item[idKey]);
+            if (!before) return [item];
+            if (!desired) return [];
+            const changes = Object.fromEntries(Object.entries(desired).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key])));
+            const removedKeys = Object.keys(before).filter(key => !Object.hasOwn(desired, key));
+            if (item.manual && [...Object.keys(changes), ...removedKeys].some(key => JSON.stringify(item[key]) !== JSON.stringify(before[key]))) {
+              throw errorWith('V3_MEMORY_STALE', '本次修改的人工原文已被另一操作修改，请保留草稿并确认当前值。');
+            }
+            const revised = { ...item, ...changes };
+            for (const key of removedKeys) delete revised[key];
+            return [revised];
+          });
+          for (const item of revisionReplacement[field]) {
+            if (currentIds.has(item[idKey])) continue;
+            const before = beforeItems.get(item[idKey]);
+            if (!before) merged[field].push(item);
+            else if (field === 'exactAnchors' && item.manual && JSON.stringify(item) !== JSON.stringify(before)) {
+              if (before.manual || oldTarget.suppressedExactAnchorIds?.includes(item.anchorId)) {
+                throw errorWith('V3_MEMORY_STALE', '本次修改的人工原文已被另一操作删除，请保留草稿并确认当前记录。');
+              }
+              merged[field].push(item);
+            }
+          }
+        }
+        if (field === 'sourceFloorSnapshots') merged[field] = oldTarget.sourceFloorSnapshots.map(snapshot => ({ ...snapshot, locationReference: null }));
+        if (field === 'suppressedExactAnchorIds') merged[field] = [...new Set([...(oldTarget[field] ?? []), ...revisionReplacement[field]])];
+      }
+      for (const field of operation.manualRevisionRemoved) delete merged[field];
+      revisionReplacement = validateFloorMemory({ ...merged,
+        id: await deterministicUuid(['v3-manual-rebase', oldTarget.id, operation.runId, operation.manualRevisionFields]),
+        updatedAt: revisionReplacement.updatedAt, supersedes: oldTarget.id }, { expectedChatId: oldTarget.chatId });
+    }
+    if (operation.qianshiTextEdit) {
+      const edit = operation.qianshiTextEdit;
+      const delta = clone(oldTarget?.qianshiDelta);
+      const event = delta?.events.find(item => item.id === edit.eventId);
+      if (!event || event.sourceFloorId !== edit.sourceFloorId) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '原事件已不在这份存档中。');
+      const prior = (delta.manualEventOverrides ?? []).find(item => item.eventId === event.id) ?? {};
+      const signature = qianshiTextEventSignature(event);
+      const changedFields = Object.keys(edit.fields);
+      for (const field of changedFields) {
+        if (Object.hasOwn(prior, field) && JSON.stringify(event[field]) !== JSON.stringify(edit.baseline[field])) {
+          throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '本次修改的人工字段已变化，请保留草稿并确认当前值。');
+        }
+        event[field] = clone(edit.fields[field]);
+      }
+      if (changedFields.length) delta.manualEventOverrides = [...(delta.manualEventOverrides ?? []).filter(item => item.eventId !== event.id),
+        { ...prior, eventId: event.id, ...clone(edit.fields) }];
+      // 同一正式目标的兼容旧候选沿人工字段更新，候选决策和已接收关系保持。
+      for (const candidate of delta.historyReview?.candidates ?? []) {
+        if (candidate.event.id === event.id && qianshiTextEventSignature(candidate.event) === signature) {
+          candidate.event = { ...candidate.event, ...clone(edit.fields) };
+        }
+      }
+      const manual = edit.manualAction;
+      if (manual?.type === 'deleteEvent') delta.deletedEventIds = [...new Set([...(delta.deletedEventIds ?? []), event.id])];
+      if (manual?.type === 'tracking' || manual?.type === 'matterStatus') {
+        const key = manual.type === 'tracking' ? 'trackingOverrides' : 'manualMatterStatusOverrides';
+        const currentOverride = (delta[key] ?? []).find(item => item.matterId === manual.matterId) ?? null;
+        if (JSON.stringify(currentOverride) !== JSON.stringify(edit.baselineOverride)) throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '本次修改的人工事项状态已变化，请确认当前值。');
+        delta[key] = (delta[key] ?? []).filter(item => item.matterId !== manual.matterId);
+        if (manual.type === 'tracking') delta[key].push({ matterId: manual.matterId, following: manual.following });
+        else if (manual.status !== null) delta[key].push({ matterId: manual.matterId, status: manual.status });
+      }
+      revisionReplacement = validateFloorMemory({ ...oldTarget,
+        id: await deterministicUuid(['v3-qianshi-manual-rebase', oldTarget.id, operation.runId, edit.fields]),
+        qianshiDelta: delta, updatedAt: revisionReplacement.updatedAt, supersedes: oldTarget.id }, { expectedChatId: oldTarget.chatId });
+    }
+    if (!operation.qianshiRejudge && ['extract', 'reextract'].includes(action) && oldTarget) {
+      const ownership = floorProvenance(current)[oldTarget.floorId] ?? {};
+      revisionReplacement = validateFloorMemory({ ...revisionReplacement,
+        ...(oldTarget.summary.effectiveSource === 'user' ? { summary: { ...revisionReplacement.summary,
+          userText: oldTarget.summary.userText, effectiveSource: 'user', revisionNote: oldTarget.summary.revisionNote } } : {}),
+        ...(ownership.timeEdited ? { chronology: oldTarget.chronology } : {}),
+        ...(ownership.locationsEdited ? { locations: oldTarget.locations } : {}),
+        ...(ownership.participantsEdited ? { participants: oldTarget.participants } : {}),
+      }, { expectedChatId: oldTarget.chatId });
+    }
+
     if (!operation.qianshiRejudge && ['extract', 'reextract'].includes(action) && oldTarget) {
       const suppressed = new Set(oldTarget.suppressedExactAnchorIds ?? []);
       const manualAnchors = oldTarget.exactAnchors.filter(anchor => anchor.manual === true);
@@ -2220,7 +2300,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     } else if (operation.qianshiTextEdit?.manualAction?.type === 'deleteEvent') {
       // 单条删除只增加标记，不创建/改写关系；既有断链不能阻止用户移除误收录事件。
       // 来源、目标版本和 CAS 校验仍由同一事务执行，派生图统一撤去删除端点。
-    } else if (revisionReplacement.qianshiDelta) {
+    } else if (revisionReplacement.qianshiDelta && !operation.manualRevision && !operation.qianshiTextEdit) {
       const replacedFloorIds = new Set(oldTarget ? memorySourceFloorIds(oldTarget) : [revisionReplacement.floorId]);
       const oldEventIds = new Set(oldTarget?.qianshiDelta?.events?.map(event => event.id) ?? []);
       const preservedByOtherFloors = new Set(), currentProjection = qianshiProjection();
@@ -2326,7 +2406,12 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const indexes = await buildFoundationIndexes({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, checkpointId, floors: current.floors, candidates: current.floors.map(floorItem => ({ hostLocator: floorItem.hostLocator, rawFingerprint: floorItem.content.rawFingerprint, canonicalFingerprint: floorItem.content.canonicalFingerprint })), entities, now: nowValue });
     const indexKeys = indexes.map(index => operationStore.recordKey(index));
     const provenance = floorProvenance(current);
-    for (const value of revisionReplacements) provenance[value.floorId] = { ...provenanceEntry, runId, memoryId: value.id, action };
+    for (const value of revisionReplacements) {
+      const prior = provenance[value.floorId] ?? {};
+      provenance[value.floorId] = { ...provenanceEntry,
+        ...Object.fromEntries(['timeEdited', 'locationsEdited', 'participantsEdited'].filter(key => prior[key] === true || provenanceEntry[key] === true).map(key => [key, true])),
+        runId, memoryId: value.id, action };
+    }
     let currentState = null;
     if (current.baseline) currentState = await replayCurrentState({ chatId: current.root.chatId, narrativeGeneration: current.root.narrativeGeneration, baselineId: current.baseline.id, floors: current.floors, floorMemories, stateDeltas: provisionalDeltas, now: nowValue, id: await deterministicUuid(['v3-cse-current-state', checkpointId]), previousId: current.currentStates?.at(-1)?.id ?? null });
     const preparedStateRefs = [...provisionalDeltas.map(delta => operationStore.recordKey(delta)), ...(currentState ? [operationStore.recordKey(currentState)] : [])];
@@ -2344,24 +2429,6 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     await persistRecords([...newEntities, ...revisionReplacements, ...(currentState ? [currentState] : []), ...indexes], operation.controller.signal, { targetStore: operationStore });
     await persistRecords([run, checkpoint], operation.controller.signal, { concurrency: 1, targetStore: operationStore });
     if ((!operation.pinnedTarget && operation.epoch !== epoch) || operation.controller.signal.aborted) throw errorWith('V3_MEMORY_CANCELLED', '操作已取消。');
-    if (operation.qianshiTextEdit) {
-      const liveTargetMemory = currentMemoryMap(current).get(operation.floorId);
-      const sourceFloor = current.floors.find(item => item.id === operation.qianshiTextEdit.sourceFloorId);
-      const targetFloor = current.floors.find(item => item.id === operation.floorId);
-      const liveSource = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
-      const liveTarget = targetFloor ? currentRawSelection(hostAdapter, targetFloor) : null;
-      const sourceFingerprint = liveSource ? `sha256:${await sha256(liveSource.rawContent)}` : null;
-      const targetFingerprint = liveTarget ? `sha256:${await sha256(liveTarget.rawContent)}` : null;
-      const sourceBaseline = operation.qianshiTextEdit.sourceBaseline;
-      if (current.root.chatId !== currentHostChatId() || liveTargetMemory?.id !== operation.qianshiTextEdit.memoryId
-        || JSON.stringify(liveTargetMemory) !== operation.qianshiTextEdit.memorySignature
-        || !sourceFloor || !targetFloor || JSON.stringify(sourceFloor.hostLocator) !== JSON.stringify(sourceBaseline.hostLocator)
-        || !liveSource || sourceFingerprint !== sourceBaseline.rawFingerprint
-        || liveSource.swipeId !== sourceBaseline.swipeId || liveSource.selectedSwipeIndex !== sourceBaseline.selectedSwipeIndex
-        || targetFingerprint !== operation.floorRawFingerprint) {
-        throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件来源楼、所属档案或当前分支在写入前发生变化；没有保存文字，请刷新后确认。');
-      }
-    }
     if(operation.qianshiCreate){
       const live=currentRawSelection(hostAdapter,current.floors.find(f=>f.id===operation.floorId));
       if(current.root.chatId!==currentHostChatId()||!live||`sha256:${await sha256(live.rawContent)}`!==operation.floorRawFingerprint)throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED','登记位置已变化，请刷新后重试。');
@@ -2793,7 +2860,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     return extractFloorInternal(preparedInput.floor.id, { preparedInput, manualWork });
   }
   async function reviseInternal(floorId, action, { userText = null, revisionNote = null, metadata = null } = {}) {
-    if (active) return getState();
+    if (active) throw errorWith('V3_MEMORY_BUSY', '当前记忆任务尚未结束，本次修改未保存。请保留草稿，任务结束后再保存。');
     if (action === 'edit' || action === 'editMetadata') {
       const summaryInput = action === 'edit' ? userText : metadata?.summary;
       if (summaryInput !== null && summaryInput !== undefined && String(summaryInput).trim().length > 4000) {
@@ -2811,52 +2878,20 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const targetIdentity = captureTargetIdentity();
     const targetStore = storeForTargetIdentity(targetIdentity);
     try {
-    const hostSnapshotAtStart = hostAdapter.snapshot();
-    const targetSnapshotGraph = targetIdentity
-      ? reachable?.root?.chatId === targetIdentity.chatId ? reachable : foundationRuntime.getReachable?.()
-      : null;
-    const targetFloorAtStart = targetIdentity && targetSnapshotGraph?.root?.chatId === targetIdentity.chatId
-      ? targetSnapshotGraph.floors.find(item => item.id === floorId) ?? null : null;
-    if (targetIdentity && !targetFloorAtStart) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '原目标没有可用的楼档快照。');
-    const selectedAtStart = targetFloorAtStart ? rawSelectionFromSnapshot(hostSnapshotAtStart, targetFloorAtStart) : null;
-    if (targetIdentity && !selectedAtStart) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '原目标正文当前无法对应到这楼。');
-    const startRawContent = typeof selectedAtStart?.rawContent === 'string' ? selectedAtStart.rawContent : null;
-    const startRawFingerprint = startRawContent === null ? null : `sha256:${await sha256(startRawContent)}`;
-    const startClockSignature = targetFloorAtStart
-      ? clockEvidence(selectedAtStart, currentReferenceTags()).signature : null;
-    const archiveWitnessAtStart = targetFloorAtStart ? Object.freeze({
-      rawFingerprint: targetFloorAtStart.content.rawFingerprint,
-      canonicalFingerprint: targetFloorAtStart.content.canonicalFingerprint,
-      narrativeGeneration: targetFloorAtStart.narrativeGeneration,
-      hostLocator: JSON.stringify(targetFloorAtStart.hostLocator),
-    }) : null;
     let source;
     if (targetIdentity) {
       const cached = reachable?.root?.chatId === targetIdentity.chatId ? reachable : null;
       source = await latestReachableForCommit({ epoch, store: targetStore, pinnedTarget: true, targetIdentity }, cached);
       if (source.root.chatId !== targetIdentity.chatId) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '原目标没有可用的后端快照。');
     } else {
-      const foundation = await foundationRuntime.refreshStatus();
-      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能修订。');
-      await loadCurrent(epoch);
-      source = reachable;
+      source = await latestReachableForCommit({ epoch }, reachable);
     }
     const floor = source?.floors?.find(item => item.id === floorId), old = currentMemoryMap(source).get(floorId);
     if (!floor || !old) throw errorWith('V3_MEMORY_REVISION_UNAVAILABLE', '该楼还没有可修订的正式记忆。');
     if (isFrozenFloor(floorId, source)) throw errorWith('V3_MIGRATION_FLOOR_READ_ONLY', '来源聊天的已迁移楼只读，不能编辑。');
-    if (targetIdentity && (floor.content.rawFingerprint !== archiveWitnessAtStart?.rawFingerprint
-      || floor.content.canonicalFingerprint !== archiveWitnessAtStart?.canonicalFingerprint
-      || floor.narrativeGeneration !== archiveWitnessAtStart?.narrativeGeneration
-      || JSON.stringify(floor.hostLocator) !== archiveWitnessAtStart?.hostLocator)) {
-      throw errorWith('V3_MEMORY_STALE', '原目标楼档在修订开始时已变化，请刷新后再确认。');
-    }
-    const selectedAtRevision = targetIdentity ? selectedAtStart : rawSelectionFromSnapshot(hostSnapshotAtStart, floor);
-    const revisionRawFingerprint = targetIdentity ? startRawFingerprint ?? floor.content.rawFingerprint
-      : typeof selectedAtRevision?.rawContent === 'string' ? `sha256:${await sha256(selectedAtRevision.rawContent)}` : floor.content.rawFingerprint;
-    const revisionClockSignature = targetIdentity ? startClockSignature ?? '' : clockEvidence(selectedAtRevision, currentReferenceTags()).signature;
     const nowValue = nowIso(now);
     const revisionRunId = await deterministicUuid(['v3-memory-revision-run', old.id, action, nowValue, newUuid()]);
-    const requestedSummary = String(metadata?.summary ?? userText ?? '').trim();
+    const requestedSummary = String(metadata?.summary ?? (action === 'editMetadata' ? effectiveSummary(old) : userText) ?? '').trim();
     const requestedRevisionNote = String(revisionNote ?? metadata?.revisionNote ?? '').trim();
     let exactAnchors = old.exactAnchors;
     let suppressedExactAnchorIds = [...(old.suppressedExactAnchorIds ?? [])];
@@ -2926,7 +2961,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           : { ...old.summary, revisionNote: requestedRevisionNote || '用户标记错误' };
     if ((action === 'edit' || summaryChanged) && !summary.userText) throw errorWith('V3_MEMORY_SUMMARY_EMPTY', '摘要不能为空。');
     let chronology = old.chronology, locations = old.locations, participants = old.participants, spatialFacts = old.spatialFacts, newEntities = [], effectiveTimeChanged = false;
-    let clearLocationReference = false;
+    let clearLocationReference = false, locationsEdited = false, participantsEdited = false;
     const effectiveSummaryChanged = String(summary.effectiveSource === 'user' ? summary.userText : summary.aiText).trim() !== String(effectiveSummary(old) ?? '').trim();
     if (action === 'editMetadata') {
       const priorTimeText = [...new Set(old.chronology.map(item => item.time?.sourceText || item.time?.normalized || item.description).map(value => String(value ?? '').trim()).filter(Boolean))].join('；');
@@ -2935,7 +2970,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       effectiveTimeChanged = metadata?.timeChanged === true && requestedTimeText !== originalTimeText;
       if (effectiveTimeChanged) chronology = [{ itemId: await deterministicUuid(['v3-user-chronology', revisionRunId, requestedTimeText]), time: { kind: /(?:随后|之后|此前|次日|翌日|当晚|片刻|小时|分钟|天后|周后)/u.test(requestedTimeText) ? 'relative' : requestedTimeText ? 'explicit' : 'unknown', sourceText: requestedTimeText || '时间未明确', normalized: null, precision: 'unresolved', relativeToFloorId: null }, description: requestedTimeText || '时间未明确', evidenceRefs: [] }];
       const existingLocations = new Map(old.locations.map(item => [item.itemId, item]));
-      locations = [];
+      locations = Object.hasOwn(metadata ?? {}, 'locations') ? [] : old.locations;
       for (const [index, item] of (Array.isArray(metadata?.locations) ? metadata.locations : []).slice(0, 80).entries()) {
         const name = String(item?.name ?? '').trim().slice(0, 500); if (!name) continue;
         const prior = existingLocations.get(item?.itemId) ?? null;
@@ -2970,8 +3005,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         const unchanged = selected.length === projectedParticipants.length && selected.every((entity, index) => entity.id === projectedParticipants[index].entityId);
         if (!unchanged) participants = selected.map(entity => existingParticipants.get(entity.id) ?? { entityId: entity.id, presence: 'mentioned', evidenceRefs: [] });
       }
-      const locationOrParticipantChanged = JSON.stringify(locations) !== JSON.stringify(old.locations)
-        || JSON.stringify(participants) !== JSON.stringify(old.participants);
+      locationsEdited = JSON.stringify(locations) !== JSON.stringify(old.locations);
+      participantsEdited = JSON.stringify(participants) !== JSON.stringify(old.participants);
+      const locationOrParticipantChanged = locationsEdited || participantsEdited;
       clearLocationReference = summaryChanged || JSON.stringify(locations) !== JSON.stringify(old.locations);
       if (summaryChanged || locationOrParticipantChanged) spatialFacts = undefined;
       const noteChanged = Boolean(requestedRevisionNote) && requestedRevisionNote !== String(old.summary.revisionNote ?? '').trim();
@@ -3014,23 +3050,17 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
     if (spatialFacts) replacementData.spatialFacts = spatialFacts; else delete replacementData.spatialFacts;
     const replacement = validateFloorMemory(replacementData, { expectedChatId: old.chatId });
-    const operation = { floorId, floorFingerprint: floor.content.canonicalFingerprint, floorRawFingerprint: revisionRawFingerprint, epoch,
-      ...(targetIdentity ? { targetIdentity, store: targetStore, pinnedTarget: true, manualRevision: true,
-        manualRevisionTargetMemoryId: old.id,
-        archiveRawFingerprint: archiveWitnessAtStart.rawFingerprint, archiveCanonicalFingerprint: archiveWitnessAtStart.canonicalFingerprint,
-        archiveNarrativeGeneration: archiveWitnessAtStart.narrativeGeneration, archiveHostLocator: archiveWitnessAtStart.hostLocator,
-        startedSwipeId: selectedAtStart.swipeId, startedSelectedSwipeIndex: selectedAtStart.selectedSwipeIndex } : {}),
+    const operation = { floorId, epoch, manualRevision: true,
+      manualRevisionBase: old,
+      manualRevisionFields: Object.keys(replacementData).filter(key => !['id', 'createdAt', 'updatedAt', 'supersedes'].includes(key)
+        && JSON.stringify(old[key]) !== JSON.stringify(replacementData[key])),
+      manualRevisionRemoved: Object.keys(old).filter(key => !Object.hasOwn(replacementData, key)),
+      ...(targetIdentity ? { targetIdentity, store: targetStore, pinnedTarget: true } : {}),
       controller: new AbortController(), runId: revisionRunId, startedAt: nowValue, phase: 'committing' };
-    if (!targetIdentity) operation.dependencySnapshot = await extractorDependencySnapshot(source, floorId, { userIdentity: currentUserIdentity(), promptGuidance: '' });
-    operation.dependencyBoundaryMessageIndex = Math.max(...(operation.dependencySnapshot?.floorDependencies ?? []).map(item => {
-      const sourceFloor = source.floors.find(candidate => candidate.id === item.id);
-      return sourceFloor?.stability?.proof?.messageIndex ?? item.hostLocator.messageIndex;
-    }));
-    operation.hostIdentity = generationIdentity(hostSnapshotAtStart);
     if (!operation.pinnedTarget) active = operation;
     notify();
     const priorAudit = floorProvenance(source)[floorId] ?? {};
-    try { await commitRevision(operation, { oldReachable: source, replacement, newEntities, provenanceEntry: { api: priorAudit.api ?? null, attempts: priorAudit.attempts ?? 0, transportAttempts: priorAudit.transportAttempts ?? null, responseFingerprint: priorAudit.responseFingerprint ?? null, extractorVersion: priorAudit.extractorVersion ?? old.extractorVersion, needsReview: priorAudit.needsReview ?? false, rawFingerprint: priorAudit.rawFingerprint ?? floor.content.rawFingerprint, storyClockSignature: priorAudit.storyClockSignature ?? revisionClockSignature, timeEdited: priorAudit.timeEdited === true || (action === 'editMetadata' && effectiveTimeChanged) }, action }); }
+    try { await commitRevision(operation, { oldReachable: source, replacement, newEntities, provenanceEntry: { api: priorAudit.api ?? null, attempts: priorAudit.attempts ?? 0, transportAttempts: priorAudit.transportAttempts ?? null, responseFingerprint: priorAudit.responseFingerprint ?? null, extractorVersion: priorAudit.extractorVersion ?? old.extractorVersion, needsReview: priorAudit.needsReview ?? false, rawFingerprint: priorAudit.rawFingerprint ?? floor.content.rawFingerprint, storyClockSignature: priorAudit.storyClockSignature ?? '', timeEdited: priorAudit.timeEdited === true || effectiveTimeChanged, ...(priorAudit.locationsEdited === true || locationsEdited ? { locationsEdited: true } : {}), ...(priorAudit.participantsEdited === true || participantsEdited ? { participantsEdited: true } : {}) }, action }); }
     finally { if (active === operation) active = null; }
     return notify();
     } finally { if (targetIdentity) releaseIdentityStore(targetStore); }
@@ -3122,16 +3152,9 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         let startNotified = false;
         let resumed = false;
         const cseRolesReady = () => Boolean(reachable?.baseline && [reachable.baseline.userPersona.entityId, reachable.baseline.characterCard.entityId].every(id => reachable.entities.some(entity => entity.id === id)));
-        const consumeCseWake = () => {
-          if (!cseFailure) return true;
-          if (cseFailure.serial >= summarySyncSerial) return false;
-          cseFailure = null;
-          operation.cseBlocked = false;
-          return true;
-        };
         const wakeCse = () => {
           if (foundationRuntime.getState().status === 'needsReview') { operation.cseBlocked = true; return Promise.resolve(); }
-          if (!pipelineHistorical || !allowed() || !capturedFloorIds || !consumeCseWake()) return Promise.resolve();
+          if (!pipelineHistorical || !allowed() || !capturedFloorIds || cseFailure) return Promise.resolve();
           if (cseSyncFailure?.serial === summarySyncSerial) return Promise.resolve();
           if (cseDrain) { cseWakeRequested = true; return cseDrain; }
           let drainedSerial = summarySyncSerial;
@@ -3139,7 +3162,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             let syncFloor = null;
             let recoveredCseSync = false;
             do {
-              if (!consumeCseWake()) break;
+              if (cseFailure) break;
               cseWakeRequested = false;
               if (cseSyncFailure?.serial < summarySyncSerial) recoveredCseSync = true;
               cseSyncFailure = null;
@@ -3158,7 +3181,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
                   if (!allowed()) return;
                   const after = getState().floors.find(item => item.floorId === floor.id);
                   if (!['ready', 'noChange'].includes(after?.cse?.status)) {
-                    cseFailure = { floor, serial: attemptSerial, message: getState().lastCseError?.message ?? 'CSE 分析失败；有新摘要保存时会从本楼再试，也可点击继续重建。' };
+                    cseFailure = { floor, message: getState().lastCseError?.message ?? 'CSE 分析失败，本批不重复调用，可点击继续重建。' };
                     operation.cseBlocked = true;
                     break;
                   }
@@ -3178,7 +3201,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
                 }
               }
             } while (cseWakeRequested && allowed()
-              && (!cseFailure || cseFailure.serial < summarySyncSerial)
+              && !cseFailure
               && cseSyncFailure?.serial !== summarySyncSerial);
             if (syncFloor && allowed() && !cseSyncFailure) {
               const coverageAttemptSerial = summarySyncSerial;
@@ -3205,7 +3228,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           })().finally(() => {
             cseDrain = null;
             if (cseWakeRequested && summarySyncSerial > drainedSerial && allowed()
-              && (!cseFailure || cseFailure.serial < summarySyncSerial)
+              && !cseFailure
               && cseSyncFailure?.serial !== summarySyncSerial) void wakeCse();
           });
           return cseDrain;
@@ -3336,11 +3359,18 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
             } else for (const floor of targets) {
               if (!allowed()) return getState();
               const memory = currentMemoryMap(reachable).get(floor.id);
-              if (memory?.recordStatus !== 'active') await extractFloorInternal(floor.id, { analyzeState: false });
+              let preparationError = null;
+              try {
+                if (memory?.recordStatus !== 'active') await extractFloorInternal(floor.id, { analyzeState: false });
+              } catch (error) {
+                if (!allowed() || error?.name === 'AbortError' || STALE_MEMORY_CODES.has(error?.code)
+                  || !['sourceSelection', 'sourceSanitization', 'timeSources', 'qianshiCandidates', 'extractorEnvelope'].includes(preparationStepFor(error))) throw error;
+                preparationError = error;
+              }
               if (!allowed()) return getState();
               const currentFloor = getState().floors.find(item => item.floorId === floor.id);
-              if (!currentFloor?.memoryId || currentFloor.status !== 'ready') {
-                const failure = Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator?.messageIndex ?? null, floorLabel: floorCopy(floor), message: publicErrorMessage(getState().lastExtractorError, { fallback: '摘要提取失败，可点击继续重建后从本楼重试。' }) });
+              if (preparationError || !currentFloor?.memoryId || currentFloor.status !== 'ready') {
+                const failure = Object.freeze({ floorId: floor.id, assistantSeq: floor.assistantSeq, messageIndex: floor.hostLocator?.messageIndex ?? null, floorLabel: floorCopy(floor), message: publicErrorMessage(preparationError ?? getState().lastExtractorError, { fallback: '摘要提取失败，可点击继续重建后从本楼重试。' }) });
                 failedSummaryFloorIds.add(floor.id);
                 summaryFailures.push(failure);
                 const unfinished = missingSummaryCount(capturedFloorSet);
@@ -3393,7 +3423,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
               const floor = cseFailure.floor;
               lastAutomaticInputKey = capturedInputKey ?? inputKey;
               lastAutoRun = Object.freeze({ status: processed || cseProcessed ? 'partial' : 'failed', reason, mode: operation.mode, phase: 'analyzingCse', batchSize: config.batchSize, floorId: floor.id, assistantSeq: floor.assistantSeq, processed, cseProcessed, summarySaved: processed, failedItems: Object.freeze([...summaryFailures]), message: cseFailure.message });
-              notifyOnce(`analyzingCse:${reason}:${capturedInputKey ?? inputKey}:${floor.id}:${missingSummaryCount(capturedFloorSet)}`, { kind: 'warning', text: `千千结人物状态分析失败：${floorCopy(floor)}人物状态未完成；有新摘要保存时会从本楼再试，也可在记忆管理中点击继续。${safeErrorMessage(cseFailure.message)}` });
+              notifyOnce(`analyzingCse:${reason}:${capturedInputKey ?? inputKey}:${floor.id}:${missingSummaryCount(capturedFloorSet)}`, { kind: 'warning', text: `千千结人物状态分析失败：${floorCopy(floor)}人物状态未完成。本批继续保存健康摘要，不重复本楼分析，可在记忆管理中点击继续。${safeErrorMessage(cseFailure.message)}` });
               return notify();
             }
             if (!summaryFailures.length) continue;
@@ -4366,9 +4396,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (!nextText.title || !nextText.description) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '标题和经过说明都不能为空。');
     return runManualWork('editingQianshiText', async manualOperation => {
       const expectedEpoch = epoch;
-      const foundation = await foundationRuntime.refreshStatus();
-      if (foundation.status !== 'ready') throw errorWith('V3_MEMORY_FOUNDATION_NOT_READY', '后端数据尚未与当前正文完成同步，当前不能编辑事件。');
-      await loadCurrent(expectedEpoch);
+      reachable = await latestReachableForCommit({ epoch: expectedEpoch }, reachable);
       const matched = formalQianshiEvent(eventId);
       if (!matched && manualAction?.type === 'deleteEvent' && (reachable.floorMemories ?? []).some(memory =>
         memory.recordStatus === 'active' && memory.qianshiDelta?.deletedEventIds?.includes(eventId))) return { status: 'unchanged' };
@@ -4377,37 +4405,23 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       if (isFrozenFloor(event.sourceFloorId)) throw errorWith('V3_MIGRATION_FLOOR_READ_ONLY', '来源聊天的已迁移事项只读，不能编辑。');
       if (manualAction?.type === 'tracking') {
         const matter = qianshiGraphProjector(reachable, { calendar: storyCalendarProvider(reachable.root.chatId) }).matters.find(item => item.matterId === manualAction.matterId);
-        if (!matter || matter.origin.eventId !== eventId || matter.following !== manualAction.expectedFollowing) {
+        if (!matter || matter.origin.eventId !== eventId) {
           throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事项关注状态或所属楼已变化；请刷新千事页后重试。');
         }
       }
       if (manualAction?.type === 'matterStatus') {
         const matter = qianshiGraphProjector(reachable, { calendar: storyCalendarProvider(reachable.root.chatId) }).matters.find(item => item.matterId === manualAction.matterId);
-        if (!matter || matter.origin.eventId !== eventId || matter.status !== manualAction.expectedStatus
-          || matter.manualStatusOverride !== manualAction.expectedManualStatus) {
+        if (!matter || matter.origin.eventId !== eventId || matter.manualStatusOverride !== manualAction.expectedManualStatus) {
           throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '整线状态或所属楼已变化；请刷新千事页后重试。');
         }
       }
-      if (old.id !== expected.memoryId) throw errorWith('QIANSHI_TEXT_EDIT_TARGET_CHANGED', '事件所属档案已变化；请刷新千事页后再编辑。');
-      if (event.title !== expected.title || event.description !== expected.description || event.object !== expected.object) {
-        throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件文字已变化；当前记录保持不变，请刷新后重新编辑。');
-      }
-      if (scheduledTimeProvided && expected.scheduledTime !== event.scheduledTime
-        || peopleProvided && JSON.stringify(expected.people) !== JSON.stringify(event.people)) {
-        throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件人物或约定时间已变化；当前记录保持不变，请刷新后重新编辑。');
-      }
-      const nextStatus = status === undefined ? event.status : status;
-      const nextActionStatus = actionStatus === undefined ? event.actionStatus ?? event.status : actionStatus;
+      let nextStatus = status === undefined ? event.status : status;
+      let nextActionStatus = actionStatus === undefined ? event.actionStatus ?? event.status : actionStatus;
       const allowedStatuses = new Set(['planned', 'inProgress', 'completed', 'cancelled', 'occurred', 'unknown']);
       if (!allowedStatuses.has(nextStatus) || !allowedStatuses.has(nextActionStatus)) {
         throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '事件状态无效；原记录保持不变。');
       }
-      if (expected.status !== undefined && expected.status !== event.status
-        || expected.actionStatus !== undefined && expected.actionStatus !== (event.actionStatus ?? event.status)) {
-        throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件状态已变化；当前记录保持不变，请刷新后重新编辑。');
-      }
       const nextStoryTime = timeProvided ? normalizedTime : event.storyTime;
-      if ((timeProvided || Object.hasOwn(expected, 'storyTime')) && expected.storyTime !== event.storyTime) throw errorWith('QIANSHI_TEXT_EDIT_BASELINE_CHANGED', '事件时间已变化，请刷新后重新编辑。');
       const timeUnchanged = nextStoryTime === event.storyTime && (!timeProvided
         || Object.hasOwn((old.qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) ?? {}, 'storyTime'));
       const nextScheduledTime = scheduledTimeProvided ? normalizedScheduledTime : event.scheduledTime;
@@ -4453,6 +4467,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           nextPeople = next;
         }
       }
+      const desiredFields = { ...nextText, status: nextStatus, actionStatus: nextActionStatus,
+        ...(timeProvided ? { storyTime: nextStoryTime } : {}), ...(scheduledTimeProvided ? { scheduledTime: nextScheduledTime } : {}),
+        ...(peopleProvided ? { people: nextPeople } : {}) };
+      const fields = Object.fromEntries(Object.entries(desiredFields).filter(([key, value]) =>
+        (key === 'storyTime' && timeProvided || key === 'scheduledTime' && scheduledTimeProvided || key === 'actionStatus' && confirmActionStatus)
+        || JSON.stringify(value) !== JSON.stringify(Object.hasOwn(expected, key) ? expected[key] : key === 'actionStatus' ? event.actionStatus ?? event.status : event[key])));
+      for (const key of ['title', 'description', 'object']) if (!Object.hasOwn(fields, key)) nextText[key] = event[key];
+      if (!Object.hasOwn(fields, 'status')) nextStatus = event.status;
+      if (!Object.hasOwn(fields, 'actionStatus')) nextActionStatus = event.actionStatus ?? event.status;
       const textUnchanged = qianshiText(event.title, 500) === nextText.title && qianshiText(event.description, 4000) === nextText.description
         && event.object === nextText.object;
       const statusUnchanged = nextStatus === event.status && nextActionStatus === (event.actionStatus ?? event.status);
@@ -4461,69 +4484,25 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }
       if (textUnchanged && statusUnchanged && timeUnchanged && scheduledTimeUnchanged && peopleUnchanged && !manualAction && confirmActionStatus !== true) return { status: 'unchanged' };
       const sourceFloor = reachable.floors.find(item => item.id === event.sourceFloorId);
-      const sourceSelection = sourceFloor ? currentRawSelection(hostAdapter, sourceFloor) : null;
-      const liveSourceFingerprint = sourceSelection ? `sha256:${await sha256(sourceSelection.rawContent)}` : null;
-      if (!sourceFloor || !liveSourceFingerprint
-        || !memorySourceFloorIds(old).includes(event.sourceFloorId)) {
-        throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件来源楼或当前分支已变化；没有保存文字，请刷新后确认原文楼层仍有效。');
-      }
-      const sameReviewCandidate = (old.qianshiDelta.historyReview?.candidates ?? []).some(candidate =>
-        ['pending', 'new'].includes(candidate.decision) && candidate.event?.id === event.id
-        && qianshiTextEventSignature(candidate.event) === qianshiTextEventSignature(event)
-        && candidate.relations?.length > 0);
-      if (!manualAction && sameReviewCandidate) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '旧版待核对事件暂不能编辑，原记录保留。');
+      if (!sourceFloor || !memorySourceFloorIds(old).includes(event.sourceFloorId)) throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件所属楼已不在原存档中。');
       const nowValue = nowIso(now), priorAudit = floorProvenance(reachable)[old.floorId] ?? {};
-      const qianshiDelta = clone(old.qianshiDelta);
-      const eventIndex = qianshiDelta.events.findIndex(item => item.id === eventId);
-      if (eventIndex < 0) throw errorWith('QIANSHI_TEXT_EDIT_UNAVAILABLE', '这条正式事件已变化；请刷新后再编辑。');
-      if (manualAction?.type === 'deleteEvent') {
-        qianshiDelta.deletedEventIds = [...new Set([...(qianshiDelta.deletedEventIds ?? []), eventId])];
-        if (qianshiDelta.deletedEventIds.length === (old.qianshiDelta.deletedEventIds ?? []).length) return { status: 'unchanged' };
-      } else if (manualAction?.type === 'tracking') {
-        const prior = (qianshiDelta.trackingOverrides ?? []).find(item => item.matterId === manualAction.matterId);
-        if (prior?.following === manualAction.following) return { status: 'unchanged' };
-        qianshiDelta.trackingOverrides = [...(qianshiDelta.trackingOverrides ?? []).filter(item => item.matterId !== manualAction.matterId),
-          { matterId: manualAction.matterId, following: manualAction.following }];
-      } else if (manualAction?.type === 'matterStatus') {
-        const prior = (qianshiDelta.manualMatterStatusOverrides ?? []).find(item => item.matterId === manualAction.matterId);
-        if (manualAction.status === null && !prior || manualAction.status === prior?.status) return { status: 'unchanged' };
-        qianshiDelta.manualMatterStatusOverrides = (qianshiDelta.manualMatterStatusOverrides ?? []).filter(item => item.matterId !== manualAction.matterId);
-        if (manualAction.status !== null) qianshiDelta.manualMatterStatusOverrides.push({ matterId: manualAction.matterId, status: manualAction.status });
-      } else if (manualAction) throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '千事人工操作无效。');
-      if (!textUnchanged || !statusUnchanged || !timeUnchanged || !scheduledTimeUnchanged || !peopleUnchanged) qianshiDelta.events[eventIndex] = { ...qianshiDelta.events[eventIndex], ...nextText,
-        ...(!statusUnchanged ? { status: nextStatus, actionStatus: nextActionStatus } : {}),
-        ...(timeProvided ? { storyTime: nextStoryTime } : {}),
-        ...(scheduledTimeProvided ? { scheduledTime: nextScheduledTime } : {}),
-        ...(peopleProvided && !peopleUnchanged ? { people: nextPeople } : {}) };
-      const manualFields = { ...(qianshiDelta.manualEventOverrides ?? []).find(item => item.eventId === eventId) };
-      delete manualFields.eventId;
-      if (event.title !== nextText.title) manualFields.title = nextText.title;
-      if (event.description !== nextText.description) manualFields.description = nextText.description;
-      if (event.object !== nextText.object) manualFields.object = nextText.object;
-      if (timeProvided) manualFields.storyTime = nextStoryTime;
-      if (scheduledTimeProvided) manualFields.scheduledTime = nextScheduledTime;
-      if (peopleProvided && !peopleUnchanged) manualFields.people = nextPeople;
-      if (event.status !== nextStatus) manualFields.status = nextStatus;
-      if ((event.actionStatus ?? event.status) !== nextActionStatus || confirmActionStatus === true) manualFields.actionStatus = nextActionStatus;
-      if (Object.keys(manualFields).length) qianshiDelta.manualEventOverrides = [...(qianshiDelta.manualEventOverrides ?? []).filter(item => item.eventId !== eventId),
-        { eventId, ...manualFields }];
+      if (manualAction && !['deleteEvent', 'tracking', 'matterStatus'].includes(manualAction.type)) {
+        throw errorWith('QIANSHI_TEXT_EDIT_INVALID', '千事人工操作无效。');
+      }
       const mutationKind = manualAction?.type ?? 'qianshiTextEdit';
-      const id = await deterministicUuid(['v3-memory-revision', old.id, mutationKind, qianshiDelta, nowValue, newUuid()]);
-      const replacement = validateFloorMemory({ ...old, id, qianshiDelta, updatedAt: nowValue, recordStatus: 'active', supersedes: old.id }, { expectedChatId: old.chatId });
+      const id = await deterministicUuid(['v3-memory-revision', old.id, mutationKind, fields, nowValue, newUuid()]);
+      const replacement = validateFloorMemory({ ...old, id, updatedAt: nowValue, recordStatus: 'active', supersedes: old.id }, { expectedChatId: old.chatId });
       const targetFloor = reachable.floors.find(item => item.id === old.floorId);
-      const targetSelection = targetFloor ? currentRawSelection(hostAdapter, targetFloor) : null;
-      const operation = { ...manualOperation, floorId: old.floorId, floorIds: memorySourceFloorIds(old), floorRawFingerprint: targetSelection ? `sha256:${await sha256(targetSelection.rawContent)}` : null,
+      const overrideKey = manualAction?.type === 'tracking' ? 'trackingOverrides' : 'manualMatterStatusOverrides';
+      const operation = { ...manualOperation, floorId: old.floorId, floorIds: memorySourceFloorIds(old),
         epoch, controller: new AbortController(), runId: await deterministicUuid(['v3-memory-revision-run', old.id, mutationKind, nowValue, newUuid()]),
-        startedAt: nowValue, phase: 'committing', qianshiTextEdit: { eventId, sourceFloorId: event.sourceFloorId, memoryId: old.id, manualAction,
-          memorySignature: JSON.stringify(old), eventSignature: qianshiTextEventSignature(event), expected: { title: event.title, description: event.description, object: event.object, status: event.status, actionStatus: event.actionStatus ?? event.status },
-          sourceBaseline: { hostLocator: clone(sourceFloor.hostLocator), rawFingerprint: liveSourceFingerprint,
-            swipeId: sourceSelection.swipeId, selectedSwipeIndex: sourceSelection.selectedSwipeIndex } } };
-      if (!targetSelection) throw errorWith('QIANSHI_TEXT_EDIT_SOURCE_CHANGED', '事件所属楼已无法对应当前分支；没有保存文字，请刷新后确认。');
+        startedAt: nowValue, phase: 'committing', qianshiTextEdit: { eventId, sourceFloorId: event.sourceFloorId, manualAction, fields,
+          baseline: clone(expected), baselineOverride: (old.qianshiDelta[overrideKey] ?? []).find(item => item.matterId === manualAction?.matterId) ?? null } };
       await commitRevision(operation, { oldReachable: reachable, replacement, provenanceEntry: {
         api: priorAudit.api ?? null, attempts: priorAudit.attempts ?? 0, transportAttempts: priorAudit.transportAttempts ?? null,
         responseFingerprint: priorAudit.responseFingerprint ?? null, extractorVersion: priorAudit.extractorVersion ?? old.extractorVersion,
         needsReview: priorAudit.needsReview ?? false, rawFingerprint: priorAudit.rawFingerprint ?? targetFloor?.content.rawFingerprint ?? null,
-        storyClockSignature: priorAudit.storyClockSignature ?? currentClockSignature(targetFloor),
+        storyClockSignature: priorAudit.storyClockSignature ?? '',
       }, action: 'qianshiTextEdit', validationErrors: [] });
       if (operation.qianshiRejected) throw errorWith('QIANSHI_TEXT_EDIT_RELATION_CONFLICT', '千事关系校验未接受这次文字修改；原记录保持不变。');
       const saved = formalQianshiEvent(eventId);
@@ -4531,11 +4510,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
         ? qianshiGraphProjector(reachable, { calendar: storyCalendarProvider(reachable.root.chatId) }).matters.find(item => item.matterId === manualAction.matterId) : null;
       if (manualAction?.type === 'deleteEvent' && saved || manualAction?.type === 'tracking' && savedMatter?.following !== manualAction.following
         || manualAction?.type === 'matterStatus' && savedMatter?.manualStatusOverride !== manualAction.status
-        || !manualAction && (!saved || saved.event.title !== nextText.title || saved.event.description !== nextText.description || saved.event.object !== nextText.object
-          || saved.event.status !== nextStatus || (saved.event.actionStatus ?? saved.event.status) !== nextActionStatus
-          || saved.event.storyTime !== nextStoryTime
-          || scheduledTimeProvided && saved.event.scheduledTime !== nextScheduledTime
-          || peopleProvided && JSON.stringify(saved.event.people) !== JSON.stringify(nextPeople))) {
+        || !manualAction && (!saved || Object.entries(fields).some(([key, value]) => JSON.stringify(saved.event[key]) !== JSON.stringify(value)))) {
         throw errorWith('QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS', '保存状态待核对；请刷新千事页确认，系统不会自动重试。');
       }
       return { status: 'saved' };

@@ -4670,3 +4670,54 @@ test('资料依赖解耦：新人物同名与新增别名占用仍拒绝旧身�
     [{ entityId: A, entityType: 'person', labels: ['青哥'] }]), false, '迟到结果新增别名已归别人时必须拒绝');
   assert.equal(compatible([{ ...person, aliases: [] }]), false, '原有别名被移除仍是实际绑定变化');
 });
+
+test('CSE冻结助手来源沿统一正文选择，异常swipes刷新后可继续', async t => {
+  for (const shape of ['emptySwipes', 'outOfRange', 'blankSelected', 'noSwipes', 'selectedValid']) await t.test(shape, async () => {
+    const message = assistant('本楼可见正文。');
+    if (shape === 'emptySwipes') message.swipes = [];
+    if (shape === 'outOfRange') { message.swipes = ['旧回复']; message.swipe_id = 9; }
+    if (shape === 'blankSelected') message.swipes = [''];
+    if (shape === 'noSwipes') delete message.swipes;
+    if (shape === 'selectedValid') { message.swipes = ['明确选择的有效回复']; message.swipe_id = 0; }
+    const requests = [];
+    const h = runtimeHarness({ chat: [user('开始'), message, assistant('后楼确认稳定。')], cse: options => {
+      requests.push(JSON.parse(options.taskMessages[0].content)); return { jsonData: { noMaterialChange: true } };
+    } });
+    await h.foundationRuntime.reconcile('cse-source-probe'); await h.runtime.start();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    await h.runtime.extractFloor(floorId, { analyzeState: false });
+    const before = await h.store.readReachable({ mode: 'runtime' });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await h.runtime.refreshStatus({ allowCached: false }); await h.runtime.retryStateAnalysis(floorId);
+      assert.equal(h.runtime.getState().lastCseError, null, shape);
+      const graph = await h.store.readReachable({ mode: 'runtime' });
+      assert.equal(graph.floorMemories[0].id, before.floorMemories[0].id);
+      assert.equal(graph.stateDeltas.length, 1); assert.equal(requests.length, attempt + 1);
+    }
+    assert.equal(requests[0].payload.canonicalContent, shape === 'selectedValid' ? '明确选择的有效回复' : '本楼可见正文。');
+  });
+});
+
+
+test('USER异常swipes统一冻结摘要快照与CSE关键词，明确空串不回退', async t => {
+  for (const shape of ['emptySwipes', 'outOfRange', 'selectedBlank', 'selectedValid']) await t.test(shape, async () => {
+    const message = user('激活词');
+    if (shape === 'emptySwipes') message.swipes = [];
+    if (shape === 'outOfRange') { message.swipes = ['旧候选']; message.swipe_id = 9; }
+    if (shape === 'selectedBlank') { message.swipes = ['']; message.swipe_id = 0; }
+    if (shape === 'selectedValid') { message.swipes = ['明确所选激活词']; message.swipe_id = 0; }
+    const h = runtimeHarness({ chat: [message, assistant('正常回应。'), assistant('确认稳定。')],
+      cse: () => ({ jsonData: { noMaterialChange: true } }) });
+    h.context.characters[0].data.extensions = {};
+    h.context.characters[0].data.character_book = { name: '内置书', entries: [{ id: 1, keys: ['激活词'], enabled: true, content: '关键词作者资料' }] };
+    await h.runtime.start(); await h.runtime.extractNext();
+    const graph = await h.store.readReachable({ mode: 'runtime' });
+    const expected = shape === 'selectedBlank' ? [] : [shape === 'selectedValid' ? '明确所选激活词' : '激活词'];
+    assert.deepEqual(graph.floorMemories[0].sourceUserInputSnapshot?.messages.map(row => row.content) ?? [], expected);
+    const request = JSON.parse(h.calls.find(call => call.systemPrompt === CSE_SYSTEM_PROMPT).taskMessages[0].content);
+    assert.deepEqual(request.payload.currentUserInput?.messages.map(row => row.content) ?? [], expected);
+    assert.deepEqual(request.payload.relevantBaseline.worldInfo.map(source => source.content), expected.length ? ['关键词作者资料'] : []);
+    assert.equal(h.runtime.getState().lastCseError, null);
+    assert.equal(graph.stateDeltas.length, 1);
+  });
+});

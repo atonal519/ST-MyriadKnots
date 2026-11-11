@@ -312,3 +312,23 @@ test('无主绑定的纯内嵌及仅辅助书卡继续可读，保内嵌disabled
     assert.deepEqual(excluded.entries.filter(item => item.embedded), []);
   });
 });
+
+
+test('USER异常swipes沿可见正文激活关键词，明确空串保留清空语义', async t => {
+  for (const shape of ['emptySwipes', 'outOfRange', 'selectedBlank', 'selectedValid']) await t.test(shape, async () => {
+    const message = user('激活词');
+    if (shape === 'emptySwipes') message.swipes = [];
+    if (shape === 'outOfRange') { message.swipes = ['旧候选']; message.swipe_id = 9; }
+    if (shape === 'selectedBlank') { message.swipes = ['']; message.swipe_id = 0; }
+    if (shape === 'selectedValid') { message.swipes = ['明确所选激活词']; message.swipe_id = 0; }
+    const chat = [message, assistant('正常回应')];
+    const context = { chatMetadata: { qianqianjie: { chatId: CHAT } }, characterId: 0,
+      characters: [{ data: { character_book: { name: '内置书', entries: [{ id: 1, keys: ['激活词'], enabled: true, content: '关键词作者资料' }] } } }] };
+    const floor = { hostLocator: { messageIndex: 1 }, content: { rawFingerprint: `sha256:${await sha256(chat[1].mes)}` } };
+    const result = await captureCseRequestSources({ hostAdapter: { snapshot: () => ({ chat, context }) },
+      baseline: { userPersona: { name: '用户' }, characterCard: { name: '角色' } }, floor, expectedChatId: CHAT });
+    const expected = shape === 'selectedBlank' ? [] : [shape === 'selectedValid' ? '明确所选激活词' : '激活词'];
+    assert.deepEqual(result.targetWindow.rows.filter(row => row.role === 'user').map(row => row.content), expected);
+    assert.deepEqual(result.worldInfoSources.map(source => source.content), expected.length ? ['关键词作者资料'] : []);
+  });
+});
