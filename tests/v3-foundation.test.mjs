@@ -843,7 +843,7 @@ test('健康缓存打开与连续 fresh 刷新只核 root，版本变化才重�
   assert.ok(graphGets().length > 0, 'root 版本变化时必须重新读取受影响的完整图');
 });
 
-test('canonical 相同的未摘要稳定编辑保留楼；标点级变化只替换本楼', async () => {
+test('canonical 相同的未摘要稳定编辑保留楼；无锚正文变化只待核并保留原存档', async () => {
   const h = harness([assistant(' A '), assistant('B'), assistant('C')]);
   await h.runtime.start();
   const firstRoot = h.backend.records.get(`chat-${CHAT}/v3-root`).data;
@@ -858,9 +858,9 @@ test('canonical 相同的未摘要稳定编辑保留楼；标点级变化只替�
   assert.equal(state.status, 'ready');
   h.context.chat[0] = assistant('A！');
   state = await h.runtime.refreshStatus();
-  assert.equal(state.status, 'ready');
-  assert.equal(state.lastRun.mode, 'incremental');
-  assert.equal(state.lastRun.result, 'committed');
+  assert.equal(state.status, 'needsReview');
+  assert.deepEqual(h.runtime.getReachable().floors.map(floor => floor.id), firstCheckpoint.floorRange.floorIds);
+  assert.equal(h.runtime.getReachable().floors[0].content.canonicalContent, 'A', '无锚新对象不猜原楼身份或改写旧正文');
   assert.equal(h.backend.records.get(`chat-${CHAT}/v3-root`).data.narrativeGeneration, generation);
 });
 
@@ -1586,7 +1586,7 @@ test('同 chat 两个并发 run 只有一个 root CAS 合法提交', async () =>
   assert.equal(checkpoint.floorRange.toAssistantSeq, 2);
 });
 
-test('swipe 删除：未选项不回退，未摘要当前选中项按本楼替换', async () => {
+test('swipe 删除未选项不回退，无锚当前正文替换保留原楼待核', async () => {
   const swiped = (values, selected) => ({ is_user: false, is_system: false, mes: values[selected], swipes: values, swipe_id: selected });
   const h = harness([swiped(['A0', 'A1'], 0), assistant('B'), assistant('C')]);
   await h.runtime.start();
@@ -1598,8 +1598,9 @@ test('swipe 删除：未选项不回退，未摘要当前选中项按本楼替�
   assert.equal(state.headCheckpointId, rootBefore.headCheckpointId);
   h.context.chat[0] = swiped(['A2'], 0);
   state = await h.runtime.refreshStatus();
-  assert.equal(state.lastRun.result, 'committed');
-  assert.notEqual(h.runtime.getReachable().floors[0].id, floorIdsBefore[0]);
+  assert.equal(state.status, 'needsReview');
+  assert.equal(h.runtime.getReachable().floors[0].id, floorIdsBefore[0]);
+  assert.equal(h.runtime.getReachable().floors[0].content.canonicalContent, 'A0');
   assert.equal(state.stableBoundary.floorId, rootBefore.stableBoundary.floorId);
 });
 
@@ -1790,7 +1791,7 @@ test('513 楼新布局只写 floorOrder 分页，冷恢复可读', async () => {
   assert.equal(recovered.floors.length, 513);
 });
 
-test('A-old/B/C 与 A-new/B/C 交错 CAS 后自动收敛，新快照 run 安全重基', async () => {
+test('A-old与无锚A-new交错CAS保赢方存档，身份待核不猜楼自动重基', async () => {
   const h = harness([assistant('A-old'), assistant('B'), assistant('C')]);
   const secondStore = createFoundationStore({
     client: h.backend.client,
@@ -1828,16 +1829,21 @@ test('A-old/B/C 与 A-new/B/C 交错 CAS 后自动收敛，新快照 run 安全�
   h.backend.setBeforePut(null);
   const reachable = await secondStore.readReachable();
   assert.equal(reachable.status, 'ready');
-  assert.equal(reachable.floors[0].content.canonicalContent, 'A-new');
+  assert.equal(reachable.floors[0].content.canonicalContent, 'A-old');
+  assert.equal(second.getState().status, 'error');
+  assert.equal(second.getState().activeRun, null);
+  assert.equal(second.getState().lastRun.phase, 'retryableError');
+  assert.match(second.getState().lastError, /记录发生冲突/u);
   assert.equal(reachable.root.sourceSnapshotFingerprint, reachable.checkpoint.sourceSnapshotFingerprint);
   const oldFloors = [...h.backend.records.values()].filter(item => item.data.recordType === 'floor' && item.data.content.canonicalContent === 'A-old');
   assert.ok(oldFloors.length > 0);
   const oldRunIds = new Set(oldFloors.map(item => item.data.processing.runId));
   const oldRuns = [...h.backend.records.values()].filter(item => item.data.recordType === 'run' && oldRunIds.has(item.data.id));
-  assert.ok(oldRuns.every(item => item.data.phase !== 'completed'), '旧输入 run 不得最终 completed');
+  assert.ok(oldRuns.length > 0, '原输入运行记录保留供诊断');
+  assert.equal(h.backend.records.get(`chat-${CHAT}/v3-run-${reachable.checkpoint.runId}`)?.data.phase, 'completed', '赢方checkpoint所引用的正式run已完成');
 });
 
-test('mutation 恰好发生在 CAS 请求在途时自动二次收敛且无未处理拒绝', async () => {
+test('CAS在途出现无锚新正文时保正式存档待核，且无未处理拒绝', async () => {
   const h = harness([assistant('A-old'), assistant('B'), assistant('C')]);
   let mutated = false;
   h.backend.setBeforePut(async ({ key }) => {
@@ -1850,14 +1856,15 @@ test('mutation 恰好发生在 CAS 请求在途时自动二次收敛且无未处
   process.on('unhandledRejection', onUnhandled);
   try {
     const state = await h.runtime.start();
-    assert.equal(state.status, 'ready');
+    assert.equal(state.status, 'needsReview');
   } finally {
     process.off('unhandledRejection', onUnhandled);
     h.backend.setBeforePut(null);
   }
   const store = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT, characterLocator: 'character.png', personaLocator: 'persona.png' }) });
   const reachable = await store.readReachable();
-  assert.equal(reachable.floors[0].content.canonicalContent, 'A-new');
+  assert.equal(reachable.floors[0].content.canonicalContent, 'A-old');
+  assert.equal(reachable.root.sourceSnapshotFingerprint, reachable.checkpoint.sourceSnapshotFingerprint);
   assert.deepEqual(unhandled, []);
 });
 
@@ -2632,6 +2639,7 @@ test('尾部孤儿修复拒绝无锚编辑、定位或清洗变化、错序、�
         '反例必须真实改变清洗配置指纹');
     }
     const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
+    const originalRecords = floorIds.map(id => structuredClone(h.backend.records.get(`chat-${CHAT}/v3-floor-${id}`)));
     const markerBefore = structuredClone(mode === 'middle' ? h.context.chat[2].extra.qianqianjie_floor : next.extra.qianqianjie_floor);
     h.runtime.invalidate();
     const rejectModel = async () => { throw new Error('拒绝场景不得调用模型'); };
@@ -2642,7 +2650,12 @@ test('尾部孤儿修复拒绝无锚编辑、定位或清洗变化、错序、�
     assert.equal(saveCalls, 0, mode);
     assert.deepEqual(mode === 'middle' ? h.context.chat[2].extra.qianqianjie_floor : next.extra.qianqianjie_floor, markerBefore, mode);
     if (mode === 'sameOrphan') assert.deepEqual(h.context.chat.at(-1).extra.qianqianjie_floor, markerBefore, mode);
-    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, mode);
+    const reachable = h.runtime.getReachable();
+    assert.ok(reachable.floors.every(floor => floor.id !== orphanFloorId), '坏锚不登记为当前业务楼：' + mode);
+    for (const [index, id] of floorIds.entries()) {
+      assert.ok(reachable.floors.some(floor => floor.id === id), '原存档楼保持：' + mode);
+      assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-floor-${id}`), originalRecords[index], '原楼字节不改：' + mode);
+    }
   }
 });
 
@@ -2773,7 +2786,17 @@ test('尾孤儿保存后提交前重新读取原档；正文、标记或消息�
       generateUtilityTask: async () => { throw new Error('目标源变化不得调用模型'); }, logger: { warn() {} } });
     await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true });
     assert.equal(changed, true, `${change}: mutation must occur at actual-target precommit read`);
-    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, `${change}: outdated staged snapshot must not commit`);
+    const reachable = h.runtime.getReachable();
+    assert.ok(reachable.floors.some(floor => floor.id === floorId && floor.content.canonicalContent === '原有楼'), `${change}: 原楼正文与身份保留`);
+    assert.ok(reachable.floors.every(floor => floor.id !== orphanFloorId), `${change}: 旧孤儿身份不得成为正式楼`);
+    if (change !== 'marker') assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), rootBefore, `${change}: 已变化正文或删除不封存旧候选`);
+    if (memory.getState().memorySyncStatus === 'syncing') await new Promise((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timer = setTimeout(() => { unsubscribe(); reject(new Error(`${change}: 已触发的同步未结算`)); }, 5000);
+      const finish = () => { clearTimeout(timer); unsubscribe(); resolve(); };
+      unsubscribe = memory.subscribe(state => { if (state.memorySyncStatus !== 'syncing') finish(); });
+      if (memory.getState().memorySyncStatus !== 'syncing') finish();
+    });
     assert.notEqual(memory.getState().memorySyncStatus, 'syncing', `${change}: source changes must settle to a reviewable state`);
   }
 });
@@ -3002,7 +3025,12 @@ test('没有事件证据、错误长度、中间缺口、正文替换或切聊�
     if (mode !== 'noEvent') h.handlers.get('MESSAGE_DELETED')(mode === 'wrongLength' ? 5 : 4);
     if (mode === 'switched') { h.handlers.get('CHAT_CHANGED')(); h.setEnabled(false); }
     else await h.runtime.refreshStatus();
-    assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), root, mode);
+    if (['replaced', 'duplicateMarker', 'foreignMarker'].includes(mode)) {
+      const reachable = h.runtime.getReachable();
+      const original = h.backend.records.get(`chat-${CHAT}/v3-checkpoint-${root.data.headCheckpointId}`).data.floorRange.floorIds;
+      assert.ok(reachable.floors.every(floor => original.includes(floor.id)), mode + ': 不凭变文或坏marker猜新身份');
+      assert.equal(h.backend.records.get(`chat-${CHAT}/v3-floor-${original[0]}`).data.content.canonicalContent, 'A', '旧正文不被原位覆盖');
+    } else assert.deepEqual(h.backend.records.get(`chat-${CHAT}/v3-root`), root, mode);
   }
 });
 
@@ -3450,7 +3478,8 @@ test('HTML正文升级保可靠marker空壳身份，普通旧楼指纹不变', a
  const refreshed = await h.runtime.refreshStatus();assert.equal(refreshed.status, 'ready');
  const after = h.runtime.getReachable().floors;assert.deepEqual(after.map(f=>f.id), before.map(f=>f.id));assert.deepEqual(after.map(f=>f.content), before.map(f=>f.content));
  assert.equal((await scanAssistantCandidates([{ ...chat[0], extra: {} }], { chatId: CHAT })).length, 0);
- assert.equal((await scanAssistantCandidates([{ ...chat[0], extra: { qianqianjie_floor: { schemaVersion: 1, chatId: OTHER_CHAT, floorId: before[0].id } } }], { chatId: CHAT })).length, 0);
+ const foreign = await scanAssistantCandidates([{ ...chat[0], extra: { qianqianjie_floor: { schemaVersion: 1, chatId: OTHER_CHAT, floorId: before[0].id } } }], { chatId: CHAT });
+ assert.equal(foreign.length, 1);assert.equal(foreign[0].messageAnchor.status, 'foreign', 'foreign空壳保候选诊断，不当作本chat有效锚');
 });
 
 test('HTML正文空源手动零请求保旧摘要CSE，正常extractNext跳过未摘要空壳', async () => {

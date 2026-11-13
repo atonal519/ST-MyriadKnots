@@ -1,3 +1,4 @@
+import { RECALL_KNOWLEDGE_GUIDANCE } from './recall-text.js';
 import { MultiDirectedGraph, DirectedGraph } from 'graphology';
 import { topologicalSort } from 'graphology-dag';
 import { deterministicUuid } from './foundation-domain.js';
@@ -13,7 +14,7 @@ export const QIANSHI_CANDIDATE_CHARACTER_BUDGET = 24000;
 export const QIANSHI_PROGRESS_CHARACTER_BUDGET = 3200;
 export const QIANSHI_HISTORY_INPUT_TOKENS = 70000;
 export const QIANSHI_HISTORY_OUTPUT_TOKENS = 30000;
-export const QIANSHI_RECALL_PROJECTION_VERSION = 6;
+export const QIANSHI_RECALL_PROJECTION_VERSION = 8;
 export const QIANSHI_RECALL_PENDING_HEADER = '[相关跟进事项]';
 export const QIANSHI_RECALL_LEGACY_PENDING_HEADER = '[当前待接续]';
 const QIANSHI_RECALL_PENDING_HEADERS = new Set([QIANSHI_RECALL_PENDING_HEADER, '[相关未完事项]', QIANSHI_RECALL_LEGACY_PENDING_HEADER]);
@@ -82,20 +83,19 @@ export function preserveManualQianshiEvents(prior, next) {
     status:['ready','partial'].includes(next.status)?next.status:next.status==='empty'?'ready':'partial'};
 }
 
-export function hasUnfinishedQianshiHistory(memory, degraded = false) {
+export function hasUnfinishedQianshiHistory(memory) {
   const delta = memory?.qianshiDelta;
-  // 旧版这一条程序诊断表示有效判断已接收；只认完整固定串，混合错误仍待处理。
-  const referenceProtected = delta?.status === 'partial'
-    && /^[1-9][0-9]* 条旧记录仍被范围外引用，归线结构沿用原值；有效状态和跟进判断已接收。$/u.test(delta.reason ?? '')
-    && effectiveQianshiDelta(memory).conflicts.length === 0;
-  return degraded || (!['ready', 'empty'].includes(delta?.status) && !referenceProtected)
-    || (delta?.historyReview?.candidates ?? []).some(candidate => candidate.decision === 'pending');
+  // 已保存的保旧结果结束本轮处理，质量诊断保留。pending 单独记录请求尚未完成。
+  if (['ready', 'empty'].includes(delta?.status)) return false;
+  const effective = effectiveQianshiDelta(memory);
+  if (delta?.status === 'pending') return effective.formalEvents.length > 0 || effective.reviewEvents.length === 0;
+  return delta?.status !== 'partial' || effective.events.length === 0;
 }
 
 export function effectiveQianshiDelta(memory) {
   const delta = memory?.qianshiDelta;
-  const formalEvents = ['ready', 'partial'].includes(delta?.status) ? (delta.events ?? []) : [];
-  const formalRelations = ['ready', 'partial'].includes(delta?.status) ? (delta.relations ?? []) : [];
+  const formalEvents = ['ready', 'partial', 'pending'].includes(delta?.status) ? (delta.events ?? []) : [];
+  const formalRelations = ['ready', 'partial', 'pending'].includes(delta?.status) ? (delta.relations ?? []) : [];
   // Legacy review candidates may fill missing IDs, but a conflicting ID never replaces the formal event or relation.
   const events = [...formalEvents], relations = [...formalRelations], reviewEvents = [], reviewRelations = [], reviewRelationEntries = [], conflicts = [];
   const eventById = new Map(formalEvents.map(event => [event.id, event]));
@@ -624,8 +624,8 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       people: frozen(representative.people.map(person => frozen({ ...person }))), latestEventIds: frozen(current ? [current.id] : []),
       recordIds: frozen(records.map(event => event.id)), eventIds: frozen(records.map(event => event.id)),
       sourceFloorId: current?.sourceFloorId ?? representative.sourceFloorId, sourceAssistantSeq: current?.assistantSeq ?? representative.assistantSeq,
-      storyTime: representative.storyTime, scheduledTime: representative.scheduledTime, description: representative.description,
-      origin: frozen({ eventId: origin.id, title: origin.title, description: origin.description, storyTime: origin.storyTime, scheduledTime: origin.scheduledTime,
+      storyTime: representative.storyTime, parsedStoryTime: representative.parsedStoryTime, narrativeSourceFloorId: representative.sourceFloorId, narrativeSourceAssistantSeq: representative.assistantSeq, scheduledTime: representative.scheduledTime, description: representative.description,
+      origin: frozen({ eventId: origin.id, title: origin.title, description: origin.description, storyTime: origin.storyTime, parsedStoryTime: origin.parsedStoryTime, scheduledTime: origin.scheduledTime,
         sourceFloorId: origin.sourceFloorId, sourceAssistantSeq: origin.assistantSeq, ...(origin.manuallyCreated?{manuallyCreated:true}:{}) }) }));
   }
   matterDtos.sort((left, right) => Number(!left.following) - Number(!right.following)
@@ -646,12 +646,12 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const migration = partition ?? migrationPartition(reachable);
   const statusRows = rows => rows.map(({ floor, memory, effective }) => {
     return { floorId: floor.id, status: memory.qianshiDelta?.status ?? 'unprocessed', hasEvents: effective.events.length > 0,
-      legacyPendingOnly: memory.qianshiDelta?.status === 'pending' && effective.reviewEvents.length > 0 };
+      unfinished: hasUnfinishedQianshiHistory(memory),
+      legacyPendingOnly: memory.qianshiDelta?.status === 'pending' && effective.formalEvents.length === 0 && effective.reviewEvents.length > 0 };
   });
   const coverageFor = (rows, floorCount) => {
     const eligibleStatuses = statusRows(rows), deltaStatuses = eligibleStatuses.map(value => value.status);
-    const completeFloorIds = eligibleStatuses.filter(value => (['ready', 'empty'].includes(value.status) || value.status === 'partial' && value.hasEvents || value.legacyPendingOnly)
-      && (!degradedFloorIds.has(value.floorId) || value.status === 'partial' && value.hasEvents || value.legacyPendingOnly));
+    const completeFloorIds = eligibleStatuses.filter(value => !value.unfinished);
     return { eligibleFloors: rows.length,
       readyFloors: deltaStatuses.filter(status => status === 'ready').length,
       emptyFloors: deltaStatuses.filter(status => status === 'empty').length,
@@ -969,8 +969,18 @@ function recallSelection(projection, queryContext) {
 
 const eventRecallRow = (event, matterStatus = null, order = 0) => frozen({ eventId: event.id, matterId: event.matterId,
   assistantSeq: event.assistantSeq, matterStatus, order, line: `- ${formatStoryTime(event.parsedStoryTime, event.storyTime)}：${event.title}` });
-const pendingRecallRow = (matter, assistantSeq = matter.sourceAssistantSeq) => frozen({ matterId: matter.matterId, assistantSeq,
-  line: `- ${matter.title}${matter.object ? `（${matter.object}）` : ''}${matter.scheduledTime ? `；约定：${matter.scheduledTime}` : ''}；状态：${({ planned: '待办', inProgress: '进行中', completed: '已完成' })[matter.status] ?? '未知'}；跟进：持续。` });
+const pendingStatusLine = matter => {
+  const source = Number.isSafeInteger(matter.narrativeSourceAssistantSeq) ? `（AI #${matter.narrativeSourceAssistantSeq}）` : '';
+  const latestTime = formatStoryTime(matter.parsedStoryTime, matter.storyTime);
+  const originTime = formatStoryTime(matter.origin?.parsedStoryTime, matter.origin?.storyTime);
+  const origin = originTime !== latestTime ? `。起始记录：${originTime}（AI #${matter.origin.sourceAssistantSeq}）` : '';
+  return `- ${matter.title}${matter.object ? `（${matter.object}）` : ''}。最近剧情记录：${latestTime}${source}${origin}${matter.scheduledTime ? `。约定：${matter.scheduledTime}` : ''}。记录状态：${({ planned: '待办', inProgress: '进行中', completed: '已完成' })[matter.status] ?? '未知'}。${matter.trackingOverride === true ? '人工关注：持续追踪' : '跟进选择：持续追踪'}。`;
+};
+const pendingRecallRow = (matter, assistantSeq = matter.sourceAssistantSeq) => {
+  const origin = clean(matter.origin?.description, 4000), latest = clean(matter.description, 4000);
+  const context = origin && origin !== latest ? `起因：${origin}。${latest ? `后续：${latest}` : ''}` : latest || origin;
+  return frozen({ matterId: matter.matterId, assistantSeq, line: `${pendingStatusLine(matter)}${context ? ` 上下文：${context}` : ''}` });
+};
 
 function recallCurrentMatterStatuses(projection, events) {
   return new Map(projection.matters.filter(hasTrackableCurrent).flatMap(matter => {
@@ -980,7 +990,7 @@ function recallCurrentMatterStatuses(projection, events) {
 }
 
 function renderQianshiRows(eventRows, pendingRows, characterBudget, pendingHeader = QIANSHI_RECALL_PENDING_HEADER, scopeLine = '') {
-  const scopePrefix = scopeLine ? `${scopeLine}\n\n` : '';
+  const scopePrefix = [scopeLine, RECALL_KNOWLEDGE_GUIDANCE].filter(Boolean).join('\n\n') + '\n\n';
   const maximumCharacters = Math.max(0, characterBudget - scopePrefix.length);
   const pendingMatterIds = new Set(pendingRows.map(row => row.matterId));
   const lastEventByMatter = new Map();
@@ -989,12 +999,15 @@ function renderQianshiRows(eventRows, pendingRows, characterBudget, pendingHeade
     line: `${row.line}${row.matterId && ['planned', 'inProgress'].includes(row.matterStatus) && !pendingMatterIds.has(row.matterId)
       && lastEventByMatter.get(row.matterId) === row.eventId ? `（事项状态：${row.matterStatus === 'planned' ? '待办' : '进行中'}）` : ''}` }));
   const takeRows = (title, rows, limit, selected = []) => {
-    for (const row of rows.slice(selected.length)) {
+    const accepted = new Set(selected);
+    for (const row of rows) {
+      if (accepted.has(row)) continue;
       const candidate = [title, ...selected.map(item => item.line), row.line].join('\n');
-      if (candidate.length > limit) break;
+      if (candidate.length > limit) continue;
       selected.push(row);
+      accepted.add(row);
     }
-    return selected;
+    return rows.filter(row => accepted.has(row));
   };
   let acceptedPending = [];
   if (pendingRows.length) {
@@ -1074,10 +1087,10 @@ export function prepareQianshiRecallCandidates(reachable, { queryContext = null,
     candidates.push(value); lines.push(line); usedCharacters = characters;
   };
   for (const { matter } of selected.pending) {
-    const currentStatusLine = pendingRecallRow(matter).line;
+    const currentStatusLine = pendingStatusLine(matter);
     const currentAssistantSeq = selected.eventById.get(matter.currentEventId)?.assistantSeq ?? matter.sourceAssistantSeq;
     const pendingRow = pendingRecallRow(matter, currentAssistantSeq);
-    add({ kind: 'pending', fact: { title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object, currentStatusLine },
+    add({ kind: 'pending', fact: { title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object, originDescription: matter.origin.description, description: matter.description, storyTime: formatStoryTime(matter.parsedStoryTime, matter.storyTime), originStoryTime: formatStoryTime(matter.origin.parsedStoryTime, matter.origin.storyTime), narrativeSourceAssistantSeq: matter.narrativeSourceAssistantSeq, scheduledTime: matter.scheduledTime, tracking: matter.trackingOverride === true ? 'manual' : 'automatic', currentStatusLine },
       eventIds: frozen([]), matterIds: frozen([matter.matterId]), eventRows: frozen([]), pendingRows: frozen([pendingRow]) });
   }
   for (const { matter } of selected.directMatters) {
@@ -1244,7 +1257,7 @@ export function createQianshiCandidateIndex({ projector = projectQianshiGraph } 
     if (delta?.deletedEventIds?.length) return false;
     const effective = effectiveQianshiDelta(memory);
     if (effective.reviewEvents.length || effective.reviewRelations.length) return false;
-    if (!delta || !['ready', 'partial'].includes(delta.status)) return true;
+    if (!delta || !['ready', 'partial', 'pending'].includes(delta.status)) return true;
     const aggregate = (memory.sourceFloorIds ?? [memory.floorId]).length > 1;
     const affected = new Set();
     for (const event of effective.events) {

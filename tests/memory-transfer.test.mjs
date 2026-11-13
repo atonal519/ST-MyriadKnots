@@ -2521,3 +2521,77 @@ test('undo preserves changes and deletion of imported auxiliary records while th
     assert.equal(f.api.saves, saves);
   });
 });
+
+
+test('export omits broken vector caches while retaining business data and healthy shards', async t => {
+  for (const format of ['json', 'volumes', 'bundle']) for (const damage of ['record', 'missing-shard', 'bad-shard', 'healthy']) await t.test(`${format}/${damage}`, async () => {
+    const f = await fixture();
+    const healthy = `qqj-vector-shard-${'a'.repeat(40)}`, broken = `qqj-vector-shard-${'b'.repeat(40)}`;
+    const owner = { schemaVersion: 1, recordType: 'vectorCache', chatId: SOURCE,
+      narrativeGeneration: f.graph.root.narrativeGeneration, modelKey: `sha256:${'a'.repeat(64)}` };
+    const fingerprint = `sha256:${'a'.repeat(64)}`;
+    const shard = { ...owner, rows: [{ witness: { floorId: 'floor', floorMemoryId: 'memory', memoryFloorId: 'floor',
+      assistantSeq: 1, memoryAssistantSeq: 1, offset: 0, length: 2, fingerprint, textFingerprint: fingerprint }, vector: 'AACAPw==' }] };
+    await f.backend.client.put(`chat-${SOURCE}`, healthy, shard, 0);
+    if (damage !== 'missing-shard' && damage !== 'healthy') await f.backend.client.put(`chat-${SOURCE}`, broken, { ...owner, rows: [] }, 0);
+    await f.backend.client.put(`chat-${SOURCE}`, 'qqj-vector-index', damage === 'record' ? { ...owner, dimensions: 0 } :
+      { ...owner, dimensions: 1, chunkCount: damage === 'healthy' ? 1 : 2, shardIds: damage === 'healthy' ? [healthy] : [healthy, broken] }, 0);
+    const descriptor = createMigrationDescriptor({ id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', chatId: SOURCE,
+      source: f.session.identity(), reachable: f.graph, vectorShardIds: [healthy, broken], createdAt: NOW });
+    await f.store.putRecord(descriptor);
+    const root = await f.store.readRoot();
+    await f.store.commitRoot({ ...root.data, migrationDescriptorId: descriptor.id }, root.revision);
+    const before = structuredClone([...f.backend.records]);
+    let plan;
+    if (format === 'json') {
+      const parsed = await parseMemoryPackage((await f.runtime.exportCurrent()).text);
+      assert.deepEqual(parsed.graph.migrationDescriptor.recordRefs.vectorShardIds, [healthy]);
+      assert.ok(parsed.value.records.some(record => record.id === healthy));
+      assert.equal(parsed.value.records.some(record => record.id === broken || damage !== 'healthy' && record.id === 'qqj-vector-index'), false);
+      plan = await f.runtime.preview(parsed.value);
+    } else {
+      const scans = streamingFixture(f);
+      let files;
+      if (format === 'volumes') files = await volumeFiles(f.runtime);
+      else {
+        const chunks = [];
+        const metadata = await writeMemoryBundle(f.runtime.exportVolumes({ partBytes: 4096 }), {
+          async write(blob) { chunks.push(blob); }, async close() {}, async abort() {},
+        });
+        files = [new File(chunks, metadata.filename)];
+      }
+      assert.equal(scans.length, 2, 'export keeps the existing two bounded scans');
+      plan = await f.runtime.previewVolumes(files);
+    }
+    assert.deepEqual([...f.backend.records], before, 'source cache and descriptor remain byte-for-byte unchanged');
+    await f.runtime.importPreview(plan);
+    const imported = [...f.backend.records].filter(([key]) => key.startsWith(`chat-${IMPORTED}/`));
+    assert.ok(imported.some(([key]) => key.endsWith(`/${healthy}`)));
+    assert.equal(imported.some(([key]) => key.endsWith(`/${broken}`) || damage !== 'healthy' && key.endsWith('/qqj-vector-index')), false);
+    assert.equal(imported.some(([key]) => key.endsWith('/qqj-vector-index')), damage === 'healthy');
+    const copied = imported.map(([, row]) => row.data).find(row => row.recordType === 'migrationDescriptor');
+    assert.deepEqual(copied.recordRefs.vectorShardIds, [healthy]);
+    assert.ok(imported.some(([, row]) => row.data.recordType === 'floorMemory' && row.data.summary.aiText === '钥匙在木盒里。'));
+  });
+});
+
+test('import publishes a complete graph when only the auxiliary identity binding fails', async t => {
+  for (const format of ['json', 'volumes']) await t.test(format, async () => {
+    const f = await fixture();
+    let files;
+    if (format === 'volumes') { streamingFixture(f); files = await volumeFiles(f.runtime); }
+    const target = await f.target();
+    const plan = format === 'json' ? await f.runtime.preview(f.exported.text) : await f.runtime.previewVolumes(files);
+    const put = f.backend.client.put;
+    f.backend.client.put = async (...args) => {
+      if (args[0] === 'chat-identity-bindings' && args[1] === `binding-${IMPORTED}`) throw Object.assign(new Error('binding unavailable'), { status: 500 });
+      return put(...args);
+    };
+    await f.runtime.importPreview(plan);
+    assert.equal(target.chatMetadata.qianqianjie.chatId, IMPORTED);
+    assert.equal(f.api.persistedHeader.chat_metadata.qianqianjie.chatId, IMPORTED);
+    const graph = await createFoundationStore({ client: f.backend.client, contextProvider: () => f.session.identity() }).readReachable({ mode: 'full' });
+    assert.equal(graph.status, 'ready');
+    assert.equal(graph.floorMemories[0].summary.aiText, '钥匙在木盒里。');
+  });
+});

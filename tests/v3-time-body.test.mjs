@@ -1835,19 +1835,19 @@ test('清旧中途失败不假成功，冷重载同入口将已删404与剩余�
   await h.runtime.deleteItems([]);stored=await h.store.read(CHAT);assert.equal(stored.head.pendingDeletionRecords,undefined);assert.equal(h.back.records.has(`chat-${CHAT}/${seed.final.id}`),false);assert.equal(h.calls(),0);
 });
 
-test('切聊后旧删除失败与年度快照迟到都不覆盖当前运行时状态',async()=>{
+test('切聊后旧删除失败不覆盖当前状态，成功删除直接结算且不读取年度',async()=>{
   const h=await harness({count:2}),seed=await seedDeletionHistory(h);let attempted=false;
   h.back.setRemoveHook(()=>{if(!attempted){attempted=true;h.setChat('other-chat');h.runtime.invalidate();throw new Error('旧聊天清理失败');}});
   await assert.rejects(h.runtime.deleteItems([{itemId:seed.removed.id,observationKey:seed.removed.observationKey}]),/旧聊天清理失败/u);
   assert.equal(h.runtime.getState().last,null);assert.equal(h.runtime.getState().pendingDeletionCount,0);
 
-  let providerCalls=0,releaseAnnual;
-  const annualGate=new Promise(resolve=>{releaseAnnual=resolve;});
-  const tail=await harness({count:2,annualSettingsProvider:()=>{providerCalls++;return providerCalls>=3?annualGate:{ready:false};}}),tailSeed=await seedDeletionHistory(tail);
-  const deleting=tail.runtime.deleteItems([{itemId:tailSeed.removed.id,observationKey:tailSeed.removed.observationKey}]);
-  while(providerCalls<3) await new Promise(resolve=>setImmediate(resolve));
-  tail.setChat('other-chat');tail.runtime.invalidate();releaseAnnual({ready:false});
-  await assert.rejects(deleting,/当前聊天已变化/u);assert.equal(tail.runtime.getState().last,null);assert.equal(tail.runtime.getState().pendingDeletionCount,0);
+  let providerCalls=0;
+  const tail=await harness({count:2,annualSettingsProvider:()=>{providerCalls++;return {ready:false};}}),tailSeed=await seedDeletionHistory(tail);
+  const beforeCalls=providerCalls;
+  await tail.runtime.deleteItems([{itemId:tailSeed.removed.id,observationKey:tailSeed.removed.observationKey}]);
+  assert.equal(providerCalls,beforeCalls,'已保存的删除直接结算，不等待无关年度读取');
+  tail.setChat('other-chat');tail.runtime.invalidate();
+  assert.equal(tail.runtime.getState().last,null);assert.equal(tail.runtime.getState().pendingDeletionCount,0);
 });
 
 test('旧后端能力不足与head CAS失败都不改原清单',async()=>{
@@ -2100,12 +2100,12 @@ test('迁移后的正式时间runtime保留旧批次人工停止项并从B首个
 });
 
 test('190人工新建在空时间头保存独立身份，冷读和下一正文沿原ID更新',async()=>{
- const h=await harness({count:1,generate:request=>({changes:[{itemId:request.trackedItems[0]?.id??null,sourceKeys:['S1'],subjectEntityId:PERSON,subjectName:'阿岚',type:'body',label:'人工伤情',observation:'新正文确认仍有不适',occurrenceTime:'',dueTime:'',periodDays:null,status:'active',stateRefs:[],progression:''}]})});
+ const h=await harness({count:1,generate:request=>({changes:[{itemId:request.trackedItems[0]?.id??null,sourceKeys:[request.observations.at(-1).sourceKey],subjectEntityId:PERSON,subjectName:'阿岚',type:'body',label:'人工伤情',observation:'新正文确认仍有不适',occurrenceTime:'',dueTime:'',periodDays:null,status:'completed',stateRefs:[],progression:''}]})});
  h.source.entities.push({id:PERSON,displayName:'阿岚',aliases:[],entityType:'person',recordStatus:'active',status:'active'});
  await h.runtime.createItem({subjectEntityId:PERSON,type:'body',label:'人工伤情',observation:'人工记录的轻微伤情',observationTime:'',occurrenceTime:'',dueTime:'',periodDays:''});
  assert.equal(h.calls(),0);let stored=await h.store.read(CHAT),item=h.runtime.getState().trackedItems[0];assert.ok(item.id);assert.equal(item.status,'active');assert.equal(item.projection,null);assert.equal(stored.batches[0].changes[0].previousObservationKey,null);assert.deepEqual(stored.batches[0].changes[0].sourceRefs,[]);assert.deepEqual(stored.batches[0].sourceKeys,[]);assert.equal(stored.batches[0].manualEdit,true);
  const originalId=item.id;await h.reload().refreshStatus();assert.equal(h.runtime.getState().trackedItems[0].id,originalId);
- h.chat.push({is_user:false,mes:raw(1,'阿岚的人工伤情仍有不适。')},{is_user:true,mes:'继续'});await h.seal();await h.runtime.runBatch();assert.equal(h.calls(),1);stored=await h.store.read(CHAT);assert.equal(replayTimeBatches(stored.batches,await h.body())[0].id,originalId);assert.equal(replayTimeBatches(stored.batches,await h.body())[0].observation,'新正文确认仍有不适');
+ h.chat.push({is_user:false,mes:raw(1,'阿岚的人工伤情仍有不适。')},{is_user:true,mes:'继续'});await h.seal();await h.runtime.runBatch();assert.equal(h.calls(),1);stored=await h.store.read(CHAT);assert.equal(replayTimeBatches(stored.batches,await h.body())[0].id,originalId);assert.equal(replayTimeBatches(stored.batches,await h.body())[0].observation,'新正文确认仍有不适');assert.equal(replayTimeBatches(stored.batches,await h.body())[0].status,'completed','创建默认active不锁后续状态');
  const target='dddddddd-dddd-4ddd-8ddd-dddddddddddd';await h.store.copyPrefix(CHAT,target,[h.source.floors[0]]);const prefix=await h.store.read(target);assert.equal(prefix.batches.length,1);assert.equal(prefix.batches[0].changes[0].id,originalId);
 });
 
@@ -2285,4 +2285,311 @@ test('关联图不可用不阻断普通停止项删除，也不授权删除activ
   assert.deepEqual(replayTimeBatches((await h.store.read(CHAT)).batches, await h.body()).map(item => item.id), [seed.survivor.id]);
   assert.equal(JSON.stringify(h.source.floorMemories), qianshiBefore);
   assert.equal(h.calls(), 0);
+});
+
+
+test('第二批人工时间按字段合并，旧名称窗承接新期限，同字段竞争与删除准确', async () => {
+  const h = await harness({ count: 1 });
+  h.source.entities.push({ id: PERSON, displayName: '阿岚', entityType: 'person', recordStatus: 'active', status: 'active' });
+  await h.runtime.createItem({ subjectEntityId: PERSON, type: 'deadline', label: '原事项', observation: '人工登记', dueTime: '2026-05-03' });
+  const original = h.runtime.getState().trackedItems[0];
+  await h.runtime.editItem(original.id, { dueTime: '2026-05-04' }, original.observationKey);
+  await h.runtime.editItem(original.id, { label: '人工新名称' }, original.observationKey);
+  let item = h.runtime.getState().trackedItems[0];
+  assert.equal(item.label, '人工新名称'); assert.equal(item.dueTime.date, '2026-05-04');
+  await assert.rejects(h.runtime.editItem(original.id, { label: '旧窗迟到名称' }, original.observationKey), /人工字段.*变化/u);
+  await h.runtime.editItem(item.id, { dueTime: '' }, item.observationKey);
+  item = h.runtime.getState().trackedItems[0]; assert.equal(item.dueTime.date, null);
+  await h.reload().refreshStatus(); assert.equal(h.runtime.getState().trackedItems[0].label, '人工新名称');
+  assert.equal(h.calls(), 0);
+});
+
+
+test('第二批时间保存期CAS重基只合并实际字段，核心故障仍准确失败', async t => {
+  for (const phase of ['afterBatch', 'headCas']) await t.test(phase, async () => {
+  const h = await harness({ count: 1 });
+  h.source.entities.push({ id: PERSON, displayName: '阿岚', entityType: 'person', recordStatus: 'active', status: 'active' });
+  await h.runtime.createItem({ subjectEntityId: PERSON, type: 'deadline', label: '原事项', observation: '人工登记', dueTime: '2026-05-03' });
+  const first = h.runtime, second = h.reload();
+  await second.refreshStatus();
+  const original = first.getState().trackedItems[0];
+  const put = h.back.client.put;
+  let race = true;
+  h.back.client.put = async (collection, id, data, revision, options) => {
+    if (phase === 'headCas' && id === 'v3-time-head' && race) {
+      race = false;
+      await second.editItem(original.id, { dueTime: '2026-05-04' }, original.observationKey);
+    }
+    if ((h.back.records.get(`${collection}/${id}`)?.revision ?? 0) !== revision) throw Object.assign(new Error('CAS conflict'), { status: 409 });
+    const result = await put(collection, id, data, revision, options);
+    if (phase === 'afterBatch' && id.includes('batch') && race) {
+      race = false; await second.editItem(original.id, { dueTime: '2026-05-04' }, original.observationKey);
+    }
+    return result;
+  };
+  await first.editItem(original.id, { label: '并发保存名称' }, original.observationKey);
+  const item = first.getState().trackedItems[0];
+  assert.equal(item.label, '并发保存名称'); assert.equal(item.dueTime.date, '2026-05-04'); assert.equal(h.calls(), 0);
+  });
+});
+
+test('第六批时间：可选状态引用空元素保合法观察及独立后项', async () => {
+  const h = await harness();
+  const source = await h.body(), fragments = planTimeBody(source, [], { history: true }).groups.flat();
+  const prepared = await prepareTimeRequest(source, [], { fragments });
+  const first = bodyModel(prepared.request).changes[0];
+  const batch = await compileTimeResponse({ changes: [{ ...first, stateRefs: [null, { stateId: 'unknown', sourceFloorId: 'floor-1' }] },
+    { ...first, label: '独立健康事项' }] }, prepared);
+  assert.equal(batch.changes.length, 2);
+  assert.deepEqual(batch.changes[0].stateRefs, []);
+});
+
+test('第六批时间：新观察保人工实际字段与同为空的清空，旧人工批次冷读兼容', async () => {
+  const h = await harness({ count: 2 });
+  const source = await h.body(), rows = planTimeBody(source, [], { history: true }).groups.flat();
+  const first = await prepareTimeRequest(source, [], { fragments: [rows[0]] });
+  const seed = await compileTimeResponse(bodyModel(first.request, { type: 'cycle', periodDays: null }), first);
+  const manual = await compileTimeEdit(seed.changes[0], { label: '人工名称', periodDays: null, dueTime: '', status: 'cancelled' }, source, 'manual');
+  const prepared = await prepareTimeRequest(source, [seed, manual], { fragments: [rows.at(-1)] });
+  assert.ok(prepared.request.trackedItems.some(item => item.id === manual.changes[0].id));
+  const response = bodyModel(prepared.request, { itemId: manual.changes[0].id, type: 'cycle', label: '自动名称', periodDays: 28, dueTime: '2026-06-01', status: 'active' });
+  const next = await compileTimeResponse(response, prepared, [seed, manual]);
+  assert.equal(next.changes[0].label, '人工名称');
+  assert.equal(next.changes[0].periodDays, null);
+  assert.equal(next.changes[0].dueTime.date, null);
+  assert.equal(next.changes[0].status, 'cancelled');
+  const oldManual = structuredClone(manual); delete oldManual.changes[0].manualFields;
+  const oldNext = await compileTimeResponse(response, prepared, [seed, oldManual]);
+  assert.equal(oldNext.changes[0].label, '人工名称');
+  assert.equal(oldNext.changes[0].status, 'cancelled');
+});
+
+test('第六批时间：人工推测改写及清空同观察同刻保持，后续时点正常评估', async t => {
+  for (const projectionText of ['人工确认的推测', '']) await t.test(projectionText || '清空', async () => {
+    const h = await harness({ count: 1 });
+    const source = await h.body(), rows = planTimeBody(source, [], { history: true }).groups.flat();
+    const first = await prepareTimeRequest(source, [], { fragments: rows });
+    const seed = await compileTimeResponse(bodyModel(first.request), first);
+    const manual = await compileTimeEdit(seed.changes[0], { projectionText }, source, 'manual');
+    const prepared = await prepareTimeRequest(source, [seed, manual], { currentReview: true, allowInitialProjection: true });
+    const result = await compileTimeResponse(reviewModel(prepared.request, { progression: '自动新估计' }), prepared, [seed, manual]);
+    assert.equal(result.changes[0].projection?.text ?? '', projectionText);
+    const rewritten = await prepareTimeRequest(source, [seed, manual], { fragments: rows.map(row => ({ ...row, canonicalFingerprint: 'same-floor-rewritten' })) });
+    const rewrittenResult = await compileTimeResponse(bodyModel(rewritten.request, { itemId: seed.changes[0].id, progression: '同楼改写后的自动估计' }), rewritten, [seed, manual]);
+    assert.equal(rewrittenResult.changes[0].projection?.text ?? '', projectionText);
+    const later = structuredClone(prepared);
+    later.request.currentTime = projectTime('2026-05-03 09:00');
+    const advanced = await compileTimeResponse(reviewModel(later.request, { progression: '后续时点估计' }), later, [seed, manual]);
+    assert.equal(advanced.changes[0].projection.text, '后续时点估计');
+  });
+});
+
+test('第六批时间：人工稳定目标保存跳过正文清洗，年度失败保实际回执与普通提醒', async () => {
+  let fail = false;
+  const sanitizer = Object.defineProperty({}, 'keepTags', { enumerable: true, get() { if (fail) throw new Error('TEST_BODY'); return ''; } });
+  const h = await harness({ count: 1, sanitizer, generate: request => bodyModel(request), annualSettingsProvider: () => {
+    if (fail) throw new Error('TEST_ANNUAL'); return { ready: false };
+  } });
+  await h.runtime.runBatch();
+  const stored = await h.store.read(CHAT), source = await h.body(), item = replayTimeBatches(stored.batches, source)[0];
+  fail = true;
+  await h.runtime.editItem(item.id, { label: '人工稳定名称' }, item.observationKey);
+  assert.equal(h.runtime.getState().trackedItems[0].label, '人工稳定名称');
+  fail = false;
+  const saved = await h.store.read(CHAT);
+  assert.equal(replayTimeBatches(saved.batches, source)[0].label, '人工稳定名称');
+  const recallSource = { status: 'ready', chatId: CHAT, floorMemories: [], currentState: [], entities: [], identityProjection: {} };
+  const healthy = await h.runtime.recallProjection(recallSource);
+  assert.equal(healthy.reminders.length, 0);
+  // 年度故障单独验证，正文清洗仍保持可用。
+  const plain = await harness({ count: 1, generate: request => bodyModel(request), annualSettingsProvider: () => {
+    if (fail) throw new Error('TEST_ANNUAL'); return { ready: false };
+  } });
+  fail = false; await plain.runtime.runBatch(); fail = true;
+  assert.equal((await plain.runtime.recallProjection(recallSource)).reminders.length, 1);
+  assert.equal(plain.calls(), 1);
+});
+
+test('第六批时间：人工保存不读挂起年度且保原年度展示', async () => {
+  let annualReads = 0, hanging = false;
+  const h = await harness({ count: 1, annualSettingsProvider: () => {
+    annualReads++;
+    if (hanging) return new Promise(() => {});
+    return { ready: true, people: [{ entityId: PERSON, profile: { name: '甲', birthday: '5月2日' } }] };
+  }, generate: request => request.task === 'annual-settings'
+    ? { sources: request.sources.map(source => ({ sourceId: source.sourceId, items: [{ category: 'birthday', label: '生日', originalDate: '5月2日', note: '' }] })) }
+    : bodyModel(request) });
+  await h.runtime.runBatch();
+  const beforeAnnual = structuredClone(h.runtime.getState().annualItems);
+  assert.ok(beforeAnnual.length > 0);
+  const item = h.runtime.getState().trackedItems[0], beforeReads = annualReads;
+  hanging = true;
+  await h.runtime.editItem(item.id, { label: '明确人工名称' }, item.observationKey);
+  assert.equal(annualReads, beforeReads);
+  assert.deepEqual(h.runtime.getState().annualItems, beforeAnnual);
+  const current = h.runtime.getState().trackedItems[0];
+  await h.runtime.editItem(current.id, { status: 'paused' }, current.observationKey);
+  const stopped = h.runtime.getState().stoppedItems[0];
+  await h.runtime.deleteItems([{ itemId: stopped.id, observationKey: stopped.observationKey }]);
+  assert.equal(annualReads, beforeReads);
+  assert.deepEqual(h.runtime.getState().annualItems, beforeAnnual);
+});
+
+test('第六批时间：投影来源失效仍报告存储目标存在，真实删项才移除presence', async () => {
+  const h = await harness({ count: 2, generate: request => bodyModel(request) });
+  await h.runtime.runBatch();
+  const stored = await h.store.read(CHAT), itemId = stored.batches.flatMap(batch => batch.changes)[0].id;
+  h.source.floors = h.source.floors.filter(floor => floor.id !== 'floor-2');
+  h.chat.splice(2);
+  const projection = await h.runtime.recallProjection({ status: 'ready', chatId: CHAT, floorMemories: [], currentState: [], entities: [], identityProjection: {} });
+  assert.ok(projection.presentItemIds.includes(itemId));
+  assert.equal(projection.reminders.length, 0);
+});
+
+test('第六批时间：人工观察在原时点和同楼改写中保留，实际后楼承接新观察', async () => {
+  const h = await harness({ count: 1 });
+  let source = await h.body(), rows = planTimeBody(source, [], { history: true }).groups.flat();
+  const first = await prepareTimeRequest(source, [], { fragments: rows });
+  const seed = await compileTimeResponse(bodyModel(first.request), first);
+  const manual = await compileTimeEdit(seed.changes[0], { observation: '人工当时的观察', observationTime: '2026-05-01 08:00' }, source, 'manual');
+  const rewritten = rows.map(row => ({ ...row, canonicalFingerprint: 'changed', description: '阿岚同一楼正文改写后的描述' }));
+  const same = await prepareTimeRequest(source, [seed, manual], { fragments: rewritten });
+  const response = request => bodyModel(request, { itemId: seed.changes[0].id, observation: '模型新的观察' });
+  const sameResult = await compileTimeResponse(response(same.request), same, [seed, manual]);
+  assert.equal(sameResult.changes[0].observation, '人工当时的观察');
+  assert.equal(sameResult.changes[0].observationTime.date, '2026-05-01');
+  h.chat.push({ is_user: false, mes: raw(1, '阿岚后一天的新观察') }, { is_user: true, mes: '继续' }); await h.seal();
+  source = await h.body(); rows = planTimeBody(source, [], { history: true }).groups.flat();
+  const later = await prepareTimeRequest(source, [seed, manual], { fragments: [rows.at(-1)] });
+  const laterResult = await compileTimeResponse(response(later.request), later, [seed, manual]);
+  assert.equal(laterResult.changes[0].observation, '模型新的观察');
+  assert.equal(laterResult.changes[0].observationTime.date, '2026-05-02');
+  assert.equal(manual.changes[0].observation, '人工当时的观察');
+});
+
+test('第六批时间：最新摘要已有时点而time尚未到达，人工推测仍沿已存元数据保存', async () => {
+  const h = await harness({ count: 1, generate: request => bodyModel(request) });
+  await h.runtime.runBatch();
+  const item = h.runtime.getState().trackedItems[0];
+  assert.ok(item.projection);
+  h.chat.push({ is_user: false, mes: raw(0, '阿岚在同一时刻继续观察') }, { is_user: true, mes: '继续' }); await h.seal();
+  h.source.floorMemories.push({ id: 'latest-memory', floorId: 'floor-2', recordStatus: 'active',
+    extractorVersion: 'qqj-v3-extractor-prompt-66', chronology: [{ time: { kind: 'explicit', normalized: item.projectionTime.raw, precision: 'exact' } }] });
+  await h.runtime.editItem(item.id, { projectionText: '人工确认当前推测' }, item.observationKey);
+  assert.equal(h.runtime.getState().trackedItems[0].projection, '人工确认当前推测');
+  const saved = await h.store.read(CHAT);
+  assert.equal(saved.batches.at(-1).changes[0].projection.text, '人工确认当前推测');
+  assert.equal(h.calls(), 1);
+});
+
+test('第六批时间：显式恢复active即使同值仍保护，区别新建默认状态', async () => {
+  const h = await harness({ count: 2 });
+  const source = await h.body(), rows = planTimeBody(source, [], { history: true }).groups.flat();
+  const first = await prepareTimeRequest(source, [], { fragments: [rows[0]] });
+  const seed = await compileTimeResponse(bodyModel(first.request), first);
+  const manual = await compileTimeEdit(seed.changes[0], { status: 'active' }, source, 'manual');
+  const prepared = await prepareTimeRequest(source, [seed, manual], { fragments: [rows.at(-1)] });
+  const next = await compileTimeResponse(bodyModel(prepared.request, { itemId: seed.changes[0].id, status: 'completed' }), prepared, [seed, manual]);
+  assert.equal(next.changes[0].status, 'active');
+  assert.deepEqual(manual.changes[0].manualFields, ['status']);
+});
+
+test('第六批时间：同楼多批次按最新已存时点承接人工推测', async () => {
+  const h = await harness({ count: 1, generate: request => bodyModel(request) });
+  await h.runtime.runBatch();
+  const stored = await h.store.read(CHAT), source = await h.body();
+  const prepared = await prepareTimeRequest(source, stored.batches, { currentReview: true, allowInitialProjection: true });
+  prepared.request.currentTime = projectTime('2026-05-01 12:00');
+  const reviewed = await compileTimeResponse(reviewModel(prepared.request, { progression: '正午已存估计' }), prepared, stored.batches);
+  await saveTimeBatch(h, reviewed);
+  const item = reviewed.changes[0];
+  await h.runtime.editItem(item.id, { projectionText: '人工正午确认' }, item.observationKey);
+  assert.equal(h.runtime.getState().trackedItems[0].projection, '人工正午确认');
+  assert.equal((await h.store.read(CHAT)).batches.at(-1).currentTime.clock, '12:00');
+});
+
+test('字段冲突或未知保留健康当前时间，冲突日期不继承上楼', async () => {
+  const h = await harness({ count: 1 });
+  const stamp = (ns, date, weekday, time) => `<!-- ${ns}-start | date=${date} | weekday=${weekday} | time=${time} -->正文<!-- ${ns}-end | date=${date} | weekday=${weekday} | time=${time} -->`;
+  for (const [raw, date, clock] of [
+    [stamp('QQJ', '2026年5月10日', '周一', '09:00') + stamp('SDC', '2026年5月10日', '周二', '09:00'), '2026-05-10', '09:00'],
+    [stamp('QQJ', '2026年5月10日', '未知', '99:99'), '2026-05-10', null],
+    [stamp('QQJ', '2026年5月10日', '未知', '09:00') + stamp('SDC', '2026年5月11日', '未知', '09:00'), null, '09:00'],
+  ]) {
+    h.chat[0].mes = raw; await h.seal();
+    const time = (await h.body()).bodyFloors[0].observationTime;
+    assert.equal(time.date, date, raw); assert.equal(time.clock, clock, raw);
+    const recent = await readRecentBodyStoryTimes({ chat: h.chat }, { reachable: h.source });
+    assert.equal(recent.at(-1).observationTime.date, date); assert.equal(recent.at(-1).observationTime.clock, clock);
+    assert.equal(h.calls(), 0);
+  }
+});
+
+test('后楼明确冲突的日期不从健康前楼继承', async () => {
+  const h = await harness({ count: 2 });
+  const stamp = (ns, date, time) => `<!-- ${ns}-start | date=${date} | weekday=未知 | time=${time} -->正文<!-- ${ns}-end | date=${date} | weekday=未知 | time=${time} -->`;
+  h.chat[0].mes = stamp('QQJ', '2026年5月10日', '08:00');
+  h.chat[2].mes = stamp('QQJ', '2026年5月11日', '09:00') + stamp('SDC', '2026年5月12日', '09:00');
+  await h.seal();
+  const body = await h.body();
+  assert.equal(body.bodyFloors[0].observationTime.date, '2026-05-10');
+  assert.equal(body.bodyFloors[1].observationTime.date, null);
+  assert.equal(body.bodyFloors[1].observationTime.clock, '09:00');
+  const recent = await readRecentBodyStoryTimes({ chat: h.chat }, { reachable: h.source });
+  assert.equal(recent.at(-1).observationTime.date, null);
+  assert.equal(recent.at(-1).observationTime.clock, '09:00');
+});
+
+test('328时间最终head丢回执保完成，人工暂停已存后实际召回撤旧提醒',async t=>{
+ for(const manual of [false,true])await t.test(manual?'人工暂停':'最终评估',async()=>{
+  const h=await harness({count:1,generate:bodyModel});const put=h.back.client.put;let lose=true;
+  if(!manual)h.back.client.put=async(...args)=>{const value=await put(...args);if(lose&&args[1]==='v3-time-head'&&args[2].currentReviewAttempt?.status==='completed'){lose=false;throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});}return value;};
+  await h.runtime.organize(await h.runtime.prepareHistoryPlan());
+  if(manual){
+   const source={status:'ready',chatId:CHAT,floorMemories:[],currentState:[],entities:[],identityProjection:{}};
+   assert.equal((await h.runtime.recallProjection(source)).reminders.length,1);const item=h.runtime.getState().trackedItems[0];
+   h.back.client.put=async(...args)=>{const value=await put(...args);if(lose&&args[1]==='v3-time-head'){lose=false;throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});}return value;};
+   await h.runtime.editItem(item.id,{status:'paused'},item.observationKey);await h.runtime.refreshStatus({force:true});assert.equal((await h.runtime.recallProjection(source)).reminders.length,0);assert.equal(h.runtime.getState().stoppedItems[0].status,'paused');
+  }else {assert.equal(lose,false);await h.runtime.refreshStatus({force:true});assert.equal(h.runtime.getState().status,'completed');h.reload();await h.runtime.refreshStatus({force:true});assert.equal(h.runtime.getState().status,'completed');assert.equal((await h.runtime.prepareHistoryPlan()).apiCalls,0);}
+  assert.equal(h.calls(),2);assert.equal(h.runtime.getState().busy,false);
+ });
+});
+
+test('328时间认证立即停同通道后组尾审，独立Abort保健康后组与原补查',async t=>{
+ for(const mode of ['auth','abort'])await t.test(mode,async()=>{
+  let phase='fail',n=0;const h=await harness({count:45,unstable:true,generate:(request,calls,task)=>{n++;if(phase==='fail'&&n===2){assert.equal(task.signal.aborted,false);throw mode==='auth'?Object.assign(Error('auth'),{code:'QQJ_AUTH',status:401}):new DOMException('独立中止','AbortError');}return request.currentReview?reviewModel(request):bodyModel(request,{progression:''});}});
+  const plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.bodyBatchCount,3);await h.runtime.organize(plan);assert.equal(n,mode==='auth'?2:4);
+  const saved=await h.store.read(CHAT);assert.equal(saved.batches.filter(x=>!x.currentReview).length,mode==='auth'?1:2);assert.ok(['failed','partial'].includes(h.runtime.getState().status));assert.equal(h.runtime.getState().busy,false);
+  phase='resume';h.reload();const next=await h.runtime.prepareHistoryPlan();assert.equal(next.floorCount,mode==='auth'?24:20);await h.runtime.organize(next);const tail=await h.runtime.prepareHistoryPlan();if(tail.apiCalls)await h.runtime.organize(tail);assert.equal((await h.runtime.prepareHistoryPlan()).apiCalls,0);
+ });
+});
+
+test('328年度已请求失败被同触发抑制时准确提示待补，普通正文和人工补查保持',async()=>{
+ let fail=true;const h=await harness({count:1,annualSettingsProvider:()=>({ready:true,people:[{entityId:PERSON,profile:{name:'阿岚',birthday:'5月2日'}}]}),generate:request=>{if(request.task==='annual-settings'){if(fail)throw Error('年度请求失败');return{sources:request.sources.map(source=>({sourceId:source.sourceId,items:[{category:'birthday',label:'生日',originalDate:'5月2日',note:''}]}))};}return bodyModel(request,{progression:''});}});
+ await h.runtime.runBatch();assert.equal(h.runtime.getState().trackedItems.length,1);const before=h.calls();await h.runtime.runBatch();assert.equal(h.calls(),before);assert.match(h.runtime.getState().last.message,/年度.*(?:失败|待补|未完成)/);assert.doesNotMatch(h.runtime.getState().last.message,/超过.*预算/);
+ fail=false;const plan=await h.runtime.prepareHistoryPlan();assert.equal(plan.floorCount,0);assert.equal(plan.annualSetting.shouldRequest,true);await h.runtime.organize(plan);assert.equal(h.runtime.getState().annualItems.length,1);
+});
+
+test('328时间head丢回执确认接受原生JSON键重排，真实字段差异仍拒绝',async t=>{
+ const reorder=value=>Array.isArray(value)?value.map(reorder):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,reorder(value[key])])):value;
+ for(const changed of [false,true])await t.test(changed?'字段真实变化':'等值键重排',async()=>{
+  let saved;const head={schemaVersion:1,chatId:CHAT,batchIds:[],lastRun:{status:'completed',items:0}};
+  const store=createTimeStore({client:{put:async(c,id,data)=>{saved=reorder(data);if(changed)saved.lastRun.status='partial';throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});},get:async()=>({revision:1,data:saved})}});
+  if(changed)await assert.rejects(store.putHead(CHAT,head,0),{code:'BACKEND_NETWORK'});else assert.equal((await store.putHead(CHAT,head,0)).revision,1);
+ });
+});
+
+test('328最终时间head已存首次确认读暂错，原catch冷读承接而不改写failed',async()=>{
+ const h=await harness({count:1,generate:bodyModel});const put=h.back.client.put,get=h.back.client.get;let lose=true,failRead=false;
+ h.back.client.put=async(...args)=>{const result=await put(...args);if(lose&&args[1]==='v3-time-head'&&args[2].currentReviewAttempt?.status==='completed'){lose=false;failRead=true;throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});}return result;};
+ h.back.client.get=async(...args)=>{if(failRead&&args[1]==='v3-time-head'){failRead=false;throw Object.assign(Error('read failed'),{code:'BACKEND_NETWORK'});}return get(...args);};
+ await h.runtime.organize(await h.runtime.prepareHistoryPlan());assert.equal(lose,false);assert.equal(h.runtime.getState().status,'completed');assert.equal((await h.store.read(CHAT)).head.lastRun.status,'completed');assert.equal((await h.runtime.prepareHistoryPlan()).apiCalls,0);assert.equal(h.calls(),2);
+});
+
+test('328时间提交状态暂不明保原数据，原强制刷新可从耐久head收口',async()=>{
+ const h=await harness({count:1,generate:bodyModel});const put=h.back.client.put,get=h.back.client.get;let lose=true,blocked=false;
+ h.back.client.put=async(...args)=>{const result=await put(...args);if(lose&&args[1]==='v3-time-head'&&args[2].currentReviewAttempt?.status==='completed'){lose=false;blocked=true;throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});}return result;};
+ h.back.client.get=async(...args)=>{if(blocked&&args[1]==='v3-time-head')throw Object.assign(Error('read unavailable'),{code:'BACKEND_NETWORK'});return get(...args);};
+ await h.runtime.organize(await h.runtime.prepareHistoryPlan());assert.equal(h.runtime.getState().status,'failed');assert.equal(h.runtime.getState().last.persisted,false);blocked=false;
+ await h.runtime.refreshStatus({force:true});assert.equal(h.runtime.getState().status,'completed');assert.equal((await h.runtime.prepareHistoryPlan()).apiCalls,0);assert.equal(h.calls(),2);
 });

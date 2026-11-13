@@ -1052,3 +1052,12 @@ test('重构固定材料与QQJ保存读回分开：宿主新正文可读回，�
 });
 
 test('整档删除沿既有记录枚举清地点人工资料并清投影缓存',async()=>{const f=fixture();f.records.set(`chat-${CHAT_ID}/v3-place-workspace`,{recordId:'v3-place-workspace',revision:1,data:{schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:CHAT_ID,placesByEntityId:{},deletionsByEntityId:{}}});await f.manager.deleteCurrent();assert.equal([...f.records.keys()].some(key=>key.startsWith(`chat-${CHAT_ID}/`)),false);assert.ok(f.records.has(`chat-${OTHER_ID}/v3-root`));assert.deepEqual(f.memoryInvalidations,[{deletedChatId:CHAT_ID}]);});
+
+test('328删除文件已存丢回执原继续承接清理结果，拒绝后来新归属',async t=>{
+ for(const changed of [false,true])await t.test(changed?'后来新身份':'完成原删除',async()=>{
+  let lose=true;const f=fixture({afterHostSaveHook(){if(lose){lose=false;throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});}}});
+  await assert.rejects(f.manager.deleteCurrent(),{code:'BACKEND_NETWORK'});assert.equal(f.readPersistedHost()[0].chat_metadata.qianqianjie,undefined);
+  if(changed){const metadata=f.readPersistedHost()[0].chat_metadata;metadata.qianqianjie={schemaVersion:2,chatId:OTHER_ID};f.updatePersistedHost({metadata});await assert.rejects(f.manager.deleteCurrent());assert.equal(f.readPersistedHost()[0].chat_metadata.qianqianjie.chatId,OTHER_ID);}
+  else{const before=f.calls.filter(x=>x[0]==='hostSave').length;assert.equal((await f.manager.deleteCurrent()).status,'completed');assert.equal(f.calls.filter(x=>x[0]==='hostSave').length,before);assert.equal(f.context.chatMetadata.qianqianjie,undefined);assert.ok(f.calls.some(x=>x[0]==='resume'));assert.equal(f.manager.getState().status,'completed');}
+ });
+});

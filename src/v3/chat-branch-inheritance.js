@@ -1,3 +1,4 @@
+import { normalizeStoryCalendar } from './calendar-rules.js';
 import { sha256 } from '../identity.js';
 import { cloneHostJsonMetadata } from '../host-context.js';
 import { createFoundationStore } from './foundation-store.js';
@@ -264,6 +265,9 @@ export function createChatBranchInitializer({
   client,
   hostAdapter,
   vectorRuntimeProvider = () => null,
+  coreRecordCacheProvider = () => null,
+  captureCalendar = () => null,
+  persistCalendar = async () => {},
   now = () => new Date(),
   fetchImpl = globalThis.fetch,
 } = {}) {
@@ -274,6 +278,7 @@ export function createChatBranchInitializer({
     report({ phase: 'readingBranch' });
     const sourceIdentity = identity(host, sourceChatId);
     const targetIdentity = identity(host, targetChatId);
+    const sourceCalendar = normalizeStoryCalendar(captureCalendar(sourceChatId));
     const liveSnapshot = taskInputs ? null : hostAdapter.snapshot();
     const snapshot = taskInputs ?? {
       chat: structuredClone(Array.isArray(liveSnapshot.chat) ? liveSnapshot.chat : []),
@@ -286,8 +291,9 @@ export function createChatBranchInitializer({
     const fixedTarget = { ...snapshot.target, chatId: targetChatId };
     const targetFile = snapshot.initialTargetFile ?? await readTargetChat(fixedTarget, { signal, fetchImpl, allowedChatIds: [sourceChatId, targetChatId] });
     assertCapturedBranchTargetMatches(snapshot, targetFile, sourceChatId, targetChatId, { deferNewTargetAnchors: true });
-    const sourceStore = createFoundationStore({ client, contextProvider: () => sourceIdentity });
-    const targetStore = createFoundationStore({ client, contextProvider: () => targetIdentity });
+    const coreRecordCache = coreRecordCacheProvider();
+    const sourceStore = createFoundationStore({ client, contextProvider: () => sourceIdentity, coreRecordCache });
+    const targetStore = createFoundationStore({ client, contextProvider: () => targetIdentity, coreRecordCache });
     const peopleStore = createPeopleWorkspaceStore({ client });
     const timeStore = createTimeStore({ client });
     const placeStore = createPlaceWorkspaceStore({ client });
@@ -399,7 +405,7 @@ export function createChatBranchInitializer({
           const checkpointResult = await targetStore.putRecord(checkpoint, { signal });
           if (!['saved', 'reused'].includes(checkpointResult.status)) throw fail('V3_BRANCH_RECORD_CONFLICT', '分支记忆记录发生冲突，未提交目标根。');
           await placeStore.copy(sourceIdentity,targetIdentity,{sourceEntities:source.entities,targetFloors:floors,narrativeGeneration});
-          const committed = await targetStore.commitRoot(root, 0, { signal });
+          const committed = await targetStore.commitRoot(root, 0, { signal, awaitCoreCachePublish: true });
           if (!['saved'].includes(committed.status)) {
             target = await targetStore.readReachable();
             if (!['ready', 'needsReseal'].includes(target.status) || target.root.headCheckpointId !== checkpointId) throw fail('V3_BRANCH_ROOT_CONFLICT', '分支目标根发生冲突，未覆盖已有数据。');
@@ -420,6 +426,7 @@ export function createChatBranchInitializer({
     report({ phase: 'copyingTime' });
     await timeStore.copyPrefix(sourceChatId, targetChatId, target.floors ?? [], signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (sourceCalendar) await persistCalendar(targetChatId, sourceCalendar);
     report({ phase: 'savingBranchChat' });
     const savedMessages = await persistBranchedMessageMetadata({ target: fixedTarget, chat: snapshot.chat, chatMetadata: snapshot.chatMetadata, sourceChatId, targetChatId, bindings, retainedFloorIds, signal, fetchImpl });
     projectSavedBranchMetadata(raw, hostAdapter, host.hostChatId, snapshot.chat, savedMessages, targetChatId);

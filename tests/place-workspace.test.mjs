@@ -153,3 +153,37 @@ test('地点合并多源人工同字段：近target先承接，同级模型原�
  const sameLevel=place.compilePlaceMerges([{sourceKey:'k0',targetKey:'k2'},{sourceKey:'k1',targetKey:'k2'}],bindings);assert.equal(place.applyPlaceMerges(data,sameLevel,{resolve}).placesByEntityId[next].description,'远源');
  data.placesByEntityId[next]={description:'',scopes:{description:structuredClone(scope)}};assert.equal(place.applyPlaceMerges(data,plan,{resolve}).placesByEntityId[next].description,'');
 });
+
+
+test('prefix copy retains a deleted place identity only when its deletion scope travels', () => {
+ const seed={schemaVersion:3,recordType:'entity',id:room,chatId:chat,narrativeGeneration:parent,entityType:'place',displayName:'旧屋',aliases:[],specialRole:'none',firstSeenFloorId:null,lastSeenFloorId:null,status:'provisional',mergedIntoEntityId:null,mergeEvidenceRefs:[],baselineClaimIds:[],createdAt:'2026-11-12T00:00:00.000Z',updatedAt:'2026-11-12T00:00:00.000Z',recordStatus:'active',supersedes:null};
+ const data={...workspace(),placesByEntityId:{[room]:{scopes:{},createdEntity:seed}},
+   deletionsByEntityId:{[room]:{knownThroughFloorId:next,coveredFloorIds:[floor,next],coveredItemIds:[]}}};
+ place.validatePlaceWorkspace(data,chat);
+ const before=structuredClone(data);
+ const retained=place.placeWorkspaceForPrefix(data,new Set([floor,next]));
+ place.validatePlaceWorkspace(retained,chat);
+ assert.deepEqual(retained.placesByEntityId[room].createdEntity,seed);
+ assert.deepEqual(retained.deletionsByEntityId[room].coveredFloorIds,[floor,next]);
+ const prior=place.placeWorkspaceForPrefix(data,new Set([floor]));
+ assert.equal(prior.placesByEntityId[room].createdEntity,undefined);
+ assert.equal(prior.deletionsByEntityId[room],undefined);
+ assert.deepEqual(data,before);
+});
+
+test('328地点保存真未存与状态不明均不伪成功，正常读取可承接耐久结果',async t=>{
+ for(const durable of [false,true])await t.test(durable?'已存但确认也失败':'确实未存',async()=>{
+  let saved=null,blocked=false;const fault=()=>Object.assign(Error('network'),{code:'BACKEND_NETWORK'});
+  const store=place.createPlaceWorkspaceStore({client:{get:async()=>{if(blocked)throw fault();if(!saved)throw Object.assign(Error('missing'),{status:404});return structuredClone(saved);},put:async(c,id,data)=>{if(durable)saved={revision:1,data:structuredClone(data)};blocked=true;throw fault();}}});
+  await store.read({chatId:chat});await assert.rejects(store.put({chatId:chat},workspace(),0),{code:'BACKEND_NETWORK'});blocked=false;
+  const next=await store.read({chatId:chat});assert.equal(next.revision,durable?1:0);
+ });
+});
+
+test('328地点丢回执确认接受原生JSON键重排，真实字段差异仍拒绝',async t=>{
+ const reorder=value=>Array.isArray(value)?value.map(reorder):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,reorder(value[key])])):value;
+ for(const changed of [false,true])await t.test(changed?'字段真实变化':'等值键重排',async()=>{
+  let saved;const store=place.createPlaceWorkspaceStore({client:{put:async(c,id,data)=>{saved=reorder(data);if(changed)saved.placesByEntityId[room].description='后来人工';throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});},get:async()=>({revision:1,data:saved})}});
+  if(changed)await assert.rejects(store.put({chatId:chat},workspace(),0),{code:'BACKEND_NETWORK'});else assert.equal((await store.put({chatId:chat},workspace(),0)).revision,1);
+ });
+});

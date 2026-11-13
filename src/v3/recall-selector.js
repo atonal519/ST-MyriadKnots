@@ -1,3 +1,4 @@
+import { RECALL_KNOWLEDGE_GUIDANCE } from './recall-text.js';
 import { effectiveFoundationFacts } from './place-foundation.js';
 import { manualPlaceFacts } from './place-workspace.js';
 import { projectPlaceFeatures, currentPlaceEntityIds, expandPlaceParents, isGenericPlaceAlias, placeSourceLocationReference } from './spatial-domain.js';
@@ -323,7 +324,7 @@ function cseChangeCandidates(source, involvedIds) {
 const entityName = (id, entityById) => entityById.get(id)?.displayName ?? '未知人物';
 
 export const LEGACY_CSE_RECALL_KNOWLEDGE_BOUNDARY = '以下都是作者侧资料，不等于人物共享记忆：private 只属于标明主体；authorial 仅作作者塑造参考。observable、expressed、shared 不证明所有人物知情，分别以正文证实的实际观察、接收和共同知情范围为限。需要区分表达者、接收者或共同知情范围时，只保留有依据的归属；不得补出无依据受众，不确定时不扩大范围。toward 只标态度对象，不标信息接收者或知情者。';
-export const CSE_RECALL_KNOWLEDGE_BOUNDARY = '人物状态记录：主体、态度对象、可见性。';
+export const CSE_RECALL_KNOWLEDGE_BOUNDARY = `${RECALL_KNOWLEDGE_GUIDANCE}人物状态记录：主体、态度对象、可见性。`;
 const recallVisibility = value => ({ private: '私密', observable: '可观察', expressed: '已表达', shared: '已共享', authorial: '作者设定' })[value] ?? value;
 const materialScopeLine = coverage => Number.isSafeInteger(coverage?.stableThroughAssistantSeq) && coverage.stableThroughAssistantSeq > 0
   ? `本轮资料范围：已稳定到 AI #${coverage.stableThroughAssistantSeq}。` : '';
@@ -364,7 +365,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
     if (value.category === 'shared') {
       const speaker = value.speakerEntityId ? entityName(value.speakerEntityId, entityById) : '来源不明';
       const targets = (value.targetEntityIds ?? []).map(id => entityName(id, entityById)).join('、');
-      return `${speaker}${targets ? ` → ${targets}` : ''}：${relation}${value.text}`;
+      return `${relation}表达者：${speaker}。接收者：${targets || '未列明'}。内容：${value.text}`;
     }
     if (value.kind === 'action') {
       const actor = entityName(value.actorEntityId, entityById);
@@ -404,6 +405,11 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
         const priorSameBodyAfter = value.after && renderedAfters.find(item => item.subjectEntityId === value.subjectEntityId
           && item.layer === value.layer && sameStateBody(item.state, value.after));
         const currentEquivalent = value.after && lineStates.some(state => state.subjectEntityId === value.subjectEntityId && state.layer === value.layer && sameStateBody(state, value.after));
+        if (value.origin === 'manual') {
+          lines.push(value.action === 'remove' ? `- [变化] 主体：${value.subject} / ${value.layer}：人工移除或清空。`
+            : `- [变化] 主体：${value.subject} / ${value.layer}：人工${action[value.action] ?? '校准'}。${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq)}。`);
+          continue;
+        }
         lines.push(`- [变化] 主体：${value.subject} / ${value.layer}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, assistantSeq, priorAfter?.assistantSeq)}；之后 ${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq)}。`);
         if (value.after && !currentEquivalent && !priorSameBodyAfter) renderedAfters.push({ subjectEntityId: value.subjectEntityId, layer: value.layer, state: value.after, assistantSeq });
       }
@@ -478,7 +484,7 @@ export function placeRecallBlocks(places = [], legacy = false, grouped = !legacy
 export function formatRecallInjection(input) {
   const corrections = input.timeProjection?.corrections ?? {};
   const states = input.states.map(state => {
-    const correction = corrections[`${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`];
+    const correction = state.origin === 'manual' ? null : corrections[`${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`];
     return correction ? { ...state, text: correction.text, _timeCorrection: true, _timeDependency: { key: `${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`, itemId: correction.itemId, text: correction.text, sourceSignature: correction.sourceSignature ?? null } } : state;
   });
   const timeDependencies = input.timeDependencies ?? { corrections: [], reminders: [] };
@@ -534,8 +540,7 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
       } else if (value.category === 'shared') {
         const speaker = value.speakerEntityId ? entityName(value.speakerEntityId, entityById) : null;
         const targets = (value.targetEntityIds ?? []).map(id => entityName(id, entityById)).join('、');
-        const boundary = speaker ? `（${speaker}${targets ? ` → ${targets}` : ''}）` : '';
-        shared.push(`${prefix}${boundary}：${relation}${value.text}`);
+        shared.push(`${prefix}：${relation}表达者：${speaker || '来源不明'}。接收者：${targets || '未列明'}。内容：${value.text}`);
       } else if (value.kind === 'action') {
         const actor = entityName(value.actorEntityId, entityById);
         const targets = (value.targetEntityIds ?? []).map(id => entityName(id, entityById)).join('、');
@@ -548,7 +553,7 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
     }
     if (objective.length) { lines.push('[客观相关旧事]'); objective.forEach(value => lines.push(`- ${value}`)); }
     for (const [owner, values] of privateByOwner) { lines.push(`[私有资料；知情：${owner}]`); values.forEach(value => lines.push(`- ${value}`)); }
-    if (shared.length) { lines.push('[已表达/已共享信息]'); shared.forEach(value => lines.push(`- ${value}`)); }
+    if (shared.length) { lines.push('[已表达信息及接收范围]'); shared.forEach(value => lines.push(`- ${value}`)); }
   };
   const recentFloors = floors.filter(floor => floor.items.some(value => value.recallSection === 'recent'));
   const distantFloors = floors.filter(floor => floor.items.some(value => value.recallSection !== 'recent'));
@@ -582,6 +587,11 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
       const priorSameBodyAfter = value.after && renderedAfters.find(item => item.storylineId === value.storylineId
         && item.subjectEntityId === value.subjectEntityId && item.layer === value.layer && sameStateBody(item.state, value.after));
       const currentEquivalent = value.after && states.some(state => state.subjectEntityId === value.subjectEntityId && state.layer === value.layer && sameStateBody(state, value.after));
+      if (value.origin === 'manual') {
+        lines.push(value.action === 'remove' ? `- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：人工移除或清空。`
+          : `- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：人工${action[value.action] ?? '校准'}。${stateSide(value.after, currentEquivalent, priorSameBodyAfter?.assistantSeq)}。`);
+        continue;
+      }
       lines.push(`- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, priorAfter?.assistantSeq)}；之后 ${stateSide(value.after, currentEquivalent, priorSameBodyAfter?.assistantSeq)}。`);
       if (value.after && !currentEquivalent && !priorSameBodyAfter) renderedAfters.push({ storylineId: value.storylineId, subjectEntityId: value.subjectEntityId, layer: value.layer, state: value.after, assistantSeq: value.assistantSeq });
     }
@@ -1380,7 +1390,7 @@ function historyCandidateText(value, entityById, originByFloor = new Map()) {
   if (value.category === 'narrative') boundary = '叙事回顾';
   else if (value.category === 'private') boundary = `私有资料；知情：${entityName(value.ownerEntityId, entityById)}`;
   else if (value.category === 'transfer') boundary = `信息传递；表达者：${value.fromEntityId ? entityName(value.fromEntityId, entityById) : '来源不明'}；接收者：${names(value.toEntityIds)}；渠道：${value.kind}`;
-  else if (value.category === 'shared') boundary = `已表达/已共享；${entityName(value.speakerEntityId, entityById)} → ${names(value.targetEntityIds) || '未列明对象'}`;
+  else if (value.category === 'shared') boundary = `已表达信息。表达者：${value.speakerEntityId ? entityName(value.speakerEntityId, entityById) : '来源不明'}。接收者：${names(value.targetEntityIds) || '未列明'}`;
   else if (value.kind === 'placeFeature') boundary = '当前地点设施';
   else if (value.kind === 'placeScene') boundary = '当时现场';
   else if (value.kind === 'placeDescription') boundary = '历史地点描述；持续性未分类';

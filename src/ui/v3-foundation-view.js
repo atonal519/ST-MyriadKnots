@@ -581,6 +581,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const error = errorCopy(state); if (error) return error;
     if (pluginActivity.busy && ['memories', 'management'].includes(page)) return '';
     if (['memories', 'management'].includes(page) && !refreshSyncing(state) && (effectiveStatus(state) === 'needsReview' || state.memorySyncStatus === 'needsReview')) return reviewCopy(state);
+    if (page === 'management' && refreshRequestEpoch === null && !refreshSyncing(state)) return '';
     return feedback === statusCopy('running') ? '' : feedback;
   };
   const errorAlreadyInHealth = state => {
@@ -1196,7 +1197,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const timeNode = element('span', 'qqj-floor-time', times); timeNode.setAttribute('title', times);
     const floorStatus = floor.frozen ? '来源归档 · 只读' : floor.sourceUnavailable ? '来源待核' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
     const statusNode = element('span', `v3-memory-status${floor.summarySource === 'user' && floor.status === 'ready' ? ' is-user' : ''}`, floorStatus);
-    const chevron = element('span', 'qqj-memory-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
+    const chevron = element('span', 'qqj-memory-chevron'); chevron.setAttribute('aria-hidden', 'true');
     const numberNode = element('strong', 'qqj-floor-number', title);
     if (floor.frozen && floor.sourceOrigin?.sourceHostChatId) numberNode.setAttribute('title', floor.sourceOrigin.sourceHostChatId);
     head.append(numberNode, timeNode, statusNode, chevron);
@@ -1290,7 +1291,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const card = setDetailsState(element('details', 'qqj-memory-card status-pending'), `memory:${key}`, false);
     const head = element('summary', 'qqj-memory-card-head');
     const statusNode = element('span', 'v3-memory-status', waitingFloorCopy(candidate.reason));
-    const chevron = element('span', 'qqj-memory-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
+    const chevron = element('span', 'qqj-memory-chevron'); chevron.setAttribute('aria-hidden', 'true');
     head.append(element('strong', 'qqj-floor-number', floorCopy(state, candidate)), element('span', 'qqj-floor-time', '未提取'), statusNode, chevron);
     const body = element('div', 'qqj-memory-card-body');
     body.append(element('p', 'qqj-memory-main is-empty', waitingFloorExplanation(candidate.reason)));
@@ -1772,6 +1773,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function openCseEditor(key, draft, state, title) {
     if (typeof customImpl !== 'function') return;
+    draft.original ??= Object.fromEntries(['core', 'adaptive', 'situational'].map(field => [field, draft[field].map(item => ({ ...item }))]));
+    draft.anchorFloorId ??= state.replayedCurrentState?.headFloorId;
     cseDrafts.set(key, draft);
     const content = element('div');
     const redraw = (expandedField = null) => { const previous = Array.from(content.children[0]?.children ?? []).find(node => (node.tag === 'details' || node.tagName?.toLowerCase() === 'details') && node.open); content.replaceChildren(); renderCseEditor(content, draft, foundationState ?? state, redraw, expandedField ?? previous?.qqjCategory ?? null); };
@@ -1781,7 +1784,12 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       if (draft.saving) return false;
       if (workBusy(foundationState ?? state)) throw new Error('后台记忆仍在整理，请稍后再保存人物状态。');
       const cloneItems = items => items.map(item => ({ ...item }));
-      const payload = { expectedCurrentStateId: draft.expectedCurrentStateId, expectedCurrentStateFingerprint: draft.expectedCurrentStateFingerprint, core: cloneItems(draft.core), adaptive: cloneItems(draft.adaptive), situational: cloneItems(draft.situational) };
+      const payload = { expectedChatId: draft.chatId, anchorFloorId: draft.anchorFloorId,
+        expectedCurrentStateId: draft.expectedCurrentStateId, expectedCurrentStateFingerprint: draft.expectedCurrentStateFingerprint, original: draft.original };
+      const meaning = items => items.map(item => [item.itemId, item.text, item.visibility, item.towardEntityId ?? null]);
+      for (const field of ['core', 'adaptive', 'situational']) {
+        if (JSON.stringify(meaning(draft[field])) !== JSON.stringify(meaning(draft.original[field]))) payload[field] = cloneItems(draft[field]);
+      }
       const currentDraft = () => cseDrafts.get(key) === draft && (runtime.getState?.() ?? foundationState)?.chatId === draft.chatId;
       draft.saving = true; draft.saveError = ''; redraw();
       let failure = null;
@@ -1810,8 +1818,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (subject && !draft) {
       const edit = element('button', actionsContainer ? 'qqj-memory-menu-action' : 'secondary-action', '编辑状态'); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
       edit.addEventListener('click', () => {
-        const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null }));
-        openCseEditor(key, { chatId: state.chatId, subjectEntityId: entityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(subject.core), adaptive: copyItems(subject.adaptive), situational: copyItems(subject.situational), saving: false, saveError: '' }, state, `编辑人物状态 · ${displayName}`);
+        const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null, origin: item.origin }));
+        const original = { core: copyItems(subject.core), adaptive: copyItems(subject.adaptive), situational: copyItems(subject.situational) };
+        openCseEditor(key, { chatId: state.chatId, subjectEntityId: entityId, anchorFloorId: state.replayedCurrentState?.headFloorId, original, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(subject.core), adaptive: copyItems(subject.adaptive), situational: copyItems(subject.situational), saving: false, saveError: '' }, state, `编辑人物状态 · ${displayName}`);
       });
       actions.append(edit);
     }
@@ -2108,7 +2117,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       appendSubjectGroups(anchor, userSubject, state, { situational: (userSubject.situational ?? []).filter(item => !item.towardEntityId), showMeta: false, groupAdaptiveByTarget: true, showSituationalVisibility: true });
       const editLabel = userEntity?.specialRole === 'user' ? '编辑我的状态' : '编辑人物状态';
       const edit = element('button', 'secondary-action qqj-cse-edit-action', editLabel); edit.type = 'button'; edit.disabled = workBusy(state) || typeof runtime.correctSubjectState !== 'function' || !state.currentStateId || !state.currentStateFingerprint;
-      edit.addEventListener('click', () => { const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null })); openCseEditor(key, { chatId: state.chatId, subjectEntityId: userSubject.subjectEntityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(userSubject.core), adaptive: copyItems(userSubject.adaptive), situational: copyItems(userSubject.situational), saving: false, saveError: '' }, state, `${editLabel} · ${userEntity?.displayName || userSubject.displayName}`); });
+      edit.addEventListener('click', () => { const copyItems = values => (values ?? []).map(item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null, origin: item.origin })); openCseEditor(key, { chatId: state.chatId, subjectEntityId: userSubject.subjectEntityId, expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint, core: copyItems(userSubject.core), adaptive: copyItems(userSubject.adaptive), situational: copyItems(userSubject.situational), saving: false, saveError: '' }, state, `${editLabel} · ${userEntity?.displayName || userSubject.displayName}`); });
       title.append(edit);
     }
     return anchor;
@@ -2413,7 +2422,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function updateManagementFeedback(state) {
     if (!managementFeedbackNode) return;
-    let copy = (currentFeedback(state) || errorCopy(state) || (pluginActivity.busy ? '' : '状态已显示。')).replace('；历史召回回执已独立处理。', '');
+    let copy = (currentFeedback(state) || errorCopy(state) || '').replace('；历史召回回执已独立处理。', '');
     const owned = ownedFailureFeedback(state); if (owned !== null) copy = owned;
     if (routineFeedback() && errorAlreadyInHealth(state)) copy = '';
     if (!errorCopy(state) && uninitializedCopy(state) && [uninitializedCopy(state), statusCopy('uninitialized'), statusCopy('idle'), '状态已显示。', '当前聊天尚未建立记忆，状态已读取完成。'].includes(copy)) copy = '';
@@ -2462,7 +2471,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         : ['needsReview', 'error'].includes(effectiveStatus(state)) || sessionErrorCopy() ? ''
           : uninitializedCopy(state) || (!state.chatId ? '当前记忆状态尚未载入，请点击“刷新状态”。'
             : cseResume ? '完成后如仍有缺失，可继续补齐。'
-            : !rebuildActionable ? '当前没有需要补齐的稳定楼。'
+            : !rebuildActionable ? ''
               : '可用“补齐缺失”保留已有结果；“完全重构”会替换全部摘要与人物状态。');
     const progressCopy = element('span', 'settings-hint');
     refreshManagementProgress = () => { progressCopy.textContent = [pendingCopy, nextStepCopy()].filter(Boolean).join('。'); progressCopy.hidden = !progressCopy.textContent; };

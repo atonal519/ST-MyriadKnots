@@ -1,5 +1,5 @@
 import { placeWorkspaceDependency } from './place-foundation.js';
-import { deriveCseTimeline, filterReachableDeltas, replayCurrentState } from './cse-engine.js';
+import { deriveCseTimeline, filterReachableDeltas, projectCseDeltasForSources, replayCurrentState } from './cse-engine.js';
 import { assessMemoryCoverageFromHost, memoryCoverageHostBindings } from './memory-coverage.js';
 import {
   buildEntityIdentityDirectory, deriveUserIdentityProjection, projectCseStateIdentityReferences,
@@ -109,7 +109,7 @@ function personaCoreStateIds(deltas) {
   return ids;
 }
 
-function stateDto(replayed, entities, floorSeq, personaCoreIds) {
+export function stateDto(replayed, entities, floorSeq, personaCoreIds) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
   const item = value => Object.freeze({
     stateId: value.id,
@@ -130,7 +130,7 @@ function stateDto(replayed, entities, floorSeq, personaCoreIds) {
   })));
 }
 
-function cseChangesDto(timeline, entities, floorSeq, identityProjection, personaCoreIds) {
+export function cseChangesDto(timeline, entities, floorSeq, identityProjection, personaCoreIds, manualSubjectsByDelta = new Map()) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
   const state = value => value ? Object.freeze({
     stateId: value.id,
@@ -157,6 +157,7 @@ function cseChangesDto(timeline, entities, floorSeq, identityProjection, persona
         subjectEntityId,
         layer: change.category,
         action: change.action,
+        ...(manualSubjectsByDelta.get(entry.deltaId)?.has(subject.subjectEntityId) && (change.action === 'remove' || change.after?.origin === 'manual') ? { origin: 'manual' } : {}),
         before: state(change.before),
         after: state(change.after),
       }));
@@ -216,12 +217,15 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   const { floors, floorById, memoryGroups, activeMemoryIds } = selected;
   let activeMemories = selected.activeMemories.flatMap(memory => {
     if (!memorySourceFloorIds(memory).some(floorId => unmatchedFloorIds.has(floorId))) return [memory];
-    const manualTime = first.run?.diagnostics?.floorProvenance?.[memory.floorId]?.timeEdited === true;
-    if (memory.summary?.effectiveSource !== 'user' && !manualTime) return [];
+    const provenance = first.run?.diagnostics?.floorProvenance?.[memory.floorId] ?? {};
+    const manualTime = provenance.timeEdited === true;
+    const manualLocations = provenance.locationsEdited === true;
+    const manualParticipants = provenance.participantsEdited === true;
+    if (memory.summary?.effectiveSource !== 'user' && !manualTime && !manualLocations && !manualParticipants) return [];
     // A saved manual summary remains authoritative while its body is updating.
     // Automatic facts from the unconfirmed body do not accompany that summary.
     return [{ ...memory, summary: memory.summary?.effectiveSource === 'user' ? memory.summary : { effectiveSource: 'user', userText: '' },
-      chronology: manualTime ? memory.chronology : [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [],
+      chronology: manualTime ? memory.chronology : [], locations: manualLocations ? memory.locations : [], participants: manualParticipants ? memory.participants : [], actions: [], observations: [], informationTransfers: [],
       privateCognition: [], commitments: [], eventFragments: [], openLoops: [], spatialFacts: null,
       exactAnchors: (memory.exactAnchors ?? []).filter(anchor => anchor.manual === true) }];
   });
@@ -237,7 +241,7 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   let trustedDeltas = [], replayed = null, cseTimeline = [];
   try {
     if (first.cseUnavailable === true) throw new TypeError('V3_RECALL_CSE_UNAVAILABLE');
-    trustedDeltas = filterReachableDeltas({ floors: confirmedFloors, floorMemories: first.floorMemories ?? [], stateDeltas: first.stateDeltas ?? [] });
+    trustedDeltas = projectCseDeltasForSources({ floors, stateDeltas: first.stateDeltas ?? [], confirmedFloorIds: new Set(confirmedFloors.map(floor => floor.id)) });
     cseTimeline = deriveCseTimeline(trustedDeltas);
     if (first.baseline) {
       const timestamp = now();
@@ -279,6 +283,8 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
   const projectedMemories = activeMemories.map(memory => projectFloorMemoryIdentityReferences(memory, identityProjection));
   if (projectedMemories.some(memory => memory.unavailableSources?.includes('places'))) identityProjection = { ...identityProjection,
     unavailableSources: [...new Set([...(identityProjection.unavailableSources ?? []), 'places'])] };
+  const manualChangeTargets = new Set(trustedDeltas.flatMap(delta => (delta.source?.manualSubjectEntityIds ?? [])
+    .map(id => `${delta.id}:${resolveIdentityEntityId(id, identityProjection)}`)));
   return isolateRecallAuxiliarySources(Object.freeze({
     status: 'ready',
     chatId: first.root.chatId,
@@ -315,8 +321,8 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     rawSources: Object.freeze(vectors.rawSources.filter(source => !unmatchedFloorIds.has(source.floorId))),
     currentState: Object.freeze(stateDto(projectCseStateIdentityReferences(replayed, identityProjection), entities, floorSeq, personaCoreIds).map(subject => Object.freeze({ ...subject,
       ...Object.fromEntries(['core', 'adaptive', 'situational'].map(layer => [layer, Object.freeze(subject[layer].filter(item => item.origin === 'manual' || !unmatchedFloorIds.has(item.sourceFloorId)))])) }))),
-    cseChanges: Object.freeze(cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds).filter(change =>
-      ![change.floorId, change.before?.sourceFloorId, change.after?.sourceFloorId].some(floorId => unmatchedFloorIds.has(floorId)))),
+    cseChanges: Object.freeze(cseChangesDto(cseTimeline, entities, floorSeq, identityProjection, personaCoreIds, new Map(first.stateDeltas.map(delta => [delta.id, new Set(delta.source?.manualSubjectEntityIds ?? [])]))).filter(change =>
+      manualChangeTargets.has(`${change.deltaId}:${change.subjectEntityId}`) || ![change.floorId, change.before?.sourceFloorId, change.after?.sourceFloorId].some(floorId => unmatchedFloorIds.has(floorId)))),
     identityProjection,
     placeWorkspace: identityProjection.placeWorkspace ?? null,
     placeWorkspaceDependency: placeWorkspaceDependency(first.root.chatId,identityProjection.placeWorkspaceRevision,identityProjection.placeWorkspace),

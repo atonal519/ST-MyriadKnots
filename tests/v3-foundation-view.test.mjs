@@ -1361,7 +1361,7 @@ test('无 chat 与无状态 provider 仍提供状态诊断，复制不会抢占�
   state = { ...state, status: 'ready', foundationStatus: 'ready' }; release(state);
   const result = await activation;
   assert.equal(result.status, 'ready', '只读复制不得递增业务 epoch 使激活结果变 stale');
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /记忆状态已刷新/);
+  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /记忆状态已刷新/);
 });
 
 test('四项破坏性记忆操作等待异步确认，取消时零业务动作', async () => {
@@ -1984,7 +1984,7 @@ test('历史欠账与人物状态重构按钮各自开始暂停继续，CSE 进�
   await flatten(container).find(node => node.textContent === '刷新状态').click();
   await new Promise(resolve => setImmediate(resolve));
   let failure = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
-  assert.match(failure.textContent, /当前聊天已读取完成/);
+  assert.equal(failure.textContent, ''); assert.equal(failure.hidden, true, '健康读取不重复占位，原CSE失败仍由专属提示承接');
   const oldFailure = flatten(container).find(node => node.textContent.includes('上次人物状态分析失败'));
   assert.match(oldFailure.textContent, /第 4 楼返回的人物状态 JSON 不完整.*可继续人物状态重构/);
   assert.match(flatten(container).find(node => node.className === 'qqj-management-notice').textContent, /人物状态重构未完成.*请点击“继续人物状态重构”/);
@@ -2603,11 +2603,11 @@ test('三页职责分离，千结只保留摘要编辑/重提，双丝网归位�
 });
 
 test('管理页刷新状态按钮发起 fresh 读取并显式核对 foundation', async () => {
-  const state = { status: 'ready', memorySnapshotStatus: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: 'head', lastError: null, lastExtractorError: null, lastCseError: null, floors: [], memoryWorkBusy: false };
+  let state = { status: 'ready', memorySnapshotStatus: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', stableCount: 0, rememberedCount: 0, unprocessedCount: 0, pending: null, headCheckpointId: 'head', lastError: null, lastExtractorError: null, lastCseError: null, floors: [], memoryWorkBusy: false };
   const calls = [];
-  let releaseRefresh;
-  const pendingRefresh = new Promise(resolve => { releaseRefresh = () => resolve(state); });
-  const runtime = { getState: () => state, refreshStatus: options => { calls.push(options); return pendingRefresh; }, confirmLatest: async () => state };
+  let releaseRefresh, listener;
+  const pendingRefresh = new Promise(resolve => { releaseRefresh = () => { state = { ...state, memorySyncStatus: 'idle' }; resolve(state); }; });
+  const runtime = { getState: () => state, refreshStatus: options => { calls.push(options); return pendingRefresh; }, confirmLatest: async () => state, subscribe(callback) { listener = callback; return () => { listener = null; }; } };
   const container = new Node('main');
   const view = createV3FoundationView({ runtime, documentRef });
   view.setPage('management'); view.mount(container);
@@ -2615,20 +2615,22 @@ test('管理页刷新状态按钮发起 fresh 读取并显式核对 foundation',
   assert.ok(button);
   const replaceCount = container.replaceCount;
   button.click();
+  assert.equal(container.replaceCount, replaceCount, '动作尚未收到新runtime数据时不整页重绘');
+  state = { ...state, memorySyncStatus: 'syncing' }; listener(state);
   const pendingFeedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
   assert.equal(pendingFeedback.textContent, '正在刷新状态…', '未决刷新必须立即显示在实际反馈节点');
   assert.equal(pendingFeedback.className.includes('error'), false);
-  assert.equal(container.replaceCount, replaceCount, '显示刷新进度不得整页重绘');
   releaseRefresh();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, [{ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }]);
-  assert.equal(flatten(container).find(node => node.className.includes('qqj-management-feedback')).textContent, '当前聊天已读取完成。');
+  const feedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.equal(feedback.textContent, ''); assert.equal(feedback.hidden, true, '读取完成后健康反馈退出占位');
 });
 
 test('管理页刷新反馈跟随真实终态并保留后续操作反馈', async () => {
   const initial = { status: 'ready', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'ready', pluginEnabled: true,
     chatId: CHAT, stableCount: 247, rememberedCount: 247, unprocessedCount: 0, floors: [], memoryWorkBusy: false,
-    lastError: null, lastExtractorError: null, lastCseError: null };
+    lastError: null, lastExtractorError: null, lastCseError: null, rebuildStatus: 'caughtUp', rebuildHasActionableWork: false, cseRebuildStatus: 'idle' };
   const mixed = { ...initial, memorySyncStatus: 'syncing' };
   const reviewed = { ...initial, status: 'needsReview', foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'needsReview',
     reviewReason: { code: 'markerMismatch', messageIndex: 495, expectedCount: 247, actualCount: 248, markerStatus: 'valid', bindingIssue: 'markerConflict' },
@@ -2641,6 +2643,11 @@ test('管理页刷新反馈跟随真实终态并保留后续操作反馈', async
   const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef,
     navigatorRef: { clipboard: { writeText: async value => { copied = value; } } } });
   view.setPage('management'); view.mount(container);
+  const idleFeedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.equal(idleFeedback.hidden, true); assert.equal(idleFeedback.textContent, '');
+  const idleProgress = flatten(container).find(node => node.className === 'qqj-management-progress');
+  assert.ok(idleProgress.children.every(node => node.hidden), '无任务的进度区没有可见子节点，沿现有CSS退出占位');
+  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /当前没有需要补齐的稳定楼/u);
   flatten(container).find(node => node.textContent === '刷新状态').click();
   view.setActivity({ busy: true, phase: 'inspecting', copy: '正在核验记忆' });
   view.setActivity({ busy: false, phase: null, copy: '' });
@@ -2659,6 +2666,9 @@ test('管理页刷新反馈跟随真实终态并保留后续操作反馈', async
   assert.doesNotMatch(feedback.textContent, /正在同步与核验/u);
   assert.deepEqual(calls, [{ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true }]);
 
+  state = { ...initial, memorySyncStatus: 'idle' }; listener(state);
+  const recoveredFeedback = flatten(container).find(node => node.className.includes('qqj-management-feedback'));
+  assert.equal(recoveredFeedback.hidden, true); assert.equal(recoveredFeedback.textContent, '', '正常订阅恢复后常规旧提示也退出');
   flatten(container).find(node => node.textContent === '复制状态诊断').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(copied);
@@ -2863,7 +2873,8 @@ test('摘要地点只按来源楼的明确关系显示父级，搜索与编辑�
   summary.value = '用户改过的摘要'; summary.fire('input');
   await submitEditor(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(saved[0], 'floor-20');
-  assert.deepEqual(saved[1].locations, [{ itemId: 'summary-20:location:0', name: '主卧' }], '保存载荷仍只含原地点名与原itemId');
+  assert.equal(saved[1].locations, undefined, '地点未编辑不提交，避免原位覆盖当前人工内容');
+  assert.equal(locationInput.value, '主卧', '派生父级仍不写入人工输入');
   view.deactivate();
 });
 
@@ -3152,7 +3163,7 @@ test('摘要楼默认折叠，折叠条显示楼号/时间/真实状态，展开
   const time = flatten(editorContent()).find(node => node.placeholder === '日期、时间范围或相对时间'); time.value = '次日'; time.fire('input'); time.value = '10月4日 周二 15:30'; time.fire('input');
   await submitEditor(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(saved[0], 'floor'); assert.equal(saved[1].summary, '修订后摘要');
-  assert.equal(saved[1].timeText, '10月4日 周二 15:30'); assert.equal(saved[1].originalTimeText, '10月4日 周二 15:30'); assert.equal(saved[1].timeChanged, false); assert.equal(saved[1].locations[0].itemId, 'place-1');
+  for (const field of ['timeText', 'originalTimeText', 'timeChanged', 'locations']) assert.equal(Object.hasOwn(saved[1], field), false, '改回原值和未编辑字段不提交：' + field);
   assert.equal(saved[1].participantNames, undefined, '人物输入未改时保留原引用，不按姓名重选');
   assert.equal(flatten(container).find(node => String(node.className).includes('qqj-memory-card')).open, true);
   view.deactivate(); assert.equal(menuDocument.clickListenerCount(), 0, '页面停用时清理外部点击监听');
@@ -4010,7 +4021,7 @@ test('回执恢复失败只显示在召回区，不妨碍地基 ready', async ()
   view.mount(container);
   await view.activate();
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /记忆状态已刷新/);
+  assert.doesNotMatch(copy, /记忆状态已刷新/);
   assert.match(copy, /历史召回回执恢复失败：模拟回执失败；不影响记忆读取/);
   assert.match(copy, /已记忆 0\/2 楼/);
 });

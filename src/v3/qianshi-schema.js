@@ -153,6 +153,6 @@ export function validateQianshiDelta(input, { floorId = null, floorIds = null } 
     if (JSON.stringify(review).length > 480000) fail('qianshiDelta.historyReview');
   }
   if (value.status === 'empty' && value.events.length || value.status === 'ready' && !value.events.length
-    || value.status === 'pending' && value.events.length || value.status === 'partial' && !value.events.length) fail('qianshiDelta.status');
+    || value.status === 'partial' && !value.events.length) fail('qianshiDelta.status');
   return Object.freeze(value);
 }

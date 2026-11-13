@@ -74,8 +74,9 @@ function cseReply(options, text, reason) {
   return { jsonData: { subjects: trackedSubjects.map(({ name }) => ({ subject: name, situational: [{ text, visibility: 'observable', reason }] })) }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'seed' } };
 }
 
-test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目标 ready/root 可读且模型调用为零', async () => {
+for (const targetCalendar of [undefined, null, { months: 12, prefix: '人工历' }]) test(`候选生产 bundle 经真实 CHAT_CHANGED 继承历法且保目标人工值（${targetCalendar === undefined ? '继承' : targetCalendar === null ? '旧空值按设置归一' : '人工历'}）`, async () => {
   const backend = createRecordBackend();
+  const calendarSettings = { qianqianjie: { pluginEnabled: true, storyCalendars: { [SOURCE]: { months: 4, prefix: '测试历' } } }, 'schedule-planner': {} };
   let activeHost = hostChat('原聊天', SOURCE, [user('开始'), assistant('公共 A'), user('继续 A')]);
   const hostFiles = new Map([['原聊天', { header: { chat_metadata: structuredClone(activeHost.chatMetadata) }, chat: structuredClone(activeHost.chat) }]]);
   const seedHostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => activeHost } } });
@@ -172,6 +173,9 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
     if (options.method === 'PUT') {
       const body = JSON.parse(options.body);
       if ((previous?.revision ?? 0) !== body.expectedRevision) return response(409, {});
+      if (parts[0].startsWith('chat-') && parts[0] !== `chat-${SOURCE}` && parts[1] === 'v3-root' && targetCalendar !== undefined) {
+        calendarSettings.qianqianjie.storyCalendars[body.data.chatId] = structuredClone(targetCalendar);
+      }
       const revision = (previous?.revision ?? 0) + 1;
       backend.records.set(mapKey, { revision, data: structuredClone(body.data) });
       return response(200, envelope(body.data, revision));
@@ -199,7 +203,7 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
     else if (hostPath === '/scripts/user.js') module = synthetic(identifier, { getCurrentUserHandle: () => 'isolated-test-user' });
     else if (hostPath === '/lib.js') module = synthetic(identifier, { showdown: { Converter: class { makeHtml(value) { return value; } } }, DOMPurify: { sanitize: value => value }, localforage: { INDEXEDDB: 'INDEXEDDB', createInstance: () => ({ async ready() {}, async getItem() { return null; }, async setItem() {}, async removeItem() {}, async keys() { return []; } }) } });
     else if (hostPath === '/scripts/power-user.js') module = synthetic(identifier, { power_user: { persona_description: '调查员' } });
-    else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: { qianqianjie: { pluginEnabled: true }, 'schedule-planner': {} }, extensionNames: [], extensionTypes: { 'third-party/ST-QianQianJie': 'local' } });
+    else if (hostPath === '/scripts/extensions.js') module = synthetic(identifier, { extension_settings: calendarSettings, extensionNames: [], extensionTypes: { 'third-party/ST-QianQianJie': 'local' } });
     else if (hostPath === '/script.js') module = synthetic(identifier, { is_send_press: false, saveSettingsDebounced() {}, getRequestHeaders: () => ({}) });
     else if (hostPath === '/scripts/group-chats.js') module = synthetic(identifier, { is_group_generating: false });
     else if (hostPath === '/scripts/world-info.js') module = synthetic(identifier, { loadWorldInfo: async () => null, selected_world_info: [], world_info: {}, world_info_case_sensitive: false, world_info_match_whole_words: false, world_names: [] });
@@ -233,6 +237,10 @@ test('候选生产 bundle 经真实 CHAT_CHANGED 初始化同角色副本，目�
   assert.equal(target.status, 'ready');
   assert.equal(target.floorMemories[0].summary.aiText, '公共 A 摘要');
   assert.equal(activeHost.chatMetadata.qianqianjie.chatId, targetChatId);
+  assert.equal(calendarSettings.qianqianjie.storyCalendars[targetChatId]?.months ?? null, targetCalendar == null ? 4 : targetCalendar.months);
+  assert.equal(calendarSettings.qianqianjie.storyCalendars[targetChatId]?.prefix ?? null, targetCalendar == null ? '测试历' : targetCalendar.prefix);
+  assert.equal(calendarSettings.qianqianjie.storyCalendars[SOURCE].months, 4);
+  assert.equal(calendarSettings.qianqianjie.storyCalendars[SOURCE].prefix, '测试历');
   assert.equal(candidateAiCalls + hostAiCalls, 0);
   assert.equal(snapshotSource(backend.records), sourceBefore);
 });

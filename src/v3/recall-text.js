@@ -1,3 +1,6 @@
+export const RECALL_COMPACT_KNOWLEDGE_GUIDANCE = '作者资料按原描述及实际接收范围限定人物知情。';
+export const RECALL_KNOWLEDGE_GUIDANCE = '资料供作者理解剧情。人物知情依已存表达者、接收者、实际观察及原描述范围。私下约定、传闻与推测保留原语义。';
+
 // 先按程序写入的长度跳过原文块，再解析外层来源/时间/剧情线。
 export function readManualArtifactBlocks(source, { preserveHeaders = false } = {}) {
   const header = /^(- (?:AI #[^\n]+：|\[旧事\] ))\[人工原文｜(\d+)字符\]\n/gmu;

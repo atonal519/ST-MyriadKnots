@@ -447,3 +447,46 @@ test('发布原生读写事务串行完成，同一store不同时排队十六个
   assert.equal(await cache.readManifest(scope, witness), null);
   assert.equal(await cache.readManifest(scope, next), null, '迟到写事务没有重新发布已失效manifest');
 });
+
+test('第七批缓存：原生打开沿既有预算退出，迟到连接关闭且不重新启用缓存', async t => {
+  for (const late of ['success', 'error']) await t.test(late, async () => {
+    const h = localForageHarness(); let request, closes = 0;
+    const cache = createIndexedDbCoreRecordCache({ localForage: h.localForage, accountHandleProvider: () => 'user',
+      originProvider: () => 'https://tavern.invalid', indexedDBProvider: () => ({ open() { request = {}; return request; } }),
+      keyRangeProvider: () => h.keyRange, ioTimeoutMs: 5 });
+    const scope = await cache.scopeFor({ chatId: '123e4567-e89b-42d3-a456-426614174000' });
+    const pending = cache.readManifest(scope, witness);
+    const value = await Promise.race([pending, new Promise(resolve => setTimeout(() => resolve('still-pending'), 50))]);
+    if (late === 'success') {
+      request.result = { objectStoreNames: { contains: () => true }, close() { closes++; }, transaction() { throw new Error('Late connection used'); } };
+      request.onsuccess();
+    } else { request.error = new Error('late open failure'); request.onerror(); }
+    await pending; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(value, false);
+    assert.equal(cache.getStats().available, false);
+    assert.equal(cache.getStats().lastFailure.phase, 'native-open');
+    assert.equal(cache.getStats().lastFailure.lateResult, late === 'success' ? 'fulfilled' : 'rejected');
+    assert.equal(closes, Number(late === 'success'));
+    assert.equal(await cache.readManifest(scope, witness), false);
+    assert.equal(await cache.publish(scope, witness, [], { floor: [] }), false);
+  });
+});
+
+test('第七批缓存：原生blocked或error后迟到成功仅关闭原连接', async t => {
+  for (const failure of ['blocked', 'error']) await t.test(failure, async () => {
+    const h = localForageHarness(); let request, closes = 0;
+    const cache = createIndexedDbCoreRecordCache({ localForage: h.localForage, accountHandleProvider: () => 'user',
+      originProvider: () => 'https://tavern.invalid', indexedDBProvider: () => ({ open() { request = {}; return request; } }),
+      keyRangeProvider: () => h.keyRange, ioTimeoutMs: 50 });
+    const scope = await cache.scopeFor({ chatId: '123e4567-e89b-42d3-a456-426614174000' });
+    const pending = cache.readManifest(scope, witness);
+    while (!request) await new Promise(resolve => setImmediate(resolve));
+    if (failure === 'blocked') request.onblocked(); else { request.error = new Error('open failed'); request.onerror(); }
+    assert.equal(await pending, false);
+    request.result = { objectStoreNames: { contains: () => true }, close() { closes++; } }; request.onsuccess();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closes, 1);
+    assert.equal(cache.getStats().available, false);
+    assert.equal(await cache.readManifest(scope, witness), false);
+  });
+});

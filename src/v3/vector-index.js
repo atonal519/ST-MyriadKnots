@@ -143,7 +143,12 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
   let state = { status: 'idle', completed: 0, total: 0, error: null, cancelled: false, userCancelled: false, buildDiagnostic: null };
   const subscribers = new Set();
   // Cancellation markers describe this notification only; query progress must not replay an old cancel.
-  const notify = patch => { state = { ...state, ...patch, cancelled: patch?.cancelled === true, userCancelled: patch?.userCancelled === true }; for (const fn of subscribers) fn({ ...state }); };
+  const notify = patch => {
+    state = { ...state, ...patch, cancelled: patch?.cancelled === true, userCancelled: patch?.userCancelled === true };
+    for (const fn of subscribers) {
+      try { fn({ ...state }); } catch { /* A view failure does not own the vector task or other subscribers. */ }
+    }
+  };
   const updateBuildDiagnostic = (operation, patch) => {
     operation.buildDiagnostic = { ...(operation.buildDiagnostic ?? {}), ...patch };
     const safe = safeBuildDiagnostic(operation.buildDiagnostic);
@@ -213,9 +218,10 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     const key = ownerKey(source, modelKey), captured = epoch;
     const reportLoad = value => { if (diagnostic) { diagnostic.load = value; diagnostic.onLoadProgress?.(); } };
     if (loading?.key === key && loading.epoch === captured) return loading.promise;
-    const job = { key, epoch: captured, promise: null }; loading = job; notify({});
-    job.promise = (async () => {
+    const job = { key, epoch: captured, promise: null }; loading = job;
+    job.promise = Promise.resolve().then(async () => {
       try {
+        notify({});
         if (!isEnabled()) { reportLoad({ pending: null, shardsRead: 0, shardCount: null, exitReason: 'disabled', backendCode: null, httpStatus: null }); return; }
         reportLoad({ pending: 'manifest', shardsRead: 0, shardCount: null, exitReason: null, backendCode: null, httpStatus: null });
         const manifest = await readRecord(`chat-${source.chatId}`, VECTOR_INDEX_ID);
@@ -289,7 +295,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
         /* 缓存读取失败仍按既有行为退回无索引召回；快照只保留安全错误元数据。 */
       }
       finally { if (loading === job) loading = null; notify({}); }
-    })();
+    });
     return job.promise;
   }
 
@@ -301,9 +307,10 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
         || JSON.stringify(configProvider()) !== operation.config) throw errorWith('VECTOR_ABORTED', '索引建立已取消。');
     };
     let phase = 'source';
-    updateBuildDiagnostic(operation, { status: 'building', phase, batchNumber: 0, completedChunks: 0, totalChunks: 0,
-      inputCount: 0, inputCharacters: 0, longestInputCharacters: 0, errorCode: null, httpStatus: null, request: null });
     try {
+      if (!incremental) notify({ status: 'building', completed: 0, total: 0, error: null, background: false, cancelled: false });
+      updateBuildDiagnostic(operation, { status: 'building', phase, batchNumber: 0, completedChunks: 0, totalChunks: 0,
+        inputCount: 0, inputCharacters: 0, longestInputCharacters: 0, errorCode: null, httpStatus: null, request: null });
       const source = await sourceProvider({ targetIdentity: operation.targetIdentity, stage: 'source', sourceKey: operation.sourceKey });
       if (source?.status !== 'ready') {
         if (incremental) { updateBuildDiagnostic(operation, { status: 'skipped', phase: 'source' }); return { status: 'notReady' }; }
@@ -337,14 +344,14 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
           return { status: 'unchanged', chunkCount: chunks.length };
         }
       }
-      // 冷启动和手动重复建索引先恢复已提交向量；后台不因缓存冷而重算整档。
-      if (cached?.key !== key) await load(source, operation.configValue, modelKey, null, { allowActive: !incremental });
+      // 后台先恢复完整旧缓存；手动建立在下方逐片读回，坏派生片可独立重建。
+      if (incremental && cached?.key !== key) await load(source, operation.configValue, modelKey, null);
       guard(source);
-      if (cached?.key !== key) {
+      if (incremental && cached?.key !== key) {
         updateBuildDiagnostic(operation, { status: 'skipped', phase: 'cache' });
-        return incremental ? { status: 'notIndexed' } : { status: 'unavailable' };
+        return { status: 'notIndexed' };
       }
-      const cachedRawRows = cached.rows.filter(row => rawWitnessShape(row.witness));
+      const cachedRawRows = cached?.key === key ? cached.rows.filter(row => rawWitnessShape(row.witness)) : [];
       if (incremental && previous.data.chunkCount > 0 && cachedRawRows.length === 0) {
         updateBuildDiagnostic(operation, { status: 'skipped', phase: 'cache' });
         return { status: 'legacySummaryOnly' };
@@ -377,7 +384,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
           }
         }
         // A failed build may already have persisted this exact batch; check its deterministic ID before re-embedding.
-        if (!previousShardIds.has(expectedId)) {
+        if (!savedBatch || !previousShardIds.has(expectedId)) {
           phase = 'cache';
           existingBatch = await readRecord(collection, expectedId); guard(source);
           const persisted = await validSavedBatch(existingBatch, source, modelKey, batch, witnesses, expectedId, dimensions);
@@ -418,7 +425,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
           }));
         }
         const id = `${VECTOR_SHARD_PREFIX}${(await sha256(JSON.stringify([source.narrativeGeneration, modelKey, batchRows.map(row => row.witness)]))).slice(0, 40)}`;
-        if (!persistedBatch && !previousShardIds.has(id)) {
+        if (!persistedBatch && (!savedBatch || !previousShardIds.has(id))) {
           const storedRows = batchRows.map(row => ({ witness: row.witness, vector: encodeVector(row.vector) }));
           phase = 'cache';
           const existing = id === expectedId ? existingBatch : await readRecord(collection, id); guard(source);
@@ -438,9 +445,9 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
         || rows.some(row => !valid.has(rawSourceKey(row.witness)))) throw errorWith('VECTOR_SOURCE_CHANGED', '来源已变化，请重新建立索引。');
       phase = 'save';
       updateBuildDiagnostic(operation, { phase, completedChunks: rows.length, totalChunks: chunks.length });
-      await client.put(collection, VECTOR_INDEX_ID, { schemaVersion: SCHEMA, recordType: 'vectorCache', chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, dimensions: dimensions ?? cached.dimensions ?? operation.configValue.dimensions ?? 1024, shardIds, chunkCount: rows.length }, previous?.revision ?? 0, { signal: operation.controller.signal });
+      await client.put(collection, VECTOR_INDEX_ID, { schemaVersion: SCHEMA, recordType: 'vectorCache', chatId: source.chatId, narrativeGeneration: source.narrativeGeneration, modelKey, dimensions: dimensions ?? cached?.dimensions ?? operation.configValue.dimensions ?? 1024, shardIds, chunkCount: rows.length }, previous?.revision ?? 0, { signal: operation.controller.signal });
       guard(source);
-      cached = { key, rows, dimensions: dimensions ?? cached.dimensions ?? operation.configValue.dimensions ?? 1024,
+      cached = { key, rows, dimensions: dimensions ?? cached?.dimensions ?? operation.configValue.dimensions ?? 1024,
         manifest: { revision: (previous?.revision ?? 0) + 1, shardIds, chunkCount: rows.length } };
       lastIncrementalFailureKey = null; lastIncrementalCancelledKey = null;
       updateBuildDiagnostic(operation, { status: 'ready', phase: 'complete', completedChunks: rows.length, totalChunks: chunks.length, errorCode: null, httpStatus: null });
@@ -465,7 +472,7 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
       if (incremental && updating === operation) {
         updating = null; notify({});
       }
-      if (!incremental && active === operation) { active = null; notify({}); }
+      if (!incremental && active === operation) { active = null; notify(state.status === 'building' ? { status: cached?.rows?.length ? 'ready' : 'idle', background: false } : {}); }
     }
   }
 
@@ -491,7 +498,6 @@ export function createVectorIndex({ client, api, configProvider, sourceProvider,
     if (!config || !isEnabled()) throw errorWith('VECTOR_DISABLED', '请先启用向量 API。');
     const operation = { controller: new AbortController(), epoch, targetIdentity: targetIdentity(), configValue: config, config: JSON.stringify(config), sourceKey: null };
     active = operation; lastIncrementalFailureKey = null; lastIncrementalCancelledKey = null;
-    notify({ status: 'building', completed: 0, total: 0, error: null, background: false, cancelled: false });
     return executeBuild(operation, false);
   }
 

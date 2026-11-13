@@ -637,6 +637,36 @@ export function timeItemFailures(batches, reachable) {
   return failures;
 }
 
+const MANUAL_TIME_FIELDS = ['subjectEntityId', 'label', 'observation', 'observationTime', 'occurrenceTime', 'dueTime', 'periodDays', 'status', 'projectionText'];
+const timeFieldValue = (item, field) => field === 'projectionText' ? item.projection?.text ?? '' : item[field];
+
+export function manualTimeEdits(batches) {
+  const previous = new Map(), edits = new Map();
+  for (const batch of batches) for (const item of batch.changes ?? []) {
+    const prior = previous.get(item.id), ownership = edits.get(item.id);
+    if (batch.manualEdit) {
+      const fields = Array.isArray(item.manualFields) ? item.manualFields.filter(field => MANUAL_TIME_FIELDS.includes(field))
+        : MANUAL_TIME_FIELDS.filter(field => !(field === 'status' && !prior && item.previousObservationKey === null && item.status === 'active')
+          && (!prior || JSON.stringify(timeFieldValue(item, field)) !== JSON.stringify(timeFieldValue(prior, field))));
+      const next = ownership ?? { fields: {}, observationAnchors: {}, revision: null, revisionsByObservation: {} };
+      for (const field of fields) {
+        if (field === 'projectionText') next.projection = { text: item.projection?.text ?? '', applicableTime: batch.currentTime,
+          floorId: batch.cutoffFloorId };
+        else {
+          next.fields[field] = structuredClone(item[field] ?? null);
+          if (['observation', 'observationTime'].includes(field)) next.observationAnchors[field] = batch.cutoffFloorId;
+        }
+      }
+      next.revision = item.observationKey;
+      edits.set(item.id, next);
+    }
+    const current = edits.get(item.id);
+    if (current) current.revisionsByObservation[item.observationKey] = current.revision;
+    previous.set(item.id, item);
+  }
+  return edits;
+}
+
 export async function compileTimeEdit(item, fields, reachable, batchId, items = []) {
   const fail = message => Object.assign(new Error(message), { code: 'QQJ_TIME_EDIT_INVALID' });
   const label = fields.label === undefined ? item.label : String(fields.label).trim();
@@ -670,13 +700,14 @@ export async function compileTimeEdit(item, fields, reachable, batchId, items = 
   const canEditProjection = item.status === 'active' && item.type !== 'deadline' && validTimeProjection(item, currentTime);
   const projectionProvided = fields.projectionText !== undefined;
   const projectionText = projectionProvided ? String(fields.projectionText).trim() : item.projection?.text ?? '';
-  if (projectionProvided && (!canEditProjection || projectionText.length > 2000)) throw fail(!canEditProjection ? '当前没有可修订的有效推测，请刷新事项后重试。' : '当前推测不能超过2000字。');
+  if (projectionProvided && (projectionText && !canEditProjection || projectionText.length > 2000)) throw fail(!canEditProjection ? '当前没有可修订的有效推测，请刷新事项后重试。' : '当前推测不能超过2000字。');
   if (projectionProvided && factsChanged && projectionText !== (item.projection?.text ?? '')) throw fail('修改事实、时间或状态会清除旧推测；请撤销推测文字修改后，再保存事项。');
   const preserveProjection = !factsChanged && (identityChanged || projectionProvided) && canEditProjection && Boolean(projectionText);
   const observationKey = await timeFingerprint([item.observationKey, label, observation, observationTime, occurrenceTime, dueTime, periodDays, status, requestedSubjectEntityId, preserveProjection ? projectionText : null]);
   const sourceIdentity = identityChanged && item.sourceIdentity ? await timeFingerprint([requestedSubjectEntityId, item.type,
     [...new Set((item.sourceRefs ?? []).map(ref => ref.sourceKey).filter(Boolean))].sort(), label]) : item.sourceIdentity;
   const change = { ...structuredClone(item), label, observation, observationTime, occurrenceTime, dueTime, periodDays: periodDays ?? null, status,
+    manualFields: Object.keys(fields).filter(field => MANUAL_TIME_FIELDS.includes(field)),
     subjectEntityId: requestedSubjectEntityId, subjectName, sourceIdentity,
     stateRefs: identityChanged ? [] : item.stateRefs,
     previousObservationKey: item.observationKey, observationKey,
@@ -690,7 +721,7 @@ export async function compileTimeEdit(item, fields, reachable, batchId, items = 
     if (!primary || !primary.mergedItemIds?.includes(item.id)) throw fail('归并主项已变化，请刷新后重试编辑。');
     const detached = status === 'active';
     if (detached) { change.mergedInto = null; change.mergeRestoredObservationKey = observationKey; }
-    changes.push({ ...structuredClone(primary), mergedItemIds: detached ? primary.mergedItemIds.filter(id => id !== item.id) : primary.mergedItemIds, mergeDescription: null, mergeEvidenceKey: null,
+    changes.push({ ...structuredClone(primary), manualFields: [], mergedItemIds: detached ? primary.mergedItemIds.filter(id => id !== item.id) : primary.mergedItemIds, mergeDescription: null, mergeEvidenceKey: null,
       stateRefs: detached ? (primary.stateRefs ?? []).filter(ref => !(item.stateRefs ?? []).some(member => member.stateId === ref.stateId && member.sourceFloorId === ref.sourceFloorId)) : primary.stateRefs,
       previousObservationKey: primary.observationKey, observationKey: await timeFingerprint([detached ? 'detach' : 'member-edit', primary.observationKey, item.id, observationKey]), projection: null, reviewAssessment: null });
   }
@@ -706,6 +737,7 @@ export async function compileTimeCreate(fields, reachable, batchId, itemId, item
   const seed={id:itemId,subjectEntityId:fields.subjectEntityId,subjectName:null,type:fields.type,label:'',observation:'',observationKey:await timeFingerprint(['manual',itemId]),status:'active',
     observationTime:projectTime(''),occurrenceTime:projectTime(''),dueTime:projectTime(''),periodDays:null,sourceIdentity:null,sourceRefs:[],stateRefs:[],projection:null};
   const batch=await compileTimeEdit(seed,{...fields,subjectEntityId:String(fields.subjectEntityId??''),status:'active'},reachable,batchId,items);
+  batch.changes[0].manualFields = Object.keys(fields).filter(field => MANUAL_TIME_FIELDS.includes(field));
   batch.changes[0].previousObservationKey=null;
   batch.dependencies=[{floorId:batch.cutoffFloorId}];
   return batch;
@@ -934,6 +966,7 @@ export async function compileTimeResponse(response, prepared, batches = []) {
   const directory = prepared.identityPeople ?? prepared.request.people;
   const people = new Set(directory.map(item => item.entityId));
   const currentReview = prepared.request.currentReview === true;
+  const manualEdits = manualTimeEdits(batches);
   const changes = [], itemErrors = [], ids = new Set();
   for (const [index, original] of data.changes.entries()) {
     try {
@@ -991,8 +1024,8 @@ export async function compileTimeResponse(response, prepared, batches = []) {
       if (retirementReason && (typeof original?.itemId !== 'string' || original.itemId !== raw.itemId || !old || old.status !== 'active' || old.type !== 'body' || value.type !== 'body'
         || text(value.progression) || text(value.assessmentReason))) throw itemFail('退出跟进只允许已有活跃身体事项，并需单独提供退出理由。');
       const observationKey = hasObservation ? await timeFingerprint([value.sourceKeys, value.observation]) : old.observationKey;
-      const allowedStates = new Map((prepared.request.currentStates ?? []).filter(state => state.subjectEntityId === value.subjectEntityId).map(state => [`${state.stateId}|${state.sourceFloorId}`, state]));
-      const stateRefs = hasObservation ? (Array.isArray(value.stateRefs) ? value.stateRefs : []).filter(ref => allowedStates.has(`${ref.stateId}|${ref.sourceFloorId}`) && refs.some(source => source.floorId === ref.sourceFloorId)).map(ref => ({ stateId: ref.stateId, sourceFloorId: ref.sourceFloorId, stateText: allowedStates.get(`${ref.stateId}|${ref.sourceFloorId}`).text, sourceDeltaId: allowedStates.get(`${ref.stateId}|${ref.sourceFloorId}`).sourceDeltaId ?? null })) : old.stateRefs;
+      const allowedStates = new Map((prepared.request.currentStates ?? []).filter(state => state.origin !== 'manual' && state.subjectEntityId === value.subjectEntityId).map(state => [`${state.stateId}|${state.sourceFloorId}`, state]));
+      const stateRefs = hasObservation ? (Array.isArray(value.stateRefs) ? value.stateRefs : []).filter(ref => ref && allowedStates.has(`${ref.stateId}|${ref.sourceFloorId}`) && refs.some(source => source.floorId === ref.sourceFloorId)).map(ref => ({ stateId: ref.stateId, sourceFloorId: ref.sourceFloorId, stateText: allowedStates.get(`${ref.stateId}|${ref.sourceFloorId}`).text, sourceDeltaId: allowedStates.get(`${ref.stateId}|${ref.sourceFloorId}`).sourceDeltaId ?? null })) : old.stateRefs;
       const status = retirementReason ? 'paused' : !hasObservation && (refs.length || old.status !== 'active') ? old.status : value.status;
       let qianshiRef = old?.qianshiRef ?? null;
       if (Object.hasOwn(original ?? {}, 'qianshiCandidateKey')) {
@@ -1008,7 +1041,7 @@ export async function compileTimeResponse(response, prepared, batches = []) {
       const assessmentReason = currentReview ? text(value.assessmentReason, 150) || (!prepared.request.currentTime?.date || !effectiveTime(observationTime)?.date ? '缺少明确时间，无法可靠判断当前进展。' : timeDistance(observationTime, prepared.request.currentTime) === null ? '时间间隔无法确认，不能可靠判断当前进展。' : !timeIsNotEarlier(observationTime, prepared.request.currentTime, observationAtCutoff) ? '当前时点早于原观察或范围先后未明，无法推算。' : '') : '';
       const keywords = normalizeTimeKeywords(original?.keywords) ?? normalizeTimeKeywords(original?.tags) ?? itemKeywords(old);
       ids.add(id);
-      changes.push({ id, ...(old?.mergedInto ? { mergedInto: old.mergedInto } : {}),
+      const change = { id, ...(old?.mergedInto ? { mergedInto: old.mergedInto } : {}),
         ...(old?.mergedItemIds?.length ? { mergedItemIds: old.mergedItemIds, mergeDescription: old.mergeDescription, mergeEvidenceKey: old.mergeEvidenceKey } : {}),
         ...(old?.mergeRestoredObservationKey ? { mergeRestoredObservationKey: old.mergeRestoredObservationKey } : {}), sourceIdentity: hasObservation ? sourceIdentity : old.sourceIdentity ?? sourceIdentity, subjectEntityId: value.subjectEntityId, subjectName: subjectName || old?.subjectName || null, type: value.type, label: hasObservation ? text(value.label, 150) : old.label, status,
         observation: hasObservation ? text(value.observation) : old.observation, observationKey, periodDays,
@@ -1023,7 +1056,30 @@ export async function compileTimeResponse(response, prepared, batches = []) {
             : projectionDue(observationTime, prepared.request.currentTime)))
             || hasObservation && value.type === 'body' && bodyProjectionTimeIsComparable(observationTime, prepared.request.currentTime, observationAtCutoff)) ? {
           text: text(value.progression), applicableTime: prepared.request.currentTime, applicableFloorId: prepared.cutoffFloorId, observationKey,
-        } : null });
+        } : null };
+      const manual = manualEdits.get(id);
+      if (manual) {
+        const fields = structuredClone(manual.fields);
+        for (const [field, floorId] of Object.entries(manual.observationAnchors)) {
+          const anchor = prepared.floorSequences?.get(floorId);
+          if (hasObservation && Number.isInteger(anchor) && newest.assistantSeq > anchor) delete fields[field];
+        }
+        Object.assign(change, fields);
+        if (change.type === 'cycle' && !Object.hasOwn(manual.fields, 'dueTime') && change.periodDays
+          && (Object.hasOwn(manual.fields, 'periodDays') || Object.hasOwn(manual.fields, 'occurrenceTime'))) {
+          change.dueTime = effectiveTime(change.occurrenceTime)?.date ? shiftTime(change.occurrenceTime, change.periodDays) : change.dueTime;
+        }
+        if (hasObservation) change.observationKey = await timeFingerprint([value.sourceKeys, change.observation]);
+        if (change.projection) change.projection.observationKey = change.observationKey;
+        const projectionAnchor = prepared.floorSequences?.get(manual.projection?.floorId);
+        const hasLaterObservation = Number.isInteger(projectionAnchor) && change.sourceRefs.some(ref => (prepared.floorSequences?.get(ref.floorId) ?? 0) > projectionAnchor);
+        if (manual.projection && !hasLaterObservation && sameTimeValue(manual.projection.applicableTime, prepared.request.currentTime)) {
+          change.projection = manual.projection.text ? { text: manual.projection.text, applicableTime: manual.projection.applicableTime,
+            applicableFloorId: prepared.cutoffFloorId, observationKey: change.observationKey } : null;
+        }
+        if (change.status !== 'active') change.projection = null;
+      }
+      changes.push(change);
     } catch (error) {
       if (!error?.timeItemInvalid) throw error;
       const inputId = original?.itemId, itemId = mergedTargets.get(inputId) ?? inputId;
@@ -1094,7 +1150,7 @@ export function timeRecallProjection(items, source, currentTime, annualRecords =
   const names = new Map(source.entities.map(entity => [entity.entityId, entity.displayName]));
   const qianshiMatters = new Map((qianshiProjection?.matters ?? []).map(matter => [matter.matterId, matter]));
   const deletedQianshiEvents = new Map((qianshiProjection?.deletedEvents ?? []).map(event => [event.eventId, event.matterId]));
-  const states = source.currentState.flatMap(subject => ['core', 'adaptive', 'situational'].flatMap(layer => subject[layer].map(state => ({ ...state, subjectEntityId: subject.subjectEntityId }))));
+  const states = source.currentState.flatMap(subject => ['core', 'adaptive', 'situational'].flatMap(layer => subject[layer].filter(state => state.origin !== 'manual').map(state => ({ ...state, subjectEntityId: subject.subjectEntityId }))));
   const corrections = {}, reminders = [];
   const mapped = items.map(item => ({ ...item, observationTime: effectiveTime(item.observationTime), occurrenceTime: effectiveTime(item.occurrenceTime), dueTime: effectiveTime(item.dueTime), ...(item.projection ? { projection: { ...item.projection, applicableTime: effectiveTime(item.projection.applicableTime) } } : {}), subjectEntityId: resolveIdentityEntityId(item.subjectEntityId, source.identityProjection) }));
   for (const item of mapped) {

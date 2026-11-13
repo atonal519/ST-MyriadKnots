@@ -1,3 +1,4 @@
+import { RECALL_KNOWLEDGE_GUIDANCE } from './recall-text.js';
 import { isGenericPlaceAlias } from './spatial-domain.js';
 import { TRADITIONAL_CLOCK_PATTERN, isStoryClockOnly } from '../story-time-clock.js';
 import { isUuid, sha256 } from '../identity.js';
@@ -20,7 +21,7 @@ import { normalizeLocationReference } from './location-reference.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-65';
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-66';
 export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-36`;
 export const QIANSHI_OUTPUT_CAPACITY_GUIDANCE = '每个千事保存单元最多输出 160 条事件、320 条不同有效关系，每条事件最多 40 位人物；order 不要重复关系。';
 const PERSON_ALIAS_DESCRIPTION = '人物只收可长期复用的姓名、昵称或稳定称谓；不收代词、指示词及一次性外貌或身份描述。';
@@ -132,7 +133,7 @@ status 表示整线事实状态，actionStatus 表示本楼局部动作状态，
 逐项检查全部旧候选，主动清理已经失去后续意义的跟进。普通临时事项的有效时间或场景已经过去、后文没有承接且没有独立未决后果时，主动结束跟进，following:false。无需等正文逐字宣布完成。仅调整跟进也用 progress 链接对应候选，description 说明临时情境已过去及停追依据，保留原 status 和 latestProgress 中有据的 storyTime、scheduledTime，来源归当前判断楼。事实完成证据不足时保 planned/inProgress，跟进仍可结束。说明只记录跟进判断，保持原有动作事实与时间。债务、交付、长期承诺、关键伏笔等仍影响后续的独立未决目标，以及尚待履行的未来约定，继续 following:true。按实际上下文判断剩余意义与履行情况。局部动作结束也不关闭另一个剩余目标。
 上下文足够表明目标已达成或取消时，必须链接对应候选，记录 progress 并更新整线 completed/cancelled，结果同时记入摘要与千事。重要事项同样按后文明确蕴含的结果判断完成，保留仍有具体未决目标的事项。人工修订的状态与跟进选择优先。manualStatus=true 的候选保人工状态，tracking=following 的候选保持续跟进。已停止的事项只作历史提及用 context，保持 following:false。出现新的具体推进、重新约定或待解决目标才用 progress、following:true。`;
 
-export const EXTRACTOR_FIXED_CONTRACT = `【固定事实边界】
+export const EXTRACTOR_FIXED_CONTRACT = `${RECALL_KNOWLEDGE_GUIDANCE}\nsummary、承诺与千事description保留原有知情范围、信息来源及传闻或推测口径。\n【固定事实边界】
 1. canonicalContent 是目标 AI 楼正文；precedingUserInput 是该 AI 楼紧邻前方、按时间正序冻结的连续用户输入，也是本轮剧情事实来源。用户输入中实际写出的动作、台词、已经发生的剧情和承诺即使未被 AI 复述，也要纳入 summary 与对应结构字段。作者纠正仍按作者纠正理解；未来要求、写作指令或计划不能写成已经发生；括号内容按语义判断，不机械删除。payload.storyClock 若存在，是同一楼原始正文中的隐藏时间线索；标准 start/end 与 canonicalContent 中的明确时间是本楼最高时间锚。referenceText 来自目标楼原文的时间参考标签，可包含架空纪年、范围或不确定表达，必须保留原语义，不能擅自拆成精确 start/end。payload.previousStoryClock 是目标楼之前最近一楼的正文时间参照；它的 referenceText 也只属于前楼。payload.previousFloorContext 是已保存前楼的时间、摘要末段与有限地点身份参照。placeBindings 和 knownPlaces.parentPlaceKeys 只表示历史地点身份与已存包含关系，不代表本楼发生、当前位置或人物在场。locationReference 与 sourceFloors[].locationReference 是对应来源原消息明确地点标签的补充参照；保留其来源语义，不推断父级、当前位置或人物在场，且正文与人工修订优先。所有前楼信息都只是衔接参照，不能直接冒充本楼事实。已知人物和用户身份只用于判断称谓，不证明本楼发生、人物在场或知情；knownPeople.identityBrief 仅是身份对照，不是本楼新证据。people[].identityFacts 是可选的完整当前稳定身份列表：每项 {kind:"identity"|"occupation"|"relation",text,evidence:[...]}，分别只写稳定身份、职业/职责、用于识别的稳定关系，并把该条依据独立放在 evidence，沿现有 quoteSegments/sourceFloorKey/sourceType/sourceSnapshotIndex 合同引用原文。临时行为、病情、评价、位置、衣着和活动过程留在原事件/状态，不由单次行为推职业。每份最多20条身份、合计20条引用，拼成简介总长不超过400字；没有更新就省略，空列表不清旧简介。knownPeople.identityFacts 已保存有依据的条目可用 {existingKey:"该目标提供的原key"} 保留，不重抄旧引文；只能复用该目标本轮提供的key。新列表必须保留仍有效旧身份，纠正的条目由当前原文支持；任一条目依据无效整份简介更新跳过，其它摘要仍保存。只有旧裸简介时，有本轮明确稳定身份依据即可重建列表，即使身份未改变；旧简介只作对照，不是证据。兼容旧 people[].identityBrief 返回须配独立 identityBriefEvidence，人物出现的通用 evidence 不证明整份简介。临时信息照常写入 summary 与对应结构字段。
 2. auxiliaryStateSnapshot 若存在，是目标楼当前分支当时已保存的只读变量快照，只作摘要和结构提取的辅助状态参考。它可能同时包含多个人物、不完整或过时信息，不能整份归给某一人物，也不能当作用户手动纠正；与 canonicalContent 或 precedingUserInput 中的明确事实冲突时，以正文和用户明确事实为准。
 3. 区分叙述事实、角色声称、私有思想、意图、尝试、中断、进行中、完成和结果；不要补写正文没有的因果、动机、关系或结果。knownPeople.previousName 仅供识别同一人物的旧正式名，不自动作为别名保存。
@@ -1991,9 +1992,10 @@ export async function normalizeExtractorResponse(options) {
   const memoryWithQianshi = validateFloorMemory({ ...normalized.memory, qianshiDelta }, { expectedChatId: options.floor.chatId });
   const withQianshi = Object.freeze({ ...normalized, memory: memoryWithQianshi });
   const clock = options.envelope?.request?.payload?.storyClock;
-  // 时间戳已校验星期字段；显式未知不降低已确认日期和钟点的精度。
+  // 日期与钟点独立决定精度；未知或冲突的星期不遮蔽它们。
   const complete = clock?.complete && clock.start?.date && clock.start?.time && clock.end?.date && clock.end?.time;
-  const pairs = Array.isArray(clock?.pairs) && clock.pairs.length ? clock.pairs : complete ? [{ start: clock.start, end: clock.end }] : [];
+  const pairs = (Array.isArray(clock?.pairs) && clock.pairs.length ? clock.pairs : complete ? [{ start: clock.start, end: clock.end }] : [])
+    .filter(pair => [pair.start, pair.end].some(value => value?.date || value?.time));
   const singleEnd = clock?.singleEnd === true && clock.end?.date && clock.end?.time;
   const canonicalTime = inferCanonicalCurrentTime(options.floor?.content?.canonicalContent);
   const referenceText = typeof clock?.referenceText === 'string' ? clock.referenceText.trim().slice(0, 500) : '';
@@ -2004,7 +2006,7 @@ export async function normalizeExtractorResponse(options) {
   if (!pairs.length && !singleEnd && !referenceText && !canonicalTime && clock?.start && !clock?.end) {
     return withQianshi;
   }
-  const clockPart = value => [value?.date, value?.weekday, value?.time].filter(Boolean).join(' ');
+  const clockPart = value => [value?.date ?? (value?.time ? '日期未知' : null), value?.weekday, value?.time].filter(Boolean).join(' ');
   const end = clockPart(clock?.end);
   const sourceText = pairs.length ? `${clockPart(pairs[0].start)} → ${clockPart(pairs[0].end)}`.slice(0, 500)
     : singleEnd ? end.slice(0, 500) : '';
@@ -2015,7 +2017,7 @@ export async function normalizeExtractorResponse(options) {
     if (pairs.length > 1) itemIdInput.push(index);
     return {
       itemId: await deterministicUuid(itemIdInput),
-      time: { kind: 'explicit', sourceText: pairText, normalized: null, precision: 'exact', relativeToFloorId: null },
+      time: { kind: 'explicit', sourceText: pairText, normalized: null, precision: pair.start?.date && pair.start?.time && pair.end?.date && pair.end?.time ? 'exact' : 'unresolved', relativeToFloorId: null },
       description: pairText,
       evidenceRefs: [],
     };

@@ -51,7 +51,7 @@ test('显式未知星期保留完整日期钟点，不猜星期且不接受缺�
   assert.equal(parseClockFields('date=2月31日 | weekday=未知 | time=10:30', calendar).complete, false);
   assert.equal(parseClockFields('date=春20日 | weekday=未知 | time=99:99', calendar).complete, false);
   const conflict = parseSharedStoryClock(`${stamped}${pair('SDC', '春20日 | weekday=周一 | time=10:00', '春20日 | weekday=周一 | time=10:30')}`, calendar);
-  assert.equal(conflict.ambiguous, true, '未知与有值并存仍保留冲突边界，不静默选一个星期');
+  assert.equal(conflict.ambiguous, false, '未知与有值并存不补算星期，健康日期时刻照常可用');
   assert.equal(conflict.endMeta.weekday, null);
 });
 
@@ -140,8 +140,8 @@ test('完整戳并存时保留共同字段，残缺高优先戳回退真实 BBS 
   assert.equal(parseClockFields('date=2026-02-30 | weekday=周一 | time=12:00').complete, false);
   assert.equal(parseClockFields('date=2026年5月10日 | weekday=周日 | time=99:99').complete, false);
   assert.equal(parseClockFields('date=2026年5月10日 | weekday=周日 | time=25:7').complete, false);
-  assert.equal(parseStoryClockEvidence('<bbs_start>2026年5月11日 12:30</bbs_start><bbs_end>2026年5月11日 13:00</bbs_end><!-- SDC-start | date=2026年5月10日 | weekday=周日 | time=99:99 --><!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=10:00 -->').namespace, 'tag:bbs_start,bbs_end');
-  assert.equal(parseStoryClockEvidence('<bbs_start>2026年5月11日 12:30</bbs_start><bbs_end>2026年5月11日 13:00</bbs_end><!-- SDC-start | date=2026年5月10日 | weekday=周日 | time=25:7 --><!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=10:00 -->').namespace, 'tag:bbs_start,bbs_end');
+  assert.equal(parseStoryClockEvidence('<bbs_start>2026年5月11日 12:30</bbs_start><bbs_end>2026年5月11日 13:00</bbs_end><!-- SDC-start | date=2026年5月10日 | weekday=周日 | time=99:99 --><!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=10:00 -->').namespace, 'SDC');
+  assert.equal(parseStoryClockEvidence('<bbs_start>2026年5月11日 12:30</bbs_start><bbs_end>2026年5月11日 13:00</bbs_end><!-- SDC-start | date=2026年5月10日 | weekday=周日 | time=25:7 --><!-- SDC-end | date=2026年5月10日 | weekday=周日 | time=10:00 -->').namespace, 'SDC');
   assert.equal(parseClockFields('date=10月4日 | weekday=周二 | time=辰时').complete, true, '非数字架空时间保持可用');
 });
 
@@ -184,4 +184,55 @@ test('协调矩阵与 controller 只操作自己的 prompt key', () => {
   const peerCalls = [], peerController = createMyKnotsStoryClockController({ context: () => ({ ...host, setExtensionPrompt: (...args) => peerCalls.push(args) }), settings: () => ({ ...settings, storyClockPrompt: '' }), peerState: () => ({ active: true, custom: false }) });
   assert.equal(peerController.refresh().status, 'adapted-sdc');
   assert.deepEqual(peerCalls, [[MYKNOTS_STORY_CLOCK_KEY, '']]);
+});
+
+test('日期按年号数字月别名比较，冲突只剔除对应字段', () => {
+  const qqj = pair('QQJ', '永熙二十六年11月16日 | weekday=未知 | time=07:45', '永熙二十六年11月16日 | weekday=未知 | time=07:45');
+  const sdc = pair('SDC', '永熙二十六年冬月十六日 | weekday=周三 | time=辰时三刻', '永熙二十六年冬月十六日 | weekday=周三 | time=辰时三刻');
+  const clock = resolveStoryClock(qqj + sdc);
+  assert.equal(clock.status, 'ambiguous');
+  assert.ok(clock.meta.date.includes('永熙'));
+  assert.equal(clock.meta.time, null);
+  assert.equal(clock.meta.weekday, null);
+  assert.equal(clock.text, clock.meta.date);
+  const equal = resolveStoryClock(qqj + pair('SDC', '永熙26年冬月十六日 | weekday=未知 | time=7:45', '永熙26年冬月十六日 | weekday=未知 | time=7:45'));
+  assert.equal(equal.status, 'available');
+  assert.equal(equal.meta.time, '07:45');
+  const bad = resolveStoryClock(pair('QQJ', '2026年5月10日 | weekday=周八 | time=99:99', '2026年5月10日 | weekday=周八 | time=99:99'));
+  assert.equal(bad.status, 'incomplete');
+  assert.equal(bad.text, '2026年5月10日');
+  assert.equal(bad.meta.time, null);
+});
+
+test('单坏字段及重复字段不冒充完整戳', () => {
+  const unknown = resolveStoryClock(pair('QQJ', '未知 | weekday=未知 | time=07:45', '未知 | weekday=未知 | time=07:45'));
+  assert.equal(unknown.evidence.complete, false); assert.equal(unknown.meta.date, null); assert.equal(unknown.text, '07:45');
+  const repeated = parseClockFields('date=2026年5月10日 | date=2026年5月11日 | weekday=未知 | time=07:45');
+  assert.equal(repeated.complete, false); assert.equal(repeated.date, null); assert.equal(repeated.time, '07:45');
+});
+
+test('当前四月历按已有季节月名比较，越界中文日期不成为完整戳', () => {
+  const calendar = { months: 4, prefix: '永熙' };
+  const clock = resolveStoryClock(pair('QQJ', '永熙二十六年冬十六日 | weekday=未知 | time=07:45', '永熙二十六年冬十六日 | weekday=未知 | time=07:45') + pair('SDC', '永熙26年4月16日 | weekday=未知 | time=07:45', '永熙26年4月16日 | weekday=未知 | time=07:45'), '', calendar);
+  assert.equal(clock.status, 'available');
+  assert.equal(parseClockFields('date=永熙二十六年五月十六日 | weekday=未知 | time=07:45', calendar).complete, false);
+});
+
+test('字段内混入赋值不被认作完整健康时间', () => {
+  const meta = parseClockFields('date=2026年5月10日 | weekday=未知 | time=07:45 weekday=周三');
+  assert.equal(meta.complete, false); assert.equal(meta.date, '2026年5月10日'); assert.equal(meta.time, null);
+});
+
+test('默认输出限定本格式一套，历史双套不要求继续复制', () => {
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /一套.*start\/end/);
+  assert.match(DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, /历史.*SDC.*myknots.*重复/);
+});
+
+test('悬空前缀不遮蔽另一前缀的闭合局部时间戳', () => {
+  const raw = '<!-- SDC-start | date=2026-11-16 | weekday=周三 | time=07:45 --><!-- QQJ-start | date=2026-11-16 | weekday=周三 | time=未知 -->正文<!-- QQJ-end | date=2026-11-16 | weekday=周三 | time=未知 -->';
+  const clock = resolveStoryClock(raw);
+  assert.equal(clock.status, 'incomplete');
+  assert.equal(clock.text, '2026-11-16');
+  assert.equal(clock.meta.weekday, '周三');
+  assert.equal(clock.evidence.namespace, 'QQJ');
 });

@@ -1211,7 +1211,7 @@ export function createFoundationRuntime({
     const indexKeys = indexes.map(index => store.recordKey(index));
     const floorIds = floors.map(floor => floor.id);
     const priorRealtimeOrigin = realtimeOriginFromReachable(cache);
-    const carriesRealtimeOrigin = ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted', 'memoryExclusionChanged'].includes(operation.reason)
+    const carriesRealtimeOrigin = operation.reason==='initializePlaces'&&floors.length===0 || ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'earlyAssistantStarted', 'memoryExclusionChanged'].includes(operation.reason)
       && (emptyRealtimeObservation?.chatId === operation.chatId || priorRealtimeOrigin !== null);
     const realtimeOrigin = carriesRealtimeOrigin ? {
       chatId: operation.chatId,

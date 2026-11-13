@@ -47,38 +47,25 @@ function pathEvidence(entry, scope) {
 }
 
 function linkedBodyLeaf(entry, spatial, resolved, scope) {
-  const name = entry.path.at(-1).name.trim(), candidates = spatial.places.filter(place => typeof place?.name === 'string' && place.name.trim() === name);
-  if (!candidates.length) return { leaf: null, conflict: false };
-  const validPlace=place=>/^place-mention-[1-9]\d*$/u.test(place?.key??'')&&spatial.places.filter(other=>other?.key===place.key).length===1
-    &&(place.identity==='new'?!place.sameAsPlaceKey:place.identity==='existing'&&typeof place.sameAsPlaceKey==='string'&&Boolean(place.sameAsPlaceKey.trim()));
-  const source = resolved[0]?.body;
-  if (candidates.length !== 1 || !validPlace(candidates[0]) || !source || entry.path.length < 2 || resolved.some(ref => ref.body?.floorId !== source.floorId || ref.body.sourceType !== 'assistant')) return { leaf: null, conflict: true };
-  const ranges = refs => {
-    if (!refs.length || refs.some(ref => !ref?.body || ref.body.floorId !== source.floorId || ref.body.sourceType !== 'assistant' || ref.semantic.sourceFloorKey !== source.floorKey)) return null;
-    return refs.map(ref => {
-      const start=source.canonicalContent.indexOf(ref.source.quote);
-      return start<0||source.canonicalContent.indexOf(ref.source.quote,start+1)>=0?null:{start,end:start+ref.source.quote.length};
-    });
-  };
-  const pathRanges=ranges(resolved),overlap=(a,b)=>a.start<b.end&&b.start<a.end,contains=(a,b)=>a.start<=b.start&&a.end>=b.end;
-  if(!pathRanges||pathRanges.some(range=>!range))return {leaf:null,conflict:true};
-  let child=candidates[0];
-  const linkedEdges=new Set(),nodes=new Map([[entry.path.length-1,child]]);
-  for(let depth=entry.path.length-1;depth>0;depth--){
-    const parents=new Set(spatial.containments.filter(edge=>edge?.placeKey===child.key).map(edge=>edge.parentPlaceKey));
-    if(!parents.size)break;
-    if(parents.size!==1)return {leaf:null,conflict:true};
-    const parentKey=[...parents][0],parentsByKey=spatial.places.filter(place=>place?.key===parentKey),parent=parentsByKey[0];
-    if(parentsByKey.length!==1||!validPlace(parent)||typeof parent.name!=='string'||parent.name.trim()!==entry.path[depth-1].name.trim())return {leaf:null,conflict:true};
-    const childRanges=ranges(pathEvidence(child,scope)),parentRanges=ranges(pathEvidence(parent,scope));
-    const evidence=spatial.containments.filter(edge=>edge?.placeKey===child.key&&edge.parentPlaceKey===parentKey).flatMap(edge=>pathEvidence(edge,scope)),edgeRanges=ranges(evidence);
-    if(!childRanges||!parentRanges||!edgeRanges||[...childRanges,...parentRanges,...edgeRanges].some(range=>!range)
-      || !childRanges.some(a=>edgeRanges.some(b=>overlap(a,b)))||!parentRanges.some(a=>edgeRanges.some(b=>overlap(a,b)))
-      || pathRanges.some(range=>!edgeRanges.some(edge=>contains(edge,range))||![...childRanges,...parentRanges].some(node=>contains(node,range))))return {leaf:null,conflict:true};
-    linkedEdges.add(`${child.key}:${parent.key}`);nodes.set(depth-1,parent);child=parent;
+  const source = resolved[0]?.body, nodes = new Map();
+  const sameSource = refs => refs.length && refs.every(ref => ref.body
+    && ref.body.floorId === source?.floorId && ref.body.sourceType === source?.sourceType
+    && ref.body.sourceSnapshotIndex === source?.sourceSnapshotIndex);
+  // The path already states the parent chain. Bind a unique declaration from
+  // that same source without requiring the model to repeat its parent edges.
+  for (const [depth, segment] of entry.path.entries()) {
+    if (segment.placeKey || depth === entry.path.length - 1 && entry.placeKey) continue;
+    const candidates = spatial.places.filter(place => typeof place?.name === 'string' && label(place.name) === label(segment.name));
+    if (!candidates.length) continue;
+    const place = candidates[0];
+    if (!source || !sameSource(resolved) || candidates.length !== 1 || !/^place-mention-[1-9]\d*$/u.test(place?.key ?? '')
+      || spatial.places.filter(other => other?.key === place.key).length !== 1
+      || !(place.identity === 'new' ? !place.sameAsPlaceKey : place.identity === 'existing' && typeof place.sameAsPlaceKey === 'string' && place.sameAsPlaceKey.trim())
+      || !sameSource(pathEvidence(place, scope))
+      || segment.sameAsPlaceKey && segment.sameAsPlaceKey !== place.sameAsPlaceKey) return { conflict: true };
+    nodes.set(depth, place);
   }
-  for(const [depth,place]of nodes)if(entry.path[depth].sameAsPlaceKey&&entry.path[depth].sameAsPlaceKey!==place.sameAsPlaceKey)return {leaf:null,conflict:true};
-  return {leaf:linkedEdges.size?candidates[0]:null,conflict:!linkedEdges.size,linkedEdges,nodes};
+  return { leaf: nodes.get(entry.path.length - 1) ?? null, conflict: false, nodes };
 }
 
 const referencedSources = source => source?.references ?? (source ? [source] : []);
@@ -319,6 +306,7 @@ function makeSeed(id, name, scope, now) {
 
 export async function expandPlacePaths({ packet, envelope, existingEntities = [], now, persistBodyPaths = false, deferParentResolution = false }) {
   const result = copy(packet), scope = envelope.scope, entities = [...existingEntities], byId = new Map(entities.map(entity => [entity.id, entity]));
+  const existingPlaceIds = new Set((scope.placeCatalogBindings??[]).map(binding=>binding.entityId));
   const bindings = [...(scope.placeCatalogBindings ?? [])], byKey = new Map(bindings.map(binding => [binding.entityKey, binding]));
   const parents = new Map(scope.parentEntityIdsByPlaceId ?? []), seenPaths = new Map(), facts = new Map(), isolated = [], replaceFields = [], displayMetadataBindings = [];
   const parentPathIndex = new Map(), factPathIndexes = new Map(), entityPathIndexes = new Map();
@@ -336,9 +324,8 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     }
   }
   spatial.places ??= []; spatial.containments ??= [];
-  // Only the model's original local edges can link an omitted leaf key; a path
-  // expanded earlier in this pass cannot supply evidence for another path.
-  const linkedInput={places:spatial.places.map(place=>place&&{...place}),containments:[...spatial.containments]};
+  // Bind only original declarations; earlier expanded paths do not establish identity.
+  const linkedInput={places:spatial.places.map(place=>place&&{...place})};
 
   const localPlace = key => {
     if (typeof key !== 'string' || !/^place-mention-[1-9]\d*$/u.test(key)) return null;
@@ -395,10 +382,10 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     let leaf = explicitLeafKey ? localPlace(explicitLeafKey) : undefined;
     if (leaf) explicitNodes.set(entry.path.length - 1, leaf);
     let bridge = null;
-    if (!explicitLeafKey && bodySource && !persistBodyPaths && !clearParent) {
+    if (bodySource && !persistBodyPaths && !clearParent) {
       const linked=linkedBodyLeaf(entry,linkedInput,resolved,scope);
       if(linked.conflict){isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_IDENTITY_INVALID',path:`placePaths[${index}]`});continue;}
-      leaf=spatial.places.find(place=>place?.key===linked.leaf?.key);bridge=linked;
+      leaf??=spatial.places.find(place=>place?.key===linked.leaf?.key);bridge=linked;
     }
     const segments = entry.path.map((segment, i) => {
       const linked = explicitNodes.get(i) ?? bridge?.nodes?.get(i) ?? (i === entry.path.length - 1 ? leaf : null);
@@ -449,6 +436,11 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       pathSeen.set(pathKey, entityId);pathNodes.push({ entityId, name, pathKey });
       if(parentId)pathParents.set(entityId,new Set([parentId]));parentId=entityId;
     }
+    const lastKnownDepth = pathNodes.reduce((last,node,depth)=>existingPlaceIds.has(node.entityId)?depth:last,-1);
+    if (pathNodes.some(node=>(scope.deletedPlaceIds??[]).includes(node.entityId))
+      || envelope.request?.payload?.mode==='organize'&&pathNodes.some((node,depth)=>depth>lastKnownDepth)) {
+      isolated.push({field:'placePaths',index,code:'QQJ_PLACE_PATH_SCOPE_CONFLICT',path:`placePaths[${index}]`});continue;
+    }
     if(clearParent)pathParents.delete(pathNodes[0].entityId);
     if (new Set(pathNodes.map(node => node.entityId)).size !== pathNodes.length) {
       isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SCOPE_CONFLICT', path: `placePaths[${index}]` }); continue;
@@ -458,14 +450,14 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     }
     for(const entity of pathEntities){entities.push(entity);freshEntities.push(entity);byId.set(entity.id,entity);}
     for(const binding of pathBindings.slice(bindings.length)){bindings.push(binding);byKey.set(binding.entityKey,binding);}
-    for (const [depth, linked] of explicitNodes) {
+    for (const [depth, linked] of new Map([...(bridge?.nodes ?? []), ...explicitNodes])) {
       const node = pathNodes[depth], binding = bindings.find(binding => binding.entityId === node.entityId);
-      linked.identity = 'existing'; linked.sameAsPlaceKey = binding.entityKey;
+      const declaration = spatial.places.find(place => place?.key === linked.key);
+      declaration.identity = 'existing'; declaration.sameAsPlaceKey = binding.entityKey;
       mentionById.set(node.entityId, linked.key);
     }
     if (bodySource && !persistBodyPaths) {
-      // The linked leaf and its explicit parent edges identify new path nodes;
-      // a shared name by itself does not bind two places.
+      // Explicit local edges can also bind declarations whose parent has a different surface name.
       let linked = leaf;
       for (let depth = pathNodes.length - 1; linked && depth >= 0; depth -= 1) {
         const node = pathNodes[depth], binding = byKey.get(linked.sameAsPlaceKey);
@@ -502,7 +494,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       if (parentId) {
         parents.set(entityId, new Set([parentId]));
         if (bodySource && !persistBodyPaths) {
-          if (!bridge?.linkedEdges?.has(`${mention}:${parentMention}`) && !spatial.containments.some(edge => edge?.placeKey === mention && edge.parentPlaceKey === parentMention && edge.exactQuote === quote && edge.source === bodyEvidence.source && edge.sourceFloorKey === bodyEvidence.sourceFloorKey && edge.sourceSnapshotIndex === bodyEvidence.sourceSnapshotIndex)) spatial.containments.push({ placeKey: mention, parentPlaceKey: parentMention, exactQuote: quote, ...bodyEvidence, _placePathIndex: index });
+          if (!spatial.containments.some(edge => edge?.placeKey === mention && edge.parentPlaceKey === parentMention && edge.exactQuote === quote && edge.source === bodyEvidence.source && edge.sourceFloorKey === bodyEvidence.sourceFloorKey && edge.sourceSnapshotIndex === bodyEvidence.sourceSnapshotIndex)) spatial.containments.push({ placeKey: mention, parentPlaceKey: parentMention, exactQuote: quote, ...bodyEvidence, _placePathIndex: index });
         }
         else {
           const itemId = await deterministicUuid(['v3-worldbook-place', autoSource.locator, autoSource.fingerprint, entityId, parentId, 'containment']);

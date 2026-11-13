@@ -16,7 +16,12 @@ test('文字按钮的固定内距不再被通用间距转换重复缩放，字�
 test('面板标题与人物名沿用用户字体，不再由固定宋体覆盖', async () => {
   const css = await readFile(new URL('../src/ui/panel.css', import.meta.url), 'utf8');
   assert.doesNotMatch(css, /宋体,"Songti SC",serif/u);
-  assert.equal(css.match(/var\(--qqj-custom-font,inherit\),-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif/gu)?.length, 23);
+  const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/gu)];
+  for (const selector of ['.qqj-view-heading h2', '.v3-cse-subject h4', '.qqj-person-summary strong', '.qqj-profile-title-row>h2']) {
+    const declarations = blocks.filter(([, selectors]) => selectors.split(',').map(value => value.trim()).includes(selector));
+    assert.ok(declarations.length, `${selector}须仍有实际字体声明`);
+    assert.ok(declarations.some(([, , body]) => /font:[^;]*var\(--qqj-custom-font,inherit\),-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif/u.test(body)), `${selector}沿用自定义字体`);
+  }
   assert.match(css, /\.primary-action\{[^}]*color:var\(--qqj-control-fg,var\(--qqj-color-on-accent\)\)/u);
 });
 

@@ -4,14 +4,15 @@ import { createWorldInfoSourceCandidates } from '../src/world-info-scanner.js';
 import { filterSourcesByPermission } from '../src/source-permission.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, access } from 'node:fs/promises';
+import { readFile, access, mkdtemp, mkdir, writeFile, stat, utimes, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { createContext, runInContext, SourceTextModule, SyntheticModule } from 'node:vm';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, basename, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { normalizeStoryCalendar } from '../src/v3/calendar-rules.js';
 import { ChatSessionError } from '../src/chat-session.js';
-import { cloneHostJsonMetadata } from '../src/host-context.js';
+import { cloneHostJsonMetadata, readHostState } from '../src/host-context.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
@@ -30,6 +31,25 @@ import { createTauriBackendFetch } from '../src/tauri-backend.js';
 import { localForageHarness } from './helpers/indexeddb-harness.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const manifestPath = resolve(process.env.QQJ_TEST_MANIFEST ?? resolve(root, 'manifest.json'));
+async function readProductionModules(entryPath) {
+  const modules = new Map(), directory = dirname(entryPath);
+  async function visit(path) {
+    if (modules.has(path)) return;
+    const source = await readFile(path, 'utf8');
+    const parsed = new SourceTextModule(source, { identifier: pathToFileURL(path).href });
+    const imports = [...new Set([...(parsed.moduleRequests?.map(item => item.specifier) ?? parsed.dependencySpecifiers),
+      ...[...source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gu)].map(match => match[1])])];
+    modules.set(path, { source, imports, sha256: createHash('sha256').update(source).digest('hex') });
+    for (const specifier of imports.filter(value => value.startsWith('.'))) {
+      const target = resolve(dirname(path), specifier);
+      assert.ok(target.startsWith(directory + sep), '产物相对导入必须位于同一dist目录');
+      await visit(target);
+    }
+  }
+  await visit(entryPath);
+  return modules;
+}
 const publicMapCatalogUrls = ['https://st-myriadknots.pages.dev/maps-library/catalog.json', 'https://st-myriadknots.pages.dev/maps-real/catalog.json'];
 const isPublicMapCatalogUrl = url => publicMapCatalogUrls.includes(String(url));
 const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value && typeof value === 'object'
@@ -332,7 +352,7 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const seededSettings = wrapperSeed ? structuredClone(wrapperSeed) : { qianqianjie: {}, 'schedule-planner': {} };
@@ -442,6 +462,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     ? await projectHistoricalRecallReceipt(hostChat[1], { chatId: host.chatMetadata.qianqianjie.chatId, userMessageIndex: 1 }) : null;
   if (metadataProxy) host.chatMetadata = new Proxy(host.chatMetadata, {});
   let hostFile = { header: { chat_metadata: metadataWithUncloneableField ? JSON.parse(JSON.stringify(host.chatMetadata)) : structuredClone(host.chatMetadata) }, chat: structuredClone(firstIdentityChat?.saved ?? host.chat) };
+  if (messagesWithUncloneableField) { host.chat[0].extra ??= {}; host.chat[0].extra.transient = () => 'live only'; }
   const initialAi0BodyReads = ai0BodyReads;
   if ((initializeWithoutSubtle || locationReferenceChat || legacyReceiptUi) && !withoutQqjIdentity) backendRecords.set('/api/plugins/st-bainiaodata/v1/records/qianqianjie/chat-identity-bindings/binding-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
     revision: 1,
@@ -468,7 +489,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const promptCalls = [];
   const unloads = [], privateRecords = new Map();
   host.constants = { promptTypes: { IN_CHAT: 17 }, promptRoles: { SYSTEM: 29 } };
-  host.setExtensionPrompt = (...args) => { promptCalls.push(args); };
+  host.setExtensionPrompt = (...args) => { if (clockSetterFailure) throw new Error('optional clock setter failed'); promptCalls.push(args); };
   const message = {
     className: 'mes user-owned', dataset: { mesid: '0' }, children: [],
     getAttribute: name => name === 'mesid' ? '0' : null,
@@ -832,40 +853,46 @@ test('实际生产 bundle 原生与 Luker 启动均能捕获含其他插件临�
   }
 });
 
-test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 import 且可隔离加载', async () => {
-  const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
+test('manifest 唯一登记主入口，生产分包依赖完整、内容哈希匹配且可隔离加载', async () => {
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const cacheMatch = /^dist\/qqj-app\.js\?v=(\d{4})(\d{2})(\d{2})\.([1-9]\d*)-([a-f0-9]{16})$/.exec(manifest.js);
   assert.ok(cacheMatch, '生产 bundle 必须使用日期、递增序号与内容哈希组成的 cache key');
   const [, year, month, day] = cacheMatch;
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.1.16');
+  assert.equal(manifest.version, '1.2.0');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
-  const bundlePath = resolve(root, manifest.js.split('?')[0]);
-  const bundleSource = await readFile(bundlePath, 'utf8');
+  const bundlePath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));
+  const modules = await readProductionModules(bundlePath);
+  assert.equal(modules.size, 2, '主程序与一个稳定素材文件必须完整交付');
+  const staticPath = [...modules.keys()].find(path => path !== bundlePath);
+  assert.match(basename(staticPath), /^qianchuang-static-[A-Za-z0-9_-]+\.js$/u);
+  assert.deepEqual(modules.get(staticPath).imports, [], '独立素材不得反向依赖主程序或宿主');
+  const bundleSource = modules.get(bundlePath).source;
+  const allSources = [...modules.values()].map(module => module.source).join('\n');
   const bundleDigest = createHash('sha256').update(bundleSource).digest('hex');
   assert.equal(cacheMatch[5], bundleDigest.slice(0, 16), 'manifest cache key 必须随实际 bundle 内容变化，禁止漏 bump 假通过');
   for (const marker of [manifest.version, 'prepareStep', 'qianshiCandidates', 'Graphology 检测到重复图边。', 'DataCloneError']) {
-    assert.equal(bundleSource.includes(marker), true, `生产 bundle 缺少候选版本或安全准备诊断字段：${marker}`);
+    assert.equal(allSources.includes(marker), true, `生产 bundle 缺少候选版本或安全准备诊断字段：${marker}`);
   }
   for (const [id, sha] of Object.entries({
     'campus-compact': '9df73cb508142b44c7a4b707a705340f56e51eb952f9a2ac568fb29313a1269d',
     'campus-garden': '1822119617df62f4d3bb282ecec7762548d16f7e13f4e0e9e139d44a36744dd9',
     'campus-university': '39f454986fb30ba515e0ad1a617761e95b986ee46fd8b0ae758f80f0b3cbe2e0',
   })) {
-    assert.ok(bundleSource.includes(id) && bundleSource.includes(sha), `校园内置注册未进入生产bundle：${id}`);
+    assert.ok(allSources.includes(id) && allSources.includes(sha), `校园内置注册未进入生产bundle：${id}`);
     assert.equal(createHash('sha256').update(await readFile(resolve(root, 'assets/maps-library/' + id + '.svg'))).digest('hex'), sha);
   }
   await assert.rejects(access(resolve(root, 'dist/index.js')));
   await assert.rejects(access(resolve(root, 'src/ui/v3-floor-cards.js')));
   await assert.rejects(access(resolve(root, 'src/v3/chat-fork-migrator.js')));
-  assert.equal([...bundleSource.matchAll(/\b(?:from\s*|import\s*\()\s*["'](\.{1,2}\/[^"']+)/g)].length, 0);
-  assert.equal(bundleSource.includes('createV3ChatForkMigrator'), false, '生产 bundle 不得残留跨聊天记忆搬运器');
-  assert.equal(bundleSource.includes('qqj-v3-floor-card'), false, '生产 bundle 不得残留楼内卡片 DOM/CSS');
+  assert.deepEqual(modules.get(bundlePath).imports.filter(value => value.startsWith('.')), ['./' + basename(staticPath)]);
+  assert.equal(allSources.includes('createV3ChatForkMigrator'), false, '生产 bundle 不得残留跨聊天记忆搬运器');
+  assert.equal(allSources.includes('qqj-v3-floor-card'), false, '生产 bundle 不得残留楼内卡片 DOM/CSS');
   for (const marker of ['qianqianjie-demo', 'identity-cards', 'identity-personas', 'chat-meta', 'initial-relation-generation', 'people-foundation']) {
-    assert.equal(bundleSource.includes(marker), false, `bundle 残留 V1 标记：${marker}`);
+    assert.equal(allSources.includes(marker), false, `bundle 残留 V1 标记：${marker}`);
   }
 
   const eventHandlers = new Map();
@@ -930,10 +957,11 @@ test('manifest 唯一加载 qqj-app，生产 bundle 无 V1 标记、相对 impor
   const entryPath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : bundlePath;
   const entry = await load(pathToFileURL(entryPath).href);
   await entry.link((specifier, referencing) => load(new URL(specifier, referencing.identifier).href));
-  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier).filter(specifier => specifier !== '/scripts/power-user.js'), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js', '/lib.js', '/scripts/user.js', '/scripts/utils.js']);
+  assert.deepEqual((entry.moduleRequests || []).map(item => item.specifier).filter(specifier => specifier.startsWith('/') && specifier !== '/scripts/power-user.js'), ['/scripts/personas.js', '/scripts/extensions.js', '/script.js', '/scripts/group-chats.js', '/scripts/world-info.js', '/lib.js', '/scripts/user.js', '/scripts/utils.js']);
   await entry.evaluate();
   await new Promise(resolvePromise => setImmediate(resolvePromise));
   assert.equal(entry.status, 'evaluated');
+  for (const path of modules.keys()) assert.equal(cache.get(pathToFileURL(path).href)?.status, 'evaluated', '所有实际产物依赖均已求值');
   assert.equal(aiCalls, 0);
   assert.equal(backendCalls, 0);
   assert.equal(metadataWrites, 0);
@@ -1080,7 +1108,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
     return { prepare: () => options.identityCoordinator.prepare(), identity: () => { if (sessionIdentityError) throw sessionIdentityError; return { chatId: 'test' }; }, invalidate() {}, getState: () => sessionState };
   } });
   define('./src/chat-identity.js', { createChatIdentityCoordinator: options => { identityOptions = options; return { prepare: () => options.freshUuid() }; } });
-  define('./src/host-context.js', { cloneHostJsonMetadata, createHostChatList: options => { hostChatListOptions = options; return productionListHostChats; } });
+  define('./src/host-context.js', { cloneHostJsonMetadata, readHostState, createHostChatList: options => { hostChatListOptions = options; return productionListHostChats; } });
   define('./src/chat-memory-management.js', { createChatMemoryManagement: options => { memoryManagementOptions = options; chatMemoryManagement = { getState: () => ({ status: 'idle' }), deleteCurrent() {} }; return chatMemoryManagement; } });
   define('./src/chat-memory-migration.js', { createChatMemoryMigration: options => { memoryMigrationOptions = options; memoryMigrationRuntime = { getState: () => ({ status: 'idle' }) }; return memoryMigrationRuntime; } });
   define('./src/memory-transfer.js', { createMemoryTransfer: options => { memoryTransferOptions = options; memoryTransferRuntime = { getState: () => ({ active: transferActive }), getActivityState: () => ({ busy: transferActive }) }; return memoryTransferRuntime; } });
@@ -1249,6 +1277,7 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(coreCacheOptions.localForage, hostLocalForage);
   assert.equal(coreCacheFactoryCalls, 1, '旧设置缺少新字段时仍沿默认开启路径创建单个cache实例');
   assert.equal(coreCacheOptions.accountHandleProvider(), 'isolated-test-user');
+  assert.equal(branchInitializerOptions.coreRecordCacheProvider(), coreRecordCache, '分支延迟取得正常读取使用的同一核心缓存');
   assert.equal(foundationStoreOptions[0].coreRecordCache, coreRecordCache);
   assert.equal(foundationStoreOptions[1].coreRecordCache, coreRecordCache, '生产向量读取复用同一派生缓存实例');
   assert.deepEqual(vectorClientOptions.headers(), { 'X-CSRF-Token': 'token' }, '向量客户端从当前宿主上下文读取 CSRF 头');
@@ -1291,6 +1320,8 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(Object.hasOwn(optionalPlaces, 'placeWorkspace'), false);
   peopleReadError = new Error('people unavailable');
   await assert.rejects(v3MemoryOptions.identityProjectionProvider({ chatId: 'stored-chat' }, { allowUnavailablePlaces: true }), /people unavailable/u);
+  const optionalPeople = await v3MemoryOptions.identityProjectionProvider({ chatId: 'stored-chat' }, { includePlaces: false, allowUnavailable: true });
+  assert.deepEqual(nativeJson(optionalPeople.unavailableSources), ['people'], 'CSE目录辅助失败沿现有allowUnavailable合同返回');
   peopleReadError = null; placeReadError = null;
   assert.equal(v3MemoryOptions.generateAnalysisTask, analysisTask);
   assert.equal(timeOptions.generateTimeTask, utilityTask);
@@ -1298,13 +1329,18 @@ test('生产入口行为接线：V3 memory 区分分析与摘要 API，session/l
   assert.equal(timeOptions.sanitizerOptions, v3MemoryOptions.sanitizerOptions);
   assert.equal(timeOptions.storyClockReferenceTags(), 'Ti,时标');
   assert.equal(timeOptions.annualSettingsProvider().people.map(person => person.entityId).sort().join(','), 'awake-id,sleep-id', '年度来源保留不在当前人物展示候选中的有效资料，并应用合并/删除规则');
-  assert.equal(Object.hasOwn(timeOptions, 'onInvalidate'), false, '生产入口不得把普通刻度更新接成整轮召回失效');
+  assert.equal(typeof timeOptions.onInvalidate, 'function');
+  timeOptions.onInvalidate('manualTimeEdited');
+  timeOptions.onInvalidate('manualTimeDeleted');
+  assert.deepEqual(recallInvalidations, ['timeManuallyEdited', 'timeManuallyEdited']);
+  recallInvalidations.length = 0;
   timeRuntime.completeStoredUpdate();
   assert.deepEqual(recallInvalidations, [], '刻度正常落盘不得取消正在进行的召回');
   assert.ok(timeBindOptions.foundationRuntime);
   assert.equal(timeBindOptions.eventSource, productionEventSource);
   assert.equal(timeOptions.isEnabled(), false);
   assert.equal(Object.hasOwn(v3MemoryOptions, 'onMemoryBatchCommitted'), false, '时间从foundation生命周期读正文，不等摘要CSE完成回调');
+  assert.equal(Object.hasOwn(v3MemoryOptions, 'onAutomaticSummaryCommitted'), false, '人物维护沿现有独立生命周期读取来源');
   assert.equal(timeBatches.length, 0);
   peopleWorkspaceListener({ ...peopleWorkspaceState });
   assert.equal(timeBatches.length, 0, '人物处理状态通知不重跑正文扫描与时间事项读取');
@@ -1879,5 +1915,139 @@ test('有效别名：实际bundle原生和Luker读取已存人工全集，不回
     assert.ok(person); assert.deepEqual(person.aliases, ['人工新称']);
     assert.equal(person.profile.aliases, '人工新称');
     assert.ok(person.profile.manualFields.includes('aliases'));
+  }
+});
+
+
+test('消息JSON：index实际capture回调保宿主可保存消息且不清洗live字段', async () => {
+  const source = await readFile(resolve(root, 'index.js'), 'utf8');
+  const start = source.indexOf('captureTaskInputs: ({ raw, host, observeOnly');
+  const callback = source.slice(start + 'captureTaskInputs: '.length, source.indexOf('\n} });', start) + 2);
+  const capture = Function('cloneHostJsonMetadata', 'captureTargetChatCoordinates', `return (${callback});`)(cloneHostJsonMetadata, () => ({ hostChatId: 'captured' }));
+  const transient = () => 'live';
+  const raw = { chat: [{ mes: '正文', swipes: ['正文'], swipe_id: 0, extra: { transient, other: ['保留'], qianqianjie: { keep: true } } }], chatMetadata: {} };
+  const result = capture({ raw, host: { hostChatId: 'captured' } });
+  assert.deepEqual(result.chat, JSON.parse(JSON.stringify(raw.chat)));
+  assert.equal(raw.chat[0].extra.transient, transient);
+  raw.chat[0].extra.invalid = 1n;
+  assert.throws(() => capture({ raw, host: { hostChatId: 'captured' } }), TypeError);
+});
+
+test('可选时间戳：实际refresh封装失败仍启动核心，所有停止先触发再各自结算', async t => {
+  const source = await readFile(resolve(root, 'index.js'), 'utf8');
+  const clock = source.slice(source.indexOf('const refreshStoryClock ='), source.indexOf('globalThis.addEventListener?.(STORY_CLOCK_COORDINATION_EVENT'));
+  const toggle = source.slice(source.indexOf('const setAllEnabled ='), source.indexOf('const pluginUpdates ='));
+  for (const failure of ['clock', 'sync-stop', 'pending-stop']) await t.test(failure, async () => {
+    const calls = []; let release;
+    const stop = name => () => { calls.push(name); if (name === 'time' && failure === 'sync-stop') throw new Error('stop failed'); if (name === 'time' && failure === 'pending-stop') return new Promise(resolve => { release = resolve; }); return name; };
+    const ctx = createContext({ console: { warn() {} }, globalThis: {}, pluginLifecycleFailureRevision: 0,
+      projectStoryClockStatus() { calls.push('clock'); if (failure === 'clock') throw new Error('clock failed'); }, announceStoryClockChange() {},
+      inlineRenderer: { setEnabled: stop('inline') }, autoHideController: { stop: stop('hide') }, timeRuntime: { stop: stop('time') },
+      peopleWorkspaceRuntime: { setEnabled: stop('people') }, v3RecallRuntime: { setEnabled: stop('recall') }, v3MemoryRuntime: { setEnabled: stop('memory') },
+      lifecycle: { setEnabled: stop('lifecycle') }, clearPluginLifecycleFailureIfUnchanged() {},
+    });
+    runInContext(`${clock}\n${toggle}\nglobalThis.toggle = setAllEnabled;`, ctx);
+    const task = ctx.globalThis.toggle(false);
+    const observed = task.catch(() => null);
+    await Promise.resolve();
+    const beforeRelease = [...calls];
+    if (failure === 'pending-stop') release?.();
+    await observed;
+    assert.deepEqual(beforeRelease.filter(name => name !== 'clock'), ['inline', 'hide', 'time', 'people', 'recall', 'memory', 'lifecycle']);
+    assert.equal(await task, 'memory');
+  });
+});
+
+test('可选时间戳：实际bundle setter失败仍注册APP_READY并读取核心身份', async () => {
+  for (const host of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(host, { enabled: true, fileOwnedIdentity: true, clockSetterFailure: true });
+    assert.equal(result.eventRegistrations.get('app-ready'), 1);
+    assert.equal(result.getPublicSnapshot().status, 'ready');
+  }
+});
+
+
+test('消息JSON：实际bundle原生与Luker临时函数字段不阻新卡身份，live字段保留', async () => {
+  for (const host of ['SillyTavern', 'Luker']) {
+    const result = await isolateBundle(host, { enabled: true, initializeWithoutSubtle: true, withoutQqjIdentity: true,
+      messagesWithUncloneableField: true, allowIdentityWrites: true });
+    assert.equal(result.getPublicSnapshot().status, 'ready');
+    assert.equal(typeof result.hostChat[0].extra.transient, 'function');
+    assert.equal(result.hostFile.chat[0].extra?.transient, undefined);
+    assert.equal(result.hostFile.chat[0].mes, result.hostChat[0].mes);
+    assert.equal(result.fetchRequests.some(request => /generate|completion|embedding/iu.test(request.url)), false);
+  }
+});
+
+
+test('分包构建逐文件保mtime、素材先于入口且失败不提前替换旧入口', async t => {
+  const { writeBuildOutputs, resolveOutputDirectory } = await import('../tools/build.mjs');
+  assert.equal(resolveOutputDirectory(), resolve(root, 'dist'));
+  assert.throws(() => resolveOutputDirectory(root));
+  assert.throws(() => resolveOutputDirectory(dirname(root)));
+  assert.throws(() => resolveOutputDirectory(resolve(root, 'src')));
+  const directory = await mkdtemp(resolve(tmpdir(), 'qqj-build-publish-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const material = { type: 'chunk', fileName: 'qianchuang-static-unchanged.js', code: 'static-original', isEntry: false };
+  const entry = { type: 'chunk', fileName: 'qqj-app.js', code: 'entry-original', isEntry: true };
+  await writeFile(resolve(directory, 'old-in-use.js'), 'old-page-resource');
+  assert.deepEqual((await writeBuildOutputs([entry, material], directory)).written, [material.fileName, entry.fileName]);
+  const oldTime = new Date('2020-01-02T03:04:05Z');
+  for (const file of [entry, material]) await utimes(resolve(directory, file.fileName), oldTime, oldTime);
+  const before = await stat(resolve(directory, material.fileName));
+  assert.deepEqual((await writeBuildOutputs([entry, material], directory)).written, []);
+  assert.equal((await stat(resolve(directory, entry.fileName))).mtimeMs, oldTime.getTime());
+  const changed = await writeBuildOutputs([{ ...entry, code: 'entry-changed' }, material], directory);
+  assert.deepEqual(changed.written, [entry.fileName]);
+  const after = await stat(resolve(directory, material.fileName));
+  assert.equal(after.mtimeMs, before.mtimeMs); assert.equal(after.ino, before.ino);
+  assert.equal(await readFile(resolve(directory, 'old-in-use.js'), 'utf8'), 'old-page-resource');
+  await assert.rejects(writeBuildOutputs([{ ...entry, fileName: '../escape.js' }], directory));
+  await mkdir(resolve(directory, 'qianchuang-static-blocked.js'));
+  await assert.rejects(writeBuildOutputs([{ ...entry, code: 'must-not-publish' }, { ...material, fileName: 'qianchuang-static-blocked.js' }], directory));
+  assert.equal(await readFile(resolve(directory, entry.fileName), 'utf8'), 'entry-changed');
+  const nextMaterial = { ...material, fileName: 'qianchuang-static-new-content.js', code: 'static-changed' };
+  assert.deepEqual((await writeBuildOutputs([{ ...entry, code: 'entry-next' }, nextMaterial], directory)).written, [nextMaterial.fileName, entry.fileName]);
+  assert.equal(await readFile(resolve(directory, nextMaterial.fileName), 'utf8'), 'static-changed');
+  assert.equal(await readFile(resolve(directory, material.fileName), 'utf8'), 'static-original');
+});
+
+test('分包原构建重复执行保素材属性，仅提示词变化只写核心且素材名和完整SHA稳定', async t => {
+  const { buildPlugin, writeBuildOutputs } = await import('../tools/build.mjs');
+  const entryPath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, 'dist/qqj-app.js'));
+  const modules = await readProductionModules(entryPath);
+  assert.equal(modules.size, 2);
+  const materialPath = [...modules.keys()].find(path => path !== entryPath);
+  const directory = await mkdtemp(resolve(tmpdir(), 'qqj-build-stable-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeBuildOutputs([...modules].map(([path, value]) => ({ type: 'chunk', fileName: basename(path), code: value.source, isEntry: path === entryPath })), directory);
+  const oldTime = new Date('2020-02-03T04:05:06Z');
+  for (const path of modules.keys()) await utimes(resolve(directory, basename(path)), oldTime, oldTime);
+  const before = await stat(resolve(directory, basename(materialPath)));
+  const repeated = await buildPlugin({ outDir: directory });
+  assert.deepEqual(repeated.written, [], '相同输入的正常npm build底层必须不改文件');
+  const changed = await buildPlugin({ outDir: directory, plugins: [{ name: 'offline-prompt-change', transform(code, id) {
+    if (id.endsWith('/src/v3/cse-engine.js')) return code.replace('qqj-v3-cse-prompt-50', 'qqj-v3-cse-prompt-50-offline-cache-probe');
+  } }] });
+  assert.deepEqual(changed.written, ['qqj-app.js']);
+  const after = await stat(resolve(directory, basename(materialPath)));
+  assert.equal(after.mtimeMs, before.mtimeMs); assert.equal(after.ino, before.ino);
+  assert.equal(createHash('sha256').update(await readFile(resolve(directory, basename(materialPath)))).digest('hex'), modules.get(materialPath).sha256);
+  assert.notEqual(createHash('sha256').update(await readFile(resolve(directory, 'qqj-app.js'))).digest('hex'), modules.get(entryPath).sha256);
+});
+
+test('分包主入口和稳定素材同层URL保持SVG按需相对读取', async () => {
+  const { createGenericMapLoader } = await import('../src/ui/qianchuang-map-loader.js');
+  const { createCityMapLoader } = await import('../src/ui/qianchuang-city-maps.js');
+  const entryPath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, 'dist/qqj-app.js'));
+  const modules = await readProductionModules(entryPath);
+  for (const file of modules.keys()) {
+    const moduleUrl = 'https://offline.invalid/scripts/extensions/third-party/Renamed/dist/' + basename(file), calls = [];
+    const options = { moduleUrl, fetchImpl: async url => { calls.push(String(url)); return { ok: true, text: async () => '<svg></svg>' }; } };
+    const generic = createGenericMapLoader(options), city = createCityMapLoader(options);
+    assert.equal(calls.length, 0, '创建loader不提前下载SVG');
+    await generic('campus-compact'); await city('seoul');
+    assert.ok(calls.some(url => url.startsWith('https://offline.invalid/scripts/extensions/third-party/Renamed/assets/maps-library/campus-compact.svg?v=')));
+    assert.ok(calls.some(url => url.startsWith('https://offline.invalid/scripts/extensions/third-party/Renamed/assets/maps-real/seoul.svg?v=')));
   }
 });

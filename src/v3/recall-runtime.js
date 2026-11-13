@@ -1,10 +1,11 @@
+import { resolveIdentityEntityId, isIdentityDeleted } from './entity-identity.js';
 import { filterPlaceMemory } from './place-workspace.js';
-import { readManualArtifactBlocks } from './recall-text.js';
+import { readManualArtifactBlocks, RECALL_KNOWLEDGE_GUIDANCE, RECALL_COMPACT_KNOWLEDGE_GUIDANCE } from './recall-text.js';
 import { sha256 } from '../identity.js';
 import { rawWitnessShape, rawWitnessValid, summaryCandidateText, summaryWitnessShape, summaryWitnessValid } from './vector-source.js';
 import { sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
-import { projectRecallSource, readRecallSource, isolateRecallAuxiliarySources } from './recall-source.js';
-import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens, recallBudget, groupRecallPlaces, historySelectionContext, placeRecallBlocks } from './recall-selector.js';
+import { projectRecallSource, readRecallSource, isolateRecallAuxiliarySources, stateDto, cseChangesDto } from './recall-source.js';
+import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens, recallBudget, groupRecallPlaces, historySelectionContext, placeRecallBlocks, CSE_RECALL_KNOWLEDGE_BOUNDARY, LEGACY_CSE_RECALL_KNOWLEDGE_BOUNDARY } from './recall-selector.js';
 import { selectRecallWithLlm } from './recall-llm-selector.js';
 import { selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
@@ -16,7 +17,7 @@ import { createRecallRequestDiagnostic } from './recall-request-diagnostic.js';
 import { MIGRATION_ALIAS_KEY, migrationPartition } from './migration-prefix.js';
 import { readLocationReference } from './location-reference.js';
 import { isMemoryExcludedMessage } from './memory-exclusion.js';
-import { qianshiRecallPendingHeader, QIANSHI_RECALL_PENDING_HEADER } from './qianshi-domain.js';
+import { qianshiRecallPendingHeader, QIANSHI_RECALL_PENDING_HEADER, QIANSHI_RECALL_PROJECTION_VERSION } from './qianshi-domain.js';
 
 export const RECALL_PROMPT_SLOT = 'qqj_v3_recalled_context';
 export const RECALL_RECEIPT_KEY = 'qqj_v3_recall_receipt';
@@ -359,7 +360,7 @@ export function renderedQianshiProgressText(value, timeDependencies = null) {
     });
     return kept.some(line => line.startsWith('- ')) ? [lines[0], ...kept].join('\n') : '';
   }).filter(Boolean);
-  return (qianshiHasMaterialSection(sections) ? sections : sections.filter(section => !/^本轮千事资料来源截至：AI #\d+。$/u.test(section))).join('\n\n');
+  return (qianshiHasMaterialSection(sections) ? sections : sections.filter(section => section !== RECALL_KNOWLEDGE_GUIDANCE && !/^本轮千事资料来源截至：AI #\d+。$/u.test(section))).join('\n\n');
 }
 const qianshiBlock = (value, timeDependencies = null) => {
   const content = renderedQianshiProgressText(value, timeDependencies);
@@ -405,6 +406,9 @@ function withoutStaleTime(receipt, source, projection, changeReason = 'optionalT
   };
   const locationReferences = clone(receipt.selectedLocationReferences ?? []);
   const limits = saved.renderPlan.limits;
+  const selectionLimits = recallReceiptSelectionLimits(receipt.strategyVersion);
+  states.splice(selectionLimits.states);
+  changes.splice(Math.min(selectionLimits.cseChanges, Math.max(0, selectionLimits.combinedStatesAndChanges - states.length)));
   const entityById = new Map((source.entities ?? []).map(entity => [entity.entityId, entity]));
   const frozenNames = new Map(saved.renderPlan.entityNames ?? []);
   for (const item of floors.flatMap(floor => floor.items).filter(item => item.kind === 'manualArtifact')) {
@@ -457,6 +461,161 @@ function withoutStaleTime(receipt, source, projection, changeReason = 'optionalT
     selectedCseChanges: changes, storylines, timeDependencies: dependencies, injectionText: text, completionStatus: text ? 'ready' : 'empty', stages,
     selectorDiagnostic: receipt.selectorDiagnostic ? { ...receipt.selectorDiagnostic, historyRetainedCount: history.length + placeCount(), stateRetainedCount: states.length + changes.length } : null,
     skipReasons: [...new Set([...receipt.skipReasons, ...(changeReason ? [changeReason] : [])])] };
+}
+
+function selectedManualTimeScope(dependencies, projection) {
+  if (dependencies.renderPlan?.manualTimeItems) return clone(dependencies.renderPlan.manualTimeItems).filter(item => !item.itemId.startsWith('annual:'));
+  const selected = new Map();
+  for (const item of [...dependencies.corrections, ...dependencies.reminders]) {
+    if (item.itemId.startsWith('annual:')) continue;
+    const entry = selected.get(item.itemId) ?? { itemId: item.itemId, revision: null, correctionKeys: [], reminder: false };
+    const manual = projection?.manualTimeItems?.[item.itemId];
+    let observationKey = null;
+    try { observationKey = JSON.parse(item.sourceSignature)?.[1]; } catch { /* Older external projections may use opaque signatures. */ }
+    entry.revision = manual?.revisionsByObservation?.[observationKey] ?? null;
+    if (item.key) entry.correctionKeys.push(item.key); else entry.reminder = true;
+    selected.set(item.itemId, entry);
+  }
+  return [...selected.values()];
+}
+
+function refreshFrozenManualTime(receipt, source, projection) {
+  const saved = receipt.timeDependencies;
+  if (saved?.mode !== 'selected' || !saved.renderPlan) return receipt;
+  const scope = selectedManualTimeScope(saved, projection);
+  if (!scope.length) return receipt;
+  if (!projection) return withoutStaleTime(receipt, source, null) ?? receipt;
+  let changed = !saved.renderPlan.manualTimeItems;
+  const corrections = new Map(saved.corrections.map(item => [item.key, item]));
+  const reminders = new Map(saved.reminders.map(item => [item.itemId, item]));
+  for (const item of scope) {
+    const manual = projection.manualTimeItems?.[item.itemId];
+    const removed = Array.isArray(projection.presentItemIds) && !projection.presentItemIds.includes(item.itemId);
+    if (!removed && (!manual || manual.revision === item.revision)) continue;
+    changed = true;
+    item.revision = manual?.revision ?? item.revision;
+    for (const key of item.correctionKeys) {
+      const live = removed ? null : projection.corrections?.[key];
+      if (live?.itemId === item.itemId) corrections.set(key, { ...live, key }); else corrections.delete(key);
+    }
+    if (item.reminder) {
+      const live = removed ? null : projection.reminders?.find(value => value.itemId === item.itemId);
+      if (live) reminders.set(item.itemId, live); else reminders.delete(item.itemId);
+    }
+  }
+  if (!changed) return receipt;
+  const dependencies = { ...saved, corrections: [...corrections.values()], reminders: [...reminders.values()],
+    renderPlan: { ...saved.renderPlan, manualTimeItems: scope } };
+  return withoutStaleTime({ ...receipt, timeDependencies: dependencies }, source,
+    { corrections: Object.fromEntries(corrections), reminders: [...reminders.values()] }, null) ?? receipt;
+}
+
+function waitForRecallOperation(value, operation) {
+  const pending = Promise.resolve(value), signal = operation?.controller.signal;
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(new DOMException('Recall cancelled', 'AbortError')); };
+    pending.then(result => { signal.removeEventListener('abort', abort); resolve(result); }, error => { signal.removeEventListener('abort', abort); reject(error); });
+    if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+function refreshFrozenManualCse(receipt, snapshot) {
+  if (snapshot?.root?.chatId !== receipt.chatId || snapshot.root.narrativeGeneration !== receipt.narrativeGeneration) return receipt;
+  const selected = [...receipt.selectedStates, ...receipt.selectedCseChanges];
+  const bindings = new Map(selected.map(value => [value.subjectEntityId, value]));
+  if (!bindings.size) return receipt;
+  const floorSeq = new Map((snapshot.floors ?? []).map(floor => [floor.id, floor.assistantSeq]));
+  const entities = (snapshot.entities ?? []).filter(entity => entity.recordStatus === 'active')
+    .map(entity => ({ entityId: entity.id, displayName: entity.displayName }));
+  const names = new Map(entities.map(entity => [entity.entityId, entity.displayName]));
+  const deltas = (snapshot.stateDeltas ?? []).filter(delta => delta.recordStatus === 'active' && delta.source?.manualSubjectEntityIds?.length);
+  const manualSubjects = new Map(deltas.map(delta => [delta.id, new Set(delta.source.manualSubjectEntityIds)]));
+  const timeline = deltas.map(delta => ({ deltaId: delta.id, floorId: delta.floorId,
+    changes: (delta.fixedChanges ?? []).filter(subject => manualSubjects.get(delta.id).has(subject.subjectEntityId)) }));
+  const operations = cseChangesDto(timeline, entities, floorSeq, null, new Set(), manualSubjects)
+    .filter(change => change.origin === 'manual' && bindings.has(change.subjectEntityId))
+    .sort((left, right) => left.assistantSeq - right.assistantSeq);
+  const current = stateDto(snapshot.currentStates?.at(-1), entities, floorSeq, new Set());
+  let states = clone(receipt.selectedStates), changes = clone(receipt.selectedCseChanges);
+  const groups = new Map();
+  for (const operation of operations) {
+    const key = `${operation.deltaId}:${operation.subjectEntityId}:${operation.layer}`;
+    const group = groups.get(key) ?? [];
+    group.push(operation); groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    const operation = group[0];
+    // An already selected manual operation stays frozen when later automatic plot advances.
+    const adopted = group.every(value => changes.some(saved => saved.origin === 'manual' && saved.deltaId === value.deltaId
+      && saved.subjectEntityId === value.subjectEntityId && saved.layer === value.layer && saved.action === value.action
+      && (saved.before?.stateId ?? null) === (value.before?.stateId ?? null)
+      && (saved.after?.stateId ?? null) === (value.after?.stateId ?? null))
+      || value.after && states.some(saved => saved.stateId === value.after.stateId));
+    if (adopted) continue;
+    const binding = bindings.get(operation.subjectEntityId);
+    const sameLayer = value => value.subjectEntityId === operation.subjectEntityId && value.layer === operation.layer;
+    const delta = deltas.find(value => value.id === operation.deltaId);
+    const subject = delta.subjectSnapshots.find(value => value.subjectEntityId === operation.subjectEntityId);
+    const clearing = group.some(value => value.action === 'remove') && !subject?.[operation.layer]?.length;
+    states = states.filter(value => !(sameLayer(value) && (clearing || group.some(change => value.stateId === change.before?.stateId)
+      || value.origin === 'manual' && value.sourceFloorId === operation.floorId)
+      && (value.sourceAssistantSeq ?? 0) <= operation.assistantSeq));
+    changes = changes.filter(value => !(sameLayer(value) && value.floorId === operation.floorId));
+    for (const change of group) {
+      const after = change.after;
+      const stillCurrent = after && current.find(value => value.subjectEntityId === change.subjectEntityId)?.[change.layer]
+        .some(value => value.stateId === after.stateId);
+      if (stillCurrent && !states.some(value => value.stateId === after.stateId)) states.push({ ...after,
+        subjectEntityId: change.subjectEntityId, subject: binding.subject, toward: names.get(after.towardEntityId) ?? null,
+        layer: change.layer, storylineId: binding.storylineId });
+      changes.push({ ...change, subject: binding.subject, storylineId: binding.storylineId,
+        before: change.before ? { ...change.before, toward: names.get(change.before.towardEntityId) ?? null } : null,
+        after: after ? { ...after, toward: names.get(after.towardEntityId) ?? null } : null });
+    }
+  }
+  if (JSON.stringify([states, changes]) === JSON.stringify([receipt.selectedStates, receipt.selectedCseChanges])) return receipt;
+  const limits = recallReceiptSelectionLimits(receipt.strategyVersion);
+  states.splice(limits.states);
+  changes.splice(Math.min(limits.cseChanges, Math.max(0, limits.combinedStatesAndChanges - states.length)));
+  const updated = { ...receipt, selectedStates: states, selectedCseChanges: changes };
+  const corrections = Object.fromEntries((receipt.timeDependencies?.corrections ?? []).map(item => [item.key, item]));
+  if (receipt.timeDependencies?.renderPlan) return withoutStaleTime(updated, { entities },
+    { corrections, reminders: receipt.timeDependencies.reminders ?? [] }, null) ?? receipt;
+  return replaceLegacyCseSelection(receipt, updated);
+}
+
+function replaceLegacyCseSelection(receipt, updated) {
+  const states = updated.selectedStates, changes = updated.selectedCseChanges;
+  const limits = recallReceiptSelectionLimits(receipt.strategyVersion);
+  const corrections = Object.fromEntries((receipt.timeDependencies?.corrections ?? []).map(item => [item.key, item]));
+  const protectedText = readManualArtifactBlocks(receipt.injectionText, { preserveHeaders: true });
+  if (!protectedText.valid) return receipt;
+  const format = value => formatRecallInjection({ coverage: receipt.coverage, floors: [], states: value.selectedStates,
+    cseChanges: value.selectedCseChanges, storylines: receipt.storylines, entityById: new Map(), timeProjection: { corrections } });
+  const oldLines = new Set(format(receipt).split('\n').filter(line => line.startsWith('- ')));
+  const originalText = protectedText.text.split('\n').filter(line => !oldLines.has(line)).join('\n');
+  const render = () => {
+    const newLines = format(updated).split('\n').filter(line => line.startsWith('- ')).join('\n');
+    let text = originalText.replace('</qqj_recalled_context>', () => `${newLines}\n</qqj_recalled_context>`);
+    for (const [token, literal] of protectedText.blocks) text = text.replace(token, () => literal);
+    return text;
+  };
+  let text = render();
+  const maxCharacters = limits.expanded ? 32000 : 16000;
+  const tokenBudget = receipt.stages?.estimatedTokenBudget ?? maxCharacters;
+  while (text.length > maxCharacters || estimateRecallTokens(text) > tokenBudget) {
+    if (changes.length) changes.pop();
+    else if (states.length) states.pop();
+    else break;
+    text = render();
+  }
+  return { ...updated, injectionText: text, stages: receipt.stages ? { ...receipt.stages, stateCount: states.length,
+    currentStateCount: states.length, cseChangeCount: changes.length,
+    linkedCseChangeCount: changes.filter(value => value.relationEvidence === 'source').length,
+    finalInjectionItemCount: Math.max(0, receipt.stages.finalInjectionItemCount - receipt.selectedStates.length - receipt.selectedCseChanges.length + states.length + changes.length),
+    estimatedTokenCount: estimateRecallTokens(text) } : null,
+    selectorDiagnostic: receipt.selectorDiagnostic ? { ...receipt.selectorDiagnostic, stateRetainedCount: states.length + changes.length } : null };
 }
 
 function refreshFrozenManualSummaries(receipt, snapshot) {
@@ -553,7 +712,7 @@ function refreshLegacyAuxiliaryText(receipt, places, peopleUnavailable, placesUn
   text = text.split('\n').filter(line => {
     if (line === '[叙事回顾]' || line.startsWith('[叙事回顾（')) group = 'narrative';
     else if (line === '[客观相关旧事]') group = 'objective';
-    else if (line === '[已表达/已共享信息]' || line.startsWith('[私有资料；知情：')) group = 'people';
+    else if (line === '[已表达/已共享信息]' || line === '[已表达信息及接收范围]' || line.startsWith('[私有资料；知情：')) group = 'people';
     else if (line.startsWith('[') && !line.startsWith('[人工原文｜')) group = '';
     const row = /^- AI #[^\n]+?：(.*)$/u.exec(line);
     if (!row || group === 'narrative' || row[1].startsWith('[人工原文｜')) return true;
@@ -567,6 +726,26 @@ function refreshAuxiliaryReceipt(receipt, source, queryContext) {
   const oldPlaces = receipt.selectedPlaces ?? [], plan = receipt.timeDependencies?.renderPlan;
   const peopleUnavailable = source.unavailableSources?.includes('people');
   const placesUnavailable = source.unavailableSources?.includes('places');
+  const projection = source.identityProjection ?? {};
+  const names = new Map(source.entities.map(entity => [entity.entityId, entity.displayName]));
+  const resolveToward = value => {
+    if (!value?.towardEntityId) return value;
+    const id = resolveIdentityEntityId(value.towardEntityId, projection);
+    const towardEntityId = isIdentityDeleted(id, projection) ? null : id;
+    return towardEntityId === value.towardEntityId ? value : { ...value, towardEntityId,
+      toward: towardEntityId ? projection.currentNamesByEntityId?.[id] ?? names.get(id) ?? value.toward : null };
+  };
+  const resolveSubject = value => {
+    const id = resolveIdentityEntityId(value.subjectEntityId, projection);
+    if (isIdentityDeleted(id, projection)) return [];
+    const subject = id === value.subjectEntityId ? value.subject : projection.currentNamesByEntityId?.[id] ?? names.get(id) ?? value.subject;
+    const mapped = { ...resolveToward(value), subjectEntityId: id, subject };
+    if (Object.hasOwn(value, 'before')) Object.assign(mapped, { before: resolveToward(value.before), after: resolveToward(value.after) });
+    return [mapped];
+  };
+  const states = peopleUnavailable ? [] : receipt.selectedStates.flatMap(resolveSubject);
+  const changes = peopleUnavailable ? [] : receipt.selectedCseChanges.flatMap(resolveSubject);
+  const identitiesChanged = JSON.stringify([states, changes]) !== JSON.stringify([receipt.selectedStates, receipt.selectedCseChanges]);
   const placeItemCurrent = (item, floorId) => {
     if (!item.placeEntityId || !source.placeWorkspace) return true;
     const field = item.kind === 'placeFeature' || item.kind === 'placeDescription' ? 'features'
@@ -592,11 +771,10 @@ function refreshAuxiliaryReceipt(receipt, source, queryContext) {
     || Object.values(source.placeWorkspace?.placesByEntityId ?? {}).some(row =>
       ['description', 'parentEntityId', 'relations', 'name'].some(field => Object.hasOwn(row, field)
         && (!row.scopes?.[field] || row.scopes[field].coveredFloorIds?.some(id => selectedFloorIds.has(id))))));
-  if (!placesChanged && !peopleUnavailable && !placesUnavailable && !scopedPlaceChanged && !legacyPlaceScopeUnconfirmed) return receipt;
+  if (!placesChanged && !peopleUnavailable && !placesUnavailable && !scopedPlaceChanged && !legacyPlaceScopeUnconfirmed && !identitiesChanged) return receipt;
   const updated = { ...receipt, selectedPlaces: places,
     ...(places.length && receipt.placeWorkspaceDependency === undefined ? { placeWorkspaceDependency: `${receipt.chatId}:0` } : {}),
-    selectedStates: peopleUnavailable ? [] : receipt.selectedStates,
-    selectedCseChanges: peopleUnavailable ? [] : receipt.selectedCseChanges };
+    selectedStates: states, selectedCseChanges: changes };
   if (plan) {
     const floors = plan.floors.flatMap(floor => {
       const items = floor.items.filter(item => item.kind === 'manualArtifact' || item.rawWitness
@@ -610,7 +788,7 @@ function refreshAuxiliaryReceipt(receipt, source, queryContext) {
   }
   updated.injectionText = refreshLegacyAuxiliaryText(receipt, places, peopleUnavailable, placesUnavailable || legacyPlaceScopeUnconfirmed);
   updated.stages = receipt.stages ? { ...receipt.stages, estimatedTokenCount: estimateRecallTokens(updated.injectionText) } : null;
-  return updated;
+  return identitiesChanged ? replaceLegacyCseSelection({ ...receipt, injectionText: updated.injectionText }, updated) : updated;
 }
 const selectorDiagnosticSnapshot = value => {
   const api = sanitizeTaskMetadata(value);
@@ -796,6 +974,7 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
         && boundedString(value.deltaId, 500) && boundedString(value.floorId, 500) && Number.isSafeInteger(value.assistantSeq) && value.assistantSeq > 0
         && boundedString(value.subjectEntityId, 500) && boundedString(value.subject, 500)
         && ['core', 'adaptive', 'situational'].includes(value.layer) && ['add', 'remove', 'update', 'refine'].includes(value.action)
+        && (value.origin === undefined || value.origin === 'manual')
         && stateChangeSideValid(value.before, { identifiersRequired: IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) })
         && stateChangeSideValid(value.after, { identifiersRequired: IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) })
         && (!IDENTIFIED_RECALL_STRATEGIES.includes(receipt.strategyVersion) || boundedString(value.storylineId, 80)))) return false;
@@ -1496,12 +1675,72 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     } catch (error) { logger?.warn?.('[qianqianjie] optional qianshi projection failed', { code: error?.code ?? error?.name ?? 'QQJ_QIANSHI_READ_FAILED' }); }
     return Object.freeze({ ...source, qianshiProgress, qianshiCandidates: Object.freeze([]) });
   }
+  async function refreshFrozenKnowledgeScope(receipt, snapshot, hostSnapshot, queryContext, operation) {
+    const ordinary = removeQianshiProgress(receipt.injectionText, receipt.qianshiProgress, receipt.timeDependencies);
+    const protectedText = readManualArtifactBlocks(ordinary, { preserveHeaders: true });
+    if (!protectedText.valid) return receipt;
+    const oldRule = ordinary.startsWith('<qqj_recalled_context>') && !protectedText.text.split('\n').some(line => line === RECALL_KNOWLEDGE_GUIDANCE || line === CSE_RECALL_KNOWLEDGE_BOUNDARY || line === RECALL_COMPACT_KNOWLEDGE_GUIDANCE);
+    let progress = receipt.qianshiProgress;
+    const oldProjection = progress && (progress.projectionVersion ?? 0) < QIANSHI_RECALL_PROJECTION_VERSION;
+    if (!oldRule && !oldProjection) return receipt;
+    if (oldProjection && typeof qianshiProgressProvider === 'function') {
+      const root = snapshot?.root?.chatId === receipt.chatId && snapshot.root.narrativeGeneration === receipt.narrativeGeneration ? snapshot.root : null;
+      const source = { status: 'ready', chatId: receipt.chatId, narrativeGeneration: receipt.narrativeGeneration,
+        headCheckpointId: root?.headCheckpointId ?? receipt.headCheckpointId };
+      advanceOperation(operation, 'qianshiProgress');
+      const refreshed = await attachQianshiProgress(source, queryContext, hostSnapshot, { eventIds: progress.eventIds,
+        matterIds: progress.matterIds, pendingHeader: qianshiRecallPendingHeader(progress.text), scopeLine: qianshiProgressScopeLine(progress) });
+      if (!refreshed.qianshiProgress || refreshed.qianshiProgress.projectionVersion >= QIANSHI_RECALL_PROJECTION_VERSION) progress = refreshed.qianshiProgress;
+    }
+    if (!oldRule && progress === receipt.qianshiProgress) return receipt;
+    const plan = receipt.timeDependencies?.renderPlan;
+    const totalBudget = receipt.stages?.estimatedTokenBudget ?? 8000;
+    const progressTokens = reservedQianshiTokenBudget(progress);
+    const updated = { ...receipt, qianshiProgress: progress, stages: receipt.stages ? { ...receipt.stages,
+      ...(progress ? { qianshiTokenBudget: progressTokens } : {}), estimatedTokenBudget: totalBudget } : null };
+    if (updated.stages && !progress) delete updated.stages.qianshiTokenBudget;
+    if (plan) {
+      updated.timeDependencies = { ...receipt.timeDependencies, renderPlan: { ...plan, limits: { ...plan.limits,
+        maxCharacters: Math.min(plan.limits.maxCharacters, Math.max(0, 32000 - qianshiBlock(progress).length - 2)),
+        estimatedTokenBudget: Math.min(plan.limits.estimatedTokenBudget, Math.max(0, totalBudget - progressTokens)) } } };
+      const entities = (plan.entityNames ?? []).map(([entityId, displayName]) => ({ entityId, displayName }));
+      const corrections = Object.fromEntries((receipt.timeDependencies.corrections ?? []).map(item => [item.key, item]));
+      return withoutStaleTime(updated, { entities }, { corrections, reminders: receipt.timeDependencies.reminders ?? [] }, null) ?? receipt;
+    }
+    let text = protectedText.text;
+    // Only the program's explicit recipient templates are rewritten in legacy receipts.
+    text = text.replace(/^- (?:AI #[^\n]+：|\[旧事\] )[^\n]*\[历史原文；时间未标注\][^\n]*$/gmu, value => {
+      const token = `\u0000qqj-raw-${protectedText.blocks.size}\u0000`; protectedText.blocks.set(token, value); return token;
+    });
+    if (oldRule) {
+      const boundaries = new Set(['人物状态记录：主体、态度对象、可见性。', LEGACY_CSE_RECALL_KNOWLEDGE_BOUNDARY, '任何 private 内容仅属于标明的主体，不代表其他人物知情。']);
+      text = text.split('\n').map((line, index) => index === 2 && boundaries.has(line) ? CSE_RECALL_KNOWLEDGE_BOUNDARY : line).join('\n')
+      .replace(/^\[已表达\/已共享信息\]$/gmu, '[已表达信息及接收范围]')
+      .replace(/^(- AI #\d+(?:（[^\n（）]*）)?)（([^\n（）]+) → ([^\n（）]+)）：/gmu, '$1：表达者：$2。接收者：$3。内容：');
+    }
+    for (const [token, literal] of protectedText.blocks) text = text.replace(token, () => literal);
+    let injectionText = appendQianshiProgress(text, progress, receipt.timeDependencies);
+    if (progress && (injectionText.length > 32000 || estimateRecallTokens(injectionText) > totalBudget)) {
+      progress = null; injectionText = text;
+      updated.qianshiProgress = null;
+      if (updated.stages) delete updated.stages.qianshiTokenBudget;
+      updated.skipReasons = [...new Set([...receipt.skipReasons, 'qianshiBudget'])];
+    }
+    if (oldRule && (injectionText.length > 32000 || estimateRecallTokens(injectionText) > totalBudget)) {
+      const boundaries = new Set(['人物状态记录：主体、态度对象、可见性。', LEGACY_CSE_RECALL_KNOWLEDGE_BOUNDARY, '任何 private 内容仅属于标明的主体，不代表其他人物知情。']);
+      text = protectedText.text.split('\n').map((line, index) => index === 2 && boundaries.has(line) ? RECALL_COMPACT_KNOWLEDGE_GUIDANCE : line).join('\n');
+      for (const [token, literal] of protectedText.blocks) text = text.replace(token, () => literal);
+      injectionText = appendQianshiProgress(text, progress, receipt.timeDependencies);
+    }
+    return { ...updated, injectionText, completionStatus: injectionText ? 'ready' : 'empty', stages: updated.stages
+      ? { ...updated.stages, estimatedTokenCount: estimateRecallTokens(injectionText) } : null };
+  }
   async function preparedSource(snapshot, sanitizerSnapshot, options = {}) {
     let source = options.preparedSource ?? await basePreparedSource(snapshot, sanitizerSnapshot, options);
     if (source?.status !== 'ready') return source;
     let timeProjection = null;
-    if (typeof timeProjectionProvider === 'function') try { if (options.operation) advanceOperation(options.operation, 'timeProjection'); timeProjection = await timeProjectionProvider(source); }
-    catch (error) { logger?.warn?.('[qianqianjie] optional time projection failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
+    if (typeof timeProjectionProvider === 'function') try { if (options.operation) advanceOperation(options.operation, 'timeProjection'); timeProjection = await waitForRecallOperation(timeProjectionProvider(source), options.operation); }
+    catch (error) { if (options.operation?.controller.signal.aborted) throw error; logger?.warn?.('[qianqianjie] optional time projection failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
     return Object.freeze({ ...source, timeProjection });
   }
   const notify = () => { const state = getState(); for (const listener of subscribers) { try { listener(state); } catch { /* listener isolation */ } } return state; };
@@ -1782,15 +2021,23 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     return diagnostic;
   }
 
-  async function withoutDeletedQianshi(receipt) {
+  async function withoutDeletedQianshi(receipt, operation) {
     if (typeof qianshiDeletionProvider !== 'function' || !receipt.qianshiProgress
-      && !(receipt.timeDependencies?.reminders ?? []).some(item => item.qianshiRef)) return receipt;
-    const deletion = await qianshiDeletionProvider();
-    if (deletion.chatId !== receipt.chatId) throw Object.assign(new Error('当前聊天已变化。'), { code: 'V3_RECALL_CHAT_CHANGED' });
-    const deletedIds = new Set(deletion.events.map(event => event.eventId));
-    const witness = await qianshiDeletionWitness(receipt, deletion.events, fingerprint);
+      && !(receipt.timeDependencies?.reminders ?? []).some(item => item.qianshiRef)) return { receipt, unavailable: false };
+    let deletion, unavailable = false;
+    try {
+      deletion = await waitForRecallOperation(qianshiDeletionProvider(), operation);
+      if (!deletion || !Array.isArray(deletion.events)) throw new TypeError('千事删除状态不可用');
+    } catch (error) {
+      if (operation.controller.signal.aborted) throw error;
+      unavailable = true;
+    }
+    if (!unavailable && deletion.chatId !== receipt.chatId) throw Object.assign(new Error('当前聊天已变化。'), { code: 'V3_RECALL_CHAT_CHANGED' });
+    const deletedIds = new Set(unavailable ? receipt.qianshiProgress?.eventIds ?? [] : deletion.events.map(event => event.eventId));
+    const witness = unavailable ? [] : await qianshiDeletionWitness(receipt, deletion.events, fingerprint);
     const prior = new Map((receipt.qianshiDeletionWitness ?? []).map(value => [value.matterId, value.fingerprint]));
-    const affectedMatters = new Set();
+    const affectedMatters = new Set(unavailable ? [...(receipt.qianshiProgress?.matterIds ?? []),
+      ...(receipt.timeDependencies?.reminders ?? []).map(item => item.qianshiRef?.matterId).filter(Boolean)] : []);
     for (const value of witness) {
       if (prior.has(value.matterId) ? prior.get(value.matterId) !== value.fingerprint
         : deletion.events.some(event => event.matterId === value.matterId)) affectedMatters.add(value.matterId);
@@ -1800,11 +2047,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const matterIds = (oldQianshi?.matterIds ?? []).filter(id => !affectedMatters.has(id));
     const savedTime = receipt.timeDependencies;
     const reminders = (savedTime?.reminders ?? []).filter(item => !affectedMatters.has(item.qianshiRef?.matterId));
-    if (eventIds.length === (oldQianshi?.eventIds?.length ?? 0) && matterIds.length === (oldQianshi?.matterIds?.length ?? 0)
-      && reminders.length === (savedTime?.reminders?.length ?? 0)) return receipt;
-    // 只撤回明确删除涉及的行，不加入新材料、不重跑模型；普通摘要/CSE 与其余冻结材料逐字保留。
+    if (!unavailable && eventIds.length === (oldQianshi?.eventIds?.length ?? 0) && matterIds.length === (oldQianshi?.matterIds?.length ?? 0)
+      && reminders.length === (savedTime?.reminders?.length ?? 0)) return { receipt, unavailable: false };
+    // 已知删除仅撤对应行；读取未知仅撤本次千事及关联提醒，保其余冻结材料。
     let qianshi = null;
-    if (oldQianshi) {
+    if (oldQianshi && !unavailable) {
       const scopeLine = qianshiProgressScopeLine(oldQianshi);
       const scopedPrefix = scopeLine ? `${scopeLine}\n\n` : '';
       const bodyText = scopedPrefix && oldQianshi.text.startsWith(scopedPrefix) ? oldQianshi.text.slice(scopedPrefix.length) : oldQianshi.text;
@@ -1822,18 +2069,22 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     let ordinaryText = removeQianshiProgress(receipt.injectionText, oldQianshi, savedTime);
     const timeDependencies = savedTime?.mode === 'selected' ? { ...savedTime, reminders } : savedTime;
     if (reminders.length !== (savedTime?.reminders?.length ?? 0)) {
-      const timeBlock = rows => rows.length ? ['[时间参考（当前推测及预计/期限节点尚未获正文确认，不代表已经发生或完成）]',
-        ...rows.map(item => `- ${item.text}`)].join('\n') + '\n' : '';
-      const suffix = `${timeBlock(savedTime.reminders)}</qqj_recalled_context>`;
-      if (ordinaryText.endsWith(suffix)) ordinaryText = ordinaryText.slice(0, -suffix.length) + `${timeBlock(reminders)}</qqj_recalled_context>`;
+      const timeBlock = (rows, header) => rows.length ? [header, ...rows.map(item => `- ${item.text}`)].join('\n') + '\n' : '';
+      for (const header of ['[时间参考]', '[时间参考（当前推测及预计/期限节点尚未获正文确认，不代表已经发生或完成）]']) {
+        const suffix = `${timeBlock(savedTime.reminders, header)}</qqj_recalled_context>`;
+        if (ordinaryText.endsWith(suffix)) {
+          ordinaryText = ordinaryText.slice(0, -suffix.length) + `${timeBlock(reminders, header)}</qqj_recalled_context>`; break;
+        }
+      }
       if (ordinaryText === '<qqj_recalled_context>\n</qqj_recalled_context>') ordinaryText = '';
     }
     const injectionText = appendQianshiProgress(ordinaryText, qianshi, timeDependencies);
     const removedReminders = (savedTime?.reminders?.length ?? 0) - reminders.length;
-    const stages = receipt.stages ? { ...receipt.stages, estimatedTokenCount: estimateRecallTokens(injectionText),
+    const stages = receipt.stages ? { ...stagesWithQianshiBudget(stagesWithoutQianshi(receipt.stages, oldQianshi, injectionText), qianshi), estimatedTokenCount: estimateRecallTokens(injectionText),
       timeReminderCount: reminders.length, finalInjectionItemCount: Math.max(0, (receipt.stages.finalInjectionItemCount ?? 0) - removedReminders) } : null;
-    return { ...receipt, qianshiProgress: qianshi, timeDependencies, injectionText, stages,
-      completionStatus: injectionText ? 'ready' : 'empty', skipReasons: [...new Set([...receipt.skipReasons, 'qianshiManuallyDeleted'])] };
+    const next = { ...receipt, qianshiProgress: qianshi, timeDependencies, injectionText, stages,
+      completionStatus: injectionText ? 'ready' : 'empty', skipReasons: [...new Set([...receipt.skipReasons, unavailable ? 'optionalQianshiDeletionUnavailable' : 'qianshiManuallyDeleted'])] };
+    return { receipt: { ...next, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(next))) }, unavailable };
   }
 
   function fitReusedPrequel(operation, receipt, contextSize) {
@@ -1854,7 +2105,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
 
   function commitFrozenReceiptIfCurrent({ operation, receipt, userIndex, hostGuard }) {
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
-    // 人工删除的撤回在此前完成；普通冻结复用不重读来源、时间投影或重选千事。
+    // 原选材料的人工操作在此前承接；此处同步核对宿主边界并注入冻结结果。
     // user 消息对象是生命周期边界；最后守卫与注入同步完成，迟到请求不能跨过提交点。
     const snapshot = hostAdapter.snapshot();
     const user = latestUser(snapshot);
@@ -1925,8 +2176,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (timeDependencies.mode === 'projection' || timeDependencies.corrections.length || timeDependencies.reminders.length) {
       liveTime = currentSource.timeProjection;
       if (typeof timeProjectionProvider === 'function') {
-        try { advanceOperation(operation, 'timeProjection'); liveTime = await timeProjectionProvider(currentSource); }
-        catch (error) { liveTime = null; logger?.warn?.('[qianqianjie] optional time projection check failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
+        try { advanceOperation(operation, 'timeProjection'); liveTime = await waitForRecallOperation(timeProjectionProvider(currentSource), operation); }
+        catch (error) { if (operation.controller.signal.aborted) throw error; liveTime = null; logger?.warn?.('[qianqianjie] optional time projection check failed', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
       }
       if (!timeDependenciesCurrent(timeDependencies, liveTime)) {
         finalReceipt = withoutStaleTime(finalReceipt, currentSource, liveTime);
@@ -2121,7 +2372,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           }
         }
       }
-      let manualReceiptChanged = false;
+      let manualReceiptChanged = false, manualSnapshot = null;
       if (candidate && typeof identityProjectionProvider === 'function') {
         const entityNames = new Map(candidate.timeDependencies?.renderPlan?.entityNames ?? []);
         for (const place of candidate.selectedPlaces ?? []) if (!entityNames.has(place.placeEntityId)) {
@@ -2144,7 +2395,33 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         }
       }
       if (candidate && typeof manualMemorySnapshot === 'function') {
-        const updated = refreshFrozenManualSummaries(candidate, manualMemorySnapshot());
+        manualSnapshot = manualMemorySnapshot();
+        const updated = refreshFrozenManualCse(refreshFrozenManualSummaries(candidate, manualSnapshot), manualSnapshot);
+        if (updated !== candidate) {
+          candidate = { ...updated, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(updated))) };
+          manualReceiptChanged = true;
+        }
+      }
+      if (candidate?.timeDependencies?.renderPlan && typeof timeProjectionProvider === 'function'
+        && selectedManualTimeScope(candidate.timeDependencies, null).length > 0) {
+        let source;
+        if (manualSnapshot?.root?.chatId === candidate.chatId) {
+          const subjects = new Map();
+          for (const state of candidate.selectedStates) {
+            const subject = subjects.get(state.subjectEntityId) ?? { subjectEntityId: state.subjectEntityId, core: [], adaptive: [], situational: [] };
+            (subject[state.layer] ?? subject.situational).push(state);
+            subjects.set(state.subjectEntityId, subject);
+          }
+          source = { status: 'ready', chatId: candidate.chatId, headCheckpointId: manualSnapshot.root.headCheckpointId,
+            rootRevision: manualSnapshot.rootRevision, narrativeGeneration: manualSnapshot.root.narrativeGeneration,
+            floorMemories: (manualSnapshot.floorMemories ?? []).map(memory => ({ ...memory, floorMemoryId: memory.id })),
+            currentState: [...subjects.values()], entities: (manualSnapshot.entities ?? []).map(entity => ({ ...entity, entityId: entity.id })),
+            identityProjection: manualSnapshot.identityProjection ?? null };
+        } else source = await basePreparedSource(before, operation.sanitizerOptions, { operation });
+        let projection = null;
+        try { advanceOperation(operation, 'timeProjection'); projection = await waitForRecallOperation(timeProjectionProvider(source), operation); }
+        catch (error) { if (operation.controller.signal.aborted) throw error; logger?.warn?.('[qianqianjie] frozen time projection unavailable', { code: error?.code ?? error?.name ?? 'QQJ_TIME_READ_FAILED' }); }
+        const updated = refreshFrozenManualTime(candidate, source, projection);
         if (updated !== candidate) {
           candidate = { ...updated, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(updated))) };
           manualReceiptChanged = true;
@@ -2194,15 +2471,25 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         }
       }
       if (candidate) {
+        const scoped = await refreshFrozenKnowledgeScope(candidate, manualSnapshot, before, queryContext, operation);
+        if (scoped !== candidate) {
+          candidate = { ...scoped, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(scoped))) };
+          manualReceiptChanged = true;
+        }
         const commitStarted = Date.now();
         if (typeof qianshiDeletionProvider === 'function' && (candidate.qianshiProgress || (candidate.timeDependencies?.reminders ?? []).some(item => item.qianshiRef))) advanceOperation(operation, 'deletionWitness');
-        candidate = await withoutDeletedQianshi(candidate);
+        const deletion = await withoutDeletedQianshi(candidate, operation);
+        candidate = deletion.receipt;
+        if (deletion.unavailable) {
+          // This injection is temporary; retain the original signed selection for the next normal entry.
+          candidate = { ...candidate, receiptPersistence: 'sessionOnly' }; candidateOwner = null;
+        }
         fitReusedPrequel(operation, candidate, contextSize);
         diagnostic.selectionStatus = 'receiptCandidate'; diagnostic.coverage = clone(candidate.coverage); diagnostic.stages = clone(candidate.stages); diagnostic.selectorDiagnostic = clone(candidate.selectorDiagnostic);
         operation.phase = diagnostic.phase = 'commit'; advanceOperation(operation, 'commitVerification');
         const committed = commitFrozenReceiptIfCurrent({ operation, receipt: candidate, userIndex: user.index, hostGuard });
         if (!committed.ok) return stopForFinalSafety(committed.reason);
-        if (manualReceiptChanged) {
+        if (manualReceiptChanged && !deletion.unavailable) {
           const owner = Object.freeze({ chatId: operation.chatId, hostChatId: operation.hostChatId, userMessage: committed.user.message, userText: operation.userText });
           const receiptPersistence = typeof committed.snapshot.context?.saveChat === 'function' ? 'saving' : 'sessionOnly';
           candidate = Object.freeze({ ...candidate, receiptPersistence });
@@ -2350,6 +2637,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           deltaId: value.deltaId, floorId: value.floorId, assistantSeq: value.assistantSeq,
           subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer, action: value.action,
           storylineId: value.storylineId,
+          ...(value.origin === 'manual' ? { origin: 'manual' } : {}),
           relationEvidence: value.relationEvidence,
           before: value.before ? { stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, toward: value.before.toward, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
           after: value.after ? { stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, toward: value.after.toward, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
@@ -2386,6 +2674,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
         || receiptBase.timeDependencies.corrections.length || receiptBase.timeDependencies.reminders.length)) {
         receiptBase.timeDependencies.renderPlan = { entityNames: source.entities.map(entity => [entity.entityId, entity.displayName]), floors: selection.floors.map(({ floorId, floorMemoryId, assistantSeq, reasons, chronology, items }) => ({ floorId, floorMemoryId, assistantSeq, reasons: [...reasons], chronology: clone(chronology),
           items: items.map(({ rankScore, rankBranches, rankEntityBranches, ...item }) => clone(item)) })), limits: { maxCharacters: selection.limits.maxCharacters, estimatedTokenBudget: selection.limits.estimatedTokenBudget } };
+        const timeScope = selectedManualTimeScope(receiptBase.timeDependencies, source.timeProjection);
+        if (timeScope.length) receiptBase.timeDependencies.renderPlan.manualTimeItems = timeScope;
       }
       receiptBase.completionStatus = receiptBase.injectionText ? 'ready' : 'empty';
       diagnostic.selectionStatus = 'completed'; diagnostic.coverage = clone(receiptBase.coverage); diagnostic.stages = clone(receiptBase.stages); diagnostic.selectorDiagnostic = clone(receiptBase.selectorDiagnostic);
@@ -2510,7 +2800,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     requestDiagnostic.clear();
     epoch += 1; active?.controller.abort(FINAL_REASONS.has(reason) ? reason : 'superseded'); active = null;
     // 人工删除撤在途注入，但保留首次选材回执；下一次重生只剔除明确删除材料。
-    if (reason !== 'qianshiManuallyDeleted') sessionReceipt = null;
+    if (!['qianshiManuallyDeleted', 'timeManuallyEdited'].includes(reason)) sessionReceipt = null;
     generationQueue.length = 0; stoppedEndDebt = 0; clearSlot();
     lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastRecallReceiptOwner = null; lastError = null; notify();
   }

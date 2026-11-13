@@ -197,7 +197,7 @@ test('本轮明确询问已过生日时保留准确原文，其他在场人物�
   assert.doesNotMatch(result.injectionText, /阿裴 \/ 生日|日期关系不明确/u);
 });
 
-test('年度候选为空不增加请求；全非法正选不注入生日，坏类型和漏答仍拒绝', async () => {
+test('年度候选为空不增加请求，非法可选正选不注入生日，无有效答复仍拒绝', async () => {
   const source = annualRecallSource([annualRecord('one', PERSON, '阿岚')]);
   const empty = await selectRecallWithLlm({ source, queryContext: annualQuery('独自检修发电机'), generateUtilityTask: async () => { throw new Error('无相关候选不应请求'); } });
   assert.equal(empty.selectorDiagnostic.mode, 'local');
@@ -208,9 +208,13 @@ test('年度候选为空不增加请求；全非法正选不注入生日，坏�
   } });
   assert.equal(calls, 1);
   assert.equal(allInvalid.timeDependencies.reminders.length, 0);
-  for (const answer of [{ annual_retain_keys: 'T1' }, { annual_retain_keys: null }, { annual_retain_keys: {} }, { history_exclude_keys: [], state_exclude_keys: [] }]) {
+  for (const answer of [{ annual_retain_keys: 'T1' }, { annual_retain_keys: null }, { annual_retain_keys: {} }]) {
     await assert.rejects(selectRecallWithLlm({ source, queryContext: annualQuery('阿岚的生日'), generateUtilityTask: async () => ({ jsonData: answer }) }),
       error => ['V3_RECALL_LLM_KEYS_INVALID', 'V3_RECALL_LLM_SCHEMA_INVALID', 'V3_RECALL_LLM_FIELDS_MISSING'].includes(error.code));
+  }
+  for (const answer of [{ history_exclude_keys: [], state_exclude_keys: [] }, { history_exclude_keys: [], annual_retain_keys: 'T1' }]) {
+    const omitted = await selectRecallWithLlm({ source, queryContext: annualQuery('阿岚的生日'), generateUtilityTask: async () => ({ jsonData: answer }) });
+    assert.equal(omitted.timeDependencies.reminders.length, 0, '已有合法答复时，缺少或坏类型的可选周年字段不默认注入');
   }
 });
 

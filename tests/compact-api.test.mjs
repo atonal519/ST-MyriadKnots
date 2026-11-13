@@ -871,3 +871,36 @@ test('不可重试HTTP与主动取消不因高重试次数重复请求，工具�
   const check = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return jsonResponse({}, 503); } });
   const before = calls; await assert.rejects(check.testConnection({ config: config({ qqjRetryCount: 0 }) })); assert.equal(calls - before, 1);
 });
+
+test('运行保存解耦：已知HTTP失败正文挂起保原分类且不重派，主动取消仍AbortError', async t => {
+  for (const status of [400, 401, 403]) for (const stage of ['read', 'cancel']) await t.test(`${status}/${stage}`, async () => {
+    let calls = 0, cancelled = 0, released = 0;
+    const busy = [];
+    const client = createCompactApiClient({ timeoutMs: () => 8, retryWait: async () => {}, onBusyChange: value => busy.push(value), fetchImpl: async () => {
+      calls++;
+      return { ok: false, status, body: { getReader: () => ({
+        read: () => stage === 'read' ? new Promise(() => {}) : Promise.resolve({ done: false, value: new TextEncoder().encode('x'.repeat(5000)) }),
+        cancel: () => { cancelled++; return new Promise(() => {}); }, releaseLock: () => { released++; },
+      }) } };
+    } });
+    await assert.rejects(client.generateTask({ config: config({ qqjRetryCount: 2 }), taskMessages: [] }), error => error.code === (status === 400 ? 'QQJ_REQUEST_FORMAT' : 'QQJ_AUTH') && error.httpStatus === status);
+    assert.equal(calls, 1); assert.equal(cancelled, 1); assert.equal(released, 1); assert.deepEqual(busy, [true, false]);
+  });
+  const controller = new AbortController(); let start; const started = new Promise(resolve => { start = resolve; });
+  const client = createCompactApiClient({ fetchImpl: async () => ({ ok: false, status: 401, body: { getReader: () => ({ read: () => { start(); return new Promise(() => {}); }, cancel() {}, releaseLock() {} }) } }) });
+  const pending = client.generateTask({ config: config(), taskMessages: [], signal: controller.signal }); await started; controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('运行保存解耦：重试释放弃用HTTP正文，默认backoff结束清abort监听', async () => {
+  const controller = new AbortController(), listeners = new Set();
+  const add = controller.signal.addEventListener.bind(controller.signal), remove = controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener = (type, listener, options) => { if (type === 'abort') listeners.add(listener); return add(type, listener, options); };
+  controller.signal.removeEventListener = (type, listener, options) => { if (type === 'abort') listeners.delete(listener); return remove(type, listener, options); };
+  let calls = 0, cancelled = 0;
+  const client = createCompactApiClient({ timeoutMs: () => 100, fetchImpl: async () => ++calls === 1
+    ? { ok: false, status: 503, body: { cancel: () => { cancelled++; return new Promise(() => {}); } } }
+    : jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] }) });
+  assert.deepEqual((await client.generateTask({ config: config({ qqjRetryCount: 1 }), taskMessages: [], signal: controller.signal })).jsonData, { ok: true });
+  assert.equal(calls, 2); assert.equal(cancelled, 1); assert.equal(listeners.size, 0);
+});

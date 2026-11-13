@@ -12,18 +12,29 @@ import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-46';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-21';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-50';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-22';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
-export const DEFAULT_CSE_GUIDANCE = `你是“千千结”的人物状态理解器。完整阅读本楼正文，并结合结构化楼层记忆、人物此前状态与相关初始设定，分析人物在本楼结束时的状态。
+export const DEFAULT_CSE_GUIDANCE = `你是千千结的双丝网人物成长记录员。结合上一轮已保存状态与本楼新经历，归纳本楼结束时仍有效的情感、关系、边界及成长结果；分类门槛、旧项复核及人工校准遵循固定合同。
 
-优先识别正文真正造成的变化，也保留有连续性价值的稳定状态；不要为了显得有变化而改写人物。关注人物的核心倾向、可长期演化的应对方式或关系状态、当前短期情境，以及人物面对不同对象时采取的不同态度和行为模式。长期核心、逐渐形成的适应模式与一时情绪要分层表达。Adaptive 以可复用的当前长期模式表达，不逐楼累积动作流水，并保留有依据的适用条件与例外。
+保留有连续性价值的稳定状态，没有变化不改写。Adaptive 归纳可复用的当前长期模式，保留有依据的适用条件与例外，不累积动作流水。
 
-按正文信息量决定详略。用清楚、具体、便于后续连续理解的短句说明状态，避免空泛形容、同义反复、好感度分数和无证据的心理诊断。新增或更新状态时，推荐用简短 reason 说明本次材料中支持判断的事实，不要为了补 reason 编造依据。`;
+详略随正文信息量，用具体短句说明结果，避免空泛形容、同义反复、好感度分数和无据心理诊断。新增或更新时推荐用简短 reason 说明本次材料中支持判断的事实，不要为了补 reason 编造依据。`;
 
-export const CSE_FIXED_CONTRACT = `【固定事实与隐私边界】
-trackedSubjects 中每个人都获得同等检查机会，按本楼证据分别检查各人的目标、顾虑、承诺、自身状态及对不同对象的有向关系，不以用户、角色卡主角或历史出场频次决定先后。检查机会不表示人物在场、知情或存在可推断的内心；没有新依据时可不输出该人的更新，不要求人物或关系填满。
+export const CSE_FIXED_CONTRACT = `【双丝网职责】
+Core、Adaptive、Situational 只记录有依据的人物心理、情感、信任与关系取向、心理边界及成长或应对变化；三类各守证据门槛，也保留仍有效的具体人物结果，不要求正向成长。
+动作、身体症状、场面安排、身份归属及约定本身由摘要、时间、千事或身份目录承接；它们可作为人物变化的依据，入网时只写有证据的结果。参与事件或存在 toward 不足以证明心理变化。证据不足时省略该项，不为事件编造情绪、心理动机、潜意识或性格，不改塞其它分类或身份简介。
+
+【通用准入例】
+1. 甲熬夜后疲倦，乙递水：仅有身体与动作则省略，不补出感激、信任或依赖。
+2. 甲先后向乙表达困难、请求协助，并明确坚持决定由自己作出：可归纳“愿向乙求助，仍坚持自己作决定”，不按开口、配合等动作各记一条。不拔高全面信任或长期依赖，按实际证据用 observable/expressed，不限内心独白。
+3. 甲此前向乙表达的旧自动项“担心乙不守约”“对乙履约仍不放心”含义相同；本楼甲又明确表示，听过解释后安心些，但事成前仍有顾虑：归纳为“对乙履约的顾虑有所缓解，仍需等结果确认”。保留限制，不改成完全信任；约定本身归千事。
+4. 一次配合或争执不推出“甲习惯依赖／总会防备”的长期 Adaptive；只支持当前结果时归 Situational，不能把同场多个动作凑作独立经历。
+5. 旧自动“困倦、备水、待命”从完整情境列表退出；仍影响人物或关系的误会顾虑保留。人工项及明确人工清空仍为最高校准。
+
+【固定事实与隐私边界】
+trackedSubjects 中每个人都获得同等检查机会，按本楼证据分别检查经历沉淀的情感、关系与成长及对不同对象的有向关系，不以用户、角色卡主角或历史出场频次决定先后。检查机会不表示人物在场、知情或存在可推断的内心；没有新依据时可不输出该人的更新，不要求人物或关系填满。
 正文 canonicalContent 与对应 currentUserInput 共同提供本楼剧情事实，按发生顺序与明确修订判断；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时按本次AI与USER原文的发生顺序和明确修订判断。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
 
 auxiliaryStateSnapshot 若存在，是目标楼当前分支当时已保存的只读变量快照，只用于辅助理解状态。它可能同时包含多个人物、不完整或过时信息，不能整体归给某一人物，也不能当作用户手动 Core 纠正或可引用的权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
@@ -34,47 +45,49 @@ subjectRelevantEvidence 按 tracked subject 汇集角色相关条目；每项只
 
 previousState 按 subject 分列各人的 ownState，只说明对应人物自身的前态，不代表其他人物已经知道这些状态；这里展示的是合并身份后同一个人的有效状态，不要把合并前的旧名称或旧身份另算作另一人。authorialOtherStateContext 不重复 previousState 已提供的人物，并已按 visibility 排除 private 和 authorial 状态项，是其余人物的作者侧连续性参考。为精简请求，Core/Adaptive 前态不重复传输旧 reason；这不表示原状态没有依据，旧状态仍不是本楼新 evidence。Situational 前态保留原 reason，因为完整情境列表需要用它核对是否发生变化。
 
-五种 visibility 按信息本身和正文证据判断，所有主体使用同一标准。private 是主体未向他人显露的内心或未公开认知；正文明确写出的内心可直接记录，不因主体是用户或非用户而区别，也不得从外在表现猜成确定的私密心理。expressed 是主体通过言语或行为明确表达的想法、意图或态度；表达不等于已被他人接收，也不证明表达内容客观为真。observable 是外在动作、身体表现、位置等实际可感知的状态或处境；可观察不等于任意人物实际在场观察，不能把内心或判断混成外在事实。shared 是正文已证实相关人物共同知情的内容，只限证据支持的共同范围，不等于全员知情。authorial 是作者设定或仅供塑造的参考，不代表本人或任何角色已知。需要区分表达者、接收者或共同知情范围时，在现有 text/reason 中保留有依据的归属，不强迫补全受众；不确定时不扩大知情范围。toward 只表示态度对象，不表示接收或知情。
+五种 visibility 按信息本身和正文证据判断，所有主体使用同一标准。private 是主体未向他人显露的内心或未公开认知；正文明确写出的内心可直接记录，不因主体是用户或非用户而区别，也不得从外在表现猜成确定的私密心理。expressed 是主体通过言语或行为明确表达的想法、意图或态度；表达不等于已被他人接收，也不证明表达内容客观为真。observable 是能从实际言行观察到的情感或关系变化；可观察不等于任意人物实际在场观察，不能把内心或判断混成外在事实。shared 是正文已证实相关人物共同知情的内容，只限证据支持的共同范围，不等于全员知情。authorial 是作者设定或仅供塑造的参考，不代表本人或任何角色已知。需要区分表达者、接收者或共同知情范围时，在现有 text/reason 中保留有依据的归属，不强迫补全受众；不确定时不扩大知情范围。toward 只表示态度对象，不表示接收或知情。
 
 只可为输入中的 trackedSubjects 输出状态；trackedSubjects 是候选范围，不要求逐人补写，也不要求每个分类凑数。不要用“本楼未出现”“状态无变化”之类空话替换旧状态，也不要因为缺少证据而反推“不知道”。knownPeople 仅用于 toward 对象绑定，不代表他们本楼也要输出状态。
 
 【可选 NPC 身份简介】
-identityBriefTargets 列出本楼识别到的 NPC，不代表在场、知情或需要状态追踪。只记录稳定身份 identity、职业/职责 occupation、用于识别的稳定关系 relation；活动过程、单次服务、病情、衣着、位置与人物评价留给原事件/状态，不能从单次行为推职业。
+identityBriefTargets 列出本楼识别到的 NPC，不代表在场、知情或需要状态追踪。只记录稳定身份 identity、职业/职责 occupation、用于识别的稳定关系 relation；活动过程、单次服务、病情、衣着、位置与人物评价留给摘要、时间及千事，不能从单次行为推职业。
 同一响应可返回 identityBriefUpdates:[{targetKey:"目标key",identityFacts:[{kind:"occupation",text:"稳定身份短句",evidence:[{source:"来源键",quote:"逐字原文"}]}]}]。targetKey 逐字用该目标key，source 逐字用 evidenceSourceCatalog；不得凭 knownPeople、userPersona、其它人物设定或用户Adaptive历史补身份。列表是完整当前稳定身份，最多20条、整份合计20条引用、拼成简介总长不超过400字。
 保留旧的有效条目时仅回 {existingKey:"该目标实际提供的原key"}，不重抄旧引文，不借用别人的key；纠正或新增条目必须有当前材料逐字依据。没更新就省略，空列表不清旧。旧裸identityBrief只作身份对照，不是证据；本次有明确稳定身份依据即可建立有据列表，即使身份没改变，也不要照抄旧临时内容。兼容旧identityBrief+evidence返回，只有简介专属依据可定位才接受；新列表存在时按新列表处理。完整列表任一条坏则只忽略本次整份简介更新，不影响摘要/CSE状态；即使subjects为空也独立检查简介。
 
-判断每条候选信息时，在内部依次问三个问题：第一，这条主要回答人物现在怎样、处境如何，还是此刻怎样对待某人？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
+判断每条候选信息时，在内部依次问三个问题：第一，这条具体记录了哪种有依据的心理、情感、关系或应对特征或结果？第二，另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象？第三，这里有两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述？只输出判断后的状态，不要输出思考过程、问题答案或分类解释。
 
 主要说明人物自身现状时不填写 toward；文本中心是人物针对某个明确已知人物的看法、态度或相处反应时，Adaptive 或 Situational 应填写 toward。关系反应可以通过明确指向对方的言语和行为表现，不需要直接说出态度；但不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应。物品摆放、自身身体状态等信息即使提到他人，也不能仅凭该提及变成关系态度。对各方使用同一判断标准。混合信息只在确有独立依据时拆分，不强制双栏填满，不重复同一事实，也不编造态度。private 只表示可见性，明确的私密态度仍可填写 toward，不能因私密而留空。previousState 中旧 toward 也必须按本楼证据审视，不得盲从；旧 toward 为空不妨碍本轮为有明确对象的状态填写 toward。没有新依据时不把旧状态改写成“未知”。自身状态或无法唯一判断对象时留空，不要求每项都有对象。单方 A→B 不得自动镜像成 B→A，也不能把某人的单方声称写成双方态度。Core 不使用 toward；一次关系反应也不能被拔高为 Core 或长期 Adaptive。Situational 只有在正文给出明确时间流逝时才可写 reasonableProgression，不能补造新事件。reason 是可选的简短解释；直接状态数组中的条目省略 reason 时，会标记为“未提供依据”。这不免除持续校准合同对 evidence 的要求，reason 也不能代替 evidence。不要输出数据库 ID。
 
 仅针对填写了 toward 的 Adaptive，text 直接写具体长期倾向，省略“在和某人相处过程中”“面对某人时”等仅重复 toward 对象、没有新增语义的套话开头。例如同一含义应写成“更愿意主动解释误会”，不要写成“在和人物乙相处过程中，更愿意主动解释误会”。必要的适用条件、第三人，以及本身有实际语义的对象名称仍应保留；不要为调整措辞增加证据、扩大长期程度、放宽 refine/evidence 合同，也不要把应 keep 的旧项强制改成 refine。
 
-Situational 记录本楼结束时仍在进行或仍限制人物的当前情境，不是“已发生事实”清单。某个事实仍然成立，不等于它必须一直占据当前情境。已发送或已收到消息、已拍到照片、已完成部署、已达成一次行动、已得知一条信息等已经完成的过程默认交给摘要；若确有未解决后果，只写仍在生效的后果，不保留过程流水。这些过程退出当前列表不需要正文逐条宣布“结束”，也不代表否认历史、人物失忆或把尚未完成的任务写成完成。保留真正持续的伤势、未解决处境、仍有效约定和有依据的当下关系反应，不能仅因本楼未提及就删除仍在持续的状态；有新依据表明它们结束或被替代时再移除或更新。同一处境或变化过程提炼合并为简短当前状态，text 和 reason 都不要逐楼追加历史行动链。每次输出某人物的 situational 时，使用完整分区对象 {"self":[...],"relations":[...]}：self 只放自身情境且不填 toward；relations 每项都须用 toward 指向唯一可绑定的人物。两区各自都是本楼结束时的完整列表；输出完整列表时清理 previousState 中已结束、已被替代或只剩历史意义的条目，只保留仍有当下影响的状态。只有两区都明确为 [] 才清空整类。缺少任一区或结构不完整时保留旧情境，不把缺项当成空数组；关系对象无法唯一绑定时沿既有隔离规则处理，不能改放进 self。编译后按 self 再 relations 的顺序合并到现有情境数组，总数上限120。是否保留得知的信息、获得的事物或行动表现，应按其仍然造成的当下影响判断，并遵守上述事实、隐私和知识来源边界。
+Situational 记录经历沉淀后仍影响人物塑造的情感变化、关系反应、心理边界和成长结果。结合 previousState 与本楼新经历更新当前结果；即时情绪须有持续的人物或关系意义才进入；身体症状、衣着、位置、物品收放、待办、约定及行动流水由摘要、时间和千事承接。本楼正常分析的主体，其同一主体、同一 toward（含无对象）、同一 visibility 且没有实质冲突、确为同一意义的相近旧自动项，与本楼新变化一起归纳为当前结果；不把历次触动、动作和阶段判断逐条续留。保留有独立意义的区别、条件、例外、程度及未解顾虑，不跨对象或信息范围合并，不为变短扩大信任、改成长久倾向或抹平矛盾。逐项复核 previousState 的旧自动 Situational，已结束、被替代、仅属事件或失去人物塑造意义的项退出当前列表，无需等待剧情宣布事件已经结束。旧 Core/Adaptive 仍按原 review 与 evidence 门槛变更。离场本身不证明情感或关系结束，仍有持续意义的结果保留。历史事实继续保在原剧情资料中。人工项和明确人工清空为最高校准，人工条目独立保留，不参与自动归纳；在场人物后续有实际剧情变化时，按该时点的新依据判断自然演进。
+每次输出 situational 使用完整分区对象 {"self":[...],"relations":[...]}。self 记录自身情感与成长，relations 使用 toward 唯一指向相应人物。两区都明确为 [] 才清空整类，结构不完整或省略分类沿用旧值。关系对象无法唯一绑定时按既有规则隔离，不能改放进 self。text 写归纳后的当前结果，reason 仅简述支持它的依据，不把多条经历或历次状态串成一句长记录；连续未变的旧观察保持原含义与可见性。明确结束后再次发生按本楼新经历理解。编译后总数上限120。
+trackedSubjects 中 reviewOnly=true 的人物仅复核其 previousState.ownState.situational 旧自动项，按已有意义保留或移除，保留项沿用原 text、visibility 与 toward。其人工项和其它分类由程序保留，无需回抄。该范围不用于新增情境、Core、Adaptive或身份资料。可在原一次响应中输出其完整 self/relations 自动列表，确认全部退出时两区均为空。
 
 【持续校准合同】
 若本次请求包含 userCoreExtraction，必须独立检查 relevantBaseline.userPersona.description 中是否存在有原句支持的稳定长期核心特质。该任务不依赖本楼是否出现变化，也不依赖 previousState 中是否已有 Core：没有新变化或旧 Core 为空都不能作为跳过理由。有明确依据时，在用户 subject 的 additions.core 中写入特质及 userPersona 逐字证据，并返回 userCoreExtraction:{status:"traits"}；依据不足时不新增 Core，并返回 userCoreExtraction:{status:"insufficient"}。此提取任务不得仅凭 Persona 改动其他人物或其他分类；本楼对所有 trackedSubjects 的常规状态分析仍照常进行。
 
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
 
-单次事件造成的即时情绪、动作或台词若有值得保留的当下影响，只可进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式；两项有限历史例外是用户自身的独立历史检查任务，以及本次提供 relationHistory 的有效人物对：前者沿原用户任务，后者只用于带toward的关系Adaptive；均可用所附事件判断独立模式，新增时仍须引用本楼确认其当前适用的原句。没有这些限定历史材料的新增 Adaptive 仍遵守正文证据合同。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
+单次事件造成的即时情绪、动作或台词须形成有持续人物塑造意义的情感或关系结果，才进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式；两项有限历史例外是用户自身的独立历史检查任务，以及本次提供 relationHistory 的有效人物对：前者沿原用户任务，后者只用于带toward的关系Adaptive；均可用所附事件判断独立模式，新增时仍须引用本楼确认其当前适用的原句。没有这些限定历史材料的新增 Adaptive 仍遵守正文证据合同。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
 
 【Adaptive 更新步骤】
 人物自身的长期应对模式与针对每个明确对象（toward）的模式，分别按同一证据标准判断；各方向独立，不自动镜像。先依据上面的条件判断是否可改变长期状态；同一连续事件的多次动作、程度变化或多条 quote 不构成彼此独立的经历，楼数本身也不能证明独立。证据不足或模式未变时省略旧项，由现有状态沿用；明确作者设定和纠正仍按原合同处理。
 
 有依据 refine 时，将整项写成当前仍有效的模式，保留相互独立的含义、适用条件、关键例外，以及理解当前模式所需的形成原因或已证实转折；用短句归纳，不逐楼续写动作。只写证据支持的变化；证据仅支持适用范围收窄时，明确写出条件，不得改成整体反转。同一模式的动作流水交给摘要，仍影响当下的后果才进入 Situational。reason 只解释本次变化；quote 用足以支持判断的最短完整原句。
 
-例如，同一场活动里持续搬运物品或递工具仍属一个连续事件，不能据此新增“一贯照料”的长期模式。若明确设定只在紧急救援时允许必要接触，refine 时应保留该条件和其他仍有效的例外，不能为缩短文本而删掉。
+若明确设定只在紧急救援时允许必要接触，refine 时应保留该条件和其他仍有效的例外，不能为缩短文本而删掉。
 
-【稀疏输出】只返回实际变化操作：未变人物、分类和旧项省略，不逐项回写 keep；省略分类仍按原合同保留。若输出某人物的 Situational，仍须提供本楼结束时的完整有效列表。确认没有状态变化时返回 {"subjects":[]}。
+【稀疏输出】只返回实际变化操作：未变人物、分类和旧项省略，不逐项回写 keep；省略分类仍按原合同保留。若输出某人物的 Situational，仍须提供本楼结束时的完整有效列表。没有新变化且无须更新旧状态时返回 {"subjects":[]}；这会保旧，不能用来移除旧自动情境。移除仍须输出完整 situational self/relations 列表。
 
-人物被提及不等于本人在场；第三方声称某人的处境、行动或心理，不等于该内容已被客观证实。证据只支持时，可以记录说话者作出该声称，或有实际送达证据时记录接收者得知该说法；不得据此给被提及者新增 observable 状态或把传闻写成事实。
+人物被提及不等于本人在场；第三方声称某人的处境、行动或心理，不等于该内容已被客观证实。声称、传递及得知信息按原来源和知情范围理解。只有正文明确支持相应人物的心理、情感或关系结果时，才记录该结果并保原知情范围。纯信息传递沿原剧情资料保存，传闻保传闻口径。
 
 Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以新增或改写 Core；Adaptive 可随新事实、反例和旧依据不足而保持、收窄或撤回。coreUserEdited 为 true 时，只有 currentUserInput 中明确的作者纠正才可改变 Core；它不锁定 Adaptive。
 
 currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。evidence.source 必须逐字使用 evidenceSourceCatalog 中的 source；世界书使用其中的具体键，例如 worldbook:1，不填写书名或泛称 worldbook。quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人；characterCard 和 worldbook 是可能包含多个人物设定的作者材料，按来源原文明确描述的人物判断归属；不因卡名或来源名称推断归属，也不把一个人物的设定套给他人。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
 authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑造方向不等于已经发生的事实、所有人物已经知情或人物的永久性格。它不能单独作为新增或改写 Core 的证据。
 
-本轮合作、分歧、协调和约定若仍影响楼末关系，分别判断每人的有向Situational及自身目标。relationHistory 只为当楼有效人物对补充作者侧旧动作、沟通和承诺，不代表双方已知；仅可支持带明确toward的Adaptive新增、refine/remove，且同项必须有canonicalContent或currentUserInput的原句确认模式现在仍适用或应结束。新增长期模式仍须多个独立经历；一次持续事件、多个quote或楼数不自动算独立经历。历史不能用于Core、身份简介、第三人或无toward泛人格，不自动镜像，也不强迫产出长期项。Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
+本轮合作、分歧、协调和约定带来的经历若沉淀为情感或关系变化，分别判断每人的有向Situational及自身成长。relationHistory 只为当楼有效人物对补充作者侧旧动作、沟通和承诺，不代表双方已知；仅可支持带明确toward的Adaptive新增、refine/remove，且同项必须有canonicalContent或currentUserInput的原句确认模式现在仍适用或应结束。新增长期模式仍须多个独立经历；一次持续事件、多个quote或楼数不自动算独立经历。历史不能用于Core、身份简介、第三人或无toward泛人格，不自动镜像，也不强迫产出长期项。Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
 省略人物或分类表示保留已有状态。situational 使用自身与关系两个完整分区；两区都为 [] 表示有依据清空整类，没有足够依据更新时省略分类。review 或 additions 中某类的空数组只表示没有相应操作，不清空旧项；清除旧 Core/Adaptive 须逐项 remove 并给证据。
 
@@ -82,14 +95,14 @@ authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑
 英文 JSON 字段名保持示例写法；状态 text、reason 使用中文。变化说明由程序按实际前后状态生成，无需填写 changeSummary。根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
 
 推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：自身情境不填写 toward；正文明确指向某人的当下态度仍在影响人物时，可单独列出该情境并填写对象姓名。
-{"subjects":[{"subject":"主体甲","review":{"adaptive":[{"previousText":"旧模式","toward":"对象乙","action":"refine","text":"保留有效条件与例外的当前模式","reason":"本楼支持调整的原因","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"situational":{"self":[{"reason":"本楼结束时仍生效的自身处境","text":"赶路后感到疲倦，想先休息","visibility":"private","origin":"floor"}],"relations":[{"reason":"主体甲明确说仍想自己拿行李并先保持距离","text":"此刻仍对对象乙保持距离，暂不愿让对方接手行李","toward":"对象乙","visibility":"expressed","origin":"floor"}]}}]}
+{"subjects":[{"subject":"主体甲","review":{"adaptive":[{"previousText":"旧模式","toward":"对象乙","action":"refine","text":"保留有效条件与例外的当前模式","reason":"本楼支持调整的原因","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"situational":{"self":[{"reason":"经历沉淀后仍影响人物的情感变化","text":"理解自己的需要后更愿意表达边界","visibility":"private","origin":"floor"}],"relations":[{"reason":"主体甲明确说误会虽已解释，此刻仍难以完全信任对象乙","text":"误会后此刻对对象乙的信任仍有保留，尚不愿完全依赖对方","toward":"对象乙","visibility":"expressed","origin":"floor"}]}}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 // 新生成统一走证据校准协议；编译器仍可读取旧 after-state 格式。
 export function buildCseSystemPrompt(guidance = '', processingPrompt = '') {
   const custom = typeof guidance === 'string' ? guidance : '';
   const businessGuidance = custom.trim() ? custom : DEFAULT_CSE_GUIDANCE;
-  return withBaseProcessingPrompt(`${businessGuidance}\n\n${CSE_FIXED_CONTRACT}`, processingPrompt);
+  return withBaseProcessingPrompt(`${CSE_FIXED_CONTRACT}\n\n【补充分析指引】\n以下指导在上述双丝网职责和各分类证据门槛内适用。\n${businessGuidance}`, processingPrompt);
 }
 
 export const CSE_SYSTEM_PROMPT = buildCseSystemPrompt();
@@ -268,7 +281,7 @@ function previousSubjectsForPrompt(currentState, tracked) {
 function previousForPrompt(subjects, entities, coreUserEditedSubjectEntityIds) {
   return subjects.map(subject => {
     const owner = entities.find(entity => entity.id === subject.subjectEntityId);
-    // 完整 Situational 列表按 text/reason 比较变化，Core/Adaptive 旧 reason 仅是前次解释，不再重复发送。
+    // Core/Adaptive 旧 reason 是前次解释，请求只传状态语义；Situational 复核沿用原观察依据。
     return { subject: owner?.displayName ?? '未知人物', coreUserEdited: coreUserEditedSubjectEntityIds.has(subject.subjectEntityId), ownState: {
       core: semanticItems(subject.core, entities, { includeReason: false }), adaptive: semanticItems(subject.adaptive, entities, { includeReason: false }), situational: semanticItems(subject.situational, entities),
     } };
@@ -318,6 +331,17 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
   const directoryById = new Map(directory.map(entry => [entry.entityId, entry]));
   const labelsFor = entity => directoryById.get(entity.id)?.labels ?? entityLabels(entity);
   const activeKnownEntities = directory.filter(entry => entry.entityType === 'person' || entry.specialRole !== 'none');
+  const trackedIds = new Set(trackedSubjects.map(entity => entity.id));
+  const reviewCandidates = (currentState?.subjects ?? []).filter(subject => !trackedIds.has(subject.subjectEntityId)
+    && subject.situational.some(item => item.origin !== 'manual'))
+    .map(subject => directoryById.get(subject.subjectEntityId)?.entity)
+    .filter(entity => entity?.entityType === 'person');
+  const candidateBindings = [...trackedSubjects, ...reviewCandidates].map(entity => ({ entityId: entity.id, labels: labelsFor(entity), specialRole: entity.specialRole }));
+  // 旧情境的新增复核资格保持当前主体的唯一绑定。
+  const reviewSubjects = reviewCandidates.filter(entity => labelsFor(entity).every(label => matchingBindings(label, candidateBindings).length === 1))
+    .slice(0, Math.max(0, 80 - trackedSubjects.length));
+  const reviewOnlyIds = new Set(reviewSubjects.map(entity => entity.id));
+  const outputSubjects = [...trackedSubjects, ...reviewSubjects];
   const requestWorldInfoSources = Array.isArray(worldInfoSources) ? worldInfoSources : baseline.worldInfoSources;
   const effectiveSources = requestSources && typeof requestSources === 'object' ? requestSources : {
     userPersona: baseline.userPersona,
@@ -334,7 +358,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
     : floorMemory.sourceLocationReference;
   const evidenceSources = cseEvidenceSources({ floor, baseline, currentUserInput, requestSources: { ...effectiveSources, worldInfoSources: effectiveWorldInfoSources } });
   const coreUserEdited = new Set(coreUserEditedSubjectEntityIds);
-  const previousSubjects = previousSubjectsForPrompt(currentState, trackedSubjects);
+  const previousSubjects = previousSubjectsForPrompt(currentState, outputSubjects);
   const previousSubjectIds = new Set(previousSubjects.map(subject => subject.subjectEntityId));
   const nameForSubjectId = entityId => directoryById.get(entityId)?.displayName
     ?? (entityId === baseline.userPersona.entityId ? baseline.userPersona.name : entityId === baseline.characterCard.entityId ? baseline.characterCard.name : null);
@@ -379,7 +403,12 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
         values: sourceLocationReference,
       } } : {}),
       ...(floorMemory.sourceVariableReference ? { auxiliaryStateSnapshot: auxiliaryStateSnapshotForPrompt(floorMemory.sourceVariableReference) } : {}),
-      previousState: previousForPrompt(previousSubjects, entities, coreUserEdited),
+      previousState: previousSubjects.map(previous => {
+        const subject = previousForPrompt([previous], entities, coreUserEdited)[0];
+        return reviewOnlyIds.has(previous.subjectEntityId)
+          ? { subject: subject.subject, reviewOnly: true, ownState: { situational: subject.ownState.situational.filter(item => item.origin !== 'manual') } }
+          : subject;
+      }),
       relevantBaseline: {
         userPersona: { name: effectiveUserPersona.name, description: effectiveUserPersona.description, visibility: 'authorial' },
         characterCard: { name: effectiveCharacterCard.name, description: effectiveCharacterCard.description, personality: effectiveCharacterCard.personality, scenario: effectiveCharacterCard.scenario, visibility: 'authorial' },
@@ -401,12 +430,12 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       subjectRelevantEvidence: subjectRelevantEvidence(floorMemory, trackedSubjects, entities),
       authorialOtherStateContext: authorialOtherStateContext(currentState, entities, previousSubjectIds),
       ...(relevantPriorContext ? { relevantPriorContext } : {}),
-      trackedSubjects: trackedSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity), coreUserEdited: coreUserEdited.has(entity.id) })),
+      trackedSubjects: outputSubjects.map(entity => ({ name: entity.displayName, aliases: labelsFor(entity), ...(reviewOnlyIds.has(entity.id) ? { reviewOnly: true } : { coreUserEdited: coreUserEdited.has(entity.id) }) })),
       knownPeople: activeKnownEntities.map(entry => ({ name: entry.displayName, aliases: entry.labels })),
     } }),
     scope: Object.freeze({
       floorId: floor.id, floorMemoryId: floorMemory.id, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration, baselineId: baseline.id,
-      trackedBindings: trackedSubjects.map(entity => ({ entityId: entity.id, labels: labelsFor(entity), specialRole: entity.specialRole })),
+      trackedBindings: outputSubjects.map(entity => ({ entityId: entity.id, labels: labelsFor(entity), specialRole: entity.specialRole, ...(reviewOnlyIds.has(entity.id) ? { reviewOnly: true } : {}) })),
       knownBindings: activeKnownEntities.map(entry => ({ entityId: entry.entityId, labels: entry.labels, specialRole: entry.specialRole })),
       identityBriefBindings: briefTargets.map(({ key, entityId, identityBrief, identityBriefSource }) => ({ key, entityId, identityBrief: identityBrief ?? null,
         identityFacts: identityBriefSource?.facts ?? [], existingFacts: identityFactBindings(identityBriefSource, key) })),
@@ -415,7 +444,7 @@ export function createCseEnvelope({ floor, floorMemory, baseline, currentState, 
       coreUserEditedSubjectEntityIds: [...coreUserEdited],
       userAdaptiveReview: Boolean(userAdaptiveReview),
       ...(userCoreExtraction ? { userCoreExtraction } : {}),
-      identityMemberEntityIdsBySubject: Object.freeze(Object.fromEntries(trackedSubjects.map(entity => [entity.id, Object.freeze([...new Set([entity.id, ...(identityMemberEntityIdsBySubject?.[entity.id] ?? [])].filter(id => typeof id === 'string' && id))])]))),
+      identityMemberEntityIdsBySubject: Object.freeze(Object.fromEntries(outputSubjects.map(entity => [entity.id, Object.freeze([...new Set([entity.id, ...(identityMemberEntityIdsBySubject?.[entity.id] ?? [])].filter(id => typeof id === 'string' && id))])]))),
     }),
   });
 }
@@ -639,7 +668,7 @@ async function compileAfterStateCategory(options) {
   return output.length ? output : options.previous;
 }
 
-async function compileSituationalCategory(options) {
+async function compileSituationalList(options) {
   const { raw } = options;
   if (Array.isArray(raw) || raw === null || raw === undefined || typeof raw !== 'object'
     || (!Object.hasOwn(raw, 'self') && !Object.hasOwn(raw, 'relations'))) return compileAfterStateCategory(options);
@@ -663,6 +692,17 @@ async function compileSituationalCategory(options) {
 }
 
 const categoryNames = category => category === 'core' ? ['core', '核心', '核心人格'] : ['adaptive', '适应', '长期适应'];
+async function compileSituationalCategory(options) {
+  const proposed = await compileSituationalList(options);
+  const used = new Set();
+  return proposed.map(item => {
+    const index = options.previous.findIndex((previous, position) => !used.has(position) && sameItemMeaning(previous, item));
+    if (index < 0) return item;
+    used.add(index);
+    return options.previous[index];
+  });
+}
+
 const sameItemMeaning = (left, right) => normalized(left?.text) === normalized(right?.text)
   && (left?.towardEntityId ?? null) === (right?.towardEntityId ?? null)
   && left?.visibility === right?.visibility;
@@ -948,6 +988,16 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
     const isolationStart = isolated.length;
     const acceptedBeforeSubject = acceptedIntents.count;
     const previous = previousById.get(binding.entityId) ?? { core: [], adaptive: [], situational: [] };
+    if (binding.reviewOnly) {
+      const rawSituational = field(raw, ['situational', 'situation', '短期状态', '情境']);
+      const proposed = rawSituational === undefined ? previous.situational
+        : await compileSituationalCategory({ raw: rawSituational, category: 'situational', binding, knownBindings: envelope.scope.knownBindings, deltaId, floorId: envelope.scope.floorId, previous: previous.situational, isolated, acceptedIntents });
+      const retainedIds = new Set(proposed.map(item => item.id));
+      const situational = previous.situational.filter(item => item.origin === 'manual' || retainedIds.has(item.id));
+      compiled.set(binding.entityId, { ...previous, subjectEntityId: binding.entityId, situational, changeSummary: [], coreChallenges: [] });
+      acceptedIntents.count += 1;
+      continue;
+    }
     const hasCore = field(raw, categoryNames('core')) !== undefined;
     const hasAdaptive = field(raw, categoryNames('adaptive')) !== undefined;
     const hasSituational = field(raw, ['situational', 'situation', '短期状态', '情境']) !== undefined;
@@ -1093,13 +1143,48 @@ async function manualStateItems({ edits, originals, category, subjectEntityId, f
   return output;
 }
 
+export function mergeManualCseEdits({ currentSubject, original, edits, manualChanges = [] }) {
+  const merged = {};
+  for (const category of ['core', 'adaptive', 'situational']) {
+    const current = currentSubject[category] ?? [];
+    const copy = item => ({ itemId: item.id, text: item.text, visibility: item.visibility, towardEntityId: item.towardEntityId ?? null });
+    merged[category] = current.map(copy);
+    if (!Object.hasOwn(edits, category)) continue;
+    const desired = edits[category];
+    if (!Array.isArray(desired) || desired.some(item => !item || typeof item !== 'object')) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', '人物状态编辑内容无效。');
+    const editedIds = desired.map(item => item.itemId).filter(Boolean);
+    if (new Set(editedIds).size !== editedIds.length) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', '人物状态编辑条目重复。');
+    const baseline = original?.[category] ?? current.map(item => ({ ...copy(item), origin: item.origin }));
+    const baselineIds = new Set(baseline.map(item => item.itemId));
+    if (desired.some(item => item.itemId && !baselineIds.has(item.itemId))) throw errorWith('V3_CSE_MANUAL_STALE', '所编辑条目已变化，请保留草稿并重新打开。');
+    const same = (left, right) => JSON.stringify(manualItemMeaning(left, category)) === JSON.stringify(manualItemMeaning(right, category));
+    for (const before of baseline) {
+      const after = desired.find(item => item.itemId === before.itemId);
+      if (after && same(before, after)) continue;
+      const equivalent = current.filter(item => item.origin === before.origin && same(item, before));
+      const latest = current.find(item => item.id === before.itemId) ?? (equivalent.length === 1 ? equivalent[0] : null);
+      const removed = manualChanges.some(change => change.category === category && !change.after
+        && (change.before?.id === before.itemId || (change.before && same(change.before, before)) || current.length === 0));
+      const revised = manualChanges.some(change => change.category === category && change.before?.id === before.itemId
+        && change.after?.origin === 'manual' && !same(change.after, before));
+      if (revised || (latest?.origin === 'manual' && !same(latest, before)) || (after && removed) || (!latest && after && before.origin === 'manual')) {
+        throw errorWith('V3_CSE_MANUAL_STALE', '所编辑条目已被人工修改或删除，请保留草稿并重新打开。');
+      }
+      merged[category] = merged[category].filter(item => item.itemId !== before.itemId && item.itemId !== latest?.id);
+      if (after) merged[category].push({ ...after, itemId: latest?.id ?? null });
+    }
+    merged[category].push(...desired.filter(item => !item.itemId));
+  }
+  return merged;
+}
+
 export async function createManualCseCorrection({ anchorDelta, currentState, subjectEntityId, subjectMemberEntityIds = [subjectEntityId], edits, allowedTowardEntityIds = [], deltaId, now }) {
   const currentSubject = currentState?.subjects?.find(subject => subject.subjectEntityId === subjectEntityId);
   if (!currentSubject || !anchorDelta?.subjectSnapshots || typeof deltaId !== 'string') throw errorWith('V3_CSE_MANUAL_TARGET_INVALID', '当前人物状态或纠正锚点不可用。');
   const allowed = new Set(allowedTowardEntityIds);
   const categories = ['core', 'adaptive', 'situational'];
-  const normalizedEdits = Object.fromEntries(categories.map(category => [category, Array.isArray(edits?.[category]) ? edits[category] : null]));
-  if (categories.some(category => normalizedEdits[category] === null)) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', '人物状态编辑内容不完整。');
+  const normalizedEdits = Object.fromEntries(categories.map(category => [category, Object.hasOwn(edits ?? {}, category) ? edits[category] : currentSubject[category].map(item => ({ itemId: item.id, ...item }))]));
+  if (categories.some(category => !Array.isArray(normalizedEdits[category]))) throw errorWith('V3_CSE_MANUAL_INPUT_INVALID', '人物状态编辑内容不完整。');
   const unchanged = categories.every(category => JSON.stringify(normalizedEdits[category].map(item => [String(item?.text ?? '').trim(), item?.visibility, categoryAllowsToward(category) ? item?.towardEntityId || null : null])) === JSON.stringify(currentSubject[category].map(item => manualItemMeaning(item, category))));
   if (unchanged) return Object.freeze({ status: 'unchanged', delta: null });
 
@@ -1118,7 +1203,15 @@ export async function createManualCseCorrection({ anchorDelta, currentState, sub
   const coreChanged = JSON.stringify(normalizedEdits.core.map(item => [String(item?.text ?? '').trim(), item?.visibility])) !== JSON.stringify(currentSubject.core.map(item => [item.text, item.visibility]));
   const manualCoreSubjectEntityIds = [...new Set([...(anchorDelta.source?.manualCoreSubjectEntityIds ?? []), ...(coreChanged ? [subjectEntityId] : [])])].filter(id => snapshotIds.has(id));
   const noMaterialChange = false;
-  const targetItems = actualSubjectChanges({ before: currentSubject, after: corrected, audits: [] });
+  const originalSubject = structuredClone(currentSubject);
+  if (anchorDelta.source?.manualSubjectEntityIds?.includes(subjectEntityId)) {
+    const previousChanges = anchorDelta.fixedChanges?.find(subject => subject.subjectEntityId === subjectEntityId)?.items ?? [];
+    for (const change of [...previousChanges].reverse()) {
+      originalSubject[change.category] = originalSubject[change.category].filter(item => !change.after || (item.id !== change.after.id && JSON.stringify(stateMeaning(item)) !== JSON.stringify(stateMeaning(change.after))));
+      if (change.before) originalSubject[change.category].push(change.before);
+    }
+  }
+  const targetItems = actualSubjectChanges({ before: originalSubject, after: corrected, audits: [] });
   const fixedChanges = [
     ...(anchorDelta.fixedChanges ?? []).filter(subject => !memberIdSet.has(subject.subjectEntityId)),
     ...(targetItems.length ? [{ subjectEntityId, items: targetItems }] : []),
@@ -1301,6 +1394,67 @@ export function deriveCseTimeline(stateDeltas = []) {
     timeline.push(Object.freeze({ deltaId: delta.id, floorId: delta.floorId, noMaterialChange: delta.noMaterialChange, changes: Object.freeze(changes), endStateSubjects: Object.freeze(endStateSubjects), isolationSummary: delta.source?.isolationSummary ? Object.freeze({ count: delta.source.isolationSummary.count, codes: Object.freeze([...delta.source.isolationSummary.codes]) }) : null }));
   }
   return Object.freeze(timeline);
+}
+
+function manualDeltaChanges(delta) {
+  const ids = new Set(delta.source?.manualSubjectEntityIds ?? []);
+  if (Object.hasOwn(delta, 'fixedChanges')) return delta.fixedChanges.filter(subject => ids.has(subject.subjectEntityId));
+  return delta.subjectSnapshots.filter(snapshot => ids.has(snapshot.subjectEntityId)).map(snapshot => ({
+    subjectEntityId: snapshot.subjectEntityId,
+    items: ['core', 'adaptive', 'situational'].flatMap(category => snapshot[category].filter(item => item.origin === 'manual')
+      .map(after => ({ category, action: 'add', before: null, after }))),
+  }));
+}
+
+function applyManualDeltaChanges(subjects, delta, changes) {
+  const snapshots = [];
+  for (const change of changes) {
+    const snapshot = delta.subjectSnapshots.find(item => item.subjectEntityId === change.subjectEntityId);
+    if (!snapshot) continue;
+    const before = subjects.get(change.subjectEntityId) ?? EMPTY_CSE_SUBJECT;
+    const next = { subjectEntityId: change.subjectEntityId, core: [...before.core], adaptive: [...before.adaptive], situational: [...before.situational] };
+    for (const item of change.items) {
+      const values = next[item.category];
+      const clear = item.action === 'remove' && snapshot[item.category]?.length === 0;
+      next[item.category] = clear ? [] : values.filter(value => value.id !== item.before?.id && (!item.before || itemMeaningKey(value) !== itemMeaningKey(item.before)));
+      if (item.after?.origin === 'manual' && !next[item.category].some(value => value.id === item.after.id)) next[item.category].push(item.after);
+    }
+    if (delta.source?.manualCoreSubjectEntityIds?.includes(change.subjectEntityId) && !snapshot.core.length) next.core = [];
+    subjects.set(change.subjectEntityId, next);
+    snapshots.push(next);
+  }
+  return snapshots;
+}
+
+export async function preserveManualCseDelta(automaticDelta, manualDelta) {
+  if (!manualDelta?.source?.manualSubjectEntityIds?.length) return automaticDelta;
+  const changes = manualDeltaChanges(manualDelta);
+  const subjects = new Map(automaticDelta.subjectSnapshots.map(snapshot => [snapshot.subjectEntityId, snapshot]));
+  applyManualDeltaChanges(subjects, manualDelta, changes);
+  const subjectSnapshots = [...subjects.values()].map(subject => ({ ...subject,
+    changeSummary: subject.changeSummary ?? [], coreChallenges: subject.coreChallenges ?? [] }));
+  const ids = new Set(manualDelta.source.manualSubjectEntityIds);
+  const fixedChanges = [...(automaticDelta.fixedChanges ?? []).filter(subject => !ids.has(subject.subjectEntityId)), ...changes.filter(subject => subject.items.length)];
+  const noMaterialChange = false;
+  const fingerprint = `sha256:${await sha256(JSON.stringify([automaticDelta.floorId, automaticDelta.floorMemoryId, subjectSnapshots, noMaterialChange, { fixedChanges }]))}`;
+  return validateStateDeltaRecord({ ...automaticDelta, subjectSnapshots, fixedChanges, noMaterialChange, fingerprint,
+    source: { ...automaticDelta.source, manualSubjectEntityIds: [...ids],
+      ...(manualDelta.source.manualCoreSubjectEntityIds ? { manualCoreSubjectEntityIds: manualDelta.source.manualCoreSubjectEntityIds } : {}) } }, { expectedChatId: automaticDelta.chatId });
+}
+
+export function projectCseDeltasForSources({ floors = [], stateDeltas = [], confirmedFloorIds }) {
+  const subjects = new Map(), projected = [];
+  for (const delta of filterReachableDeltas({ floors, stateDeltas })) {
+    if (confirmedFloorIds.has(delta.floorId)) {
+      for (const snapshot of delta.subjectSnapshots) applyDeltaSnapshot(subjects, delta, snapshot);
+      projected.push(delta);
+      continue;
+    }
+    const changes = manualDeltaChanges(delta);
+    const snapshots = applyManualDeltaChanges(subjects, delta, changes);
+    if (snapshots.length) projected.push({ ...delta, subjectSnapshots: snapshots, fixedChanges: changes.filter(subject => subject.items.length) });
+  }
+  return projected;
 }
 
 export async function replayCurrentState({ chatId, narrativeGeneration, baselineId, floors = [], floorMemories = [], stateDeltas = [], now, id = null, previousId = null }) {

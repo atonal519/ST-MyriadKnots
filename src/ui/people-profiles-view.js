@@ -175,7 +175,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const payload = Object.fromEntries(PEOPLE_PROFILE_FIELDS.filter(field => !person.profiled || draft.dirtyFields.has(field)).map(field => [field, draft[field]]));
     draft.saving = true; draft.notice = '保存中…'; draft.error = '';
     try {
-      await runtime.saveProfile(person.entityId, payload, { manualFields: [...draft.dirtyFields] });
+      await runtime.saveProfile(person.entityId, payload, { manualFields: [...draft.dirtyFields], original: draft.original });
       const next = runtime.getState(); state = next;
       if ((next.chatId ?? null) !== token.chatId || drafts.get(token.entityId) !== token.draft) return true;
       const updated = next.people.find(item => item.entityId === token.entityId);

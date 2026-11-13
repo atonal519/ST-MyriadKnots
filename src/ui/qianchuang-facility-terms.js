@@ -176,4 +176,16 @@ Luggage|行李|行李箱,行李架,行李寄存
 Shirt|衣物|衣物,外套,衣架,更衣用品
 Watch|穿戴设备|手表,智能手表,穿戴设备
 ShoppingBag|储物袋|购物袋,储物袋,手提袋
+BedDouble|床榻|罗汉榻,贵妃榻,竹榻,软榻,木榻,架子床,拔步床,月洞床
+ShelvingUnit|陈列架|博古架,多宝格
+Columns3|屏风|屏风,座屏,插屏,围屏
+Table2|桌案|茶案,书案,画案,供案,香案,条案,八仙桌,四仙桌
+Armchair|座椅|太师椅,圈椅,官帽椅,交椅,玫瑰椅
+Flame|香炉|香炉,熏炉,薰炉
+Flame|灯火|油灯,烛台,烛灯,灯笼,宫灯,纱灯,走马灯
+FlameKindling|炉火|火炉,炭盆,炭炉,泥炉,手炉,脚炉,熏笼
+ShelvingUnit|药柜|百子柜,药橱,中药柜,药屉
+Coffee|茶具|茶盏,茶碗,茶壶,茶盘,盖碗,紫砂壶,公道杯
+Amphora|陶瓮|陶瓮,水瓮,米瓮,酒瓮,酒坛,陶罐,瓷罐
+Archive|箱笼|箱笼,木箱,妆奁,衣箱
 `.trim().split('\n').map(line=>{const [icon,label,words,key]=line.split('|');return {icon,label,terms:words.split(','),key:key||icon};});

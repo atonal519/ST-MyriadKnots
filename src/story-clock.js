@@ -10,11 +10,16 @@ export const DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT = [
   '格式示例（仅示意字段结构，不构成剧情事实；请替换为本楼实际内容）：',
   '  已知故事年份：<!-- QQJ-start | date=大陆历1686年10月4日 | weekday=周二 | time=15:30 -->正文<!-- QQJ-end | date=大陆历1686年10月4日 | weekday=周二 | time=16:00 -->',
   'start 与 end 都必须同时填写 date、weekday、time；有可靠故事依据时 weekday 使用周一至周日，没有依据时写“未知”，不凭日期或现实时间猜星期。正文或可靠故事时间依据明确给出年份时，start 与 end 沿用该年份和正文时间写法；跨年或倒叙按本楼正文及可靠时间依据记录。没有可靠年份时不要补写年份或猜算跨年日期；没有可靠日期时保留不确定表达，不用系统或服务器现实年份填补。世界书中的日期和时间要求仍须完整执行，QQJ 不替代、不合并、不改写它们。',
+  '本楼仅按本提示指定的 QQJ 格式输出一套 start/end；历史楼出现 SDC、myknots 等同类标记时，不因此重复追加。世界书自身的独立输出要求仍须完整执行。',
   '通常以上一楼 end 为参考推进本楼时间；无可用参考时保留当前剧情能确认的时间，不能确认的字段写“未知”。除这两个注释外，不要在正文中讨论 QQJ。',
 ].join('\n');
 
 const text = value => typeof value === 'string' ? value : '';
-const field = (raw, name) => new RegExp(`(?:^|[|｜,，;；\\n])\\s*(?:${name})\\s*[=＝:]\\s*([^|｜,，;；\\n]+)`, 'iu').exec(raw)?.[1]?.trim() || null;
+const field = (raw, name) => {
+  const matches = [...raw.matchAll(new RegExp(`(?:^|[|｜,，;；\\n])\\s*(?:${name})\\s*[=＝:]\\s*([^|｜,，;；\\n]+)`, 'igu'))];
+  const value = matches.length === 1 ? matches[0][1].trim() : '';
+  return value && !/[=＝]/u.test(value) ? value : null;
+};
 const REFERENCE_TAG_NAME = /^[\p{L}][\p{L}\p{N}_-]*~?$/u;
 
 export function normalizeStoryClockReferenceTags(value) {
@@ -26,6 +31,53 @@ export function normalizeStoryClockReferenceTags(value) {
     seen.add(key);
     return true;
   });
+}
+
+// 只比较明确的日期词元，纪年和未识别月名保持各自身份。
+const CN_DIGITS = '零〇一二两兩三四五六七八九壹贰貳叁參叄肆伍陆陸柒捌玖';
+const CN_NUMBER = `(?:元|[0-9${CN_DIGITS}十拾百佰千仟廿卄卅卌]+)`;
+const CN_VALUES = Object.fromEntries([...CN_DIGITS].map((char, index) => [char, [0,0,1,2,2,2,3,4,5,6,7,8,9,1,2,2,3,3,3,4,5,6,6,7,8,9][index]]));
+function cnNumber(value) {
+  if (value === '元') return 1;
+  if (/^\d+$/u.test(value)) return Number(value);
+  if ([...value].every(char => char in CN_VALUES)) return Number([...value].map(char => CN_VALUES[char]).join(''));
+  const compact = value.match(/^([廿卄卅卌])([零〇一二三四五六七八九])?$/u);
+  if (compact) return ({ 廿: 20, 卄: 20, 卅: 30, 卌: 40 })[compact[1]] + (CN_VALUES[compact[2]] ?? 0);
+  let total = 0, digit = null;
+  for (const char of value) {
+    if (char in CN_VALUES) { if (digit !== null && digit !== 0) return null; digit = CN_VALUES[char]; }
+    else {
+      const unit = ({ 十: 10, 拾: 10, 百: 100, 佰: 100, 千: 1000, 仟: 1000 })[char];
+      if (!unit) return null;
+      total += (digit ?? 1) * unit; digit = null;
+    }
+  }
+  return total + (digit ?? 0);
+}
+
+function clockDateKey(raw, calendar) {
+  const value = String(raw ?? '').normalize('NFKC').trim();
+  const iso = /^(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,2})$/u.exec(value);
+  if (iso) return ['', Number(iso[1]), Number(iso[2]), Number(iso[3])];
+  const match = new RegExp(`^(?:([\\p{L}]*?)(${CN_NUMBER})\\s*年\\s*)?(${CN_NUMBER}|正|冬|腊|臘)月(?:初)?(${CN_NUMBER})(?:日|号|號)?$`, 'u').exec(value);
+  const seasonal = calendar?.months === 4 ? new RegExp(`^(?:([\\p{L}]*?)(${CN_NUMBER})\\s*年\\s*)?(春|夏|秋|冬)(?:月)?(?:初)?(${CN_NUMBER})(?:日|号|號)?$`, 'u').exec(value) : null;
+  if (!match && !seasonal) return value;
+  const [, era = '', year, month, day] = seasonal ?? match;
+  return [era, year ? cnNumber(year) ?? NaN : null, seasonal ? ({ 春: 1, 夏: 2, 秋: 3, 冬: 4 })[month] : ({ 正: 1, 冬: 11, 腊: 12, 臘: 12 })[month] ?? cnNumber(month), cnNumber(day)];
+}
+const clockTimeKey = value => String(value ?? '').normalize('NFKC').replace(/^(\d{1,2}):(\d{2})$/u, (_, h, m) => `${Number(h)}:${m}`);
+function mergeClockMeta(values, calendar) {
+  const compare = (key, value) => key === 'date' ? JSON.stringify(clockDateKey(value, calendar)) : key === 'time' ? clockTimeKey(value) : String(value).replace(/^(?:週|星期|礼拜|禮拜)/u, '周').replace(/天$/u, '日');
+  const merged = {};
+  let conflict = false;
+  for (const key of ['date', 'weekday', 'time']) {
+    const known = values.map(value => value?.[key]).filter(value => value != null);
+    const same = known.every(value => compare(key, value) === compare(key, known[0]));
+    if (!same) conflict = true;
+    merged[key] = same && known.length === values.length ? known[0] : null;
+  }
+  return Object.freeze({ raw: values.map(value => value?.raw).filter(Boolean).join(' / '), ...merged,
+    complete: !conflict && values.every(value => value?.complete), conflict });
 }
 
 export function parseClockFields(raw, calendar = null) {
@@ -41,19 +93,21 @@ export function parseClockFields(raw, calendar = null) {
   const clocks = [...normalizedTime.matchAll(/(?<!\d)(\d{1,2}):(\d{2})(?!\d)/gu)];
   const hasNumericClock = /\d+:\d+/u.test(normalizedTime);
   const period = /上午|下午|中午|正午|凌晨|清晨|早晨|早上|晚上|夜里|夜间|午夜|\b(?:AM|PM)\b/iu.test(normalizedTime);
-  const timeValid = Boolean(time) && (!hasNumericClock || clocks.length > 0 && clocks.every(match => Number(match[1]) <= (period ? 12 : 23) && Number(match[2]) <= 59 && (!period || Number(match[1]) >= 1)));
+  const timeValid = Boolean(time) && !/^(?:未知|未明确|未明|不详)$/u.test(time) && (!hasNumericClock || clocks.length > 0 && clocks.every(match => Number(match[1]) <= (period ? 12 : 23) && Number(match[2]) <= 59 && (!period || Number(match[1]) >= 1)));
   const normalizedDate = String(date ?? '').normalize('NFKC');
+  const dateParts = clockDateKey(date, calendar);
   const numericDate = normalizedDate.match(/(?:^|\D)(\d{1,2})月(\d{1,2})(?:日|号|號)?(?:\D|$)/u)
     ?? normalizedDate.match(/(?:^|\D)\d{1,4}[-/.](\d{1,2})[-/.](\d{1,2})(?:\D|$)/u);
-  const month = Number(numericDate?.[1]), day = Number(numericDate?.[2]);
+  const month = Array.isArray(dateParts) ? dateParts[2] : Number(numericDate?.[1]), day = Array.isArray(dateParts) ? dateParts[3] : Number(numericDate?.[2]);
   const gregorianYear = /^(\d{4})[-/.]\d{1,2}[-/.]\d{1,2}$/u.exec(normalizedDate)?.[1]
     ?? /^(\d{4})年\d{1,2}月\d{1,2}(?:日|号|號)?$/u.exec(normalizedDate)?.[1];
-  const maxDay = numericDate && month >= 1 && month <= 12
+  const maxDay = (numericDate || Array.isArray(dateParts)) && month >= 1 && month <= 12
     ? calendar ? calendarMonthDays(calendar)[month - 1] ?? 0
       : gregorianYear ? new Date(Date.UTC(Number(gregorianYear), month, 0)).getUTCDate() : 31
     : 0;
-  const dateValid = Boolean(date) && (!numericDate || month >= 1 && month <= 12 && day >= 1 && day <= maxDay);
-  return Object.freeze({ raw: value, date, weekday, time, complete: Boolean(dateValid && (weekdayValid || weekdayUnknown) && timeValid) });
+  const dateValid = Boolean(date) && !/^(?:未知|未明确|未明|不详)$/u.test(date) && (!(numericDate || Array.isArray(dateParts)) || month >= 1 && month <= 12 && day >= 1 && day <= maxDay)
+    && (!Array.isArray(dateParts) || dateParts[1] === null || Number.isSafeInteger(dateParts[1]) && dateParts[1] >= 0);
+  return Object.freeze({ raw: value, date: dateValid ? date : null, weekday: weekdayValid ? weekday : null, time: timeValid ? time : null, complete: Boolean(dateValid && (weekdayValid || weekdayUnknown) && timeValid) });
 }
 
 function namespaceCandidate(source, namespace, calendar) {
@@ -70,7 +124,7 @@ function namespaceCandidate(source, namespace, calendar) {
   const pairs = [];
   for (let index = 0; index < tokens.length - 1; index += 1) {
     const start = tokens[index], end = tokens[index + 1];
-    if (start.kind !== 'start' || end.kind !== 'end' || !start.meta.complete || !end.meta.complete) continue;
+    if (start.kind !== 'start' || end.kind !== 'end') continue;
     pairs.push(Object.freeze({ startMeta: start.meta, endMeta: end.meta, sourceIndex: start.index }));
     index += 1;
   }
@@ -85,7 +139,8 @@ function namespaceCandidate(source, namespace, calendar) {
     startMeta,
     endMeta,
     duplicate,
-    complete: pairs.length > 0,
+    paired: Boolean(currentPair),
+    complete: pairs.length > 0 && pairs.every(pair => pair.startMeta.complete && pair.endMeta.complete),
     singleEnd: starts.length === 0 && ends.length === 1 && ends[0].meta.complete,
     pairs: Object.freeze(pairs),
     tokens: Object.freeze(tokens.map(token => Object.freeze({ kind: token.kind, raw: token.meta.raw }))),
@@ -98,37 +153,20 @@ export function parseSharedStoryClock(value, calendar = null) {
   const candidates = ['SDC', 'QQJ', 'myknots'].map(namespace => namespaceCandidate(source, namespace, calendar)).filter(Boolean);
   if (!candidates.length) return null;
   candidates.sort((left, right) => Number(right.complete) - Number(left.complete) || left.sourceIndex - right.sourceIndex);
-  const usable = candidates.filter(candidate => candidate.complete);
-  if (!usable.length) {
-    const singleEnds = candidates.filter(candidate => candidate.singleEnd);
-    if (singleEnds.length) {
-      const key = candidate => JSON.stringify([candidate.endMeta.date, candidate.endMeta.weekday, candidate.endMeta.time]);
-      if (singleEnds.some(candidate => key(candidate) !== key(singleEnds[0]))) return Object.freeze({ ...singleEnds[0], complete: false, ambiguous: true });
-      return singleEnds[0];
-    }
-    return candidates[0];
-  }
-  const loneEnds = candidates.filter(candidate => candidate.singleEnd);
-  if (loneEnds.length) {
-    const endKey = value => JSON.stringify([value?.date, value?.weekday, value?.time]);
-    const pairedEnd = usable[0].pairs.at(-1)?.endMeta;
-    if (loneEnds.some(candidate => endKey(candidate.endMeta) !== endKey(pairedEnd))) return Object.freeze({ ...usable[0], complete: false, ambiguous: true });
-  }
-  if (usable.length < 2) return candidates[0];
-  const shape = candidate => JSON.stringify(candidate.pairs.map(pair => [pair.startMeta.date, pair.startMeta.weekday, pair.startMeta.time, pair.endMeta.date, pair.endMeta.weekday, pair.endMeta.time]));
-  if (usable.every(candidate => shape(candidate) === shape(usable[0]))) return usable[0];
-  const count = Math.max(...usable.map(candidate => candidate.pairs.length));
-  const merge = values => {
-    const fields = ['date', 'weekday', 'time'];
-    const merged = Object.fromEntries(fields.map(key => [key, values.every(value => value?.[key] === values[0]?.[key]) ? values[0]?.[key] ?? null : null]));
-    return Object.freeze({ raw: values.map(value => value?.raw).filter(Boolean).join(' / '), ...merged, complete: Boolean(merged.date && merged.weekday && merged.time) });
-  };
+  const usable = candidates.filter(candidate => candidate.paired || candidate.singleEnd);
+  if (usable.length < 2) return usable[0] ?? candidates[0];
+  const paired = usable.filter(candidate => candidate.paired);
+  const count = Math.max(1, ...paired.map(candidate => candidate.pairs.length));
   const pairs = Array.from({ length: count }, (_, index) => Object.freeze({
-    startMeta: merge(usable.map(candidate => candidate.pairs[index]?.startMeta)),
-    endMeta: merge(usable.map(candidate => candidate.pairs[index]?.endMeta)),
+    startMeta: mergeClockMeta(paired.map(candidate => candidate.pairs[index]?.startMeta ?? (index === 0 ? candidate.startMeta : null)), calendar),
+    endMeta: mergeClockMeta(usable.map(candidate => candidate.pairs[index]?.endMeta ?? (index === 0 ? candidate.endMeta : null)), calendar),
   }));
-  return Object.freeze({ ...usable[0], start: pairs[0]?.startMeta.raw ?? null, end: pairs[0]?.endMeta.raw ?? null,
-    startMeta: pairs[0]?.startMeta ?? null, endMeta: pairs[0]?.endMeta ?? null, complete: false, ambiguous: true, pairs: Object.freeze(pairs) });
+  const ambiguous = pairs.some(pair => pair.startMeta.conflict || pair.endMeta.conflict);
+  const current = pairs.at(-1);
+  return Object.freeze({ ...usable[0], start: current.startMeta.raw || null, end: current.endMeta.raw || null,
+    startMeta: paired.length ? current.startMeta : null, endMeta: current.endMeta,
+    complete: paired.length > 0 && pairs.every(pair => pair.startMeta.complete && pair.endMeta.complete),
+    paired: paired.length > 0, singleEnd: paired.length === 0, ambiguous, tokens: Object.freeze(usable.flatMap(candidate => candidate.tokens)), pairs: Object.freeze(paired.length ? pairs : []) });
 }
 
 export function parseStoryClockReference(value, referenceTags = '') {
@@ -180,13 +218,16 @@ export function parseStoryClockReference(value, referenceTags = '') {
 export function parseStoryClockEvidence(value, referenceTags = '', calendar = null) {
   const shared = parseSharedStoryClock(value, calendar);
   const reference = parseStoryClockReference(value, referenceTags);
-  return shared?.ambiguous || shared?.complete || shared?.singleEnd ? shared : reference ?? shared;
+  return shared?.ambiguous || shared?.complete || shared?.singleEnd || shared?.paired && (shared.endMeta?.date || shared.endMeta?.time) ? shared : reference ?? shared;
 }
 
 export function resolveStoryClock(value, referenceTags = '', calendar = null) {
   const evidence = parseStoryClockEvidence(value, referenceTags, calendar);
   if (!evidence) return null;
-  if (evidence.ambiguous) return Object.freeze({ status: 'ambiguous', source: 'timestamp', evidence, signature: storyClockSignature(evidence) });
+  const current = evidence.pairs?.at(-1)?.endMeta ?? evidence.endMeta;
+  const partial = evidence.paired || evidence.singleEnd ? current : null;
+  const availableText = [partial?.date, partial?.time].filter(Boolean).join(' ');
+  if (evidence.ambiguous) return Object.freeze({ status: 'ambiguous', source: 'timestamp', evidence, meta: partial, text: availableText, signature: storyClockSignature(evidence) });
   if (evidence.complete && !evidence.referenceText) {
     const currentPair = evidence.pairs?.at(-1);
     const meta = currentPair?.endMeta ?? evidence.endMeta ?? evidence.startMeta;
@@ -200,7 +241,7 @@ export function resolveStoryClock(value, referenceTags = '', calendar = null) {
   }
   const textValue = evidence.lastReferenceText ?? evidence.referenceText;
   if (textValue) return Object.freeze({ status: 'available', source: 'reference', evidence, text: textValue, signature: storyClockSignature(evidence) });
-  return Object.freeze({ status: 'incomplete', source: 'timestamp', evidence, signature: storyClockSignature(evidence) });
+  return Object.freeze({ status: 'incomplete', source: 'timestamp', evidence, meta: partial, text: availableText, signature: storyClockSignature(evidence) });
 }
 
 export function storyClockSignature(clock) {

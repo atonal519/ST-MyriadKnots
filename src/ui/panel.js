@@ -266,7 +266,6 @@ export function createPanel({
     if (focusSources) { settingsDrawerState.open('general'); settingsDrawerState.open('worldbook'); }
 
     const page = element('section', 'settings-page');
-    page.append(element('h2', '', '千千结设置'));
 
     // 总开关：standalone 主控，统管整个插件（含记忆自动提取）。
     const master = element('div', 'master-switch');

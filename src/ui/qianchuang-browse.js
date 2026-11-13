@@ -3,11 +3,12 @@ export function projectQianchuangBrowse(snapshot, requestedScope) {
   const places = snapshot.places ?? [], byId = new Map(places.map(place => [place.entityId, place]));
   const roots = (snapshot.mapRootIds ?? []).filter(id => byId.has(id));
   const hinted = places.some(place => ['area','site'].includes(place.mapRole));
+  const areaContainer = node => node && (node.mapRole === 'area' || !node.mapRole && (node.childEntityIds ?? []).some(id => byId.get(id)?.mapRole === 'area'));
   let scopeId = requestedScope;
   if (scopeId && (!byId.has(scopeId) || byId.get(scopeId).mapRole === 'interior')) scopeId = undefined;
   if (scopeId === undefined) {
-    const root=roots.length===1?byId.get(roots[0]):null,areaContainer=root&&(root.mapRole==='area'||!root.mapRole&&(root.childEntityIds??[]).some(id=>byId.get(id)?.mapRole==='area'));
-    scopeId = hinted && areaContainer ? root.entityId : null;
+    const root=roots.length===1?byId.get(roots[0]):null;
+    scopeId = hinted && areaContainer(root) ? root.entityId : null;
     while (scopeId) {
       const children = byId.get(scopeId).childEntityIds ?? [];
       if (children.length !== 1 || byId.get(children[0])?.mapRole !== 'area') break;
@@ -18,7 +19,7 @@ export function projectQianchuangBrowse(snapshot, requestedScope) {
   const groups = [];
   const sitesBelow = id => {
     const node = byId.get(id); if (!node || node.mapRole === 'interior') return [];
-    if (node.mapRole === 'site') return [id];
+    if (!areaContainer(node)) return [id];
     return (node.childEntityIds ?? []).flatMap(sitesBelow);
   };
   if (!hinted) {
@@ -30,9 +31,8 @@ export function projectQianchuangBrowse(snapshot, requestedScope) {
     for (const id of ids) {
       const node = byId.get(id); if (!node) continue;
       if (node.mapRole === 'interior') continue;
-      if (node.mapRole === 'area') groups.push({ entityId: id, siteIds: sitesBelow(id) });
-      else if (node.mapRole === 'site') direct.push(id);
-      else if (!scopeId && roots.includes(id)) direct.push(id); // Legacy roots keep their existing map.
+      if (areaContainer(node)) groups.push({ entityId: id, siteIds: sitesBelow(id) });
+      else direct.push(id); // Untyped legacy places keep their map presence in mixed trees.
 
     }
     // An area with child regions is the map scope, not an extra child region.

@@ -457,7 +457,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
       let completed = 0;
       for (const group of recordWriteBatches(prepared.map(({ validator, ...item }) => item))) {
         const response = !group.single && typeof client.putMany === 'function'
-          ? await client.putMany(collection(current), group.records, { signal }) : null;
+          ? await client.putMany(collection(current), group.records, { signal, negotiate: group.records.length > 1 }) : null;
         const batchResults = new Array(group.records.length); let firstError = null;
         if (response === null) {
           let cursor = 0;
@@ -489,7 +489,7 @@ export function createFoundationStore({ client, contextProvider, isEnabled = tru
             try {
               const expected = group.records[index];
               if (item?.recordId !== expected.recordId) fail('V3_STORE_BATCH_RESPONSE_INVALID');
-              if (item.status !== 409) throw Object.assign(new Error('分支记忆保存失败，请到“记忆管理”页复制状态诊断反馈。'), { status: item.status });
+              if (item.status !== 409) throw Object.assign(new Error('记忆保存失败，请到“记忆管理”页复制状态诊断反馈。'), { status: item.status });
               const winner = await read(current, item.recordId, byId.get(item.recordId).validator);
               if (winner.status === 'ready' && sameFoundationRecordContent(winner.data, expected.data)) {
                 stageCoreRecord(current, item.recordId, expected.data.recordType, winner.rawEnvelope, operation.cacheScope);

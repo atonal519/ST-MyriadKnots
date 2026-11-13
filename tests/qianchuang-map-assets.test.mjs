@@ -4,6 +4,19 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {createGenericMapLoader} from '../src/ui/qianchuang-map-loader.js';
 import {QIANCHUANG_MAP_STYLES,normalizeQianchuangMapLayout,normalizeQianchuangMapStyle,validQianchuangMapLayout} from '../src/qianchuang-display-hints.js';
+const realTemplateIds=['modern-coast','modern-radial','modern-town-plain','modern-town-river','modern-town-coast','old-town-inland','old-town-river','old-town-coast','old-town-plain','terrain-forest','terrain-coast','terrain-mountain','terrain-coast-relief','terrain-desert','terrain-snow','palace-axial','palace-courtyard-garden'];
+
+test('真实片区保留人居路网与来源，SVG样式只作用于千窗根',()=>{
+ const sources=new Map(JSON.parse(readFileSync(new URL('../assets/maps-library/sources.json',import.meta.url),'utf8')).map(row=>[row.id,row]));
+ for(const id of realTemplateIds){
+  const asset=QIANCHUANG_MAP_ASSETS[id],source=sources.get(id),svg=readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url),'utf8');
+  assert.match(String(source.license),/ODbL/u,id);assert.match(source.sourceSha256,/^[a-f0-9]{64}$/u,id);assert.match(svg,/OpenStreetMap contributors/u,id);
+  assert.match(svg,/class="map-building"/u,id);assert.match(svg,/class="map-road-/u,id);assert.match(svg,/var\(--ql-water\)/u,id);
+  assert.doesNotMatch(svg,/<(?:linearGradient|radialGradient|image|script)\b|href="https?:/u,id);
+  const style=svg.match(/<style>([\s\S]*?)<\/style>/u)?.[1];assert.ok(style,id);
+  for(const match of style.matchAll(/([^{}]+)\{/gu))for(const selector of match[1].split(','))assert.ok(selector.trim().startsWith('.qqj-generic-basemap '),id+' '+selector);
+ }
+});
 test('本地SVG根可直接插入HTML并保SVG命名空间',()=>{
  for(const asset of Object.values(QIANCHUANG_MAP_ASSETS)){
   const svg=readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url),'utf8');
@@ -45,8 +58,8 @@ test('184新甲板按当前文件SHA单次读取，几何不进入主模块',asy
  for(const asset of Object.values(QIANCHUANG_MAP_ASSETS)){assert.ok(asset.shortTags.length>1,asset.id);assert.equal(new Set(asset.shortTags).size,asset.shortTags.length,asset.id);}
  });
 
- test('两张已验收新图可选，旧宫苑与舰图选择保持',()=>{
- const expected={'palace-courtyard-garden':'44a4c146641186d23f5afa2dc16679e09b24c49bdf2e7209744e16c64c2057b4','sci-fi-ring-life':'16b53652141e4369e8bb724289cfcc58833ca5830ac1292475ff8c96b5043b96'};
+ test('宫苑与舰图继续可选，既有选择保持',()=>{
+ const expected={'sci-fi-ring-life':'16b53652141e4369e8bb724289cfcc58833ca5830ac1292475ff8c96b5043b96'};
  for(const[id,sha]of Object.entries(expected)){const asset=QIANCHUANG_MAP_ASSETS[id];assert.ok(asset,id);assert.equal(asset.sha256,sha);assert.equal(createHash('sha256').update(readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url))).digest('hex'),sha);}
  assert.deepEqual(qianchuangMapCandidates('palace','courtyard').map(a=>a.id),['palace-courtyard-garden']);assert.deepEqual(qianchuangMapCandidates('sci-fi','ring').map(a=>a.id),['sci-fi-ring-life']);
  for(const[style,layout,previous]of[['palace','courtyard','palace-axial'],['sci-fi','ring','sci-fi-linear']])assert.equal(selectQianchuangMapAsset({entityId:'existing-root',style,layout,previousAssetId:previous}),previous);
@@ -101,5 +114,16 @@ test('图库全部为原生方形，SVG画幅、元数据和可见点位共用�
    assert.ok(region.inset.w>0&&region.inset.h>0,asset.id);
    for(const ring of region.contours)assert.ok(ring.every(point=>point.every(value=>value>=0&&value<=100)),asset.id);
   }
+ }
+});
+
+
+
+test('真实路网与主地形线沿现主题使用非缩放线宽',()=>{
+ for(const id of realTemplateIds){
+  const svg=readFileSync(new URL('../assets/maps-library/'+QIANCHUANG_MAP_ASSETS[id].file,import.meta.url),'utf8'),style=svg.match(/<style>([\s\S]*?)<\/style>/u)[1];
+  const lines=[...style.matchAll(/([^{}]+)\{([^{}]*)\}/gu)].filter(match=>/map-(?:road-|river|ridge)/u.test(match[1]));
+  assert.ok(lines.length>0,id);assert.ok(lines.every(match=>match[2].includes('vector-effect:non-scaling-stroke')),id);
+  assert.match(style,/var\(--blue\)/u,id);assert.match(style,/var\(--paper\)/u,id);
  }
 });

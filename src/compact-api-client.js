@@ -142,35 +142,39 @@ function throwResponseError(data, secrets = []) {
   throw safeError(code, 0, providerError ? { providerError } : {});
 }
 
-async function readLimitedErrorText(response, maximum = HTTP_ERROR_BODY_LIMIT) {
-  // 错误正文仅用于诊断；正文读取和取消异常尽量忽略。
+async function readLimitedErrorText(response, maximum = HTTP_ERROR_BODY_LIMIT, signal) {
+  // 错误正文只补充诊断，读取沿原请求取消；清理不等待宿主关闭连接。
   const reader = response?.body?.getReader?.();
   if (reader) {
-    const decoder = new TextDecoder(); let text = '';
+    const decoder = new TextDecoder(); let text = '', eof = false;
     try {
       while (text.length < maximum) {
-        const { done, value } = await reader.read();
-        if (done) { text += decoder.decode(); break; }
+        const { done, value } = await abortable(() => reader.read(), signal);
+        if (done) { eof = true; text += decoder.decode(); break; }
         if (!value) continue;
         const remaining = maximum - text.length;
         const chunk = typeof value.subarray === 'function' ? value.subarray(0, remaining) : value;
         text += decoder.decode(chunk, { stream: true });
-        if (text.length >= maximum || chunk.length < value.length) { try { await reader.cancel?.(); } catch {} break; }
+        if (text.length >= maximum || chunk.length < value.length) break;
       }
       return text.slice(0, maximum);
     } catch { return text.slice(0, maximum); }
+    finally {
+      if (!eof) try { Promise.resolve(reader.cancel?.()).catch(() => {}); } catch {}
+      try { reader.releaseLock?.(); } catch { /* 宿主可能仍持有原生读取。 */ }
+    }
   }
   if (typeof response?.text === 'function') {
-    try { return String(await response.text()).slice(0, maximum); } catch {}
+    try { return String(await abortable(() => response.text(), signal)).slice(0, maximum); } catch {}
   }
   if (typeof response?.json === 'function') {
-    try { return JSON.stringify(await response.json()).slice(0, maximum); } catch {}
+    try { return JSON.stringify(await abortable(() => response.json(), signal)).slice(0, maximum); } catch {}
   }
   return '';
 }
 
-async function readProviderError(response, secrets = []) {
-  const text = (await readLimitedErrorText(response)).trim();
+async function readProviderError(response, secrets = [], signal) {
+  const text = (await readLimitedErrorText(response, HTTP_ERROR_BODY_LIMIT, signal)).trim();
   if (!text) return null;
   let candidate = null;
   let malformedJson = false;
@@ -192,8 +196,6 @@ function completionDetails(data) {
   }
   return { text, finishReason };
 }
-
-export function extractCompletion(data) { return completionDetails(data).text; }
 
 export function balancedObjects(text) {
   const candidates = []; let objectDepth = 0, arrayDepth = 0, start = -1, quoted = false, escaped = false, unclosed = false;
@@ -339,13 +341,12 @@ async function readSseResponse(response, { requireSse = false, signal, secrets =
   return { text: output.trim(), finishReason };
 }
 
-export async function readSseContent(response) { return (await readSseResponse(response)).text; }
-
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError());
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(abortError()); }, { once: true });
+    const onAbort = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(abortError()); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -417,10 +418,14 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
           if (!response.ok) {
             if ((response.status === 429 || response.status >= 500) && attempt < retries && retryAvailable()) {
               requestFailure(transportBudget, mapHttpError(response.status));
+              try { Promise.resolve(response.body?.cancel?.()).catch(() => {}); } catch {}
               attempt += 1; linked.cleanup(); await retryWait(Math.min(400 * 2 ** attempt, 2000), signal); continue;
             }
             requestProgress(transportBudget, 'responseBody');
-            throw mapHttpError(response.status, await abortable(() => readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)]), linked.controller.signal));
+            let providerError = null;
+            try { providerError = await abortable(() => readProviderError(response, [config.key, config.url, normalizeApiUrl(config.url)], linked.controller.signal), linked.controller.signal); }
+            catch { if (signal?.aborted) throw abortError(); }
+            throw mapHttpError(response.status, providerError);
           }
           const secrets = [config.key, config.url, normalizeApiUrl(config.url)];
           if (stream) {
@@ -440,7 +445,7 @@ export function createCompactApiClient({ fetchImpl, headers = () => ({}), retryW
           throwResponseError(data, secrets);
           return data;
         } catch (error) {
-          if (linked.timedOut()) error = safeError('timeout');
+          if (linked.timedOut() && !error?.httpStatus) error = safeError('timeout');
           if (signal?.aborted || error?.name === 'AbortError') { requestFailure(transportBudget, abortError(), true); throw abortError(); }
           requestFailure(transportBudget, error);
           if ((error instanceof TypeError || error?.code === 'QQJ_TIMEOUT' || error?.retryableRecognitionFormat === true) && attempt < retries && retryAvailable()) {

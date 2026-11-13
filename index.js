@@ -30,7 +30,7 @@ import { createApiResolver, createApiTools, createTaskRouter } from './src/api-r
 import { createCompactApiClient } from './src/compact-api-client.js';
 import { createChatSession } from './src/chat-session.js';
 import { createChatIdentityCoordinator } from './src/chat-identity.js';
-import { cloneHostJsonMetadata, createHostChatList } from './src/host-context.js';
+import { readHostState, cloneHostJsonMetadata, createHostChatList } from './src/host-context.js';
 import { createChatMemoryManagement } from './src/chat-memory-management.js';
 import { createStorageManagement } from './src/storage-management.js';
 import { createMemoryTransfer } from './src/memory-transfer.js';
@@ -114,9 +114,11 @@ const announceStoryClockChange = () => {
   try { if (typeof globalThis.CustomEvent === 'function') globalThis.dispatchEvent?.(new globalThis.CustomEvent(STORY_CLOCK_COORDINATION_EVENT, { detail: { owner: 'myknots' } })); } catch { /* 宿主无 CustomEvent 时保持单插件行为 */ }
 };
 const refreshStoryClock = ({ readOnly = false, announce = false } = {}) => {
-  const result = projectStoryClockStatus({ readOnly });
-  if (announce) announceStoryClockChange();
-  return result;
+  try {
+    const result = projectStoryClockStatus({ readOnly });
+    if (announce) announceStoryClockChange();
+    return result;
+  } catch (error) { console.warn('[qianqianjie] 时间戳提示更新失败', error); }
 };
 globalThis.addEventListener?.(STORY_CLOCK_COORDINATION_EVENT, event => { if (event?.detail?.owner !== 'myknots') refreshStoryClock(); });
 const sanitizerOptions = () => ({ ...settings.wrappers() });
@@ -148,7 +150,11 @@ const taskRouter = createTaskRouter({
 const peopleTaskRouter = createTaskRouter({ resolver: apiResolver, compactClient, isEnabled: settings.isEnabled });
 const apiTools = createApiTools({ resolver: apiResolver, compactClient, processingPrompt, isEnabled: settings.isEnabled });
 const listHostChats = createHostChatList({ headers: () => hostContext()?.getRequestHeaders?.() ?? {} });
-const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, vectorRuntimeProvider: () => vectorIndex });
+const initializeChatBranch = createChatBranchInitializer({ client: backendClient, hostAdapter, vectorRuntimeProvider: () => vectorIndex,
+  coreRecordCacheProvider: () => coreRecordCache,
+  captureCalendar: chatId => settings.get().storyCalendars?.[chatId] ?? null,
+  persistCalendar: (chatId, calendar) => persistStoryCalendar(chatId, calendar),
+});
 const identityCoordinator = createChatIdentityCoordinator({ client: backendClient, freshUuid: newUuid, listHostChats, initializeBranch: initializeChatBranch,
   readTargetFile: (raw, host, { signal }) => readTargetChatFile(captureTargetChatCoordinates({ context: raw, chatId: host.hostChatId }, {
     hostChatId: host.hostChatId, characterLocator: host.characterAvatar,
@@ -158,12 +164,21 @@ const identityCoordinator = createChatIdentityCoordinator({ client: backendClien
     return persistTargetChatIdentity({ coordinates: taskInputs.target, raw, snapshot: taskInputs, chatId, listHostChats, signal });
   },
 });
-const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator, captureTaskInputs: ({ raw, host }) => {
+const session = createChatSession({ contextProvider, isEnabled: settings.isEnabled, identityCoordinator, onPrepared: ({ result }) => {
+  const revision = pluginLifecycleFailureRevision;
+  void v3MemoryRuntime.start({ preparedIdentity: result.identity }).then(() => {
+    if (session.getState().identity === result.identity && pluginLifecycleFailure?.phase === 'identityPrepare') clearPluginLifecycleFailureIfUnchanged(revision);
+  }).catch(error => recordPluginLifecycleFailure(error, 'identityPrepare'));
+}, captureTaskInputs: ({ raw, host, observeOnly = false }) => {
+  if (observeOnly) {
+    void v3MemoryRuntime.start({ preparationSnapshot: { chat: Array.isArray(raw.chat) ? raw.chat : [], identity: { hostChatId: host.hostChatId, characterLocator: host.characterAvatar, personaLocator: host.personaAvatar } } });
+    return null;
+  }
   const target = captureTargetChatCoordinates({ context: raw, chat: raw.chat, chatId: host.hostChatId, source: 'captured' }, {
     hostChatId: host.hostChatId, characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
   });
   return {
-    chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []),
+    chat: cloneHostJsonMetadata(Array.isArray(raw.chat) ? raw.chat : []),
     chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}),
     target,
   };
@@ -267,6 +282,7 @@ const timeRuntime = createTimeRuntime({
   sanitizerOptions,
   storyClockReferenceTags: () => settings.get().storyClockReferenceTags,
   isEnabled: () => settings.isEnabled() && settings.get().timeEvolutionEnabled === true,
+  onInvalidate: reason => { if (['manualTimeEdited', 'manualTimeDeleted'].includes(reason)) v3RecallRuntime?.invalidate('timeManuallyEdited'); },
 });
 const v3MemoryRuntime = createV3MemoryRuntime({
   storyCalendarProvider,
@@ -296,7 +312,11 @@ const v3MemoryRuntime = createV3MemoryRuntime({
   placeWorkspaceStore,
   placeWorldInfoProvider: request=>qianchuangWorldInfoProvider(request),
   onPlaceChanged: (chatId,change) => { if(change?.automatic!==true&&session.identity().chatId===chatId)v3RecallRuntime?.invalidate('placeEdited'); },
-  captureBusinessIdentity: () => session.identity(),
+  captureBusinessIdentity: options => {
+    if (!options?.allowUnprepared) return session.identity();
+    const host = readHostState(contextProvider());
+    return host.ok ? { chatId: host.chatId, hostChatId: host.hostChatId, characterLocator: host.characterAvatar, personaLocator: host.personaAvatar } : null;
+  },
   storeForIdentity: targetFoundationStore,
   onQianshiEventDeleted: () => v3RecallRuntime?.invalidate('qianshiManuallyDeleted'),
   qianshiExternalReferenceProvider: (targetChatId, targetReachable) => {
@@ -562,18 +582,16 @@ const startQianchuangMaps = () => startQianchuangMapCatalog({ genericAssets: QIA
 });
 const setAllEnabled = async enabled => {
   const diagnosticRevisionAtStart = pluginLifecycleFailureRevision;
-  try { refreshStoryClock({ announce: true }); }
-  catch (error) { try { error.qqjDiagnosticPhase = 'pluginEnable'; } catch {} throw error; }
+  refreshStoryClock({ announce: true });
   if (!enabled) {
-    inlineRenderer.setEnabled(false);
-    autoHideController.stop();
-    await timeRuntime.stop();
-    await peopleWorkspaceRuntime.setEnabled(false);
-    await v3RecallRuntime.setEnabled(false);
-    const v3Result = await v3MemoryRuntime.setEnabled(false);
-    const lifecycleResult = await lifecycle?.setEnabled(false);
+    const stopped = await Promise.allSettled([
+      () => inlineRenderer.setEnabled(false), () => autoHideController.stop(), () => timeRuntime.stop(),
+      () => peopleWorkspaceRuntime.setEnabled(false), () => v3RecallRuntime.setEnabled(false),
+      () => v3MemoryRuntime.setEnabled(false), () => lifecycle?.setEnabled(false),
+    ].map(stop => { try { return stop(); } catch (error) { return Promise.reject(error); } }));
+    for (const result of stopped) if (result.status === 'rejected') console.warn('[qianqianjie] 停止辅助任务失败', result.reason);
     clearPluginLifecycleFailureIfUnchanged(diagnosticRevisionAtStart);
-    return v3Result ?? lifecycleResult;
+    return stopped[5].value ?? stopped[6].value;
   }
   startQianchuangMaps();
   inlineRenderer.setEnabled(true);

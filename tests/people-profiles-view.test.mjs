@@ -936,3 +936,28 @@ test('千人整理按钮同次失败单槽但保操作回执，不与独立旧�
  await new Promise(resolve=>setImmediate(resolve));const count=flatten(container).filter(n=>!n.hidden&&String(n.textContent).includes('记忆存储请求超时')).length;assert.equal(count,same?1:2,'相同短句的两次不同原始错误不可互吞');if(same)assert.match(visible(container),/整理.*未完成/);view.deactivate();
  }
 });
+
+
+test('第二批人物编辑窗只提交实际修改，原字段基线保留并发职业与失败草稿', async () => {
+  const h = trueRuntimeHarness(); await h.runtime.refresh(); await h.runtime.setSelectedEntityIds([A]);
+  await h.runtime.saveProfile(A, { name: '甲', notes: '原备注', occupation: '旧职业' }, { manualFields: ['notes'] });
+  const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  let notes = editorField(view, '补充资料'); notes.value = '人工备注'; notes.fire('input');
+  const key = `chat-${CHAT}/${PEOPLE_WORKSPACE_RECORD_ID}`;
+  const update = (field, value) => {
+    const record = structuredClone(h.records.get(key)); record.revision++;
+    record.data.profilesByEntityId[A][field] = value; h.records.set(key, record);
+  };
+  update('occupation', '后台新职业');
+  h.runtime.invalidate(); await h.runtime.refresh(); await saveEditor(view);
+  assert.equal(h.records.get(key).data.profilesByEntityId[A].notes, '人工备注');
+  assert.equal(h.records.get(key).data.profilesByEntityId[A].occupation, '后台新职业');
+  flatten(container).find(node => node.textContent === '编辑资料').click();
+  notes = editorField(view, '补充资料'); notes.value = '未保存旧窗'; notes.fire('input');
+  update('notes', '另一人工备注'); h.runtime.invalidate(); await h.runtime.refresh();
+  await saveEditor(view);
+  assert.equal(editorField(view, '补充资料').value, '未保存旧窗');
+  assert.match(view.testDialogs.active.error?.message ?? '', /人工字段.*更新/u);
+  assert.equal(h.records.get(key).data.profilesByEntityId[A].notes, '另一人工备注');
+});

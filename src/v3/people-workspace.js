@@ -1056,7 +1056,7 @@ export function createPeopleWorkspaceRuntime({
       if (isCurrent(operation)) lastError = null; return result.state;
     });
   }
-  async function saveProfile(entityId, fields, { manualFields: requestedManualFields = null } = {}) {
+  async function saveProfile(entityId, fields, { manualFields: requestedManualFields = null, original = null } = {}) {
     const operation = begin('savingProfile');
     return settle(operation, async () => {
       const startingProfile = operation.workspace?.profilesByEntityId?.[entityId] ?? null;
@@ -1071,13 +1071,19 @@ export function createPeopleWorkspaceRuntime({
           throw errorWith('QQJ_PEOPLE_PROFILE_ENTITY_INVALID', '这个人物已删除或归属变化，本次资料没有写入。');
         }
         const existing = current.profilesByEntityId[entityId];
-        if (JSON.stringify(existing ?? null) !== JSON.stringify(startingProfile)) throw errorWith('QQJ_PEOPLE_PROFILE_CONFLICT', '这个人物资料已在其他页面更新，本次没有覆盖新内容，请重试。');
         const declaredInput = requestedManualFields === null ? null : [...new Set(requestedManualFields)].filter(field => PEOPLE_PROFILE_FIELD_SET.has(field));
+        const baseline = original ?? startingProfile;
+        const editedFields = declaredInput ?? PEOPLE_PROFILE_FIELDS;
+        if (editedFields.some(field => existing?.manualFields?.includes(field)
+          && String(existing?.[field] ?? '') !== String(baseline?.[field] ?? '')
+          && String(existing?.[field] ?? '') !== requested[field])) {
+          throw errorWith('QQJ_PEOPLE_PROFILE_CONFLICT', '本次修改的人工字段已在其他页面更新，请保留草稿并确认当前值。');
+        }
         const desired = existing && declaredInput ? { ...profileFields(existing), ...Object.fromEntries(declaredInput.map(field => [field, requested[field]])) } : requested;
-        const confirmingAliases = declaredInput?.includes('aliases') && !existing?.manualFields?.includes('aliases');
-        if (existing && sameFields(existing, desired) && !confirmingAliases) return null;
+        const confirmingFields = declaredInput?.some(field => !existing?.manualFields?.includes(field));
+        if (existing && sameFields(existing, desired) && !confirmingFields) return null;
         const changedFields = PEOPLE_PROFILE_FIELDS.filter(field => String(existing?.[field] ?? '') !== String(desired[field] ?? ''));
-        const declared = requestedManualFields === null ? changedFields : [...new Set(requestedManualFields)].filter(field => PEOPLE_PROFILE_FIELD_SET.has(field) && (changedFields.includes(field) || field === 'aliases'));
+        const declared = requestedManualFields === null ? changedFields : [...new Set(requestedManualFields)].filter(field => PEOPLE_PROFILE_FIELD_SET.has(field));
         const manual = [...new Set([...(existing?.manualFields ?? []), ...declared])];
         const timestamp = nowIso(now);
         return { ...clone(current), profilesByEntityId: { ...clone(current.profilesByEntityId), [entityId]: {

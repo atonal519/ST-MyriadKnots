@@ -3,14 +3,8 @@
 千窗在固定背景上显示当前聊天中有明确包含关系的场地，点位为界面示意排布，不表示真实坐标或距离。素材使用静态SVG几何，默认从免费静态图库读取目录和图片，已有图同时保留在插件内供读取失败时使用。SVG不含生成器、外部字体、脚本或在线地图图层。
 
 - **大城市**：OpenStreetMap 钟路街区数据，范围126.982,37.565–126.993,37.575，经投影、裁切和主题配色处理。© [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)，[ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/)。显示此底图时保留普通文字署名“© OpenStreetMap contributors · ODbL”，完整版权与许可链接保留于本文档。原始采集SHA256：26114c040bfc0034743f247ad28ef007eec8e8b60c5127492f6e59d05c67e462。
-- **小城市·西幻**：Watabou Medieval Fantasy City Generator 的 Redfall 输出（seed222816148），裁去外侧河线与无关区域，保留城内街巷与建筑轮廓，并适配主题。作者在[官方FAQ](https://watabou.github.io/faq.html)允许复制、修改输出及用于商业RPG，署名可选；此声明用于生成的图像输出，不是把生成器代码许可套在素材上。原始输出SHA256：79b3ba9329e5456d4af11e8a4aff01bab586198745b2ba115ab4fcc30598e88b。
-- **宫廷·示意**：为千窗原创的架空宫苑平面草案，表达中轴、前庭、侧院与园林；不对应实际宫城。
-
-- **现代小城·示意**（`modern-town`）：千窗原创静态街区；错位横街、纵街与支路连通，沿街住宅和偏置公共中心组成低密镇区。
-- **古风城镇·示意**（`old-town`）：千窗原创静态城镇局部；穿城曲街与坊巷连接院落和市集，与宫苑和西幻小城分别保留。
-- **科幻设施·示意**（`sci-fi`）：千窗原创静态设施局部；内部舱室、通道、房间连接和设备区可用作星舰、空间站或基地背景。
-
-新增三图见 `src/ui/qianchuang-generic-trio.js`，独立SVG位于 `assets/maps-generic/`；静态可点预览为 `mockups/generic-map-trio.html`。各图的五块分区离线合并为1至5区，点位沿既有静态查表接口填入。这三张兼容底图以地图局部呈现：撤完整外壳、容器卡片底和闭合分区描边，内部主路与舱壁沿主题色显示；原轮廓和点位坐标继续用于内部布局。这些素材保留为旧保存值兼容，正式选图优先级见下方本地素材库；主页不增加底图选择控件。
+- **城镇与宫苑**：按真实城镇和设施片区绘制，来源包括Siena旧城、Lucca、Lemgo、Vltava河湾、Vannes港城、景福宫及Versailles宫苑。道路、建筑、水面和绿地使用OpenStreetMap公开几何，按[ODbL 1.0](https://www.openstreetmap.org/copyright)署名。
+- **旧保存值**：`modern/town/palace/modern-town/old-town/sci-fi`继续保留原保存字符串，读取时分别承接`modern-inland/old-town-inland/palace-axial/modern-town-plain/old-town-plain/sci-fi-linear`；沿现有图库按需载入，无设置迁移或主页选择控件。旧兼容模块中的早期Watabou Redfall几何仍按[官方FAQ](https://watabou.github.io/faq.html)输出许可保留。
 
 界面沿用插件已有控件和几何点标记；地点及设施可使用完整 Lucide v1.17.0 图库，共1958个名称（含别名）、1712份独立几何。`src/ui/qianchuang-lucide-data.js` 保存可信静态节点，随本地构建载入，只将实际取用的图标渲染为SVG；名称支持原库PascalCase、kebab-case和空格形式，保留原九个调用别名。无远程取图、宿主全局库或生成器依赖。路径依据官方已构建版本，遵守 ISC；完整官方许可见 [lucide-license.txt](lucide-license.txt)。`src/ui/qianchuang-basemaps.js` 保留旧静态几何兼容，不包含原型示例地点、描述或点位。正式素材由 `src/qianchuang-map-assets.js` 登记；页面不设手动底图选择，优先保留既有人工保存值，其余按各地图页的环境提示选择，缺少提示时使用既有默认。
 
@@ -22,7 +16,7 @@
 
 显式整理可在尚无摘要时进行，使用当前目录与人工字段、已保存地点引文、允许世界书及角色description/scenario；角色字段使用独立characterCard来源。不发送近期全文或整聊，不增加模型调用。已选聊天没有Core时，整理沿原地基封存和CAS初始化零楼记录。底图由同次结果的可选`mapStyle`、`mapLayout`选择；workspace提示兼容旧档，每个地图页的根地点可保存自己的环境提示，真实城市底图和已有聊天手动保存值优先；同聊天也会更新背景和示意点位。无style增量时保已存自动选择，主页不新增选择控件。
 
-地图浏览范围与数据父树分开：地区名低调标在完整底图，建筑作点位，室内保留文字层级。原有三份素材按原比例完整显示，区域由原素材实际可见的道路、城墙、院墙及画面边缘围合。离线按原SVG绘制顺序提取街区，整块相邻街区合并成五个大区；少区沿已有邻接关系合并，只保存1至5区的静态轮廓和内部留白。程序不在使用时推断或剪分边界。同一展示区域提供轮廓、区名安全留白和本区点位。地图最多使用五个静态分区；未定地区的独立场地较多时，留一个完整分区容纳这些点，其余最多四个显示具名地区，避免把独立场地都挤在边缘。完整地点层级始终保留在下方树中。场地点位优先使用离线预选的可见建筑、院落和近街边落点，避开道路、区域边界和区名框；按固定顺序填入地点，新增时保留已有预选位置。合并区域及无具名区域也有静态落点，超过预选数量时沿用简要排布。与具名区域并列的无所属场地放在边缘留白。原底图几何不改；点击地区只筛下方树，全图点位和构图不随筛选重排。地区名与点位常显，仅当前、键盘聚焦或鼠标悬停的场地显示名称。主页使用同款搜索输入框；区域、建筑、楼层与房间共用递归折叠树。初始只显示顶层标题，逐层点开才见该层描述和下级；地图地名可筛选，地图换点收起旧场地详情，仅展开新场地的必要祖先；普通树仍可手动同时展开多项。点空白清选择并返回全部顶层标题。地图示意排布不表示真实行政边界或距离。可选展示提示随原地点提取产生，不增加模型请求；人工四字段编辑保持原样。
+地图浏览范围与数据父树分开：地区名低调标在完整底图，建筑作点位，室内保留文字层级。底图沿原生方形画幅完整显示。UI分区参考源道路、庭院、池岸、建筑与画面边界离线制作；宫苑按真实设施域及院内线索分配。少区合并相邻区域，保存1至5区的静态轮廓和内部留白。程序不在使用时推断或剪分边界。同一展示区域提供轮廓、区名安全留白和本区点位。地图最多使用五个静态分区；未定地区的独立场地较多时，留一个完整分区容纳这些点，其余最多四个显示具名地区，避免把独立场地都挤在边缘。完整地点层级始终保留在下方树中。场地点位优先使用离线预选的可见建筑、院落和近街边落点，避开道路、区域边界和区名框；按固定顺序填入地点，新增时保留已有预选位置。合并区域及无具名区域也有静态落点，超过预选数量时沿用简要排布。与具名区域并列的无所属场地放在边缘留白。运行时不裁切或重算底图，离线UI区域与点位按同一源画幅制作；点击地区只筛下方树，全图点位和构图不随筛选重排。地区名与点位常显，仅当前、键盘聚焦或鼠标悬停的场地显示名称。主页使用同款搜索输入框；区域、建筑、楼层与房间共用递归折叠树。初始只显示顶层标题，逐层点开才见该层描述和下级；地图地名可筛选，地图换点收起旧场地详情，仅展开新场地的必要祖先；普通树仍可手动同时展开多项。点空白清选择并返回全部顶层标题。地图示意排布不表示真实行政边界或距离。可选展示提示随原地点提取产生，不增加模型请求；人工四字段编辑保持原样。
 
 地点编辑弹窗内可展开“添加子地点”，搜索并多选已有地点，与名称、所属、描述和方位草稿一起保存；取消或无改动不提交。选中父项时其下级仍随原子树保留。三点菜单保留编辑、设为顶层地点与删除。独立“设为顶层地点”可将未归属叶子显式登记到顶层，普通编辑无改动仍不保存。父、子候选均按当前真实树的前序排列，同一分支相邻、未归属在后。手工共同父未标角色但已有明确区域子级时，默认浏览进入这个区域容器。
 
@@ -37,26 +31,29 @@
 
 可点图库预览见`mockups/map-library.html`，默认只显示底图，辅助分区和落点可切换。`src/qianchuang-map-assets.js`集中登记实际可用素材及静态区域/落点，SVG沿现有按需读取模式加载。异星地表暂共用成熟的自然地形源：生态类优先森林/原野/海岸，岩质类优先山地/荒漠/北地，独立星球不回退成舰内设施。
 
-现库共24张：现代城市3、现代小城3、古风城镇4、自然地形6、宫苑3、舰内设施2、校园3。新增6图使用用户认可预览的原字节；山谷/北地只替换原terrain-mountain/snow的统一样式，不重复登记同一地理范围。平涂细线沿现paper/blue/ql主题，保源道路、水岸、田块与建筑位置，撤题签、外框、重复阴影与排线。分区从源道路、田埂、水系和林界离线归并，点可落建筑但避水面、通道和区名；运行沿原静态布局接口，没有载入生成器或运行裁图系统。十座真实城市与六个旧保存值继续可用。乡镇区名以手机可读为准，中心留在本区陆地，可轻印淡建筑或田块，不把白巷细缝当作字号限制；常规点位优先屋舍、街巷或田界内侧并留出约6%视口边距。
+现库共24张：现代城市3、现代小城3、古风城镇4、自然地形6、宫苑3、舰内设施2、校园3。17张城镇/地貌/宫苑图采用真实OSM片区及MapToPoster分层绘法，沿paper/blue/ql主题保完整路网、建筑、水面与真实植被；同色子路径合并编码，SVG几何保留。既有钟路、本丸、3校园和2舰内图继续使用原SVG及静态几何。10座命名城市保原身份、地理范围、SVG、slots与分区。
 
-| 素材 | 真实来源与使用条款 |
-|---|---|
-| 河谷聚落/平原田镇 | [Watabou Village](https://watabou.github.io/village-generator/)，seed1105664726与770015231；原屋舍、田块与道路位置保持。 |
-| 河口港镇 | [Watabou MFCG](https://watabou.github.io/city-generator/)，seed731042519，河口、码头和两岸街巷。 |
-| 环向城区、临水/滨湾小城 | [ProbableTrain City Generator](https://probabletrain.itch.io/city-generator)三个独立参数原生导出，全部二维道路/建筑顶点保留；原始SHA及裁窗见sources.json，完整导出参数保留任务来源记录。 |
-| 城镇街巷 | [Watabou MFCG](https://watabou.github.io/city-generator/) Redfall，seed222816148；沿用原图。 |
-| 森林山地、海岸原野 | [Watabou Perilous Shores](https://watabou.itch.io/perilous-shores)，seed123456789与987654321。 |
-| 本丸院落 | [OpenStreetMap](https://www.openstreetmap.org/copyright)二条城内院公开建筑、步道、庭池及已登记树点，© OpenStreetMap contributors，ODbL 1.0。保源几何并裁掉外围完整城壕、外街，不使用游戏美术；原始数据SHA、采集时间和裁窗见sources.json。 |
-| 紧凑校园、园林校园、综合大学 | [OpenStreetMap](https://www.openstreetmap.org/copyright)都立科学技术高中、学习院目白校区、首尔大学冠岳教学生活片区公开几何，© OpenStreetMap contributors，ODbL 1.0。裁窗、原始SHA与已验SVG SHA见sources.json。 |
-| 园林庄园 | Rijksmuseum [Gunterstein庄园平面 RP-P-1899-A-21589](https://id.rijksmuseum.nl/200431916)，数字图像为[Public Domain Mark 1.0](https://creativecommons.org/publicdomain/mark/1.0/)。保留宅邸、主园路、地块和水景，去纸底、题签与密排线。 |
-| 环廊生活设施 | Robert Pearce / Eric B. Smith 的 [Luxury Liner Deck 1](https://gurpsland.sytes.net/geomorphs/)尾部旋转餐厅，沿 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)署名及非商业条件使用；保原舱壁、家具与环廊，移除图中文字。 |
-| 现代城市水岸 | [ProbableTrain City Generator](https://probabletrain.itch.io/city-generator)导出的现成SVG；作者允许自由使用下载图像，本插件不分发其生成器引擎。 |
-| 山地河谷、海岸水系、荒漠、北地湖原 | USGS [National Map等高线](https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer)与[NHD水系](https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer)的公共领域矢量输出，原服务关闭标签，保真实地形线。 |
+| 素材ID | 当前真实来源 |
+| --- | --- |
+| modern-inland | 首尔钟路旧OSM采集，原SVG/投影/几何保留；原raw SHA见本文开头。 |
+| modern-coast / modern-radial | Seattle滨水街区3.4km / Karlsruhe放射城中心3km。 |
+| modern-town-plain | Lemgo紧凑城镇2.5km。 |
+| modern-town-river / old-town-river | Český Krumlov北侧Vltava人居2.8km / 旧城河湾1.7km，共用一次真实采集、使用不同裁窗。 |
+| modern-town-coast / old-town-coast | Vannes南港2.2km / 旧港城2.5km。 |
+| old-town-inland / old-town-plain | Siena旧城2km / Lucca旧城2km。 |
+| terrain-forest / terrain-snow | Český Krumlov城镇与林地4.4km / Kuopio-Puijo湖滨城镇6km。 |
+| terrain-coast / terrain-coast-relief | Kotor北湾2.9km / Kotor港城与山坡3.6km，真实岸线同源不同裁窗。 |
+| terrain-mountain | Boulder山麓城镇5km，叠加USGS真实Index Contours主线。 |
+| terrain-desert | Ouarzazate荒漠城镇4km。 |
+| palace-axial / palace-courtyard-garden | 景福宫1km / Versailles主宫与近园1.3km；点位限制在真实设施域。 |
+| palace-courtyard-honmaru | 二条城本丸OSM源，保原图与静态分区落点。 |
+| campus-compact / campus-garden / campus-university | 东京科学技术高中 / 学习院目白 / 首尔大学冠岳既有OSM平面，保原图与静态几何。 |
+| sci-fi-linear / sci-fi-ring-life | Luxury Liner Deck1甲板与旋转餐厅裁窗，CC BY-NC 4.0，保舱室与通道原几何。 |
 
-Watabou输出按[官方FAQ](https://watabou.github.io/faq.html)的复制、修改及商业RPG使用许可；这里使用静态输出，未复制生成器代码，也未将输出许可改标为CC0。各素材来源、原始SHA、裁窗及衍生SHA记录在`assets/maps-library/sources.json`。宫苑保留既有已认可示意图，并新增现成庄园平面内部裁窗。科幻设施使用已认可的现成甲板内部裁取，见下方署名与许可。
+OSM图显示© OpenStreetMap contributors，按ODbL 1.0使用；真实来源、原始SHA、投影及裁窗见`assets/maps-library/sources.json`。新17图的crop为投影米制方窗，boundsWgs84记录采集范围，输出为1000²；既有素材保其原裁窗含义。道路层级采用[MapToPoster](https://github.com/originalankur/maptoposter)的MIT绘图代码/方法；森林读取实际wood/forest面。Boulder另含[USGS The National Map](https://carto.nationalmap.gov/arcgis/rest/services/contours/MapServer)公共领域主等高线，源URL/SHA列在同一来源记录。宫苑UI区按实际院路、池岸与殿院线索分配，景福宫严格使用OSM historic宫苑relation5501517，Versailles使用其Parc/Jardin/主宫真实面。
 
 
-新增园林庄园（`palace/courtyard`）与环廊生活设施（`sci-fi/ring`）沿源园路、水岸和舱壁离线描取1至5区；少区由相邻完整区合并。各区有独立留白、落点和全图点池，不改变旧图ID、几何和已保存选图。两张SVG仅继承既有`--ql-*`主题变量，自包含PNG蒙版和原图结构保持；旧版前端从外链读到新图时同样随日夜切换。
+宫苑按真实设施域、院路与园庭离线静态分配1至5区；舰内设施仍保留原自包含PNG蒙版与舱室结构，沿舱壁划分静态区域。各区提供留白、落点和全图点池，均沿既有静态接口分配，继承现有`--ql-*`主题变量。
 
 本丸院落使用`palace/honmaru`，普通`palace/courtyard`继续使用园林庄园；未明确本丸布局时不随机抽到专用图。模型仍在原一次摘要或整理中按实际范围选择：独立本丸、和风御殿或日式生活院落群可用`scope/palace/honmaru`；刀剑乱舞、刀剣乱舞、Touken Ranbu只提供题材参考，城镇街市与野外战场沿原类型。`mapLayout`内确定的“本丸、和风院落、和风御殿、日式院落群”和Honmaru大小写、前后空白兼容为标准honmaru；不扫描卡名或地点原文来强制选图。旧园林在原同次资料合并收到明确新布局时重选，省略布局仍保已有图。素材提供1至5区、31个全图落点与独立公共点，正式地图下方显示OSM署名。
 
@@ -69,7 +66,6 @@ Watabou输出按[官方FAQ](https://watabou.github.io/faq.html)的复制、修�
 sci-fi-linear采用Robert Pearce / Eric B. Smith的[Luxury Liner Deck 1](https://gurpsland.sytes.net/geomorphs/)成熟甲板图，按[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)署名及非商业条件使用；衍生资产沿同许可，不改标为公共领域。原PNG为1740×5010，源SHA和裁窗x310/y1850/1120×1280保存在sources.json。裁取内部生态生活片区、去中庭大字和题签，保舱壁、家具、连续通道、水域及小通用舱名；将栅格源分为主题色蒙版，以自包含SVG按需载入。没有完整船壳外框。现有sci-fi-linear选择和旧sci-fi保存值共用同一资产及静态几何，不迁移聊天设置。
 
 
-海岸原野素材terrain-coast沿用同一1450²源裁窗，与城市、河谷共用纸底、浅填色和细线层次。7处林面平涂并柔化冠缘，撤单株密树、枝纹、冠影与坡面短排线；保海陆、海岸、完整河岸带/河流、52个建筑主体及原嵌套位置、分区与落点。原3处小丘只保主要轮廓，不新增地势或高程；其中2处仅擦入裁窗左缘，1处在窗外。该处理沿Watabou原输出许可，源SHA及处理记录见sources.json。
 
 
 ## 外链图库与新增图
@@ -87,8 +83,15 @@ sci-fi-linear采用Robert Pearce / Eric B. Smith的[Luxury Liner Deck 1](https:/
 
 新增真实城市时，将SVG放进 `assets/maps-real/`，在该目录 `catalog.json` 的 `cities` 中补完整 `id/label/file/width/height/sha256`、`aliases`、陆地近路 `slots` 和 `groups:[{labelBox,slots}]`，保留来源与许可说明。别名只用于选择背景，不建立地点归属。
 
-已发布ID对应的图、尺寸、SHA和显示几何保持不变；修改图片或几何时使用新ID及新文件名，保留旧文件和旧目录条目，让旧存档继续找到原图。新目录包含全部几何，插件也兼容最初部署的轻目录：只有ID、SHA和尺寸与内置图吻合时才补用该图的内置几何；未知且缺几何的条目跳过。
+通常新增不同素材或地理范围使用新ID及文件名。本轮按用户明确要求统一既有模板，17张沿原ID/file/family/layout更新SVG、SHA及配套静态几何；六旧保存值读时承接对应图库，聊天偏好不重写。新目录包含完整几何，也兼容最初的轻目录：只有ID、SHA和尺寸吻合时才借用内置几何；未知且缺几何的条目跳过。
 
 图片按目录的完整SHA版本地址读取并核验，再由宿主已有DOMPurify清理SVG。只允许图库目录下的静态SVG文件，保留内嵌PNG和本地mask/样式，不加载图片中的外部资源。目录或图片一次读取最长8秒；网络、HTTP或内容错误时，内置图使用原本地资源。外部新图离线时保留存档里的原ID，页面使用已有背景或继续展示地点文字，不保存替代ID。
 
 能否直接访问图库取决于用户设备的网络。插件已内置的地图在图库不可达时仍可使用；之后新增而尚未随插件内置的图片需要联网读取。地点文字和父子目录沿原记录显示，摘要与保存继续原流程。
+
+
+自然图采用完整真实城镇与周边地貌：街巷与建筑保留，真实水面、wood/forest及公园草地平涂，Boulder仅叠实际少量主等高线。开口海岸使用源coastline与裁窗边界构面，按实际共边岸段的land-left方向辨海陆。画幅与静态分区/落点同源；宫苑落点和区名留白留在真实设施内。
+
+SVG样式限定在现有.qqj-generic-basemap根；道路/主线采用非缩放线宽，颜色继承原主题。地形图沿原opacity1，其余普通图库.72，生态甲板.8。离线UI轮廓按0.15%画幅简化，完整SVG路网和建筑不随UI轮廓删减；运行时继续查静态表。旧CDN目录不匹配新SHA/几何时沿原loader读本地，匹配版本仍按原流程读外链。
+
+区域名沿原标签中心以正常主题字号呈现，近边文字向画幅内展开；仅真超长时省略，点击仍在下方显示完整地点树。键盘焦点贴文字显示下划线，标签不再占整块留白矩形。混合类型目录中，无mapRole的旧场地继续显示，内室只保文字层级并将当前位置锚到可见祖先；没有向存档补写类型。自然地形底图局部提高主题细线清晰度，其余题材原主题层级保持。

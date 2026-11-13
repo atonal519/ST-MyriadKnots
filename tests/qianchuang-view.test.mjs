@@ -1,3 +1,4 @@
+import {projectQianchuangSnapshot} from '../src/v3/qianchuang-domain.js';
 import {startQianchuangMapCatalog} from '../src/qianchuang-map-catalog.js';
 import {QIANCHUANG_MAP_ASSETS} from '../src/qianchuang-map-assets.js';
 import {CITY_MAPS} from '../src/ui/qianchuang-city-maps.js';
@@ -50,9 +51,9 @@ test('180独立页默认下钻唯一地区链，逐页换素材与点位同切�
 });
 
 test('179同聊天自动换图重排点位，手动图优先，设施显式空和模型短标签优先',async()=>{
- const data={...initial,mapStyle:'modern-town',places:initial.places.map(node=>({...node,features:[{text:'设有沙发。'}],facilities:node.entityId==='root'?[{icon:'Armchair',label:'休憩软榻'}]:[]}))},h=harness({snapshot:data});await h.view.activate();assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'modern-town');assert.deepEqual(h.find('qqj-window-tag').map(node=>node.children[1].textContent),['休憩软榻']);
+ const data={...initial,mapStyle:'modern-town',places:initial.places.map(node=>({...node,features:[{text:'设有沙发。'}],facilities:node.entityId==='root'?[{icon:'Armchair',label:'休憩软榻'}]:[]}))},h=harness({snapshot:data});await h.view.activate();assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'modern-town-plain');assert.deepEqual(h.find('qqj-window-tag').map(node=>node.children[1].textContent),['休憩软榻']);
  const old=h.find('qqj-window-marker')[0];h.emit({mapStyle:'sci-fi',projectionRevision:2});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'sci-fi-linear');assert.notEqual(h.find('qqj-window-marker')[0],old);
- h.stored.qianchuangBasemaps[chat]='palace';h.emit({projectionRevision:3});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'palace');assert.equal(h.writes.length,0);
+ h.stored.qianchuangBasemaps[chat]='palace';h.emit({projectionRevision:3});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],'palace-axial');assert.equal(h.writes.length,0);
 });
 function harness({snapshot=initial,prepareSession=async()=>({status:'ready'}),sessionStateProvider=null,worldInfoProvider=null,dialog=null,editingRuntime={},loadCityMap=async()=>'<svg class="qqj-real-basemap"></svg>',loadGenericMap=async()=>'<svg class="qqj-generic-basemap"></svg>',userAvatarProvider=()=>null}={}){
  let value=structuredClone(snapshot),listeners=new Set(),prepares=0,writes=[];const stored={qianchuangBasemaps:{[other]:'town'},apiModel:'keep'};
@@ -62,6 +63,22 @@ function harness({snapshot=initial,prepareSession=async()=>({status:'ready'}),se
  const created=[];assert.equal(typeof module.createQianchuangView,'function');const view=module.createQianchuangView({runtime,settings,prepareSession,sessionStateProvider,worldInfoProvider,dialog,loadCityMap,loadGenericMap,userAvatarProvider,documentRef:{createElementNS:(_,tag)=>{const n=new SvgNode(tag);created.push(n);return n;},createElement:t=>{const n=new Node(t);created.push(n);return n;}}}),container=new Node();view.mount(container);
  return {view,container,runtime,writes,stored,created,get prepares(){return prepares;},emit(patch){value={...value,...patch};for(const f of listeners)f();},find:cls=>flat(container).filter(n=>n.className?.split(' ').includes(cls))};
 }
+
+test('六个旧底图保存值直接读取同用途图库且不改设置',async()=>{
+ const aliases={modern:'modern-inland',town:'old-town-inland',palace:'palace-axial','modern-town':'modern-town-plain','old-town':'old-town-plain','sci-fi':'sci-fi-linear'};
+ for(const[key,id]of Object.entries(aliases)){
+  const loads=[],h=harness({loadGenericMap:async asset=>{loads.push(asset);return '<svg></svg>';}});await h.view.activate();await Promise.resolve();loads.length=0;
+  h.stored.qianchuangBasemaps[other]=key;h.emit({...initial,chatId:other,projectionRevision:2});await Promise.resolve();
+  assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],id,key);assert.deepEqual(loads,[id],key);assert.equal(h.stored.qianchuangBasemaps[other],key);assert.equal(h.writes.length,0);
+ }
+});
+
+test('新通用OSM素材沿原版权位置署名，舰内仍保设施来源',async()=>{
+ for(const[id,style,layout]of [['modern-coast','modern','coast'],['terrain-forest','terrain','forest'],['palace-axial','palace','axial'],['sci-fi-linear','sci-fi','linear']]){
+  const data={...initial,places:[{...place('scope','范围',['site']),mapLevel:'scope',mapRole:'area',mapStyle:style,mapLayout:layout,mapAssetId:id},{...place('site','场地',[],'scope'),mapRole:'site'}],mapRootIds:['scope'],unassignedPlaceIds:[]},h=harness({snapshot:data});await h.view.activate();
+  assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],id);assert.equal(h.find('qqj-window-copyright')[0].hidden,id==='sci-fi-linear',id);assert.equal(h.writes.length,0);
+ }
+});
 
 test('切页快照同revision只画一次地点树，重挂复用已解析底图', async () => {
  let loads=0;
@@ -121,12 +138,12 @@ test('设施胶囊只从肯定stable文字取短标签、去重保原文，否�
  assert.equal(h.find('qqj-window-tag').length,7);assert.equal(h.find('qqj-window-copy').filter(n=>n.textContent===features[0].text).length,1);assert.ok(h.find('qqj-window-tag')[0].children[0].innerHTML.includes('<svg'));
 });
 test('撤手动底图入口，普通通知保SVG且切聊仍读取已存底图不写设置',async()=>{
- const h=harness();await h.view.activate();const map=h.find('qqj-window-map')[0],geometry=map.children[0],parent=h.find('qqj-window-leaf')[0];parent.open=false;
- assert.ok(geometry.innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(h.find('qqj-window-navigation')[0].hidden,true);
+ const h=harness();await h.view.activate();await Promise.resolve();const map=h.find('qqj-window-map')[0],geometry=map.children[0],parent=h.find('qqj-window-leaf')[0];parent.open=false;
+ assert.equal(geometry.querySelector('svg').getAttribute('preserveAspectRatio'),'xMidYMid meet');assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(h.find('qqj-window-navigation')[0].hidden,true);
  assert.equal(h.created.some(node=>node.attributes['aria-label']==='千窗底图'),false);assert.equal(h.find('qqj-window-basemap-field').length,0);assert.equal(h.find('qqj-window-copyright')[0].hidden,false);
  h.emit({syncing:true});assert.equal(h.find('qqj-window-map')[0].children[0],geometry);assert.equal(h.find('qqj-window-leaf')[0],parent);assert.equal(parent.open,false);
- h.emit({chatId:other,projectionRevision:2,places:[place('new-root','旧共同父',['new-site']),place('new-site','旧场地',[],'new-root')],mapRootIds:['new-root'],unassignedPlaceIds:[]});assert.equal(h.find('qqj-window-copyright')[0].hidden,true,'旧town保存值仍读取');assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.ok(map.children[0].innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));h.emit({projectionRevision:3,places:[],mapRootIds:[],unassignedPlaceIds:[]});assert.equal(h.find('qqj-window-marker').length,0);assert.equal(h.find('qqj-window-map-group')[0].hidden,true);assert.equal(h.writes.length,0);assert.equal(h.stored.apiModel,'keep');
- h.stored.qianchuangBasemaps.palaceChat='palace';h.emit({...initial,chatId:'palaceChat',projectionRevision:4});assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.ok(map.children[0].innerHTML.includes('preserveAspectRatio="xMidYMid meet"'));
+ h.emit({chatId:other,projectionRevision:2,places:[place('new-root','旧共同父',['new-site']),place('new-site','旧场地',[],'new-root')],mapRootIds:['new-root'],unassignedPlaceIds:[]});await Promise.resolve();assert.equal(h.find('qqj-window-copyright')[0].hidden,false,'旧town保存值承接真实图库并署名');assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(map.children[0].querySelector('svg').getAttribute('preserveAspectRatio'),'xMidYMid meet');h.emit({projectionRevision:3,places:[],mapRootIds:[],unassignedPlaceIds:[]});await Promise.resolve();assert.equal(h.find('qqj-window-marker').length,0);assert.equal(h.find('qqj-window-map-group')[0].hidden,true);assert.equal(h.writes.length,0);assert.equal(h.stored.apiModel,'keep');
+ h.stored.qianchuangBasemaps.palaceChat='palace';h.emit({...initial,chatId:'palaceChat',projectionRevision:4});await Promise.resolve();assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(map.children[0].querySelector('svg').getAttribute('preserveAspectRatio'),'xMidYMid meet');
 });
 test('冷准备结束后已关闭或已切聊不会把旧异步画回，主页不准备存档',async()=>{
  let release;const gate=new Promise(r=>release=r);const h=harness({prepareSession:()=>gate,sessionStateProvider:()=>({status:'preparing'})});const pending=h.view.activate();h.view.deactivate();release({status:'ready'});await pending;assert.equal(h.prepares,0);
@@ -290,7 +307,7 @@ test('空城市留共享未归属目录，不造页或孤点，实际城市地�
 });
 
 test('读取新增通用底图保存值，无主页选择控件或设置写入',async()=>{
- for(const key of ['modern-town','old-town','sci-fi']){const h=harness();await h.view.activate();h.stored.qianchuangBasemaps[other]=key;h.emit({chatId:other,projectionRevision:2});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],key==='sci-fi'?'sci-fi-linear':key);assert.equal(h.find('qqj-window-map')[0].attributes['data-map-mode'],'generic');assert.equal(h.find('qqj-window-basemap-field').length,0);assert.equal(h.writes.length,0);}
+ for(const key of ['modern-town','old-town','sci-fi']){const h=harness();await h.view.activate();h.stored.qianchuangBasemaps[other]=key;h.emit({chatId:other,projectionRevision:2});assert.equal(h.find('qqj-window-map')[0].attributes['data-basemap'],{'modern-town':'modern-town-plain','old-town':'old-town-plain','sci-fi':'sci-fi-linear'}[key]);assert.equal(h.find('qqj-window-map')[0].attributes['data-map-mode'],'generic');assert.equal(h.find('qqj-window-basemap-field').length,0);assert.equal(h.writes.length,0);}
 });
 
 test('普通物件与修饰别称直接匹配设施，覆盖鞋柜镜子沙发地毯座椅电视',()=>{
@@ -368,4 +385,90 @@ test('各类底图共用铺满正方形canvas，加载根SVG与区域使用同�
  const h=harness({snapshot:data,loadCityMap:async()=>'<svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" class="qqj-real-basemap"></svg>'});
  await h.view.activate();await Promise.resolve();const map=h.find('qqj-window-map')[0],svg=h.find('qqj-window-geometry')[0].querySelector('svg');
  assert.equal(map.style['--qqj-window-map-aspect'],'1');assert.equal(map.style['--qqj-window-map-width'],'100%');assert.equal(svg.getAttribute('preserveAspectRatio'),'xMidYMid meet');assert.equal(svg.getAttribute('viewBox'),'0 0 1000 1000');assert.equal(h.writes.length,0);
+});
+
+test('初始化紧邻原整理，交替一次调用、取消及失败均释放共用忙态', async()=>{
+ const calls=[],confirmations=[];let release,fail=false;
+ const h=harness({dialog:{confirm:async options=>{confirmations.push(options);return true;},info:async()=>{}},editingRuntime:{organizePlaces:options=>{calls.push(options);if(fail)return Promise.reject(new Error('fixture'));return new Promise((resolve,reject)=>{release=resolve;options.signal.addEventListener('abort',()=>reject(new DOMException('取消','AbortError')),{once:true});});}}});
+ await h.view.activate();const actions=()=>h.find('qqj-window-toolbar-actions')[0].children;
+ assert.deepEqual(actions().slice(0,2).map(node=>node.textContent),['初始化','整理']);
+ const init=h.find('qqj-window-initialize')[0],organize=h.find('qqj-window-organize')[0];
+ const first=init.fire('click');await Promise.resolve();assert.equal(calls.length,1);assert.equal(calls[0].mode,'initialize');assert.equal(init.textContent,'取消初始化');assert.equal(organize.disabled,true);
+ init.fire('click');await first;assert.equal(init.textContent,'初始化');assert.equal(organize.disabled,false);
+ const second=organize.fire('click');await Promise.resolve();assert.equal(calls.length,2);assert.equal(calls[1].mode,'organize');assert.equal(init.disabled,true);release();await second;
+ fail=true;await init.fire('click');assert.equal(init.disabled,false);assert.equal(organize.disabled,false);assert.equal(organize.textContent,'整理');assert.match(confirmations[0].body,/世界书/);assert.match(confirmations[1].body,/已有地点/);
+});
+
+
+test('Batch18 混合角色保旧无role父pin，内室当前位置锚祖先且点击完整树零写',async()=>{
+ const data={...initial,places:[{...place('scope','七绝门',['valley','mountain']),mapLevel:'scope',mapRole:'area'},{...place('valley','七绝门山谷',['yard'],'scope')},{...place('yard','竹舍院落',['room'],'valley'),mapRole:'interior'},{...place('room','东厢房',[],'yard'),mapRole:'interior'},{...place('mountain','鬼山',[],'scope'),mapRole:'site'}],mapRootIds:['scope'],unassignedPlaceIds:[],userPosition:{status:'confirmed',placeEntityId:'room',isCurrent:true}},before=structuredClone(data),h=harness({snapshot:data});
+ await h.view.activate();const pins=h.find('qqj-window-marker');assert.deepEqual(pins.map(n=>n.attributes['data-place-id']),['valley','mountain']);assert.ok(h.find('qqj-page-health')[0].textContent.includes('2 处场地'));assert.equal(pins[0].children[0].className,'qqj-window-current-pin');
+ pins[0].fire('click');assert.ok(h.find('qqj-window-entry').some(n=>n.attributes['data-place-id']==='room'));assert.deepEqual(data,before);assert.equal(h.writes.length,0);
+});
+
+test('Batch18 真实边缘地区六字名称保持可读token并朝内展开，热区不受inset缩小',async()=>{
+ for(const [asset,count] of [['modern-town-coast',5],['terrain-coast',4],['terrain-snow',3]]){
+  const areas=Array.from({length:count},(_,i)=>({...place('area-'+i,'常规六字地区',['site-'+i],'scope'),mapRole:'area'}));
+  const data={...initial,places:[{...place('scope','地图范围',areas.map(a=>a.entityId)),mapLevel:'scope',mapRole:'area',mapAssetId:asset},...areas,...areas.map((a,i)=>({...place('site-'+i,'场地'+i,[],a.entityId),mapRole:'site'}))],mapRootIds:['scope'],unassignedPlaceIds:[],userPosition:{status:'unknown'}};
+  const h=harness({snapshot:data});await h.view.activate();const labels=h.find('qqj-window-area-open');assert.equal(labels.length,count);
+  for(const label of labels){assert.equal(label.style['--qqj-window-area-font'],undefined,'字号不再按inset压小');assert.equal(label.style.width,undefined,'button不占整块区域');assert.equal(label.style.height,undefined);assert.equal(label.attributes.title,'常规六字地区');const x=parseFloat(label.style.left),available=parseFloat(label.style['--qqj-window-area-width']);assert.equal(label.attributes['data-label-align'],x<30?'start':x>70?'end':'center');assert.ok(available*2.53>104,'253px视口可容纳六个16px汉字与文字padding');}
+  assert.equal(h.writes.length,0);
+ }
+});
+
+
+function batch19PositionSnapshot(tail='empty'){
+ const id=n=>`${n.toString(16).padStart(8,'0')}-0000-4000-8000-000000000000`,f=n=>id(100+n),ref=n=>({floorId:f(n),quotedText:'原位置依据',occurrence:1,evidenceMode:'explicit'});
+ const entities=[[1,'七绝门'],[2,'七绝门山谷'],[3,'竹舍院落'],[4,'东厢房'],[5,'鬼山'],[6,'另一范围'],[7,'另一场地'],[9,'用户']].map(([n,displayName])=>({id:id(n),entityType:n===9?'person':'place',displayName,aliases:[],specialRole:n===9?'user':'none',firstSeenFloorId:f(27),lastSeenFloorId:f(28),status:'established',recordStatus:'active'}));
+ const pos=(n,status='confirmed',place=4)=>({itemId:id(300+n),subjectEntityId:id(9),placeEntityId:place===null?null:id(place),status,evidenceRefs:[ref(n)]});
+ const memory=(n,positions=[])=>({id:id(200+n),floorId:f(n),recordStatus:'active',summary:{aiText:'普通摘要',userText:null,effectiveSource:'ai'},sourceCanonicalContent:'原正文',participants:[],locations:[],spatialFacts:{schemaVersion:1,containments:n===27?[[2,1],[3,2],[4,3],[5,1],[7,6]].map(([child,parent],i)=>({itemId:id(400+i),placeEntityId:id(child),parentEntityId:id(parent),evidenceRefs:[ref(27)]})):[],positions,features:[],relations:[]}});
+ const memories=[memory(27,tail==='unknown'?[]:[pos(27)])];
+ if(tail!=='current')memories.push(memory(28,tail==='lastSeen'?[pos(28,'lastSeen')]:tail.startsWith('left')?[pos(28,'leftUnknown')]:tail==='ambiguous'?[pos(28),{...pos(28,'confirmed',5),itemId:id(399)}]:[]));
+ if(tail==='leftThenEmpty')memories.push(memory(29));
+ const sequences=tail==='leftThenEmpty'?[27,28,29]:[27,28];
+ const workspace={schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:chat,placesByEntityId:{},deletionsByEntityId:{},foundation:{schemaVersion:1,entities:[],facts:[[1,'area','scope'],[3,'interior'],[4,'interior'],[5,'site'],[6,'area','scope'],[7,'site']].map(([n,mapRole,mapLevel],i)=>({itemId:id(500+i),kind:'place',placeEntityId:id(n),mapRole,...(mapLevel?{mapLevel}:{}),knownFromFloorId:null,source:{kind:'worldbook',locator:'fixture',quote:'地点资料'}}))}};
+ const source={status:'ready',root:{chatId:chat,narrativeGeneration:id(91),headCheckpointId:id(92)},rootRevision:tail==='current'?1:2,checkpoint:{inputFingerprints:sequences.map(n=>({floorId:f(n),memoryExcluded:false}))},floors:sequences.map(n=>({id:f(n),assistantSeq:n,recordStatus:'active',hostLocator:{messageIndex:n*2}})),floorMemories:memories,entities};
+ return{snapshot:projectQianchuangSnapshot(source,{identityProjection:{placeWorkspace:workspace,...(tail==='deleted'?{deletedEntityIds:[id(4)]}:{})}}),ids:{scope:id(1),valley:id(2),room:id(4),otherScope:id(6)},source,workspace};
+}
+
+test('Batch19 真投影27确认28空增量保上次位置标记，常显房间标签并沿头像及跨页定位',async()=>{
+ const current=batch19PositionSnapshot('current'),last=batch19PositionSnapshot(),h=harness({snapshot:current.snapshot});
+ assert.equal(current.snapshot.userPosition.isCurrent,true);assert.equal(last.snapshot.userPosition.isCurrent,false);assert.equal(last.snapshot.userPosition.placeEntityId,last.ids.room);
+ await h.view.activate();const getPin=()=>h.find('qqj-window-marker').find(n=>n.attributes['data-place-id']===last.ids.valley),old=getPin();assert.equal(old.children[0].className,'qqj-window-current-pin');
+ h.emit({...last.snapshot,projectionRevision:2});const pin=getPin();assert.equal(pin.attributes['data-user-position'],'last');assert.equal(pin.children[1].textContent,'上次位置 · 东厢房');assert.notEqual(pin,old,'current降为last时刷新真实标记状态');
+ pin.fire('click');assert.equal(pin.attributes['aria-expanded'],'true');assert.equal(pin.attributes['data-avatar-open'],'true');assert.equal(h.find('qqj-window-entry').find(n=>n.attributes['data-place-id']===last.ids.room).attributes['data-selected'],'true');pin.fire('click');assert.equal(pin.attributes['data-avatar-open'],'false');
+ h.find('qqj-window-city-tab').find(n=>n.attributes['data-city-sheet-target']===last.ids.otherScope).fire('click');assert.equal(h.find('qqj-window-marker').some(n=>n.attributes['data-user-position']),false);h.find('qqj-window-position')[0].fire('click');assert.equal(h.find('qqj-window-page')[0].attributes['data-city-sheet'],last.ids.scope);assert.equal(getPin().attributes['data-user-position'],'last');assert.equal(h.writes.length,0);
+});
+
+test('Batch19 真投影lastSeen可见，离开未知歧义删除不借旧确认造用户点',async()=>{
+ for(const tail of ['lastSeen','leftUnknown','leftThenEmpty','unknown','ambiguous','deleted']){
+  const {snapshot}=batch19PositionSnapshot(tail),before=structuredClone(snapshot),h=harness({snapshot});await h.view.activate();const pins=h.find('qqj-window-marker').filter(n=>n.attributes['data-user-position']);
+  assert.equal(pins.length,tail==='lastSeen'?1:0,tail);if(tail==='lastSeen'){assert.equal(pins[0].attributes['data-user-position'],'last');assert.equal(pins[0].children[1].textContent,'上次位置 · 东厢房');}if(tail.startsWith('left'))assert.match(h.find('qqj-window-user-position')[0].children[0].textContent,/已离开/);
+  assert.deepEqual(snapshot,before);assert.equal(h.writes.length,0);
+ }
+});
+
+
+test('古风设施沿现成图标覆盖床榻陈列焚香屏风灯火与日常器物，不匹配孤字',()=>{
+ const samples=[['罗汉榻','rest','床榻'],['竹榻和软榻与架子床','rest','床榻'],['博古架与多宝格','ShelvingUnit','陈列架'],['香炉','Flame','香炉'],['屏风','Columns3','屏风'],['油灯与烛台和灯笼','Flame','灯火'],['火炉和炭盆及泥炉','FlameKindling','炉火'],['茶案和书案与八仙桌','Table2','桌案'],['太师椅','Armchair','座椅'],['百子柜与中药柜','ShelvingUnit','药柜'],['盖碗与茶盏和紫砂壶','Coffee','茶具'],['陶瓮与酒坛','Amphora','陶瓮'],['木箱和妆奁','storage','箱笼']];
+ for(const [words,key,label] of samples)assert.deepEqual(module.qianchuangFacilityTags([{text:`设有${words}。`}]),[{key,label}],words);
+ assert.deepEqual(module.qianchuangFacilityTags([{text:'一灯如豆；案牍繁忙，炉石传说，太师门下，博古通今。'}]),[]);
+ assert.deepEqual(module.qianchuangFacilityTags([{text:'没有罗汉榻、博古架、香炉、屏风和油灯。计划添置烛台和火炉。'},{text:'配有茶案和太师椅。',kind:'temporary'},{text:'她拿起茶盏，走向屏风寻找线索。'}]),[]);
+});
+test('古风与旧设施按同canonical去重，香炉油灯同场保一个标签且原文不改',()=>{
+ const features=[{text:'设有罗汉榻和双人床、博古架与多宝格、香炉和油灯及烛台。'}],before=structuredClone(features);
+ assert.deepEqual(module.qianchuangFacilityTags(features),[{key:'rest',label:'床榻'},{key:'ShelvingUnit',label:'陈列架'},{key:'Flame',label:'香炉'}]);
+ assert.deepEqual(features,before);
+ assert.deepEqual(module.qianchuangFacilityTags([{text:'设有油灯和香炉。'}]),[{key:'Flame',label:'灯火'}]);
+ assert.deepEqual(module.qianchuangFacilityTags([{text:'设有双人床、衣柜和书桌、药柜。'}]).map(item=>item.key),['rest','storage','work','PillBottle']);
+});
+test('古风设施仅补省略facilities的展示，显式空列表与人工简介仍沿原合同',async()=>{
+ const feature={text:'设有罗汉榻、博古架、香炉、油灯和屏风。'};
+ for(const explicit of [false,true]){
+  const places=initial.places.map(node=>({...node,features:node.entityId==='root'?[feature]:[],...(explicit?{facilities:[]}:{} )}));
+  const h=harness({snapshot:{...initial,places}});await h.view.activate();
+  assert.deepEqual(h.find('qqj-window-tag').map(node=>node.children[1].textContent),explicit?[]:['床榻','陈列架','香炉','屏风']);
+  assert.equal(h.find('qqj-window-copy').some(node=>node.textContent===feature.text),true);
+  assert.equal(h.writes.length,0);
+ }
 });

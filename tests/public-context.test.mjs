@@ -20,7 +20,7 @@ const state = (entityId, text, visibility = 'private') => ({
   core: [{ text, visibility, reason: '正式记录', sourceFloorId: floorId, sourceAssistantSeq: 1 }],
   adaptive: [], situational: [],
 });
-function fixture({ query = '', profileA = '人工档案甲', profileB = '人工档案乙', profileAFields = {}, cse = [state(personA, '甲的私密状态'), state(personB, '乙的私密状态')], currentStateStatus = 'ready' } = {}) {
+function fixture({ query = '', profileA = '人工档案甲', profileB = '人工档案乙', profileAFields = {}, cse = [state(personA, '甲的私密状态'), state(personB, '乙的私密状态')], currentStateStatus = 'ready', peoplePrepared = true } = {}) {
   const calls = { memoryState: 0, currentState: 0, getState: 0, getSnapshot: 0, model: 0, sourceReader: 0, prompt: 0 };
   const reachable = {
     status: 'ready', rootRevision: 1,
@@ -39,16 +39,67 @@ function fixture({ query = '', profileA = '人工档案甲', profileB = '人工�
     hostAdapter: { snapshot: () => ({ chatId: identity.hostChatId, chat: [] }) },
     foundationRuntime: { getState: () => ({ status: 'ready' }), getReachable: () => reachable },
     memoryRuntime: { getState: () => { calls.memoryState++; return { status: 'idle' }; }, getCurrentSubjectStates: entityIds => { calls.currentState++; return { status: currentStateStatus, subjects: currentStateStatus === 'ready' ? entityIds.map(id => cse.find(value => value.subjectEntityId === id)).filter(Boolean) : [] }; } },
-    peopleRuntime: { getState: () => ({ status: 'ready', chatId: identity.chatId, revision: 4, people: [
+    peopleRuntime: peoplePrepared ? { getState: () => ({ status: 'ready', chatId: identity.chatId, revision: 4, people: [
       { entityId: personA, displayName: '同名人物', aliases: [], profile: { name: profileA, notes: '甲的档案', ...profileAFields } },
       { entityId: personB, displayName: '同名人物', aliases: [], profile: { name: profileB, notes: '乙的档案' } },
-    ] }) },
+    ] }) } : null,
     readWorldInfoProvider: async () => ({ status: 'ready', worldbook: [{ uid: 'book::1', comment: '灯塔', keys: ['灯塔'], content: '原文\n保留格式', constant: true, position: 0 }] }),
     generateModel: () => { calls.model++; },
     readSource: async () => { calls.sourceReader++; return { status: 'ready' }; },
   });
   return { bridge, calls, reachable };
 }
+
+test('bounded summary selection keeps up to twenty complete relevant memories in source order', async () => {
+  const h = fixture();
+  h.reachable.floors = Array.from({ length: 1000 }, (_, i) => ({ id: `floor-${i + 1}`, assistantSeq: i + 1 }));
+  h.reachable.floorMemories = h.reachable.floors.map((floor, i) => memory(`m-${i + 1}`, `灯塔线索${i + 1}：${'核对灯塔来信中的线索。'.repeat(12)}完整结束${i + 1}。`, i + 1));
+  const value = await h.bridge.readContext({ query: '灯塔线索', maxSummaries: 20, recentSummaries: 3, summaryCharacters: 8000, maxCharacters: 12000 });
+  const sequences = [...value.routerText.matchAll(/AI #(\d+)/g)].map(match => Number(match[1]));
+  assert.equal(sequences.length, 20);
+  assert.deepEqual(sequences, Array.from({ length: 20 }, (_, i) => 981 + i));
+  for (const seq of sequences) assert.ok(value.routerText.includes(h.reachable.floorMemories[seq - 1].summary.userText));
+  assert.ok(value.routerText.length <= 8000);
+  assert.ok(value.coverage.selectedCharacters <= 12000);
+  assert.equal(h.calls.sourceReader, 0); assert.equal(h.calls.model, 0);
+});
+
+test('an explicit story topic uses the existing scorer without being drowned by recent narrative', async () => {
+  const h = fixture();
+  h.reachable.floorMemories[0].summary.userText = '她已经明确告诉他，本月二十八日是自己的生日。';
+  h.reachable.floorMemories[1].summary.userText = '雨夜经过石桥，在山路上寻找药材，核对来信，商量周末乘车去海边。';
+  const value = await h.bridge.readContext({ query: '雨夜 石桥 山路 药材 来信 周末 乘车 海边', focusQuery: '二十八日 生日', maxSummaries: 1, summaryCharacters: 8000 });
+  assert.match(value.routerText, /已经明确告诉他/);
+  assert.doesNotMatch(value.routerText, /雨夜经过石桥/);
+  assert.equal(h.calls.sourceReader, 0); assert.equal(h.calls.model, 0);
+});
+
+test('participant names resolve from the loaded core while the people panel remains unprepared', async () => {
+  const h = fixture({ peoplePrepared: false });
+  Object.assign(h.reachable.entities[0], { displayName: '林岚', specialRole: 'user' });
+  Object.assign(h.reachable.entities[1], { displayName: '周宁', specialRole: 'char' });
+  assert.deepEqual(h.bridge.getPeopleSnapshot().people.items, []);
+  const value = await h.bridge.readContext({ query: '灯塔钥匙', participantNames: ['林岚', '周宁'], maxSummaries: 20, summaryCharacters: 8000 });
+  assert.deepEqual(value.selectedEntityIds, [personA, personB]);
+  assert.deepEqual(value.actors.map(actor => actor.displayName), ['林岚', '周宁']);
+  assert.match(value.actors[0].stateText, /甲的私密状态/);
+  assert.doesNotMatch(value.actors[1].stateText, /甲的私密状态/);
+  assert.equal(h.calls.currentState, 1); assert.equal(h.calls.sourceReader, 0); assert.equal(h.calls.model, 0);
+});
+
+test('a small recent-summary fallback shares the same budget and resolves current people without another read', async () => {
+  const h = fixture({ peoplePrepared: false });
+  Object.assign(h.reachable.entities[0], { displayName: '林岚', specialRole: 'user' });
+  Object.assign(h.reachable.entities[1], { displayName: '周宁', specialRole: 'none' });
+  h.reachable.floorMemories[0].summary.userText = '林岚已告知生日日期。';
+  h.reachable.floorMemories[2].summary.userText = '林岚和周宁已经在码头交谈，约定周末见面。';
+  const value = await h.bridge.readContext({ query: '生日', focusQuery: '生日', participantNames: ['林岚', '学校'], maxSummaries: 2, recentSummaries: 1, summaryCharacters: 8000 });
+  assert.match(value.routerText, /已告知生日日期/);
+  assert.match(value.routerText, /已经在码头交谈/);
+  assert.equal((value.routerText.match(/人工摘要（/g) || []).length, 2);
+  assert.deepEqual(value.selectedEntityIds, [personA, personB]);
+  assert.equal(h.calls.currentState, 1); assert.equal(h.calls.sourceReader, 0); assert.equal(h.calls.model, 0);
+});
 
 function delayedFoundation({ loadStatus = 'ready', fail = false, inspectAvailable = true, wrongOwner = false } = {}) {
   let release;

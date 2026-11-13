@@ -167,6 +167,10 @@ test('时间推演关闭时也能读取历法供时间轴使用，刷新配置�
   const source = { status: 'ready', chatId: CHAT };
   assert.equal((await runtime.currentStoryContext(source)).currentTime.monthDay, 30);
   calendar = twelve; runtime.invalidate(); await runtime.refreshStatus({ force: true });
-  assert.equal(await runtime.currentStoryContext(source), null, '十二月制不会把2月30日当作可靠日期');
+  const clockOnly = await runtime.currentStoryContext(source);
+  assert.equal(clockOnly.currentTime.date, null, '十二月制不会把2月30日当作可靠日期');
+  assert.equal(clockOnly.currentTime.month, null); assert.equal(clockOnly.currentTime.day, null);
+  assert.equal(clockOnly.currentTime.clock, '11:00', '合法纯钟点仍沿原合同保留');
+  assert.ok(clockOnly.recentStoryTimes.every(value => value.date === null));
   assert.equal(calls, 0);
 });

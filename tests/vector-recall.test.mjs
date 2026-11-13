@@ -2663,3 +2663,56 @@ test('百炼v4部分缓存仅嵌缺项，子请求失败或取消保原16行原�
     }
   });
 });
+
+test('第七批向量：订阅异常隔离构建增量冷读暖查，健康订阅和下一操作继续', async t => {
+  for (const phase of ['build', 'incremental', 'cold', 'warm']) await t.test(phase, async () => {
+    const source = await sourceFixture(), h = harness(source);
+    let index = h.index;
+    if (['cold', 'warm', 'incremental'].includes(phase)) await index.build();
+    if (phase === 'incremental') {
+      const canonicalContent = '苹果新的计划';
+      source.rawSources.push({ ...source.rawSources[0], floorId: 'floor-2', assistantSeq: 2, floorMemoryId: 'memory-2',
+        memoryFloorId: 'floor-2', memoryAssistantSeq: 2, canonicalContent, fingerprint: await hash(canonicalContent) });
+    }
+    if (phase === 'cold') index = createVectorIndex({ client: h.client, api: { embed: async (_config, texts) => vectors(texts) },
+      configProvider: () => config, identityProvider: () => ({ chatId: source.chatId }), sourceProvider: async () => source });
+    let healthy = 0;
+    const unsubscribe = index.subscribe(() => { throw new Error('TEST_LISTENER'); });
+    index.subscribe(() => { healthy++; });
+    if (phase === 'build') assert.equal((await index.build()).status, 'ready');
+    else if (phase === 'incremental') assert.equal((await index.updateIncrementally()).status, 'ready');
+    else {
+      const result = await index.query({ source, queryContext: { text: '苹果' } });
+      assert.equal(result.diagnostic.status, 'ready'); assert.ok(result.candidates.length > 0);
+    }
+    assert.equal(index.getActivityState().busy, false);
+    assert.ok(healthy > 0);
+    unsubscribe();
+    assert.equal((await index.query({ source, queryContext: { text: '苹果' } })).diagnostic.status, 'ready');
+    assert.equal(index.getActivityState().busy, false);
+  });
+});
+
+test('328manifest已存丢回执同页建立复用全部已提交分片，初建与增量零重嵌入',async t=>{
+ for(const incremental of [false,true])await t.test(incremental?'增量1行':'初建17行',async()=>{
+  const base=await sourceFixture();const all=Array.from({length:17},(_,i)=>({...base.rawSources[0],floorId:`floor-${i+1}`,floorMemoryId:`memory-${i+1}`,memoryFloorId:`floor-${i+1}`,assistantSeq:i+1,memoryAssistantSeq:i+1}));let inputs=0;
+  const h=harness({...base,rawSources:incremental?all.slice(0,16):all},{api:{embed:async(c,texts)=>{inputs+=texts.length;return texts.map(()=>[1,0]);}}});
+  const put=h.client.put;let lose=!incremental;
+  h.client.put=async(...args)=>{const value=await put(...args);if(lose&&args[1]===VECTOR_INDEX_ID){lose=false;throw Object.assign(Error('lost'),{code:'BACKEND_NETWORK'});}return value;};
+  if(incremental){await h.index.build();h.setSource({...base,rawSources:all});lose=true;assert.equal((await h.index.updateIncrementally()).status,'error');}else await assert.rejects(h.index.build());
+  const before=inputs;assert.equal((await h.index.build()).status,'ready');assert.equal(inputs,before);assert.equal(h.records.get(VECTOR_INDEX_ID).data.chunkCount,17);assert.equal(h.index.getState().status,'ready');
+ });
+});
+
+test('328冷坏缺分片原建立只修坏片并结算忙态，权限网络不作缺片',async t=>{
+ for(const kind of ['missing','invalid','owner','permission','network'])await t.test(kind,async()=>{
+  const base=await sourceFixture(),all=Array.from({length:17},(_,i)=>({...base.rawSources[0],floorId:`floor-${i+1}`,floorMemoryId:`memory-${i+1}`,memoryFloorId:`floor-${i+1}`,assistantSeq:i+1,memoryAssistantSeq:i+1}));let inputs=0;
+  const h=harness({...base,rawSources:all},{api:{embed:async(c,texts)=>{inputs+=texts.length;return texts.map(()=>[1,0]);}}});await h.index.build();
+  const manifest=h.records.get(VECTOR_INDEX_ID),id=manifest.data.shardIds[1];if(kind==='missing')h.records.delete(id);if(kind==='invalid')h.records.get(id).data.rows[0].vector='AAAA';if(kind==='owner')h.records.get(id).data.chatId='other';
+  const get=h.client.get;h.client.get=async(c,key)=>{if(key===id&&['permission','network'].includes(kind))throw Object.assign(Error('offline'),kind==='permission'?{status:403}:{code:'BACKEND_NETWORK'});return get(c,key);};
+  const cold=createVectorIndex({client:h.client,api:{embed:async(c,texts)=>{inputs+=texts.length;return texts.map(()=>[1,0]);}},configProvider:()=>config,identityProvider:()=>({chatId:base.chatId}),sourceProvider:async()=>({...base,rawSources:all})});const before=inputs;
+  if(['permission','network'].includes(kind)){await assert.rejects(cold.build());assert.equal(inputs,before);assert.equal(cold.getState().status,'error');}
+  else {assert.equal((await cold.build()).status,'ready');assert.equal(inputs-before,1);assert.equal(cold.getState().status,'ready');}
+  assert.notEqual(cold.getState().status,'building');
+ });
+});

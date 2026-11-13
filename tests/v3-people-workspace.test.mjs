@@ -2745,3 +2745,50 @@ test('人物自动粗扫在新楼未提取时按AI locator冻结前置USER，后
   assert.equal(recent.at(-1).precedingUserInput.messages[0].content, chat[18].mes);
   assert.equal(JSON.stringify(recent).includes('新输入不得'), false);
 });
+
+
+test('人工人物按实际字段保存，职业并发不挡备注，人工同字段竞争与清空准确', async () => {
+  const h = harness(); await h.runtime.refresh(); const id = h.peopleEntities[0].id;
+  await h.runtime.saveProfile(id, { name: '人物1', notes: '旧备注', occupation: '旧职业' }, { manualFields: ['notes'] });
+  const key = `chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`;
+  const original = structuredClone(h.runtime.getState().people.find(person => person.entityId === id).profile);
+  const update = (field, value, manual) => {
+    const envelope = structuredClone(h.db.records.get(key)); envelope.revision++;
+    envelope.data.profilesByEntityId[id][field] = value;
+    if (manual) envelope.data.profilesByEntityId[id].manualFields.push(field);
+    h.db.records.set(key, envelope);
+  };
+  update('occupation', '并发职业', false);
+  await h.runtime.saveProfile(id, { notes: '人工新备注' }, { manualFields: ['notes'], original });
+  let saved = h.db.records.get(key).data.profilesByEntityId[id];
+  assert.equal(saved.notes, '人工新备注'); assert.equal(saved.occupation, '并发职业');
+  await assert.rejects(h.runtime.saveProfile(id, { notes: '旧窗迟到修改' }, { manualFields: ['notes'], original }), error => error.code === 'QQJ_PEOPLE_PROFILE_CONFLICT');
+  await h.runtime.saveProfile(id, { notes: '' }, { manualFields: ['notes'] });
+  saved = h.db.records.get(key).data.profilesByEntityId[id]; assert.equal(saved.notes, '');
+  assert.ok(saved.manualFields.includes('notes'));
+});
+
+
+test('第二批人物保存CAS重基保并发职业，人工可覆盖自动新值且删除目标拒绝', async () => {
+  const h = harness(); await h.runtime.refresh(); const [first, second] = h.peopleEntities;
+  await h.runtime.saveProfile(first.id, { name: '人物1', notes: '原备注', occupation: '旧职业' }, { manualFields: ['notes'] });
+  const key = `chat-${CHAT_A}/${PEOPLE_WORKSPACE_RECORD_ID}`;
+  let race = true;
+  h.db.hooks.beforePut = async () => {
+    if (!race) return;
+    race = false;
+    const value = structuredClone(h.db.records.get(key)); value.revision++;
+    value.data.profilesByEntityId[first.id].occupation = '保存期间新职业'; h.db.records.set(key, value);
+  };
+  await h.runtime.saveProfile(first.id, { notes: '本次人工备注' }, { manualFields: ['notes'] });
+  assert.equal(h.db.records.get(key).data.profilesByEntityId[first.id].occupation, '保存期间新职业');
+  assert.equal(h.db.records.get(key).data.profilesByEntityId[first.id].notes, '本次人工备注');
+  await h.runtime.saveProfile(second.id, { name: '人物2', notes: '自动旧值' }, { manualFields: [] });
+  const original = structuredClone(h.runtime.getState().profilesByEntityId[second.id]);
+  const value = structuredClone(h.db.records.get(key)); value.revision++;
+  value.data.profilesByEntityId[second.id].notes = '后台自动新值'; h.db.records.set(key, value);
+  await h.runtime.saveProfile(second.id, { notes: '人工最高校准' }, { manualFields: ['notes'], original });
+  assert.equal(h.db.records.get(key).data.profilesByEntityId[second.id].notes, '人工最高校准');
+  await h.runtime.deletePerson(second.id);
+  await assert.rejects(h.runtime.saveProfile(second.id, { notes: '已删旧窗' }, { manualFields: ['notes'], original }), error => error.code === 'QQJ_PEOPLE_PROFILE_ENTITY_INVALID');
+});

@@ -212,6 +212,7 @@ export function createChatMemoryMigration({ client, session, hostAdapter, source
         ...(capturedPrequel === null ? {} : { qianqianjiePrequel: capturedPrequel }) },
         user_name: capturedUserName, character_name: host.characterName };
       const expected = [header, ...targetChat];
+      if (capturedCalendar) await persistStoryCalendar(targetChatId, capturedCalendar);
       const saved = await fetchImpl('/api/chats/save', { method: 'POST', cache: 'no-cache', headers: host.requestHeaders ?? {},
         body: JSON.stringify({ ch_name: host.characterName, file_name: targetHostChatId, avatar_url: host.avatarUrl, chat: expected, force: false }) });
       if (!saved?.ok) throw fail('QQJ_MIGRATION_HOST_SAVE_FAILED', '新聊天没有保存成功。');
@@ -219,7 +220,6 @@ export function createChatMemoryMigration({ client, session, hostAdapter, source
       const persisted = await readTargetChat(verifyTarget, { fetchImpl });
       if (!sameChatQqjData(targetChat, persisted.chat)
         || !sameQqjChatMetadata(header.chat_metadata, persisted.header.chat_metadata, { includePrequel: true, includeFile: true })) throw fail('QQJ_MIGRATION_HOST_VERIFY_FAILED', '新聊天读回核验失败，身份绑定未发布。');
-      if (capturedCalendar) await persistStoryCalendar(targetChatId, capturedCalendar);
       const createdAt = now()?.toISOString?.() ?? new Date().toISOString();
       const binding = { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId: targetChatId,
         owner: { hostChatId: targetHostChatId, characterLocator: identity.characterLocator, personaLocator: identity.personaLocator },

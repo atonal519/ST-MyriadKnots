@@ -203,7 +203,7 @@ test('手工无role共同父含明确area子级时进入区域容器，楼层与
 });
 test('共同area容器的直属site留未命名组，不把范围父再画成子区域；叶area保原单区',async()=>{
  const {projectQianchuangBrowse}=await import('../src/ui/qianchuang-browse.js'),node=(entityId,childEntityIds=[],mapRole=undefined,parentEntityId=null)=>({entityId,childEntityIds,mapRole,parentEntityId});
- const snapshot={mapRootIds:['scope'],places:[node('scope',['a','b','site','room'],'area'),node('a',[],'area','scope'),node('b',[],'area','scope'),node('site',[],'site','scope'),node('room',[],undefined,'scope')]},before=structuredClone(snapshot),browse=projectQianchuangBrowse(snapshot);assert.equal(browse.scopeId,'scope');assert.deepEqual(browse.groups.map(g=>g.entityId),['a','b',null]);assert.deepEqual(browse.groups.at(-1).siteIds,['site']);assert.deepEqual(browse.treeRootIds,['a','b','site','room']);assert.deepEqual(snapshot,before);
+ const snapshot={mapRootIds:['scope'],places:[node('scope',['a','b','site','room'],'area'),node('a',[],'area','scope'),node('b',[],'area','scope'),node('site',[],'site','scope'),node('room',[],undefined,'scope')]},before=structuredClone(snapshot),browse=projectQianchuangBrowse(snapshot);assert.equal(browse.scopeId,'scope');assert.deepEqual(browse.groups.map(g=>g.entityId),['a','b',null]);assert.deepEqual(browse.groups.at(-1).siteIds,['site','room']);assert.deepEqual(browse.treeRootIds,['a','b','site','room']);assert.deepEqual(snapshot,before);
  assert.deepEqual(projectQianchuangBrowse({mapRootIds:['scope'],places:[node('scope',['site'],'area'),node('site',[],'site','scope')]}).groups,[{entityId:'scope',siteIds:['site']}]);
 });
 

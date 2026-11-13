@@ -32,6 +32,12 @@ const isAux = id => id === PLACE_WORKSPACE_RECORD_ID || id === 'v3-people-worksp
   || id === 'v3-time-head' || /^v3-time-batch-[\da-f]{32}$/.test(id)
   || (id.startsWith('v3-time-batch-') && isUuid(id.slice('v3-time-batch-'.length)))
   || id === 'qqj-vector-index' || /^qqj-vector-shard-[\da-f]{40}$/.test(id);
+const isVector = id => id.startsWith('qqj-vector-');
+const usableVector = (id, data) => !isVector(id) || vectorRecordOwned({ recordId: id, data });
+// Only derived cache references are trimmed; business graph references stay strict.
+const exportedDescriptor = (data, ids) => data.recordType === 'migrationDescriptor'
+  ? { ...data, recordRefs: { ...data.recordRefs, vectorShardIds: data.recordRefs.vectorShardIds.filter(id => ids.has(id)) } }
+  : data;
 const peopleWorkspaces = records => records.flatMap(item => item.id === 'v3-people-workspace' ? [item.data]
   : item.id.startsWith('v3-people-snapshot-') ? [item.data.workspace] : []);
 const MESSAGE_KEYS = [ANCHOR, HIDDEN, RECEIPT, 'qianqianjie_migration_alias', MESSAGE_MEMORY_EXCLUSION_KEY];
@@ -346,9 +352,11 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       let auxiliaryCount = 0;
       for await (const record of iterateCollection(`chat-${captured.identity.chatId}`)) if (isAux(record.recordId)) {
         auxiliaryCount++;
-        if (record.data?.chatId === captured.identity.chatId) collect(record.recordId, record);
+        if (record.data?.chatId === captured.identity.chatId && usableVector(record.recordId, record.data)) collect(record.recordId, record);
       }
-      const records = [...collected].map(([id, record]) => ({ id, data: clone(record.data) }));
+      const vector = collected.get('qqj-vector-index');
+      if (vector && !vector.data.shardIds.every(id => collected.has(id))) collected.delete('qqj-vector-index');
+      const records = [...collected].map(([id, record]) => ({ id, data: clone(exportedDescriptor(record.data, collected)) }));
       await validateRecords(records, captured.identity.chatId);
       const bindings = await verifyConversation(graph, captured.chat, sanitizerOptions());
       const avatarImages = [];
@@ -430,17 +438,28 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
       ...refs.entities.map(id => `v3-entity-${id}`), ...refs.stateDeltas.map(id => `v3-state-delta-${id}`),
       ...refs.currentStates.map(id => `v3-current-state-${id}`), ...refs.indexes]);
     const revisions = new Map(), sources = new Map();
-    let scanned = 0;
+    let scanned = 0, vectorIndex = null, descriptor = null;
     check(typeof client.iterRecords === 'function', '请更新白鸟数据后端后使用分卷导出。');
     for await (const envelope of client.iterRecords(collection, { signal, requireStreaming: true })) {
       report('records', ++scanned);
       if (!coreIds.has(envelope.recordId) && !(isAux(envelope.recordId) && envelope.data?.chatId === captured.identity.chatId)) continue;
       const item = { id: envelope.recordId, data: envelope.data };
+      if (!usableVector(item.id, item.data)) continue;
       validateVolumeRecord(item, captured.identity.chatId);
       check(!revisions.has(item.id), '存储清单含有重复记录。');
       revisions.set(item.id, { revision: envelope.revision, bytes: bytes(item.data) });
       for (const workspace of peopleWorkspaces([item])) for (const source of Object.values(workspace.avatarSourcesByEntityId ?? {})) sources.set(source.path, source);
-      yield { kind: 'record', ...item };
+      if (item.id === 'qqj-vector-index') vectorIndex = item;
+      else if (item.data.recordType === 'migrationDescriptor') descriptor = item;
+      else yield { kind: 'record', ...item };
+    }
+    if (vectorIndex) {
+      if (vectorIndex.data.shardIds.every(id => revisions.has(id))) yield { kind: 'record', ...vectorIndex };
+      else revisions.delete(vectorIndex.id);
+    }
+    if (descriptor) {
+      descriptor = { ...descriptor, data: exportedDescriptor(descriptor.data, revisions) };
+      yield { kind: 'record', ...descriptor };
     }
     check([...coreIds].every(id => revisions.has(id)) && revisions.get('v3-root')?.revision === rootEnvelope.revision,
       '导出期间记忆发生变化，请重新导出。');
@@ -449,7 +468,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     const checkedData = (id, envelope) => {
       check(envelope && envelope.revision === revisions.get(id)?.revision, '导出期间记忆发生变化，请重新导出。');
       report(readPhase, ++readCount);
-      return envelope.data;
+      return id === descriptor?.id ? descriptor.data : envelope.data;
     };
     const readRecord = async id => {
       const envelope = await client.get(collection, id, { signal });
@@ -499,6 +518,7 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
     for await (const envelope of client.iterRecords(collection, { signal, requireStreaming: true })) {
       report('verify', ++scanned);
       if (!coreIds.has(envelope.recordId) && !(isAux(envelope.recordId) && envelope.data?.chatId === captured.identity.chatId)) continue;
+      if (isVector(envelope.recordId) && !revisions.has(envelope.recordId)) continue;
       check(revisions.get(envelope.recordId)?.revision === envelope.revision, '导出期间记忆发生变化，请重新导出。'); verified++;
     }
     check(verified === revisions.size, '导出期间记忆发生变化，请重新导出。'); current(captured);
@@ -632,9 +652,10 @@ export function createMemoryTransfer({ client, session, hostAdapter, isBusy = ()
   async function completeImport(captured, initial, value, chatId, root, importedAuxiliaryRevisions, summaries, streaming = false) {
     if (value.calendar) await persistCalendar(chatId, value.calendar);
     const createdAt = now().toISOString();
-    await client.put(CHAT_IDENTITY_COLLECTION, `binding-${chatId}`, { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId,
+    try { await client.put(CHAT_IDENTITY_COLLECTION, `binding-${chatId}`, { schemaVersion: 1, kind: 'qqj-chat-identity-binding', chatId,
       owner: { hostChatId: captured.identity.hostChatId, characterLocator: captured.identity.characterLocator, personaLocator: captured.identity.personaLocator },
       state: 'ready', sourceChatId: value.source.chatId, createdAt, updatedAt: createdAt }, 0);
+    } catch { /* The auxiliary directory does not own the saved graph or target file. */ }
     const header = clone(initial.header), messages = clone(initial.chat);
     header.chat_metadata.qianqianjie = { ...header.chat_metadata.qianqianjie, schemaVersion: 2, chatId, file: chatFileFromHost(captured.identity) };
     if (value.prequel === null) delete header.chat_metadata.qianqianjiePrequel; else header.chat_metadata.qianqianjiePrequel = value.prequel;

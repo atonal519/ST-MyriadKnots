@@ -1,3 +1,4 @@
+import { selectAssistantMessage, selectUserStabilityAnchor } from './v3/foundation-domain.js';
 import { createActivitySignal } from './plugin-activity.js';
 import { cloneHostJsonMetadata, ensureChatUuid, isUuid, readHostState } from './host-context.js';
 import { captureTargetChatCoordinates } from './v3/host-adapter.js';
@@ -15,7 +16,7 @@ const sameHost = (left, right) => left.hostChatId === right.hostChatId
   && left.characterAvatar === right.characterAvatar
   && left.personaAvatar === right.personaAvatar;
 
-export function createChatSession({ contextProvider, isEnabled = true, ensureChatId = ensureChatUuid, identityCoordinator = null, captureTaskInputs = null } = {}) {
+export function createChatSession({ contextProvider, isEnabled = true, ensureChatId = ensureChatUuid, identityCoordinator = null, captureTaskInputs = null, onPrepared = null } = {}) {
   if (typeof contextProvider !== 'function') throw new TypeError('session contextProvider 必须是函数');
   if (typeof isEnabled !== 'boolean' && typeof isEnabled !== 'function') throw new TypeError('session isEnabled 无效');
   if (typeof ensureChatId !== 'function') throw new TypeError('session ensureChatId 必须是函数');
@@ -58,7 +59,7 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
       hostChatId: host.hostChatId,
       characterLocator: host.characterAvatar, personaLocator: host.personaAvatar,
     });
-    return { chat: structuredClone(Array.isArray(raw.chat) ? raw.chat : []), chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}), target };
+    return { chat: cloneHostJsonMetadata(Array.isArray(raw.chat) ? raw.chat : []), chatMetadata: cloneHostJsonMetadata(raw.chatMetadata ?? {}), target };
   };
   const publicIdentity = host => Object.freeze({
     hostChatId: host.hostChatId,
@@ -111,6 +112,8 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
     state = Object.freeze({ status: 'preparing' });
     operation.promise = (async () => {
       try {
+        // 无身份的新空档先同步观察；正式输入仍按需捕获。
+        if (onPrepared && captureTaskInputs && !isUuid(context.host.chatId) && !context.raw.chat?.some((message, index, chat) => selectAssistantMessage(message) && selectUserStabilityAnchor(chat[index + 1]))) captureTaskInputs({ ...context, observeOnly: true });
         let branchPrepared = false;
         const chatId = identityCoordinator
           ? await identityCoordinator.prepare(context.raw, context.host, { signal: operation.controller.signal, getTaskInputs,
@@ -126,7 +129,9 @@ export function createChatSession({ contextProvider, isEnabled = true, ensureCha
         } catch { /* A completed identity belongs to its captured host target, not the newly selected page. */ }
         // Only this preparation's continuation may register new native messages.
         // Cached ready state remains an ordinary read on later opens.
-        return branchPrepared ? Object.freeze({ ...result, branchPrepared: true }) : result;
+        const prepared = branchPrepared ? Object.freeze({ ...result, branchPrepared: true }) : result;
+        try { onPrepared?.({ result: prepared, taskInputs }); } catch { /* 身份已保存，后续加载错误不能撤销该结果。 */ }
+        return prepared;
       } catch (error) {
         if (operation.controller.signal.aborted) return Object.freeze({ status: enabled() ? 'cancelled' : 'disabled' });
         markPreparationFailure(error, 'identityDirectory', entryPoint);

@@ -4,7 +4,7 @@ export function getHostContext() {
   return ctx;
 }
 
-// Host chat metadata is persisted as JSON; capture that boundary without cloning transient live values.
+// Host messages and metadata persist as JSON; omit transient live values at the same boundary.
 export function cloneHostJsonMetadata(value) {
   return JSON.parse(JSON.stringify(value));
 }

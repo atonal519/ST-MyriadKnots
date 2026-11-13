@@ -473,3 +473,24 @@ test('城市补祖先只复用无相反父的唯一旧城市，普通房间、�
     assert.equal(foundation.projectPlaceParentLinks([],workspace,new Map()).get(id(1)).parents.size,0);
   });
 });
+
+test('整理模式只允许已有地点和缺失祖先，初始化删除path隔离不吞健康路径',async()=>{
+ const entities=[seed(1,'宿舍'),seed(2,'客房')];
+ const run=(mode,paths,deletedPlaceIds=[])=>foundation.expandPlacePaths({packet:{placePaths:paths},envelope:{request:{task:'organizePlaces',payload:{mode}},scope:{...envelope.scope,deletedPlaceIds}},existingEntities:entities,now:'2026-11-12T00:00:00Z',persistBodyPaths:true});
+ const unrelated={path:[{name:'宿舍',sameAsPlaceKey:'place-1'},{name:'独立新亭'}],source:'worldbook',sourceKey:source.sourceKey,exactQuote:source.content};
+ const organized=await run('organize',[path,unrelated]);assert.equal(organized.freshEntities.some(entity=>entity.displayName==='一楼'),true);assert.equal(organized.freshEntities.some(entity=>entity.displayName==='独立新亭'),false);assert.equal(organized.isolated.length,1);
+ const initialized=await run('initialize',[path,{...unrelated,path:[{name:'健康新馆'}]}],[id(2)]);
+ assert.equal(initialized.foundationPatch.facts.some(fact=>fact.placeEntityId===id(2)),false);assert.equal(initialized.freshEntities.some(entity=>entity.displayName==='健康新馆'),true);assert.equal(initialized.isolated.length,1);
+});
+
+
+test('Batch17 明确path与唯一同来源spatial声明省略选填key也统一父链及单节点简介', async t => {
+ for(const sourceType of ['assistant','precedingUser']) for(const single of [false,true]) await t.test(`${sourceType}/${single?'single':'chain'}`,async()=>{
+  const text='青石馆有灶房，灶房内有石灶。',binding={floorId:id(93),floorKey:'floor-1',canonicalContent:text,rawFingerprint:'sha256:body',...(sourceType==='precedingUser'?{sourceUserInputSnapshot:{messages:[{content:text}]}}:{})};
+  const evidence={source:sourceType==='assistant'?'canonicalContent':'precedingUserInput',sourceFloorKey:'floor-1',...(sourceType==='precedingUser'?{sourceSnapshotIndex:0}:{}),exactQuote:text};
+  const packet={summary:'合法摘要',spatialFacts:{places:[{key:'place-mention-1',name:'灶房',identity:'new',...evidence}],containments:[],positions:[]},placePaths:[{path:[...(single?[]:[{name:'青石馆'}]),{name:'灶房',description:'灶房内有石灶。'}],...evidence}]};
+  const result=await foundation.expandPlacePaths({packet,envelope:{request:{task:'extractFloorSemantics'},scope:{...envelope.scope,placeCatalogBindings:[],parentEntityIdsByPlaceId:new Map(),sourceFloorBindings:[binding]}},now:'2026-11-13T00:00:00Z'});
+  assert.deepEqual(result.isolated,[]);assert.equal(result.packet.spatialFacts.places.filter(p=>p.name==='灶房').length,1);
+  assert.equal(result.packet.spatialFacts.containments.length,single?0:1);assert.ok(result.foundationPatch.facts.some(f=>f.kind==='feature'&&f.text==='灶房内有石灶。'));
+ });
+});

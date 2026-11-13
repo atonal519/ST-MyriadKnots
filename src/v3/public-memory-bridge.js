@@ -50,7 +50,7 @@ export function formatPublicMemoryProjection(source) {
   const entityById = new Map(entities.map(entity => [entity.entityId, entity]));
   const lines = [
     '<qqj_memory_context>',
-    '以下是千千结已经正式保存的长期记忆与人物状态，只作剧情参考；与当前正文冲突时以正文为准。',
+    '以下是千千结已经正式保存的长期记忆与人物状态。人工校准为最高依据。自动资料结合其来源与当前剧情理解。',
   ];
 
   const people = entities.filter(entity => entity.entityType === 'person' && entity.displayName);
@@ -277,7 +277,7 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
     try {
       const hostSnapshot = hostAdapter.snapshot();
       const currentSanitizerOptions = typeof sanitizerOptions === 'function' ? sanitizerOptions() : sanitizerOptions;
-      const identityProjectionValue = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider() : null;
+      const identityProjectionValue = typeof identityProjectionProvider === 'function' ? await identityProjectionProvider(before, { allowUnavailable: true }) : null;
       const identityProjection = identityProjectionValue?.data ?? identityProjectionValue;
       const foundationSnapshot = completeFoundationSnapshot(foundationRuntime);
       let source = null;
@@ -321,20 +321,18 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
   function getSnapshot() {
     const status = localStatus();
     if (status.status !== 'ready') return status;
-    try {
-      const memoryState = typeof memoryRuntime?.getState === 'function' ? memoryRuntime.getState() : null;
-      const peopleState = typeof peopleRuntime?.getState === 'function' ? peopleRuntime.getState() : null;
-      return structuredClone({
-        status: 'ready',
-        identity: status.identity,
-        memory: publicMemorySnapshot(memoryState, status.identity.qqjChatId),
-        cse: publicCseSnapshot(memoryState, status.identity.qqjChatId),
-        people: publicPeopleSnapshot(peopleState, status.identity.qqjChatId),
-      });
-    } catch (error) {
-      return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结快照读取失败。' }), identity: status.identity });
-    }
+    let memoryState = null, memoryFailed = false;
+    try { memoryState = typeof memoryRuntime?.getState === 'function' ? memoryRuntime.getState() : null; }
+    catch { memoryFailed = true; }
+    const partition = (project, empty) => { try { return structuredClone(project()); } catch { return empty(); } };
+    return frozen({
+      status: 'ready', identity: status.identity,
+      memory: partition(() => memoryFailed ? emptyMemorySnapshot('error') : publicMemorySnapshot(memoryState, status.identity.qqjChatId), () => emptyMemorySnapshot('error')),
+      cse: partition(() => publicCseSnapshot(memoryState, status.identity.qqjChatId), emptyCseSnapshot),
+      people: partition(() => publicPeopleSnapshot(typeof peopleRuntime?.getState === 'function' ? peopleRuntime.getState() : null, status.identity.qqjChatId), () => emptyPeopleSnapshot('error')),
+    });
   }
+
   function getPromptSnapshot() {
     const status = localStatus();
     if (status.status !== 'ready') return status;
@@ -390,7 +388,11 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
     if (status.status !== 'ready') return status;
     if (typeof readWorldInfoProvider !== 'function') return frozen({ status: 'unavailable', message: '当前版本暂不支持读取千千结允许使用的世界书。', identity: status.identity, worldbook: [] });
     try {
+      const before = session.identity();
       const value = await readWorldInfoProvider();
+      const after = localStatus();
+      if (after.status !== 'ready') return frozen({ ...after, worldbook: [] });
+      if (!sameIdentity(before, session.identity())) return frozen({ status: 'stale', message: '读取期间当前聊天已变化。', identity: after.identity, worldbook: [] });
       if (value?.status && value.status !== 'ready') return frozen({ status: value.status, message: value.message ?? '千千结世界书尚未准备好。', identity: status.identity, worldbook: [] });
       const worldbook = (Array.isArray(value?.worldbook) ? value.worldbook : Array.isArray(value) ? value : []).map(entry => ({
         uid: String(entry?.uid ?? ''), comment: String(entry?.comment ?? ''), keys: Array.isArray(entry?.keys) ? entry.keys.map(String) : [],
@@ -401,7 +403,10 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
       return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结世界书读取失败。' }), identity: status.identity, worldbook: [] });
     }
   }
-  async function readContext({ query = '', entityIds = [], maxCharacters = 12000 } = {}) {
+  async function readContext({
+    query = '', focusQuery = '', entityIds = [], participantNames = [],
+    maxCharacters = 12000, maxSummaries = null, summaryCharacters = null, recentSummaries = 0,
+  } = {}) {
     const empty = state => ({ ...state, anchor: null, routerText: '', actors: [], coverage: { partial: false, selectedCharacters: 0, maxCharacters: 0 } });
     const status = localStatus();
     if (status.status !== 'ready') return empty(status);
@@ -420,11 +425,15 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
         ? { status: 'error', message: inspected.lastError || '千千结已存记忆读取失败。', identity: status.identity }
         : { status: 'not-ready', message: '千千结记忆尚未准备好。', identity: status.identity });
       if (reachable.root.chatId !== before.chatId) return empty({ status: 'stale', message: '已存记忆与当前聊天身份不匹配。', identity: status.identity });
-      const peopleState = typeof peopleRuntime?.getState === 'function' ? peopleRuntime.getState() : null;
+      let peopleState;
+      try { peopleState = typeof peopleRuntime?.getState === 'function' ? peopleRuntime.getState() : null; }
+      catch { peopleState = { status: 'error', people: [] }; }
       const requested = Array.isArray(entityIds) ? entityIds.filter(id => typeof id === 'string').slice(0, 100) : [];
-      const currentStates = typeof memoryRuntime?.getCurrentSubjectStates === 'function'
-        ? memoryRuntime.getCurrentSubjectStates(requested) : { status: 'not-ready', subjects: [] };
-      const result = buildPublicContext({ reachable, peopleState, currentStates, identity: status.identity, query: String(query ?? '').slice(0, 8000), entityIds: requested, maxCharacters });
+      const result = buildPublicContext({ reachable, peopleState, identity: status.identity,
+        currentStateProvider: ids => typeof memoryRuntime?.getCurrentSubjectStates === 'function'
+          ? memoryRuntime.getCurrentSubjectStates(ids) : { status: 'not-ready', subjects: [] },
+        query: String(query ?? '').slice(0, 8000), focusQuery, entityIds: requested, participantNames,
+        maxCharacters, maxSummaries, summaryCharacters, recentSummaries });
       return result;
     } catch (error) {
       return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结人物记忆读取失败。' }), identity: status.identity, anchor: null, routerText: '', actors: [], coverage: { partial: false, selectedCharacters: 0, maxCharacters: 0 } });

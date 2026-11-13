@@ -18,19 +18,12 @@ const timestamp = value => {
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 
 async function saveRecords(store, records) {
-  let cursor = 0, failure = null;
-  async function worker() {
-    while (!failure) {
-      const index = cursor++;
-      if (index >= records.length) return;
-      try {
-        const result = await store.putRecord(records[index]);
-        if (!['saved', 'reused'].includes(result.status)) fail('V3_MIGRATION_RECORD_WRITE_FAILED');
-      } catch (error) { failure ??= error; }
-    }
+  for (let offset = 0; offset < records.length; offset += 64) {
+    const batch = records.slice(offset, offset + 64);
+    const results = await store.putRecords(batch);
+    if (!Array.isArray(results) || results.length !== batch.length
+      || results.some(result => !['saved', 'reused'].includes(result.status))) fail('V3_MIGRATION_RECORD_WRITE_FAILED');
   }
-  await Promise.all(Array.from({ length: Math.min(4, records.length) }, () => worker()));
-  if (failure) throw failure;
 }
 
 export function selectCompletedCarriedAliases({ reachable, carried = [], sourceCandidates = [], newUuid }) {
@@ -62,7 +55,7 @@ export function selectCompletedCarriedAliases({ reachable, carried = [], sourceC
 export async function initializeMigrationGraph({ store, sourceIdentity, targetIdentity, sourceReachable, carriedAliases = [], targetChat = [],
   carriedSummary = null, summarySources = [], sourcePrequelSnapshots = [], sourceCalendarSnapshots = [], sourceTimeHeadSnapshots = [], timeBatchIds = [], vectorShardIds = [], peopleWorkspaceId = null, peopleSnapshotIds = [],
   sanitizerOptions = {}, now = () => new Date(), newUuid }) {
-  if (!store?.readReachable || !store?.putRecord || !store?.commitRoot || !sourceReachable?.root || sourceReachable.status !== 'ready'
+  if (!store?.readReachable || !store?.putRecords || !store?.commitRoot || !sourceReachable?.root || sourceReachable.status !== 'ready'
     || sourceReachable.root.chatId !== sourceIdentity?.chatId || targetIdentity?.chatId === sourceIdentity.chatId) fail('V3_MIGRATION_SOURCE_NOT_READY');
   const current = await store.readReachable({ mode: 'full' });
   if (current.status !== 'uninitialized') fail('V3_MIGRATION_TARGET_NOT_EMPTY');

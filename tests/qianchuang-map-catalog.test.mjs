@@ -200,3 +200,15 @@ test('真实城市方形画幅与投影边界同步，可见槽与分区始终�
   for(const {labelBox:b}of city.groups)assert.ok(b.x>=0&&b.y>=0&&b.x+b.w<=100&&b.y+b.h<=100,city.id);
  }
 });
+
+
+
+test('同ID旧目录不遮真实片区，更新图各自一次本地读取',async()=>{
+ const updatedIds=["modern-coast","modern-radial","modern-town-plain","modern-town-river","modern-town-coast","old-town-inland","old-town-river","old-town-coast","old-town-plain","terrain-forest","terrain-coast","terrain-mountain","terrain-coast-relief","terrain-desert","terrain-snow","palace-axial","palace-courtyard-garden"],old=Object.fromEntries(updatedIds.map(id=>[id,'0'.repeat(64)])),assets=Object.fromEntries(Object.keys(old).map(id=>[id,structuredClone(QIANCHUANG_MAP_ASSETS[id])])),calls=[];
+ const client=catalogModule.createQianchuangMapCatalog({genericAssets:assets,cityAssets:{},sanitizeSvg:value=>value,fetchImpl:async url=>{
+  calls.push(url);assert.ok(url.endsWith('catalog.json'),'旧SHA目录不再发旧SVG请求');return response(url.includes('maps-real')?{cities:[]}:Object.values(assets).map(a=>({...a,sha256:old[a.id]})));
+ }});
+ await client.prepare();let local=0;
+ for(const asset of Object.values(assets)){const svg=await client.load('generic',asset,async()=>{local++;return readFileSync(new URL('../assets/maps-library/'+asset.file,import.meta.url),'utf8');});assert.equal(digest(svg),asset.sha256);assert.notEqual(asset.sha256,old[asset.id]);assert.match(svg,/vector-effect:non-scaling-stroke/u);}
+ assert.equal(local,updatedIds.length);assert.equal(calls.length,2);
+});

@@ -615,3 +615,37 @@ test('文件身份：原生归属补记随正常保存，Luker独立metadata保�
   }
   console.log(JSON.stringify({ ordinaryFileIdentityCosts: costs }));
 });
+
+test('准备完成内部回调在身份成功之后运行，自身异常不撤销已保存身份', async () => {
+  const context = { chatId: 'host', characterId: 0, groupId: null, characters: [{ avatar: 'char.png' }], userAvatar: 'persona.png', chatMetadata: {}, chat: [] };
+  let session, callback = 0;
+  session = createChatSession({ contextProvider: () => context, ensureChatId: async raw => { raw.chatMetadata.qianqianjie = { schemaVersion: 1, chatId: UUID }; return UUID; },
+    onPrepared: ({ result }) => { callback++; assert.equal(session.identity().chatId, result.identity.chatId); throw new Error('只影响后续加载'); } });
+  assert.equal((await session.prepare()).status, 'ready');
+  assert.equal(callback, 1); assert.equal(session.getState().status, 'ready');
+  await session.prepare(); assert.equal(callback, 1, '已准备好的同目标快读不重新发完成回调');
+});
+
+
+test('默认消息快照沿宿主JSON边界省临时函数，保正文swipe与未知JSON字段', async () => {
+  for (const proxy of [false, true]) {
+    const raw = chatContext('消息JSON');
+    const transient = () => 'live only';
+    const message = { is_user: false, mes: '原正文', swipes: ['原正文', '备选'], swipe_id: 0,
+      extra: { qianqianjie: { keep: true }, other: { deep: [1, null, '保留'] }, transient } };
+    raw.chat = [proxy ? new Proxy(message, {}) : message];
+    let snapshot;
+    const session = createChatSession({ contextProvider: () => raw, identityCoordinator: {
+      prepare: async (_raw, _host, { getTaskInputs }) => { snapshot = getTaskInputs(); return UUID; },
+    } });
+    assert.equal((await session.prepare()).status, 'ready');
+    assert.deepEqual(snapshot.chat, JSON.parse(JSON.stringify(raw.chat)));
+    assert.equal(raw.chat[0].extra.transient, transient);
+    snapshot.chat[0].swipes[0] = '独立副本'; assert.equal(raw.chat[0].swipes[0], '原正文');
+  }
+  for (const value of [1n, (() => { const value = {}; value.self = value; return value; })()]) {
+    const raw = chatContext('消息JSON失败'); raw.chat = [{ mes: '正文', extra: { value } }];
+    const session = createChatSession({ contextProvider: () => raw, identityCoordinator: { prepare: async (_raw, _host, { getTaskInputs }) => { getTaskInputs(); return UUID; } } });
+    await assert.rejects(session.prepare(), TypeError);
+  }
+});

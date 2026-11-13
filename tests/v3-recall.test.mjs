@@ -1,3 +1,4 @@
+import { RECALL_KNOWLEDGE_GUIDANCE } from '../src/v3/recall-text.js';
 import { resolveProcessingPrompt } from '../src/internal-processing-prompt.js';
 import test from 'node:test';
 import { processingTransport } from './fixtures/processing-transport.mjs';
@@ -471,7 +472,8 @@ test('Q 排重只比较最终客观旧事条目；完整相同才删，Q独有�
     generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [] } }) });
   assert.ok(integrated.floors.flatMap(floor => floor.items).some(item => item.category === 'objective' && item.text === objective.text));
   assert.deepEqual(integrated.qianshiProgress.eventIds, [], '真实 LLM 选材完成后从实际入选 objective 中移除同一 Q 行');
-  assert.equal(integrated.qianshiProgress.text, '');
+  assert.deepEqual(integrated.qianshiProgress.matterIds, []);
+  assert.equal(integrated.qianshiProgress.text, RECALL_KNOWLEDGE_GUIDANCE, '排重后无千事正文，仅保共用知情边界说明');
 
   const qHasUniqueStatus = removeExactQianshiDuplicates({ projectionVersion: 4,
     text: `[相关时间线]\n- ${objective.text}（后续又延期）`, eventIds: ['status-event'], matterIds: [] }, selection);
@@ -1330,10 +1332,11 @@ test('Q 候选搭乘同一次 R/C 选材，当前故事时间可见且非法 Q �
     assert.equal(caseCalls, 1);
     assert.match(result.qianshiProgress.text, expected);
   }
-  for (const qianshi_exclude_keys of [{ bad: true }, null, 7, true]) await assert.rejects(
-    () => selectRecallWithLlm({ source, queryContext: llmQuery, generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [], qianshi_exclude_keys } }) }),
-    error => ['V3_RECALL_LLM_KEYS_INVALID', 'V3_RECALL_LLM_SCHEMA_INVALID'].includes(error?.code),
-  );
+  for (const qianshi_exclude_keys of [{ bad: true }, null, 7, true]) {
+    const kept = await selectRecallWithLlm({ source, queryContext: llmQuery,
+      generateUtilityTask: async () => ({ jsonData: { history_exclude_keys: [], state_exclude_keys: [], qianshi_exclude_keys } }) });
+    assert.match(kept.qianshiProgress.text, /仍需归还钟楼钥匙/u);
+  }
 });
 
 test('同次可选 priority 只接受保留 R/C 键，去重封顶并按最终稳定身份报告入选', async () => {
@@ -2306,10 +2309,26 @@ test('召回混合 R/C/Q 排除仅保留本池合法项、去重且不丢可用�
   assert.match(mixed.qianshiProgress.text, /核对钟楼账本/u);
 });
 
+test('第一批选材隔离：坏可选Q原文年度字段保合法RC且只调用一次', async t => {
+  for (const field of ['qianshi_exclude_keys', 'artifact_select_keys', 'annual_retain_keys']) {
+    for (const hasQ of [false, true]) await t.test(`${field}/${hasQ}`, async () => {
+      const source = changingCseSource({ withHistory: true });
+      if (hasQ) source.qianshiCandidates = [qianshiCandidate('Q1', 'pending', '归还钟楼钥匙')];
+      let calls = 0;
+      const result = await selectRecallWithLlm({ source, queryContext: { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' }, generateUtilityTask: async () => {
+        calls += 1; return { jsonData: { history_exclude_keys: [], state_exclude_keys: [], [field]: 7 } };
+      } });
+      assert.equal(calls, 1); assert.ok(result.injectionText);
+      assert.ok(result.states.length || result.floors.length);
+      if (hasQ) assert.match(result.qianshiProgress.text, /归还钟楼钥匙/);
+    });
+  }
+});
+
 test('召回排除的错误字段类型仍拒绝，不把结构错误当作空排除', async () => {
   const source = changingCseSource({ withHistory: true });
   const queryContext = { ...llmQuery, text: '左佐辛夷旧门锁', latestUserText: '左佐辛夷旧门锁' };
-  for (const field of ['history_exclude_keys', 'state_exclude_keys', 'artifact_select_keys']) {
+  for (const field of ['history_exclude_keys', 'state_exclude_keys']) {
     for (const value of [null, {}, 7, false, 'R1']) {
       await assert.rejects(selectRecallWithLlm({ source, queryContext, generateUtilityTask: async () => ({ jsonData: {
         history_exclude_keys: [], state_exclude_keys: [], [field]: value,
@@ -3206,6 +3225,121 @@ test('失配楼的手工摘要仍为准，手工清空不会回灌旧AI材料', 
   }
 });
 
+test('人工CSE冻结消费按稳定人物更新、清空及重填，四入口和冷票只选择一次', async t => {
+  for (const legacy of [false, true]) await t.test(legacy ? '无renderPlan旧票' : '当前票', async () => {
+  const raw = await singleFloorReachable({ summary: '阿裴在钟楼等待。' });
+  raw.entities = reachable().entities;
+  const state = text => ({ id: `manual-${text}`, text, reason: '人工校准', visibility: 'private', origin: 'manual',
+    towardEntityId: null, sourceFloorId: raw.floors[0].id, sourceDeltaId: `delta-${text}` });
+  let prior = state('人工信任旧值');
+  const save = text => {
+    const after = text ? state(text) : null;
+    raw.stateDeltas = [{ id: after?.sourceDeltaId ?? 'delta-clear', floorId: raw.floors[0].id, floorMemoryId: raw.floorMemories[0].id,
+      recordStatus: 'active', source: { manualSubjectEntityIds: [PERSON] },
+      subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: after ? [after] : [] }],
+      fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: after ? 'update' : 'remove', before: prior, after }] }] }];
+    raw.currentStates = [{ subjects: raw.stateDeltas[0].subjectSnapshots }];
+    raw.rootRevision++;
+    raw.root.headCheckpointId = raw.checkpoint.id = `head-${raw.rootRevision}`;
+    prior = after;
+  };
+  save('人工信任旧值');
+  let selections = 0;
+  const h = createRuntimeHarness({ sourceReader: options => readRecallSource(options), reachableReader: async () => structuredClone(raw),
+    manualMemorySnapshot: () => raw, selector: input => { selections++; return selectRecall(input); } });
+  h.chat[0].is_hidden = true;
+  let result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, 'normal');
+  assert.match(result.lastRecall.injectionText, /人工信任旧值/u);
+  const unselectedId = '99999999-9999-4999-8999-999999999999';
+  raw.entities.push({ ...raw.entities[0], id: unselectedId, displayName: '裴晚生' });
+  const unselected = { ...state('未选人物私密人工值'), id: 'unselected-manual' };
+  raw.stateDeltas[0].source.manualSubjectEntityIds.push(unselectedId);
+  raw.stateDeltas[0].subjectSnapshots.push({ subjectEntityId: unselectedId, core: [], adaptive: [], situational: [unselected] });
+  raw.stateDeltas[0].fixedChanges.push({ subjectEntityId: unselectedId, items: [{ category: 'situational', action: 'add', before: null, after: unselected }] });
+  raw.currentStates[0].subjects = raw.stateDeltas[0].subjectSnapshots;
+  result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, 'continue');
+  assert.doesNotMatch(result.lastRecall.injectionText, /未选人物私密人工值/u, '同名人物只按稳定ID保原选中范围');
+  if (legacy) {
+    await flushReceiptSave();
+    const receipt = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    delete receipt.timeDependencies.renderPlan;
+    receipt.receiptFingerprint = await receiptFingerprint(receipt);
+    h.runtime.invalidate('legacy-manual-cse');
+  }
+  save('人工信任新值');
+  for (const type of ['normal', 'regenerate', 'swipe', 'continue']) {
+    result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, type);
+    assert.equal(result.lastRecall.reusedReceipt, true);
+    assert.match(result.lastRecall.injectionText, /人工信任新值/u);
+    assert.doesNotMatch(result.lastRecall.injectionText, /人工信任旧值/u);
+  }
+  save(null);
+  for (const type of ['normal', 'regenerate', 'swipe', 'continue']) {
+    result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, type);
+    assert.doesNotMatch(result.lastRecall.injectionText, /人工信任(?:旧值|新值)/u);
+  }
+  await flushReceiptSave();
+  h.runtime.invalidate('cold-manual-cse');
+  result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, 'regenerate');
+  assert.equal(result.lastRecall.reusedReceipt, true);
+  save('人工重新填写信任');
+  result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, 'normal');
+  assert.match(result.lastRecall.injectionText, /人工重新填写信任/u);
+  const frozen = result.lastRecall.injectionText;
+  raw.currentStates[0].subjects[0].situational = [{ ...state('后台自动新进展'), origin: 'floor' }];
+  raw.rootRevision++;
+  result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, 'continue');
+  assert.equal(result.lastRecall.injectionText, frozen, '已采用的人工结果沿同USER冻结，后台自动变化不重选');
+  const delta = raw.stateDeltas[0];
+  const bulk = Array.from({ length: 300 }, (_, index) => ({ ...state(`人工条目${index}`), id: `bulk-${index}`, sourceDeltaId: 'delta-bulk' }));
+  raw.stateDeltas = [{ ...delta, id: 'delta-bulk', subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: bulk }],
+    fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'remove', before: prior, after: null },
+      ...bulk.map(after => ({ category: 'situational', action: 'add', before: null, after }))] }] }];
+  raw.currentStates = [{ subjects: raw.stateDeltas[0].subjectSnapshots }];
+  raw.rootRevision++;
+  result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, 'normal');
+  assert.match(result.lastRecall.injectionText, /人工条目/u);
+  await flushReceiptSave();
+  const receipt = h.userMessage.extra[RECALL_RECEIPT_KEY];
+  assert.ok(receipt.selectedStates.length + receipt.selectedCseChanges.length <= 256);
+  assert.ok([...receipt.selectedStates, ...receipt.selectedCseChanges].every(item => receipt.storylines.some(line => line.storylineId === item.storylineId)));
+  h.runtime.invalidate('cold-count-limit');
+  result = await h.runtime.intercept([structuredClone(h.userMessage)], 12000, null, 'regenerate');
+  assert.equal(result.lastRecall.reusedReceipt, true, '人工多条结果按原计数和预算裁剪后冷票有效');
+  assert.equal(selections, 1);
+  });
+});
+
+test('人工楼内地点及参与人物在正文失配后独立保留，清空和自动资料按各自归属', async () => {
+  for (const [manualLocations, manualParticipants] of [[true, false], [false, true], [true, true], [false, false]]) {
+    const manual = manualLocations || manualParticipants;
+    const { raw, messages } = await partialBindingFixture();
+    raw.entities = [...reachable().entities, { id: 'place-library', entityType: 'place', displayName: '人工图书室', recordStatus: 'active', aliases: [] }];
+    raw.floorMemories[1].locations = [{ entityId: 'place-library', name: '人工图书室', change: 'present', participantEntityIds: [PERSON] }];
+    raw.floorMemories[1].participants = [{ entityId: PERSON }];
+    raw.run = { diagnostics: { floorProvenance: { 'partial-floor-2': { locationsEdited: manualLocations, participantsEdited: manualParticipants } } } };
+    if (manualLocations && manualParticipants) {
+      raw.floorMemories[0].recordStatus = 'superseded';
+      raw.floorMemories[1].sourceFloorIds = [raw.floors[0].id, raw.floors[1].id];
+      messages[0].mes = '聚合成员原文已经改写。';
+    } else messages[1].mes = '正文已改，人工资料仍有效。';
+    let source = await projectRecallSource(raw, () => new Date(NOW), null, { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: messages });
+    const memory = source.floorMemories.find(value => value.floorId === 'partial-floor-2');
+    assert.equal(Boolean(memory), manual);
+    if (manual) {
+      assert.equal(memory.locations.length, Number(manualLocations));
+      assert.equal(memory.participants.length, Number(manualParticipants));
+      const selected = selectRecall({ source, queryContext: buildRecallQueryContext({ coreChat: [{ is_user: true, mes: '阿裴在人工图书室的情况如何？' }] }), contextSize: 12000 });
+      if (manualLocations) assert.match(selected.injectionText, /人工图书室/u);
+      assert.equal(memory.summary, '');
+      raw.floorMemories[1].locations = [];
+      raw.floorMemories[1].participants = [];
+      source = await projectRecallSource(raw, () => new Date(NOW), null, { context: { chatMetadata: { qianqianjie: { chatId: CHAT } } }, chat: messages });
+      assert.deepEqual(source.floorMemories.find(value => value.floorId === 'partial-floor-2').locations, []);
+    }
+  }
+});
+
 test('同USER手工摘要修订只更新有关冻结内容，不重新调用选材模型', async () => {
   const raw = await singleFloorReachable({ summary: '钟楼手工旧稿。' });
   raw.floorMemories[0].summary = { effectiveSource: 'user', aiText: 'AI原稿。', userText: '钟楼手工旧稿。' };
@@ -3514,7 +3648,7 @@ test('同 user 冻结回执保留首次选中时间原文；旧schema13仍只作
     assert.equal(reused.lastRecall.reusedReceipt, true);
     assert.equal(reused.lastRecall.injectionText, receipt.injectionText, scenario);
     assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), receipt.injectionText, scenario);
-    assert.equal(checkReads, 0, '冻结复用不读取变化后的时间投影');
+    assert.equal(checkReads, 1, '冻结仅核原选时间的人工操作，普通自动投影变化保原文');
     if (scenario === 'unchanged') {
       harness.runtime.invalidate('simulateReload'); harness.userMessage.extra[RECALL_RECEIPT_KEY] = old;
       armed = false;
@@ -4312,7 +4446,7 @@ test('runtime Q候选只用一次既有utility，provider初取与按所选ID复
           pendingHeader: context.pendingHeader, scopeLine: context.scopeLine } : {}) });
       const selected = Object.hasOwn(context, 'selectedEventIds');
       return { anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION,
-        text: selected ? `${context.scopeLine}\n\n${context.pendingHeader}\n- 仍需归还钟楼钥匙；尚未记录完成。`
+        text: selected ? `${context.scopeLine}\n\n${RECALL_KNOWLEDGE_GUIDANCE}\n\n${context.pendingHeader}\n- 仍需归还钟楼钥匙；尚未记录完成。`
           : '本轮千事资料来源截至：AI #50。\n\n[相关时间线]\n- 时间未知：已被R覆盖的钟楼旧日常\n\n[相关未完事项]\n- 仍需归还钟楼钥匙；尚未记录完成。',
         eventIds: selected ? [] : ['Q1-event'], matterIds: ['Q2-matter'],
         ...(!selected ? { candidates, currentStoryTime: '大陆历1686年9月22日 20:30' } : {}),
@@ -4336,7 +4470,7 @@ test('runtime Q候选只用一次既有utility，provider初取与按所选ID复
   assert.equal(providerContexts[1].scopeLine, '本轮千事资料来源截至：AI #50。', '选中复验保留该回执的实际来源截止');
   assert.match(receipt.injectionText, /<qqj_recalled_context>/u);
   assert.match(receipt.injectionText, /仍需归还钟楼钥匙/u);
-  assert.match(receipt.qianshiProgress.text, /^本轮千事资料来源截至：AI #50。\n\n\[相关跟进事项\]/u);
+  assert.ok(receipt.qianshiProgress.text.startsWith(`本轮千事资料来源截至：AI #50。\n\n${RECALL_KNOWLEDGE_GUIDANCE}\n\n[相关跟进事项]`));
   assert.doesNotMatch(receipt.injectionText, /已被R覆盖的钟楼旧日常/u);
   assert.deepEqual(receipt.qianshiProgress.matterIds, ['Q2-matter']);
 
@@ -4659,7 +4793,7 @@ test('复用回执时千事变化不读取 provider、不重跑选材并保留�
   let activeProgress = true, selections = 0;
   const harness = createRuntimeHarness({
     selector: input => { selections += 1; return selectRecall(input); },
-    qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' },
+    qianshiProgressProvider: () => ({ projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION, anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' },
       text: activeProgress ? '[当前剧情进度]\n- [待办] 归还旧书' : '', eventIds: activeProgress ? ['event-1'] : [], matterIds: activeProgress ? ['matter-1'] : [] }),
   });
   const first = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
@@ -6687,7 +6821,7 @@ test('同一 user 的 normal/regenerate/swipe/continue 复用首次选材并核�
     assert.equal(reused.lastRecall.injectionText, originalInjection, type);
     assert.equal(latestPromptValue(harness.prompts, RECALL_PROMPT_SLOT), originalInjection, type);
   }
-  assert.deepEqual(calls, { source: 0, root: 0, identity: 4, time: 0, qianshi: 0, selector: 0 });
+  assert.deepEqual(calls, { source: 0, root: 0, identity: 4, time: 0, qianshi: 4, selector: 0 }, '每次只核当前千事删除状态，不回读整图或重选材');
   assert.equal(harness.userMessage.extra[RECALL_RECEIPT_KEY].receiptFingerprint, originalReceipt.receiptFingerprint, '复用不得重签或重存原回执');
 
   harness.runtime.invalidate('simulateReload');
@@ -6696,7 +6830,7 @@ test('同一 user 的 normal/regenerate/swipe/continue 复用首次选材并核�
   const restoredReuse = await harness.runtime.intercept(harness.chat, 12000, null, 'normal');
   assert.equal(restoredReuse.lastRecall.reusedReceipt, true);
   assert.equal(restoredReuse.lastRecall.injectionText, originalInjection);
-  assert.deepEqual(calls, { source: 0, root: 0, identity: 1, time: 0, qianshi: 0, selector: 0 }, '刷新后复用同票并核当前辅助资料');
+  assert.deepEqual(calls, { source: 0, root: 0, identity: 1, time: 0, qianshi: 1, selector: 0 }, '刷新后复票只核当前人工和删除投影，不回读整图或重选');
 
   const replacement = { is_user: true, is_system: false, mes: harness.userMessage.mes };
   harness.chat.splice(1, 1, replacement);
@@ -8778,7 +8912,9 @@ test('召回新注入直陈当时承诺与可见性，态度对象不冒作接�
     manualPlaces:[{kind:'placeFoundation',placeEntityId:'room',text:'客厅有沙发',source:{kind:'worldbook',locator:'院落:2'}}]});
   for(const label of ['历史承诺·当时已作出','历史承诺·当时已接受','历史承诺·当时已拒绝','历史承诺·当时成立未定','当时计划','当时共同接受的计划'])assert.ok(injection.includes(label),label);
   assert.match(injection,/可见性：可观察/u);assert.match(injection,/态度对象：林岚/u);
-  assert.match(injection,/接收者：乙/u);assert.doesNotMatch(injection,/接收者：林岚/u);
+  assert.match(injection,/接收者：乙/u);
+  assert.doesNotMatch(injection.split('\n').find(line=>line.includes('显得疲惫')),/接收者：林岚/u);
+  assert.match(injection,/表达者：裴晚生。接收者：林岚。内容：历史承诺/u);
   assert.match(injection,/知情：裴晚生/u);assert.match(injection,/地点资料/u);assert.match(injection,/世界书设定：院落:2/u);
   assert.doesNotMatch(injection,/不代表|不得|不构成|未赋予|以后文为准|尚未履行/u);
   assert.doesNotMatch(injection,/林岚不知情|所有人物未知|待履行|状态：未完成/u);
@@ -9368,4 +9504,407 @@ test('276成功核心读取的signal保后台缓存verifyRoot可用', async () =
   assert.equal(result.lastRecall.status, 'ready');
   assert.equal((await verifyRoot()).status, 'ready', '读取返回后缓存publish仍能核验root');
   assert.equal(verified, 1);
+});
+
+
+test('第一批选材隔离：真实年度独池坏可选字段退空，主答复缺失仍失败', async () => {
+  const source = selectorSource({ memories: [], currentState: [] });
+  source.timeProjection = { corrections: {}, reminders: [{ itemId: 'annual-only', type: 'annual', subjectEntityId: PERSON,
+    distance: null, rankText: '裴晚生生日霜月初三', text: '裴晚生 / 生日：霜月初三', sourceSignature: 'annual-only' }] };
+  let calls = 0;
+  const result = await selectRecallWithLlm({ source, queryContext: { ...llmQuery, text: '裴晚生生日', latestUserText: '裴晚生生日' }, generateUtilityTask: async options => {
+    calls += 1; const packet = JSON.parse(options.taskMessages[0].content);
+    assert.equal(packet.candidates.length, 0); assert.equal(packet.annualCandidates.length, 1);
+    return { jsonData: { history_exclude_keys: [], state_exclude_keys: [], annual_retain_keys: { bad: true } } };
+  } });
+  assert.equal(calls, 1); assert.equal(result.timeDependencies.reminders.length, 0);
+  assert.doesNotMatch(result.injectionText, /霜月初三/);
+  await assert.rejects(selectRecallWithLlm({ source, queryContext: { ...llmQuery, text: '裴晚生生日', latestUserText: '裴晚生生日' }, generateUtilityTask: async () => ({ jsonData: {} }) }),
+    error => error.code === 'V3_RECALL_LLM_FIELDS_MISSING');
+});
+
+
+test('第一批选材隔离：真实人工原文候选坏选择退空，合法主材料照常注入', async () => {
+  const value = reachable(), raw = '人工原文全文仅明确选择后可注入';
+  value.floorMemories[0].exactAnchors = [{ anchorId: 'aaaaaaaa-0000-4000-8000-000000000001', kind: 'other', exactText: raw,
+    occurrence: 1, speakerEntityId: null, whyPreserve: '人工记录', manual: true, carrier: '便笺', sourceFloorId: FLOOR1 }];
+  const source = await projectRecallSource(value, () => new Date(NOW), sourceAttempts('ready'));
+  let calls = 0;
+  const result = await selectRecallWithLlm({ source, queryContext: { text: '阿裴的便笺', latestUserText: '阿裴的便笺', messageCount: 1 }, generateUtilityTask: async options => {
+    calls += 1; const packet = JSON.parse(options.taskMessages[0].content);
+    assert.ok(packet.candidates.some(candidate => candidate.fact.includes('载体：便笺')));
+    return { jsonData: { history_exclude_keys: [], state_exclude_keys: [], artifact_select_keys: { bad: true } } };
+  } });
+  assert.equal(calls, 1); assert.ok(result.injectionText); assert.doesNotMatch(result.injectionText, new RegExp(raw));
+});
+
+test('知情范围：R承诺直陈表达接收范围，Q候选及注入保私下原描述', async () => {
+  const memories = Array.from({ length: 8 }, (_, index) => recallMemory(index + 1));
+  const target = '88888888-7777-4777-8777-777777777777';
+  memories[0] = recallMemory(1, { commitments: [{ speakerEntityId: PERSON, targetEntityIds: [target],
+    kind: 'agreement', content: '周末清晨一起去看海', status: 'accepted', exactAnchorId: null }] });
+  const source = selectorSource({ memories });
+  const query = { text: '阿裴与林岚周末看海', latestUserText: '阿裴与林岚周末看海' };
+  const context = historySelectionContext(source, query);
+  const facts = context.facts.filter(value => value.kind === 'commitment');
+  const entityById = new Map(source.entities.map(entity => [entity.entityId, entity]));
+  const r = formatRecallInjection({ coverage: source.coverage, floors: [{ assistantSeq: 1, items: facts }], states: [], cseChanges: [], entityById });
+  assert.match(r, /表达者：裴晚生/u); assert.match(r, /接收者：林岚/u);
+  assert.match(r, /资料供作者理解剧情/u);
+  const floor = { id: FLOOR1, chatId: CHAT, narrativeGeneration: GEN, assistantSeq: 1, hostLocator: { messageIndex: 0 }, content: { canonicalContent: '二人私下约好看海。' } };
+  const delta = await compileQianshiDelta({ floor, now: NOW, packet: { qianshi: { events: [{ key: 'sea', title: '周末看海',
+    description: '裴晚生与林岚二人私下对话约好同行，乙未参与对话。', people: ['裴晚生', '林岚'], status: 'planned', matter: true }], order: [] } } });
+  const graph = { root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'head' }, floors: [floor],
+    floorMemories: [{ id: MEMORY1, floorId: FLOOR1, recordStatus: 'active', chronology: [], qianshiDelta: delta }], entities: [] };
+  const prepared = prepareQianshiRecallCandidates(graph, { queryContext: query });
+  assert.ok(JSON.stringify(prepared.candidates).includes('二人私下对话'));
+  const q = projectQianshiCandidateSelection(prepared.candidates);
+  assert.match(q.text, /二人私下对话/u); assert.match(q.text, /乙未参与对话/u);
+  assert.match(q.text, /人物知情依/u);
+  assert.ok(q.characterCount <= 4000);
+  source.qianshiCandidates = prepared.candidates; source.qianshiProgress = q;
+  source.currentState = [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [{ stateId: ITEM, text: '保留的人物状态',
+    reason: '已存', visibility: 'private', origin: 'floor', towardEntityId: target, sourceFloorId: 'floor-8', sourceAssistantSeq: 8, sourceDeltaId: DELTA1 }] }];
+  let calls = 0;
+  const generate = async options => {
+    calls++; const request = JSON.parse(options.taskMessages[0].content);
+    assert.ok(JSON.stringify(request.qianshiCandidates).includes('二人私下对话'));
+    assert.match(options.systemPrompt, /资料供作者理解剧情/u);
+    return { jsonData: { history_exclude_keys: [], state_exclude_keys: [], qianshi_exclude_keys: [] } };
+  };
+  const combined = await selectRecallWithLlm({ source, queryContext: query, contextSize: 12000, generateUtilityTask: generate });
+  assert.equal(calls, 1); assert.match(combined.injectionText, /接收者：林岚/u);
+  assert.match(combined.qianshiProgress.text, /乙未参与对话/u);
+  const only = await selectRecallWithLlm({ source: { ...source, floorMemories: [], currentState: [] }, queryContext: query, contextSize: 12000, generateUtilityTask: generate });
+  assert.equal(calls, 1, 'Q-only沿既有本地选中，不增加模型请求'); assert.match(only.qianshiProgress.text, /二人私下对话/u);
+  const manual = structuredClone(graph), event = manual.floorMemories[0].qianshiDelta.events[0];
+  manual.floorMemories[0].qianshiDelta.manualEventOverrides = [{ eventId: event.id, description: '人工确认二人私下约定，乙未获告知。' }];
+  assert.match(projectQianshiRecall(manual).text, /人工确认二人私下约定/u);
+  const long = structuredClone(graph); long.floorMemories[0].qianshiDelta.events[0].description = '完整上下文'.repeat(780);
+  const bounded = projectQianshiRecall(long, { characterBudget: 1000 });
+  assert.ok(bounded.characterCount <= 1000); assert.deepEqual(bounded.matterIds, [], '完整上下文超预算时整条省略');
+});
+
+test('知情范围：旧冷热冻结票四入口更新R接收范围及已选Q上下文，仍只选择一次', async t => {
+  for (const mode of ['current', 'legacy', 'legacyBudget']) await t.test(mode, async () => {
+    const legacy = mode !== 'current', budgetFull = mode === 'legacyBudget';
+    const floor = { id: FLOOR1, chatId: CHAT, narrativeGeneration: GEN, assistantSeq: 1, hostLocator: { messageIndex: 0 }, content: { canonicalContent: '二人私下约好看海。' } };
+    const delta = await compileQianshiDelta({ floor, now: NOW, packet: { qianshi: { events: [{ key: 'sea', title: '周末私下看海', description: '裴晚生与林岚二人私下对话约好同行，乙未参与对话。', people: ['裴晚生', '林岚'], status: 'planned', matter: true }], order: [] } } });
+    const graph = { root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'head' }, floors: [floor],
+      floorMemories: [{ id: MEMORY1, floorId: FLOOR1, recordStatus: 'active', chronology: [], qianshiDelta: delta }], entities: [] };
+    let selections = 0, selectedReads = 0;
+    const h = createRuntimeHarness({ manualMemorySnapshot: () => null, selector: input => { selections++; return selectRecall(input); },
+      qianshiProgressProvider: (_source, options) => {
+        if (options.selectedMatterIds) selectedReads++;
+        return { ...projectQianshiRecall(graph, options), anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' } };
+      } });
+    h.source.floorMemories[1].commitments = [{ speakerEntityId: PERSON, targetEntityIds: [h.source.entities[1].entityId],
+      kind: 'agreement', content: '周末清晨一起去看海', status: 'accepted', exactAnchorId: null }];
+    await h.runtime.intercept(h.chat, 12000, null, 'normal'); await flushReceiptSave();
+    const old = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    const oldQ = { projectionVersion: 6, text: '[相关跟进事项]\n- 周末私下看海；状态：待办；跟进：持续。', eventIds: old.qianshiProgress.eventIds, matterIds: old.qianshiProgress.matterIds };
+    oldQ.fingerprint = await fingerprintText(JSON.stringify(oldQ));
+    old.injectionText = old.injectionText.replace(/<qqj_qianshi_progress>[\s\S]*?<\/qqj_qianshi_progress>/u, `<qqj_qianshi_progress>\n${oldQ.text}\n</qqj_qianshi_progress>`)
+      .replace(/资料供作者理解剧情。[^\n]*?原语义。/u, '')
+      .replace('表达者：裴晚生。接收者：林岚。内容：', '裴晚生 → 林岚：');
+    old.qianshiProgress = oldQ;
+    old.stages.qianshiTokenBudget = estimateRecallTokens(`\n\n<qqj_qianshi_progress>\n${oldQ.text}\n</qqj_qianshi_progress>`);
+    old.stages.estimatedTokenCount = estimateRecallTokens(old.injectionText);
+    const literal = '某人说（甲 → 乙）：原句提到[已表达/已共享信息]。';
+    if (legacy) {
+      delete old.timeDependencies.renderPlan;
+      old.injectionText = old.injectionText.replace('</qqj_recalled_context>', `- [旧事] ${literal}\n</qqj_recalled_context>`);
+    }
+    if (!legacy) assert.ok(old.timeDependencies.renderPlan, 'fixture requires production renderPlan');
+    if (budgetFull) old.stages.estimatedTokenBudget = estimateRecallTokens(old.injectionText);
+    const budget = old.stages.estimatedTokenBudget;
+    old.receiptFingerprint = await receiptFingerprint(old);
+    h.runtime.invalidate('knowledge-old-ticket');
+    const reads = selectedReads;
+    for (const type of ['normal', 'regenerate', 'swipe', 'continue']) {
+      const result = await h.runtime.intercept(h.chat, 12000, null, type);
+      assert.equal(result.lastRecall.reusedReceipt, true);
+      if (budgetFull) {
+        assert.equal(result.lastRecall.qianshiProgress, null, '完整Q上下文超原预算时整条省略');
+        assert.ok(estimateRecallTokens(result.lastRecall.injectionText) <= budget);
+      } else {
+        assert.match(result.lastRecall.injectionText, /二人私下对话/u);
+        assert.match(result.lastRecall.injectionText, /乙未参与对话/u);
+      }
+      if (legacy) {
+        assert.match(result.lastRecall.injectionText, /裴晚生 → 林岚：/u, '无结构见证的grouped旧句保持字面');
+        assert.ok(result.lastRecall.injectionText.includes(literal), '普通原句中的标题和箭头保持字面');
+      }
+      else {
+        assert.match(result.lastRecall.injectionText, /表达者：裴晚生/u);
+        assert.match(result.lastRecall.injectionText, /接收者：林岚/u);
+      }
+      assert.match(result.lastRecall.injectionText, budgetFull ? /作者资料按原描述/u : /资料供作者理解剧情/u);
+      const inline = projectInlineRecallReceipt(result.lastRecall);
+      assert.equal(inline.protocolRecognized, true, '新旧票仍经真实inline消费者识别');
+      assert.equal(inline.objectItems.some(item => String(item.text ?? '').startsWith('资料供作者理解剧情')), false, '知情规则不伪装成千事条目');
+      assert.equal(result.lastRecall.stages.estimatedTokenCount, estimateRecallTokens(result.lastRecall.injectionText));
+    }
+    assert.equal(selections, 1); assert.equal(selectedReads, reads + 1, '旧版Q仅按原已选ID升级一次');
+    await flushReceiptSave(); h.runtime.invalidate('knowledge-new-ticket-cold');
+    const cold = await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+    assert.equal(cold.lastRecall.reusedReceipt, true); assert.equal(selections, 1);
+  });
+});
+
+test('第二批冻结人物明确删除与归并按稳定ID到达CSE，四入口和冷读不重选', async t => {
+  for (const mode of ['delete', 'merge', 'legacyDelete']) await t.test(mode, async () => {
+    let projection = {}, selections = 0;
+    const h = createRuntimeHarness({ manualMemorySnapshot: () => null, identityProjectionProvider: async () => projection,
+      selector: input => { selections++; return selectRecall(input); } });
+    const target = h.source.entities[2].entityId;
+    h.source.currentState = [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [{ stateId: ITEM,
+      text: '冻结人物唯一人工状态', origin: 'manual', visibility: 'private', reason: '人工', towardEntityId: target,
+      sourceFloorId: 'floor-8', sourceDeltaId: DELTA1, sourceAssistantSeq: 8 }] }];
+    const first = await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    assert.match(first.lastRecall.injectionText, /冻结人物唯一人工状态/u);
+    await flushReceiptSave();
+    if (mode === 'legacyDelete') {
+      const saved = h.userMessage.extra[RECALL_RECEIPT_KEY]; delete saved.timeDependencies.renderPlan;
+      saved.receiptFingerprint = await receiptFingerprint(saved); h.runtime.invalidate('legacy-person-delete');
+    }
+    projection = mode === 'merge' ? { identityRedirectsByEntityId: { [PERSON]: target }, currentNamesByEntityId: { [target]: '合并保留人物' } }
+      : { deletedEntityIds: [PERSON] };
+    for (const type of ['normal', 'regenerate', 'swipe', 'continue']) {
+      const result = await h.runtime.intercept(h.chat, 12000, null, type);
+      assert.equal(result.lastRecall.reusedReceipt, true);
+      if (mode === 'merge') {
+        assert.ok(result.lastRecall.selectedStates.every(value => value.subjectEntityId === target));
+        assert.match(result.lastRecall.injectionText, /合并保留人物/u);
+      } else assert.doesNotMatch(result.lastRecall.injectionText, /冻结人物唯一人工状态/u);
+    }
+    await flushReceiptSave(); h.runtime.invalidate('person-operation-cold');
+    const cold = await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+    assert.equal(cold.lastRecall.reusedReceipt, true); assert.equal(selections, 1);
+  });
+});
+
+test('千事时效旧冻结票四生成入口和冷读按原选ID补剧情时间且不重选', async t => {
+  for (const legacy of [false, true]) await t.test(legacy ? '无plan旧票' : '有plan旧票', async () => {
+    const floor = { id: FLOOR1, chatId: CHAT, narrativeGeneration: GEN, assistantSeq: 1, hostLocator: { messageIndex: 0 }, content: { canonicalContent: '两人约定日后归还书。' } };
+    const delta = await compileQianshiDelta({ floor, now: NOW, packet: { qianshi: { events: [{ key: 'book', title: '日后归还书', description: '两人私下约定日后归还。', storyTime: '2024-03-18 07:45', scheduledTime: '2024-04-01', status: 'planned', following: true, matter: true }], order: [] } } });
+    const graph = { root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'head' }, floors: [floor], entities: [], floorMemories: [{ id: MEMORY1, floorId: FLOOR1, recordStatus: 'active', chronology: [], qianshiDelta: delta }] };
+    let selections = 0, selectedReads = 0;
+    const h = createRuntimeHarness({ manualMemorySnapshot: () => null, selector: input => { selections++; return selectRecall(input); }, qianshiProgressProvider: (_source, options) => {
+      if (options.selectedMatterIds) selectedReads++;
+      return { ...projectQianshiRecall(graph, options), anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' } };
+    } });
+    await h.runtime.intercept(h.chat, 12000, null, 'normal'); await flushReceiptSave();
+    const receipt = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    const previous = { ...receipt.qianshiProgress, projectionVersion: 7, text: '[相关跟进事项]\n- 日后归还书；状态：待办；跟进：持续。' };
+    delete previous.fingerprint; previous.fingerprint = await fingerprintText(JSON.stringify(previous));
+    receipt.injectionText = receipt.injectionText.replace(/<qqj_qianshi_progress>[\s\S]*?<\/qqj_qianshi_progress>/u, `<qqj_qianshi_progress>\n${previous.text}\n</qqj_qianshi_progress>`);
+    receipt.qianshiProgress = previous;
+    receipt.stages.qianshiTokenBudget = estimateRecallTokens(`\n\n<qqj_qianshi_progress>\n${previous.text}\n</qqj_qianshi_progress>`);
+    receipt.stages.estimatedTokenCount = estimateRecallTokens(receipt.injectionText);
+    if (legacy) delete receipt.timeDependencies.renderPlan;
+    receipt.receiptFingerprint = await receiptFingerprint(receipt);
+    h.runtime.invalidate('temporal-old-receipt');
+    const reads = selectedReads;
+    for (const type of ['normal', 'regenerate', 'swipe', 'continue']) {
+      const result = await h.runtime.intercept(h.chat, 12000, null, type);
+      assert.equal(result.lastRecall.reusedReceipt, true);
+      assert.match(result.lastRecall.injectionText, /最近剧情记录：2024-03-18 07:45（AI #1）/u);
+      assert.match(result.lastRecall.injectionText, /记录状态：待办/u);
+      assert.match(result.lastRecall.injectionText, /约定：2024-04-01/u);
+      assert.equal(result.lastRecall.stages.estimatedTokenCount, estimateRecallTokens(result.lastRecall.injectionText));
+    }
+    await flushReceiptSave(); h.runtime.invalidate('temporal-current-receipt-cold');
+    assert.equal((await h.runtime.intercept(h.chat, 12000, null, 'regenerate')).lastRecall.reusedReceipt, true);
+    assert.equal(selections, 1);
+    assert.equal(selectedReads, reads + 1);
+  });
+});
+
+test('第六批时间召回：人工改写清空重填及删项贯通四入口冷热票，自动推进保原选择', async t => {
+  for (const type of ['normal', 'regenerate', 'continue', 'swipe']) await t.test(type, async () => {
+    let revision = null, label = '最初钟楼约定', available = true, selected = 0, observationKey = 'first';
+    const provider = () => ({ fingerprint: revision ?? 'initial', corrections: {}, presentItemIds: available ? ['chosen'] : [],
+      manualTimeItems: revision ? { chosen: { revision, revisionsByObservation: { first: null, [observationKey]: revision } } } : {},
+      reminders: label ? [{ itemId: 'chosen', type: 'deadline', distance: 0, text: `阿裴 / ${label}`, rankText: '钟楼赴约',
+        sourceSignature: JSON.stringify([PERSON, observationKey, []]) }] : [] });
+    const options = { timeProjectionProvider: provider, selector: input => { selected++; return selectRecall(input); } };
+    let h = createRuntimeHarness(options);
+    await h.runtime.intercept(h.chat, 12000, null, 'normal');
+    assert.match(h.runtime.getState().lastRecall.injectionText, /最初钟楼约定/u);
+    label = '自动无关推进';
+    await h.runtime.intercept(h.chat, 12000, null, type);
+    assert.match(h.runtime.getState().lastRecall.injectionText, /最初钟楼约定/u);
+    revision = 'manual-1'; observationKey = 'edit-1'; label = '人工钟楼改名';
+    await h.runtime.intercept(h.chat, 12000, null, type);
+    assert.match(h.runtime.getState().lastRecall.injectionText, /人工钟楼改名/u);
+    revision = 'manual-2'; observationKey = 'edit-2'; label = '';
+    await h.runtime.intercept(h.chat, 12000, null, type);
+    assert.doesNotMatch(h.runtime.getState().lastRecall.injectionText, /人工钟楼改名|最初钟楼约定/u);
+    const extra = structuredClone(h.userMessage.extra);
+    h = createRuntimeHarness(options); h.userMessage.extra = extra;
+    await h.runtime.intercept(h.chat, 12000, null, type);
+    assert.doesNotMatch(h.runtime.getState().lastRecall.injectionText, /人工钟楼改名|最初钟楼约定/u);
+    revision = 'manual-3'; observationKey = 'edit-3'; label = '人工重新填写';
+    await h.runtime.intercept(h.chat, 12000, null, type);
+    assert.match(h.runtime.getState().lastRecall.injectionText, /人工重新填写/u);
+    available = false;
+    await h.runtime.intercept(h.chat, 12000, null, type);
+    assert.doesNotMatch(h.runtime.getState().lastRecall.injectionText, /人工重新填写/u);
+    assert.equal(selected, 1);
+    const receipt = h.userMessage.extra[RECALL_RECEIPT_KEY];
+    assert.equal(receipt.injectionText, latestPromptValue(h.prompts, RECALL_PROMPT_SLOT));
+    assert.equal(receipt.stages.estimatedTokenCount, estimateRecallTokens(receipt.injectionText));
+  });
+});
+
+test('第六批时间召回：准备末次核验及冻结刷新等待及时响应停止，迟到结果不注入', async t => {
+  for (const stage of ['prepare', 'verify', 'frozen']) for (const late of ['resolve', 'reject']) await t.test(`${stage}/${late}`, async () => {
+    let reads = 0, armed = stage !== 'frozen', release, rejected, entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const projection = { fingerprint: 'time', corrections: {}, presentItemIds: ['chosen'], manualTimeItems: {},
+      reminders: [{ itemId: 'chosen', type: 'deadline', distance: 0, rankText: '钟楼赴约', text: '钟楼约定', sourceSignature: 'original' }] };
+    const h = createRuntimeHarness({ timeProjectionProvider: () => {
+      reads++;
+      if (armed && (stage !== 'verify' || reads === 2)) { entered(); return new Promise((resolve, reject) => { release = resolve; rejected = reject; }); }
+      return structuredClone(projection);
+    } });
+    if (stage === 'frozen') { await h.runtime.intercept(h.chat, 12000, null, 'normal'); armed = true; }
+    const type = stage === 'frozen' ? 'regenerate' : 'normal';
+    h.handlers.get('generation-started')(type);
+    const pending = h.runtime.intercept(h.chat, 12000, null, type);
+    await started; h.handlers.get('generation-stopped')();
+    const result = await Promise.race([pending, new Promise((_, reject) => setTimeout(() => reject(new Error('停止后仍等待时间来源')), 100))]);
+    assert.equal(result.lastRecall.status, 'stale');
+    const prompt = latestPromptValue(h.prompts, RECALL_PROMPT_SLOT);
+    if (late === 'resolve') release(projection); else rejected(new Error('late time failure'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), prompt);
+    assert.equal(h.runtime.getActivityState().busy, false);
+  });
+});
+
+test('第六批时间召回：年度设定提醒沿独立来源冻结，普通事项presence不删除年度项', async () => {
+  let reads = 0, selections = 0;
+  const h = createRuntimeHarness({ timeProjectionProvider: () => {
+    reads++;
+    return { fingerprint: 'annual', corrections: {}, presentItemIds: [], manualTimeItems: {},
+      reminders: [{ itemId: 'annual:person:profile-birthday:0', type: 'annual', distance: 0,
+        rankText: '阿裴生日', text: '阿裴生日就在今日', sourceSignature: 'annual-setting-source' }] };
+  }, selector: input => { selections++; return selectRecall(input); } });
+  await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  const first = h.runtime.getState().lastRecall.injectionText, before = reads;
+  assert.match(first, /阿裴生日/u);
+  const result = await h.runtime.intercept(h.chat, 12000, null, 'regenerate');
+  assert.equal(result.lastRecall.injectionText, first);
+  assert.equal(result.lastRecall.reusedReceipt, true);
+  assert.equal(reads, before);
+  assert.equal(selections, 1);
+});
+
+test('可选千事删除故障只撤本次Q及关联提醒，冻结四入口与旧票恢复不重选', async t => {
+  for (const mode of ['regenerate', 'continue', 'swipe', 'cold', 'legacy', 'auxiliary-abort', 'reminders-only']) await t.test(mode, async () => {
+    let unavailable = false, deletions = [], reads = 0, selections = 0, aborts = 0;
+    const notifications = [];
+    const deletionProvider = () => { reads++; if (unavailable) throw mode === 'auxiliary-abort' ? new DOMException('辅助读取取消', 'AbortError')
+      : Object.assign(new Error('删除状态不可用'), { code: 'V3_MEMORY_FOUNDATION_NOT_READY' }); return { chatId: CHAT, events: deletions }; };
+    const options = { selector: input => { selections++; return selectRecall(input); }, qianshiDeletionProvider: deletionProvider, notifyUser: value => notifications.push(value),
+      qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION,
+        text: '[相关时间线]\n- 旧日：应删旧事\n- 今日：健康千事\n\n[当前待接续]\n- 原事项待办', eventIds: ['event-delete', 'event-keep'], matterIds: ['matter-book'] }),
+      timeProjectionProvider: () => ({ fingerprint: 'clock', corrections: {}, reminders: [
+        { itemId: 'book-time', text: '阿裴 / 关联事项提醒', sourceSignature: 'book-time', qianshiRef: { matterId: 'matter-book', originEventId: 'event-delete' } },
+        { itemId: 'independent', text: '钟楼 / 独立时间提醒', sourceSignature: 'independent' },
+      ] }),
+    };
+    if (mode === 'reminders-only') delete options.qianshiProgressProvider;
+    const first = createRuntimeHarness(options);
+    const initial = await first.runtime.intercept(first.chat, 12000, () => { aborts++; }, 'normal'); await flushReceiptSave(); first.handlers.get('generation-ended')();
+    assert.match(initial.lastRecall.injectionText, /关联事项提醒[\s\S]*独立时间提醒/u);
+    if (mode === 'legacy') {
+      const receipt = first.userMessage.extra[RECALL_RECEIPT_KEY]; delete receipt.timeDependencies.renderPlan; delete receipt.qianshiDeletionWitness;
+      receipt.receiptFingerprint = await receiptFingerprint(receipt); first.runtime.invalidate('legacy-fixture');
+    }
+    const original = structuredClone(first.userMessage.extra[RECALL_RECEIPT_KEY]);
+    const h = mode === 'cold' ? createRuntimeHarness(options) : first;
+    if (h !== first) h.userMessage.extra = structuredClone(first.userMessage.extra);
+    unavailable = true; reads = 0;
+    const degraded = await h.runtime.intercept(h.chat, 12000, () => { aborts++; }, ['continue', 'swipe'].includes(mode) ? mode : 'regenerate');
+    assert.equal(degraded.lastRecall.status, 'ready'); assert.equal(aborts, 0); assert.equal(reads, 1); assert.equal(selections, 1); assert.deepEqual(notifications, []);
+    assert.match(degraded.lastRecall.injectionText, /<qqj_recalled_context>[\s\S]*独立时间提醒/u);
+    assert.doesNotMatch(degraded.lastRecall.injectionText, /qqj_qianshi_progress|关联事项提醒/u);
+    assert.deepEqual(degraded.lastRecall.selectedFloors, initial.lastRecall.selectedFloors);
+    assert.deepEqual(degraded.lastRecall.selectedStates, initial.lastRecall.selectedStates);
+    assert.deepEqual(degraded.lastRecall.selectedCseChanges, initial.lastRecall.selectedCseChanges);
+    assert.equal(degraded.lastRecall.stages.timeReminderCount, 1);
+    assert.equal(degraded.lastRecall.injectionText, latestPromptValue(h.prompts, RECALL_PROMPT_SLOT));
+    assert.equal(degraded.lastRecall.stages.estimatedTokenCount, estimateRecallTokens(degraded.lastRecall.injectionText));
+    assert.equal(Object.hasOwn(degraded.lastRecall.stages, 'qianshiTokenBudget'), false);
+    assert.equal(degraded.lastRecall.stages.finalInjectionItemCount, initial.lastRecall.stages.finalInjectionItemCount - 1);
+    assert.equal(degraded.lastRecall.receiptPersistence, 'sessionOnly');
+    assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY], original, '瞬态降级不重写原成功签名票');
+    unavailable = false; deletions = [{ eventId: 'event-delete', matterId: 'matter-book' }];
+    const restored = await h.runtime.intercept(h.chat, 12000, () => { aborts++; }, 'continue');
+    assert.equal(restored.lastRecall.status, 'ready'); assert.equal(selections, 1); assert.equal(reads, 2); assert.equal(aborts, 0);
+    if (mode !== 'reminders-only') assert.match(restored.lastRecall.injectionText, /健康千事/u);
+    assert.match(restored.lastRecall.injectionText, /独立时间提醒/u);
+    assert.doesNotMatch(restored.lastRecall.injectionText, /应删旧事|原事项待办|关联事项提醒/u);
+    assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY], original);
+  });
+});
+
+test('删除状态瞬态降级保人工摘要新稿及CSE清空，恢复后才沿正常票落盘', async t => {
+  for (const legacy of [false, true]) await t.test(legacy ? 'legacy' : 'current', async () => {
+    const raw = await singleFloorReachable({ summary: '人工旧摘要' }); raw.entities = reachable().entities;
+    raw.floorMemories[0].summary = { effectiveSource: 'user', aiText: 'AI旧稿', userText: '人工旧摘要' };
+    const oldState = { id: 'manual-old', text: '人工旧状态', reason: '人工', visibility: 'private', origin: 'manual', towardEntityId: null,
+      sourceFloorId: raw.floors[0].id, sourceDeltaId: 'manual-delta-old' };
+    raw.stateDeltas = [{ id: oldState.sourceDeltaId, floorId: raw.floors[0].id, floorMemoryId: raw.floorMemories[0].id, recordStatus: 'active',
+      source: { manualSubjectEntityIds: [PERSON] }, subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [oldState] }],
+      fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'add', before: null, after: oldState }] }] }];
+    raw.currentStates = [{ subjects: raw.stateDeltas[0].subjectSnapshots }];
+    let unavailable = false, selections = 0;
+    const h = createRuntimeHarness({ sourceReader: options => readRecallSource(options), reachableReader: async () => structuredClone(raw), manualMemorySnapshot: () => raw,
+      selector: input => { selections++; return selectRecall(input); }, qianshiDeletionProvider: () => { if (unavailable) throw new Error('optional unavailable'); return { chatId: CHAT, events: [] }; },
+      qianshiProgressProvider: source => ({ anchor: { narrativeGeneration: source.narrativeGeneration, headCheckpointId: source.headCheckpointId }, projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION,
+        text: '[相关时间线]\n- 合法旧千事', eventIds: ['old-event'], matterIds: [] }),
+    });
+    h.chat[0].is_hidden = true;
+    await h.runtime.intercept(h.chat, 12000, null, 'normal'); await flushReceiptSave(); h.handlers.get('generation-ended')();
+    if (legacy) { const receipt = h.userMessage.extra[RECALL_RECEIPT_KEY]; delete receipt.timeDependencies.renderPlan; delete receipt.qianshiDeletionWitness;
+      receipt.receiptFingerprint = await receiptFingerprint(receipt); h.runtime.invalidate('legacy-fixture'); }
+    const original = structuredClone(h.userMessage.extra[RECALL_RECEIPT_KEY]); assert.match(original.injectionText, /人工旧状态/u);
+    raw.floorMemories[0].id = 'memory-manual-current'; raw.floorMemories[0].summary.userText = '人工最新摘要';
+    raw.rootRevision++; raw.root.headCheckpointId = raw.checkpoint.id = 'head-manual-current';
+    raw.stateDeltas = [{ id: 'manual-clear', floorId: raw.floors[0].id, floorMemoryId: raw.floorMemories[0].id, recordStatus: 'active', source: { manualSubjectEntityIds: [PERSON] },
+      subjectSnapshots: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [] }],
+      fixedChanges: [{ subjectEntityId: PERSON, items: [{ category: 'situational', action: 'remove', before: oldState, after: null }] }] }];
+    raw.currentStates = [{ subjects: raw.stateDeltas[0].subjectSnapshots }];
+    unavailable = true;
+    const degraded = await h.runtime.intercept(h.chat, 12000, null, 'regenerate'); await flushReceiptSave();
+    assert.equal(degraded.lastRecall.status, 'ready'); assert.match(degraded.lastRecall.injectionText, /人工最新摘要/u);
+    assert.doesNotMatch(degraded.lastRecall.injectionText, /人工旧摘要|人工旧状态|合法旧千事/u);
+    assert.deepEqual(h.userMessage.extra[RECALL_RECEIPT_KEY], original); assert.equal(h.saves, 1);
+    unavailable = false;
+    const restored = await h.runtime.intercept(h.chat, 12000, null, 'continue'); await flushReceiptSave();
+    assert.equal(restored.lastRecall.status, 'ready'); assert.match(restored.lastRecall.injectionText, /人工最新摘要[\s\S]*合法旧千事/u);
+    assert.doesNotMatch(restored.lastRecall.injectionText, /人工旧摘要|人工旧状态/u); assert.equal(selections, 1);
+    const saved = h.userMessage.extra[RECALL_RECEIPT_KEY]; assert.equal(saved.injectionText, restored.lastRecall.injectionText);
+    const cold = createRuntimeHarness({ sourceReader: options => readRecallSource(options), reachableReader: async () => structuredClone(raw), manualMemorySnapshot: () => raw,
+      selector: () => assert.fail('恢复后签名票应可冷复用') }); cold.chat[0].is_hidden = true; cold.userMessage.extra = structuredClone(h.userMessage.extra);
+    assert.equal((await cold.runtime.intercept(cold.chat, 12000, null, 'continue')).lastRecall.reusedReceipt, true);
+  });
+});
+
+test('千事删除读取等待中真正主取消仍清槽，不注入迟到可选结果', async () => {
+  let blocked = false, entered, release, aborts = 0;
+  const started = new Promise(resolve => { entered = resolve; });
+  const h = createRuntimeHarness({ qianshiProgressProvider: () => ({ anchor: { narrativeGeneration: GEN, headCheckpointId: 'head' }, projectionVersion: QIANSHI_RECALL_PROJECTION_VERSION,
+    text: '[相关时间线]\n- 千事', eventIds: ['event'], matterIds: [] }), qianshiDeletionProvider: () => {
+    if (!blocked) return { chatId: CHAT, events: [] }; entered(); return new Promise(resolve => { release = resolve; }); } });
+  await h.runtime.intercept(h.chat, 12000, null, 'normal'); h.handlers.get('generation-ended')(); blocked = true;
+  h.handlers.get('generation-started')('regenerate', {}, false);
+  const task = h.runtime.intercept(h.chat, 12000, () => { aborts++; }, 'regenerate'); await started;
+  h.handlers.get('generation-stopped')(); release({ chatId: CHAT, events: [] }); await task;
+  assert.equal(aborts, 0);
+  assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), '');
 });

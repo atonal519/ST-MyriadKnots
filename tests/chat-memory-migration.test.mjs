@@ -16,7 +16,7 @@ const assistant = (mes, swipes = [mes], swipe_id = 0) => ({ is_user: false, is_s
 const user = mes => ({ is_user: true, is_system: false, mes, send_date: `date:${mes}`, extra: { thirdParty: true } });
 const uuidFactory = () => { let value = 2000; return () => `${(++value).toString(16).padStart(8, '0')}-0000-4000-8000-000000000000`; };
 
-function backend(trace = []) {
+function backend(trace = [], { batchWrites = false } = {}) {
   const records = new Map();
   const client = {
     async get(collection, id) { const value = records.get(`${collection}/${id}`); if (!value) throw Object.assign(new Error('missing'), { status: 404 }); return structuredClone(value); },
@@ -26,6 +26,17 @@ function backend(trace = []) {
       if ((previous?.revision ?? 0) !== revision) throw Object.assign(new Error('conflict'), { status: 409 });
       const value = { revision: revision + 1, data: structuredClone(data) }; records.set(key, value); return structuredClone(value);
     },
+  };
+  if (batchWrites) client.putMany = async (collection, items) => {
+    trace.push(['putMany', collection, items.length, Buffer.byteLength(JSON.stringify({ records: items }))]);
+    const start = trace.length;
+    const results = [];
+    for (const item of items) {
+      try { results.push({ recordId: item.recordId, status: 200, envelope: await client.put(collection, item.recordId, item.data, item.expectedRevision) }); }
+      catch (error) { results.push({ recordId: item.recordId, status: error.status }); }
+    }
+    for (let index = start; index < trace.length; index++) if (trace[index][0] === 'put') trace[index][0] = 'batchItem';
+    return results;
   };
   return { client, records };
 }
@@ -37,8 +48,8 @@ function makeContext(chat) {
     openCharacterChat(name) { this.opened = name; } };
 }
 
-async function fixture(chat, { holdSourceRead = false, mutateTargetRead = null, host = 'native' } = {}) {
-  const trace = [], store = backend(trace), context = makeContext(chat);
+async function fixture(chat, { holdSourceRead = false, mutateTargetRead = null, host = 'native', batchWrites = false } = {}) {
+  const trace = [], store = backend(trace, { batchWrites }), context = makeContext(chat);
   const hostRoot = { getContext: () => context };
   const hostAdapter = createHostAdapter({ globalRef: host === 'luker' ? { Luker: hostRoot } : { SillyTavern: hostRoot } });
   const sourceIdentity = { hostChatId: 'A-file', chatId: A, characterLocator: 'character.png', personaLocator: 'persona.png' };
@@ -84,7 +95,9 @@ async function fixture(chat, { holdSourceRead = false, mutateTargetRead = null, 
 
 async function completedMemoryFixture(chat, migrateOptions = {}) {
   const h = await fixture(chat, migrateOptions);
+  let modelCalls = 0;
   const utility = async options => {
+    modelCalls++;
     if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) return { jsonData: {
       summary: '林岚在书房把钥匙放进木盒。', people: [{ name: '林岚' }],
     } };
@@ -116,7 +129,7 @@ async function completedMemoryFixture(chat, migrateOptions = {}) {
     sourceCandidates: [{ hostLocator: { messageIndex: floor.messageIndex }, rawFingerprint: source.content.rawFingerprint,
       canonicalFingerprint: source.content.canonicalFingerprint }], newUuid: uuidFactory() });
   assert.equal(eligible.length, 1, '该摘要和CSE完成楼确实满足搬家alias选择条件');
-  return { ...h, memoryRuntime, sourceReachable: reachable, sourceFloorId: floor.floorId };
+  return { ...h, memoryRuntime, sourceReachable: reachable, sourceFloorId: floor.floorId, get modelCalls() { return modelCalls; } };
 }
 
 test('尾部待回复用户消息与最近AI按原顺序优先携带，搬家只发布B文件与独立图', async () => {
@@ -290,4 +303,70 @@ test('辅助目录发布失败不否定已读回的搬家文件和独立图', as
   const qqj = h.files.get(result.hostChatId)[0].chat_metadata.qianqianjie;
   assert.equal(qqj.chatId, result.chatId); assert.deepEqual(qqj.file, { characterLocator: 'character.png', hostChatId: result.hostChatId });
   assert.ok(h.records.has(`chat-${result.chatId}/v3-root`)); assert.deepEqual(h.opened, [result.hostChatId]);
+});
+
+test('328搬家必要历法先保存再发布文件，历法失败原A与文件目录保持',async t=>{
+ for(const bad of [false,true])await t.test(bad?'历法保存失败':'健康顺序',async()=>{
+  const h=await fixture([user('开场'),assistant('她把钥匙放到书房。'),user('继续')]);const before=structuredClone([...h.records].filter(([key])=>key.startsWith(`chat-${A}/`)));const calendar={months:4,prefix:'启航'},calendars=new Map();
+  const moved=createChatMemoryMigration({client:h.client,session:{identity:()=>h.sourceIdentity},hostAdapter:h.hostAdapter,sourceStoreForIdentity:identity=>createFoundationStore({client:h.client,contextProvider:()=>identity}),listHostChats:async()=>[...h.files.keys()],freshUuid:uuidFactory(),now:()=>new Date(NOW),captureStoryCalendar:()=>calendar,persistStoryCalendar:async(chatId,value)=>{assert.equal(h.files.size,0);if(bad)throw Error('calendar failed');calendars.set(chatId,structuredClone(value));},fetchImpl:async(url,options)=>{const b=JSON.parse(options.body);if(url==='/api/chats/save'){assert.ok(calendars.has(b.chat[0].chat_metadata.qianqianjie.chatId));h.files.set(b.file_name,structuredClone(b.chat));return{ok:true};}const file=h.files.get(b.file_name);return{ok:!!file,status:file?200:404,json:async()=>structuredClone(file??{})};}});
+  if(bad){await assert.rejects(moved.migrateCurrent(),/calendar failed/);assert.equal(h.files.size,0);assert.equal(h.opened.length,0);}else{assert.equal((await moved.migrateCurrent()).status,'completed');assert.equal(h.files.size,1);}
+  assert.deepEqual([...h.records].filter(([key])=>key.startsWith(`chat-${A}/`)),before);
+ });
+});
+
+
+test('搬家正式入口按既有批写发布32和512楼，人工摘要逐字保留且源图不写', async t => {
+  for (const count of [32, 512]) await t.test(`${count}楼`, async () => {
+    const chat = [];
+    for (let index = 0; index < count; index++) chat.push(assistant(`第${index + 1}楼，林岚收好钥匙。`), user(`继续${index + 1}`));
+    const h = await completedMemoryFixture(chat, { batchWrites: true });
+    await h.memoryRuntime.editSummary(h.sourceFloorId, '人工确认：钥匙仍在木盒，保留这句原文。');
+    const source = await h.sourceStore.readReachable({ mode: 'full' });
+    const sourceBefore = JSON.stringify([...h.records].filter(([key]) => key.startsWith(`chat-${A}/`)));
+    h.trace.length = 0;
+    const modelCallsBefore = h.modelCalls;
+    const result = await h.migration.migrateCurrent();
+    assert.equal(result.status, 'completed');
+    const writes = h.trace.filter(item => item[1] === `chat-${result.chatId}` && ['put', 'putMany'].includes(item[0]));
+    const batches = writes.filter(item => item[0] === 'putMany');
+    assert.ok(batches.length > 0, '正式搬家必须复用store.putRecords，不能逐条PUT');
+    assert.ok(batches.every(item => item[2] <= 64 && item[3] <= 1048576));
+    assert.equal(writes.at(-1)[2], 'v3-root', '内容记录确认完毕才提交根');
+    assert.equal(JSON.stringify([...h.records].filter(([key]) => key.startsWith(`chat-${A}/`))), sourceBefore);
+    const target = await createFoundationStore({ client: h.client, contextProvider: () => ({ ...h.sourceIdentity, chatId: result.chatId, hostChatId: result.hostChatId }) }).readReachable();
+    assert.deepEqual(target.floors.map(item => item.content), source.floors.map(item => item.content));
+    assert.deepEqual(target.floorMemories.map(({ chatId, narrativeGeneration, ...item }) => item), source.floorMemories.map(({ chatId, narrativeGeneration, ...item }) => item));
+    assert.equal(target.floorMemories[0].summary.userText, '人工确认：钥匙仍在木盒，保留这句原文。');
+    assert.equal(h.files.get(result.hostChatId).length, 3, '宿主文件仍只携两条原消息');
+    assert.equal(h.modelCalls, modelCallsBefore, '搬家不调用摘要或CSE模型');
+    console.log(JSON.stringify({ migrationBatchFixture: { floors: count, targetBatches: batches.length, targetSinglePuts: writes.length - batches.length,
+      batchLogicalRecords: batches.reduce((sum, item) => sum + item[2], 0), batchJsonBytes: batches.reduce((sum, item) => sum + item[3], 0), modelRequestsDuringMigration: h.modelCalls - modelCallsBefore } }));
+  });
+});
+
+
+test('搬家批内失败或冲突不提交根和宿主文件，超大正文沿原单写保完整', async t => {
+  for (const mode of ['partialFailure', 'conflict', 'oversized']) await t.test(mode, async () => {
+    const content = mode === 'oversized' ? '甲'.repeat(400000) : '来源原文';
+    const h = await fixture([assistant(content), user('继续'), assistant('末楼'), user('等待')], { batchWrites: true });
+    const sourceBefore = JSON.stringify([...h.records].filter(([key]) => key.startsWith(`chat-${A}/`)));
+    if (mode !== 'oversized') {
+      const putMany = h.client.putMany;
+      h.client.putMany = async (collection, records) => {
+        const saved = await putMany(collection, records.slice(1));
+        return [{ recordId: records[0].recordId, status: mode === 'conflict' ? 409 : 500, error: 'injected', message: 'injected failure' }, ...saved];
+      };
+      await assert.rejects(h.migration.migrateCurrent());
+      assert.equal(h.files.size, 0);
+      assert.equal([...h.records].filter(([key]) => !key.startsWith(`chat-${A}/`) && key.endsWith('/v3-root')).length, 0);
+      assert.ok([...h.records].some(([key]) => !key.startsWith(`chat-${A}/`)), '已确认成功记录保留，不补偿重写');
+    } else {
+      h.trace.length = 0;
+      const result = await h.migration.migrateCurrent(); assert.equal(result.status, 'completed');
+      const floor = [...h.records].find(([key, value]) => key.startsWith(`chat-${result.chatId}/v3-floor-`) && value.data.recordType === 'floor' && value.data.content.canonicalContent === content);
+      assert.ok(floor, '超1MiB正文逐字保存');
+      assert.ok(h.trace.some(item => item[0] === 'put' && item[1] === `chat-${result.chatId}` && item[2] === floor[0].split('/').at(-1)), '超大单条沿原单写');
+    }
+    assert.equal(JSON.stringify([...h.records].filter(([key]) => key.startsWith(`chat-${A}/`))), sourceBefore);
+  });
 });

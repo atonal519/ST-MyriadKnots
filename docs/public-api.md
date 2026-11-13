@@ -114,23 +114,43 @@ if (result.status === 'ready') {
 
 条目保留原文，并包含稳定的 `uid`、`comment`、`keys`、`content`、`constant` 和 `position` 字段。千千结关闭、身份尚未准备、暂不支持、没有条目和读取失败会分别返回状态；调用方不应把 `empty` 当作读取错误。
 
-### `readContext({ query, entityIds, maxCharacters })`
+### `readContext({ query, focusQuery, entityIds, participantNames, maxCharacters, maxSummaries, summaryCharacters, recentSummaries })`
 
 为指定人物按当前话题挑选档案、CSE 和有效 FloorMemory。完整正式快照已就绪时直接读取；尚未装载时等待一次既有只读 `inspect`（复用正在进行的装载），完成后重核身份与快照归属。它不调用模型、不返回宿主聊天正文、不生成或补齐资料、不写入存档，也不准备摘要或向量索引。
 
 ```js
 const result = await bridge.readContext({
   query: '钟楼、旧地图和守门约定',
+  focusQuery: '守门约定何时到期',
   entityIds: ['稳定人物标识'],
+  participantNames: ['已存人物名或别名'],
   maxCharacters: 12000,
+  maxSummaries: 20,
+  summaryCharacters: 8000,
+  recentSummaries: 3,
 });
 ```
+
+参数均可省略；不传新增参数时沿原有预算和选材方式。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `query` | `''` | 本次话题，最多取前8000字符参与本地排序。 |
+| `focusQuery` | `''` | 本次更需关注的重点，最多2000字符，以较高权重参与摘要排序。 |
+| `entityIds` | `[]` | 已知稳定人物标识，沿现有人工合并与删除映射读取。 |
+| `participantNames` | `[]` | 按已存人名和别名解析参与人物，并结合话题及保留的近期摘要补足可明确对应的人物；同名歧义不猜。 |
+| `maxCharacters` | `12000` | 所有输出正文共用的字符预算，最大40000。 |
+| `maxSummaries` | `null` | 作者侧摘要的最多条数；未指定时只受字符预算约束。指定后选中摘要按原楼序输出。 |
+| `summaryCharacters` | `null` | 作者侧摘要预算，计入总预算；默认取总预算的25%且不超过3000字符。 |
+| `recentSummaries` | `0` | 优先纳入最近若干条摘要候选，仍受条数与字符预算约束。 |
+
+摘要按完整条目纳入预算，保留人工摘要原文；不会为凑字符数切断一条摘要。这些选项不会触发摘要重做、向量索引或额外模型调用。
 
 结果包含 `identity`、`anchor`、`routerText`、`actors` 和 `coverage`。`routerText` 是明确标注的作者侧背景，供调度参考，不表示房间人物都已知；每个 actor 的 `profileText`、`stateText` 和 `memoryText` 只包含该人物可归属的资料。私密认知只给本人，信息转移只给明确接收者；承诺和计划保留未履行状态。人物身份沿用现有合并与删除映射，不按显示名猜测。
 
 没有实质档案材料的 NPC 可在原 `profileText` 预算内返回独立轻简介及来源标记，仅修改姓名或别名也保留这项参考；有实质档案材料或其它人工字段（含空）时只用其档案，不用 AI 简介补空。人工字段明确标注，人工空值保留“已明确清空，不补填”的含义。旧无引文简介另标历史来源；这些内容均占原有总预算，不增加额度。
 
-本方法使用千千结已有的轻量 BM25 纯排序挑选本地候选，属于按题筛选，不是完整语义或向量召回。`coverage.partial` 标记输出预算是否省略资料，`coverage.cseStatus` 单独报告人物状态资料是否已就绪；未准备好时返回 `not-ready`，当前没有有效资料时可以返回空文本，不表示调用失败。
+本方法使用千千结已有的轻量 BM25 纯排序挑选本地候选，属于按题筛选，不是完整语义或向量召回。`coverage.partial` 标记预算省略或人物资料、状态读取异常造成的不完整结果，`coverage.cseStatus` 单独报告人物状态资料是否已就绪；未准备好时返回 `not-ready`，当前没有有效资料时可以返回空文本，不表示调用失败。
 
 ## `getSnapshot()` 顶层结构
 
@@ -154,7 +174,7 @@ const result = await bridge.readContext({
 - `characterLocator` 和 `personaLocator` 标识当前角色与 Persona。
 - 顶层 `ready` 只表示当前身份可读。三个业务分区必须分别判断自己的状态。
 - 插件关闭或身份未准备好时，返回与 `getStatus()` 相同的 `disabled` / `not-ready` 结果，不会读取业务运行时。
-- 某个内部读取意外失败时返回 `status: 'error'`、简短 `message` 和当前 `identity`。
+- 某个业务分区读取或投影失败时，顶层仍保留 `ready` 和当前 `identity`，其它健康分区继续返回。失败的摘要或人物档案分区为 `status: 'error'` 并返回空列表；CSE不可用时为 `ready: false` 和空列表。调用方分别判断分区状态。
 
 千千结还会核对各分区的聊天身份。尚未加载、属于其他聊天或当前不可用的分区返回空数组，不会触发后台准备或把上一聊天的数据交给调用方。
 

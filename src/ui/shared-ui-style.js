@@ -89,6 +89,7 @@ const interactionColorCss = `
 .danger-action,:where(${controls}).danger{--qqj-control-fg:var(--qqj-color-danger);--qqj-control-accent:var(--qqj-color-danger);--qqj-control-hover-bg:color-mix(in srgb,var(--qqj-color-danger) 7%,var(--qqj-color-surface))}
 :where(${controls}):disabled{--qqj-control-fg:var(--qqj-disabled-color);--qqj-control-opacity:var(--qqj-disabled-opacity);--qqj-control-bg:var(--qqj-control-disabled-bg,var(--qqj-color-line));--qqj-control-border:var(--qqj-color-line);opacity:var(--qqj-disabled-opacity)}
 :where(${menu},${icons}):disabled{--qqj-control-disabled-bg:transparent}
+:where(.qqj-memory-menu-action,.qqj-profile-menu-action):disabled{--qqj-control-border:transparent}
 `;
 
 const popoverMotionCss = `
@@ -98,6 +99,7 @@ const popoverMotionCss = `
 `;
 const disclosureArrowCss = `
 .settings-drawer-summary::before,.settings-group-summary::before,.settings-sub-summary::before,.qqj-inline-select-chevron,.qqj-model-list-chevron,.qqj-memory-chevron,.qqj-person-summary::before,.qqj-section-summary::before,.qqj-cse-floor-summary::before,.qqj-cse-floor-state-summary::before,.qqj-memory-key-quotes-summary::before,.qqj-window-unassigned-summary::before,.qqj-window-summary::before,.qqj-editor-group-summary::before,.qqj-help-section-summary::before{display:inline-flex;align-items:center;justify-content:center;flex:0 0 var(--qqj-font-heading);width:var(--qqj-font-heading);height:var(--qqj-font-heading);margin:0;font-size:var(--qqj-font-heading);font-weight:400;line-height:1;vertical-align:middle;transform-origin:center}
+.qqj-memory-chevron,.qqj-memory-key-quotes-summary::before{background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center/100% 100% no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center/100% 100% no-repeat}
 `;
 export const sharedUiCss = `:host{${cssVars(sharedTokens)}}${buttonGeometryCss}${interactionColorCss}${popoverMotionCss}${disclosureArrowCss}`;
 export const sharedDialogCss = `.sp-root{${cssVars({ ...sharedTokens,

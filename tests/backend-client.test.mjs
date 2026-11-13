@@ -47,6 +47,8 @@ test('TT默认客户端识别原生批读能力，每批仅一次请求且不走
     await client.getMany('chat', ['first']);
     assert.equal(healthReads, 1, '后续批次复用能力结果');
     assert.equal(await client.putMany('chat', [{ recordId: 'never', data: {}, expectedRevision: 0 }]), null, '原生写入仍使用原单条CAS');
+    assert.equal(await createBackendClient().putMany('chat', [{ recordId: 'a', data: {}, expectedRevision: 0 }, { recordId: 'b', data: {}, expectedRevision: 0 }], { negotiate: true }), null);
+    assert.equal(healthReads, 1, 'TT显式多条批组也不新增能力探测');
   });
 });
 
@@ -795,4 +797,47 @@ test('275默认批读120秒，普通health及单请求默认15秒', async () => 
     await client.getMany('chat', ['v3-floor-memory-neutral']);
     assert.deepEqual(delays, [15000, 120000]);
   });
+});
+
+
+test('显式多条批写在暖读零回源的新client协商一次，旧后端与失败不逐包重探', async t => {
+  const records = [{ recordId: 'a', data: {}, expectedRevision: 0 }, { recordId: 'b', data: {}, expectedRevision: 0 }];
+  for (const mode of ['supported', 'legacy', 'failed']) await t.test(mode, async () => {
+    let health = 0, writes = 0, recovered = false;
+    const client = createBackendClient({ fetchImpl: async (url, options) => {
+      if (url.endsWith('/health')) {
+        health++;
+        if (mode === 'failed' && !recovered) throw new TypeError('offline health failure');
+        return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchWrite: mode === 'supported' || recovered } });
+      }
+      writes++; assert.equal(options.method, 'PUT');
+      return Response.json(JSON.parse(options.body).records.map(item => ({ recordId: item.recordId, status: 200, envelope: { revision: 1, data: item.data } })));
+    } });
+    assert.equal(await client.putMany('chat', records.slice(0, 1), { negotiate: true }), null, '单条不增加探测');
+    const results = await Promise.all([client.putMany('chat', records, { negotiate: true }), client.putMany('chat', records, { negotiate: true })]);
+    await client.putMany('chat', records, { negotiate: true });
+    assert.equal(health, 1, '并行和后续批次共享一次有界能力协商');
+    assert.equal(writes, mode === 'supported' ? 3 : 0);
+    if (mode === 'supported') assert.deepEqual(results[0].map(item => item.envelope.data), records.map(item => item.data));
+    else assert.deepEqual(results, [null, null], '保存仍由store原单写回落承担');
+    if (mode === 'failed') {
+      recovered = true; await client.health();
+      assert.equal((await client.putMany('chat', records, { negotiate: true })).length, 2);
+      assert.equal(health, 2); assert.equal(writes, 1, '后来正常协商得到能力后恢复批写');
+    }
+  });
+});
+
+
+test('显式批写等待能力期间取消后不再发送保存请求', async () => {
+  let release, health = 0, writes = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const client = createBackendClient({ fetchImpl: async url => {
+    if (url.endsWith('/health')) { health++; await gate; return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchWrite: true } }); }
+    writes++; assert.fail('取消后不得发送PUT');
+  } });
+  const controller = new AbortController();
+  const saving = client.putMany('chat', [{ recordId: 'a', data: {}, expectedRevision: 0 }, { recordId: 'b', data: {}, expectedRevision: 0 }], { negotiate: true, signal: controller.signal });
+  await new Promise(resolve => setImmediate(resolve)); controller.abort(); release();
+  await assert.rejects(saving, error => error.name === 'AbortError'); assert.equal(health, 1); assert.equal(writes, 0);
 });

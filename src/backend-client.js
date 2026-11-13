@@ -84,6 +84,7 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
   let diagnosticSequence = 0;
   let capabilities = null;
   let capabilityRequest = null;
+  let batchWriteCapabilityRequest = null;
   const finishDiagnostic = (requestDiagnostic, startedAt, outcome, { httpStatus, code, backendError, backendMessage, transport } = {}) => {
     if (!requestDiagnostic) return;
     const record = {
@@ -277,14 +278,21 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
       }
     },
     async put(collection, recordId, data, expectedRevision, { signal } = {}) { return request(key(collection, recordId), { method: 'PUT', body: JSON.stringify({ data, expectedRevision }), signal }, { method: 'PUT', recordType: recordTypeFromId(recordId) }); },
-    async putMany(collection, records, { signal } = {}) {
+    async putMany(collection, records, { signal, negotiate = false } = {}) {
       if (!Array.isArray(records) || records.length < 1 || records.length > BATCH_WRITE_LIMIT
         || records.some(item => !item || typeof item.recordId !== 'string' || !Object.hasOwn(item, 'data') || !Number.isSafeInteger(item.expectedRevision) || item.expectedRevision < 0)
         || new Set(records.map(item => item.recordId)).size !== records.length) throw new TypeError('批量保存参数无效');
       const body = JSON.stringify({ records });
       if (new TextEncoder().encode(body).length > BATCH_WRITE_BYTES) throw new TypeError('批量保存超过1MiB');
-      // Reading capability never starts a new probe or changes the native/custom transport.
-      if (capabilities?.recordBatchWrite !== true || useTauri) return null;
+      if (useTauri) return null;
+      // A warm core cache can skip every batch read. Negotiate once for an explicit
+      // multi-record save; a failed probe keeps subsequent packages on single CAS.
+      if (negotiate && records.length > 1 && !capabilities) {
+        batchWriteCapabilityRequest ??= negotiateCapabilities().catch(() => null);
+        await batchWriteCapabilityRequest;
+      }
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      if (capabilities?.recordBatchWrite !== true) return null;
       const result = await request(recordBatchKey(collection), { method: 'PUT', body, signal }, { method: 'PUT', recordType: 'collection' });
       if (!Array.isArray(result) || result.length !== records.length) throw new Error('后端批量保存结果无效');
       for (let index = 0; index < result.length; index++) {

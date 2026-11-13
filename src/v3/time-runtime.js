@@ -1,7 +1,8 @@
+import { stableJson } from '../memory-transfer-json.js';
 import { createActivitySignal } from '../plugin-activity.js';
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { estimateRecallTokens } from './recall-selector.js';
-import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, compileTimeCreate, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures, linkedTimeFollowing } from './time-engine.js';
+import { TIME_HEAD_ID, TIME_INPUT_TOKENS, prepareTimeBatch, compileTimeResponse, compileTimeEdits, compileTimeCreate, evaluateTimeBatches, replayTimeBatches, sanitizeTimeBatchForDeletion, sanitizeTimeHeadForDeletion, projectTime, effectiveTime, timeRecallProjection, timeFingerprint, validTimeProjection, normalizeTimeKeywords, timeBodyReads, timeItemFailures, linkedTimeFollowing, manualTimeEdits, storyTimes } from './time-engine.js';
 import { projectRecallSource } from './recall-source.js';
 import { sanitizeTaskMetadata } from './safe-metadata.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -11,6 +12,9 @@ import { ANNUAL_SETTING_SYSTEM_PROMPT, buildAnnualSettingSources, compileAnnualS
 import { prepareQianshiCandidates, projectQianshiGraph } from './qianshi-domain.js';
 import { migrationPartition } from './migration-prefix.js';
 import { isMemoryExcludedMessage } from './memory-exclusion.js';
+
+const channelUnavailable = error => ['QQJ_DISABLED', 'QQJ_CONFIG', 'QQJ_PRESET_INVALID', 'QQJ_AUTH', 'QQJ_NOT_FOUND', 'QQJ_RATE_LIMIT'].includes(error?.code)
+  || [401, 403, 404, 429].includes(Number(error?.httpStatus ?? error?.status));
 
 export function createTimeStore({ client }) {
   const BATCH_READ_CONCURRENCY = 16;
@@ -118,7 +122,18 @@ export function createTimeStore({ client }) {
     try { return await operation(); }
     finally { invalidate(chatId); }
   }
-  const putHead = (chatId, data, revision, signal) => write(chatId, () => client.put(collection(chatId), TIME_HEAD_ID, data, revision, { signal }));
+  const putHead = (chatId, data, revision, signal) => write(chatId, async () => {
+    try { return await client.put(collection(chatId), TIME_HEAD_ID, data, revision, { signal }); }
+    catch (error) {
+      // The head is the publication point; a lost response must not rewrite an
+      // already committed result as failed or leave manual recall projections stale.
+      try {
+        const saved = await readRecord(chatId, TIME_HEAD_ID);
+        if (saved.revision === revision + 1 && stableJson(saved.data) === stableJson(data)) return saved;
+      } catch { /* The original write remains unconfirmed. */ }
+      throw error;
+    }
+  });
   const putBatch = (chatId, data, signal) => write(chatId, () => client.put(collection(chatId), data.id, data, 0, { signal }));
   async function requirePermanentDelete() {
     let health;
@@ -179,7 +194,7 @@ export async function prepareTimeRequest(reachable, batches = [], options = {}) 
   const subjects = new Set([...prepared.request.people.map(item => item.entityId), ...prepared.request.trackedItems.map(item => item.subjectEntityId)]);
   const linkFloors = new Set(prepared.request.observations.map(item => item.floorId));
   const linkedStates = new Set(prepared.trackedRecords.flatMap(item => (item.stateRefs ?? []).map(ref => ref.stateId)));
-  prepared.request.currentStates = recall.currentState.filter(subject => subjects.has(subject.subjectEntityId)).flatMap(subject => ['core', 'adaptive', 'situational'].flatMap(layer => subject[layer].map(state => ({ ...state, subjectEntityId: subject.subjectEntityId, layer })))).filter(state => linkFloors.has(state.sourceFloorId) || linkedStates.has(state.stateId));
+  prepared.request.currentStates = recall.currentState.filter(subject => subjects.has(subject.subjectEntityId)).flatMap(subject => ['core', 'adaptive', 'situational'].flatMap(layer => subject[layer].map(state => ({ ...state, subjectEntityId: subject.subjectEntityId, layer })))).filter(state => state.origin !== 'manual' && (linkFloors.has(state.sourceFloorId) || linkedStates.has(state.stateId)));
   try {
     const qianshi = prepareQianshiCandidates(reachable, { canonicalContent: [
       ...prepared.request.observations.map(item => item.description),
@@ -261,6 +276,13 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     for (const source of sources) source.fingerprint = await timeFingerprint([source.sourceKey, source.subjectEntityId, source.subjectName, source.field, source.content]);
     return { ready: true, sources, fingerprint: await timeFingerprint(sources.map(source => [source.sourceKey, source.fingerprint])) };
   }
+  async function optionalAnnualSnapshot() {
+    try { return await annualSnapshot(); }
+    catch (error) {
+      logger?.warn?.('[qianqianjie] annual source unavailable', { code: error?.code ?? error?.name ?? 'QQJ_ANNUAL_UNAVAILABLE' });
+      return { ready: false, sources: [], fingerprint: null };
+    }
+  }
   const currentAnnualRecords = (head, snapshot) => snapshot?.ready ? snapshot.sources.flatMap(source => {
     const record = head?.settingAnnualSources?.[source.sourceKey];
     return record?.fingerprint === source.fingerprint ? [record] : [];
@@ -294,6 +316,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     last = previous;
   };
   const stableCurrentTime = source => {
+    if (!source.bodyFloors?.length) return source.bodyTimes?.get(source.floors.at(-1)?.id) ?? projectTime('');
     const host = hostAdapter.snapshot();
     const currentBody = source.bodyFloors?.filter(body => {
       const message = host.chat?.[body.hostLocator?.messageIndex];
@@ -350,7 +373,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       };
     });
     trackedItems = items.filter(item => item.status === 'active' && item.following !== false); stoppedItems = items.filter(item => item.status !== 'active' || item.following === false);
-    annualItems = projectAnnualSettings(annualRecords, currentTime).items;
+    if (annualRecords !== null) annualItems = projectAnnualSettings(annualRecords, currentTime).items;
     itemsKey = sourceKey(source);
     statusKey = sourceKey(getReachable()) === itemsKey ? itemsKey : null;
     return trackedItems.length;
@@ -387,7 +410,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   }
   async function performRefreshStatus({ force = false } = {}) {
     if (!enabled() || active) return notify();
-    if (last?.status === 'failed' && last.persisted === false) return notify();
+    if (!force && last?.status === 'failed' && last.persisted === false) return notify();
     const source = getReachable();
     if (!source?.root || !['ready', 'needsReseal'].includes(source.status ?? 'ready') || source.root.chatId !== identity().chatId) {
       trackedItems = null; stoppedItems = null; qianshiReferences = null; itemsKey = null; statusKey = null; last = { status: 'waiting', message: '等待当前聊天记忆读取。' }; return notify();
@@ -412,6 +435,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
         const projected = await bodySource(source), freshAnnual = await annualSnapshot();
         if (token !== epoch || sourceKey(getReachable()) !== bodyKey || freshAnnual.ready !== annual.ready || freshAnnual.fingerprint !== annual.fingerprint) return getState();
         coverage = planTimeBody(projected, stored.batches, { start: stored.head?.bodyStart });
+        projectionCache = null;
         const run = stored.head?.lastRun, items = cacheItems(stored.batches, projected, currentAnnualRecords(stored.head, annual));
         if (run) last = { ...run, status: run.status === 'running' ? 'interrupted' : run.status, items, message: run.status === 'running' ? '上次整理未确认完成，可手动重试。' : run.message };
         else if (retryable(stored.head, stored.batches)) last = { status: 'interrupted', items, message: '上次整理未确认完成，可手动重试。' };
@@ -460,13 +484,51 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     if (!plan || plan.epoch !== epoch || plan.chatId !== identity().chatId || manualBlock()) return notify();
     return runPlan(plan, true);
   }
+  function storedTimeSource(source, batches) {
+    const bodyTimes = storyTimes(source.floorMemories ?? [], source.floors ?? []);
+    const storedTimes = new Map(batches.map(batch => [batch.cutoffFloorId, batch.currentTime]));
+    for (const [floorId, time] of storedTimes) {
+      const edited = source.run?.diagnostics?.floorProvenance?.[floorId]?.timeEdited === true;
+      if (!bodyTimes.get(floorId)?.date && !edited) bodyTimes.set(floorId, time);
+    }
+    return { ...source, bodyFloors: [], bodyTimes };
+  }
   async function assertCurrentItems(stored, selected) {
-    const latest = await bodySource();
+    const latest = getReachable();
     const items = replayTimeBatches(stored.batches, latest);
     for (const target of selected) {
       const item = items.find(value => value.id === target.itemId);
       if (!item || item.observationKey !== target.observationKey) throw new Error('事项已变化或来源已失效，请刷新后重试。');
     }
+  }
+  function mergeTimeEdits(edits, batches, currentItems) {
+    const versions = new Map();
+    for (const batch of batches) for (const item of batch.changes ?? []) {
+      versions.set(`${item.id}:${item.observationKey}`, { item, manual: batch.manualEdit === true });
+    }
+    const fieldValue = (item, field) => field === 'projectionText' ? item.projection?.text ?? '' : item[field];
+    return edits.map(edit => {
+      const item = currentItems.find(value => value.id === edit.itemId);
+      if (!item) throw new Error('事项已删除或来源已失效，请保留草稿并确认当前事项。');
+      let version = item;
+      const manualFields = new Set();
+      const seen = new Set();
+      while (version.observationKey !== edit.observationKey) {
+        if (seen.has(version.observationKey)) throw new Error('事项已变化，请保留草稿并确认当前事项。');
+        seen.add(version.observationKey);
+        const record = versions.get(`${item.id}:${version.observationKey}`);
+        const previous = versions.get(`${item.id}:${record?.item.previousObservationKey}`)?.item;
+        if (!record || !previous) throw new Error('事项已变化或来源已失效，请保留草稿并确认当前事项。');
+        if (record.manual) for (const field of Object.keys(edit.fields ?? {})) {
+          if (JSON.stringify(fieldValue(record.item, field)) !== JSON.stringify(fieldValue(previous, field))) manualFields.add(field);
+        }
+        version = previous;
+      }
+      if ([...manualFields].some(field => JSON.stringify(fieldValue(item, field)) !== JSON.stringify(fieldValue(version, field)))) {
+        throw new Error('本次修改的人工字段已变化，请保留草稿并确认当前值。');
+      }
+      return { ...edit, observationKey: item.observationKey };
+    });
   }
   async function saveItems(edits, createFields = null) {
     const blocked = manualBlock({ storedItems: true }); if (blocked) throw new Error(blocked);
@@ -474,49 +536,54 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const operation = { epoch, chatId: identity().chatId, controller: new AbortController(), phase: 'saving', promise: null, manual: true };
     active = operation; notify();
     operation.promise = (async () => {
-      const reachable = await bodySource();
+      let reachable = getReachable();
       const key = JSON.stringify([reachable.root.chatId, reachable.root.narrativeGeneration]);
       const valid = () => current(operation) && JSON.stringify([getReachable()?.root?.chatId, getReachable()?.root?.narrativeGeneration]) === key && !manualBlock({ ignoreActive: true, storedItems: true });
       if (!valid() || !reachable?.root || reachable.root.chatId !== operation.chatId || !reachable.floors?.length) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
-      let stored = await store.read(operation.chatId);
-      if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
-      const currentItems = replayTimeBatches(stored.batches, reachable);
-      for (const edit of edits) {
-        const item = currentItems.find(value => value.id === edit?.itemId);
-        if (!item || item.observationKey !== edit.observationKey) throw new Error('事项已变化或来源已失效，请取消编辑并刷新后重试。');
+      for (let attempt = 0; attempt < 4; attempt++) {
+        let stored = await store.read(operation.chatId);
+        if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
+        reachable = storedTimeSource(reachable, stored.batches);
+        const currentItems = replayTimeBatches(stored.batches, reachable);
+        const mergedEdits = mergeTimeEdits(edits, stored.batches, currentItems);
+        const batch = createFields ? await compileTimeCreate(createFields,reachable,`v3-time-batch-${newUuid()}`,`time-${newUuid()}`,currentItems)
+          : await compileTimeEdits(mergedEdits, reachable, `v3-time-batch-${newUuid()}`, currentItems);
+        const root = await foundationStore.readRoot();
+        if (!valid() || root.data?.chatId !== operation.chatId || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
+        if(createFields)stored=await ensureStart(reachable,stored,operation.controller.signal);
+        await store.putBatch(operation.chatId, batch, operation.controller.signal);
+        if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用。');
+        const lastRun = stored.head?.lastRun ? { ...stored.head.lastRun, items: itemCount([...stored.batches, batch], reachable) } : null;
+        if (lastRun) delete lastRun.initialProjectionCheckedSignature;
+        const priorPartial = lastRun?.currentReview ? stored.batches.findLast(value => value.status === 'partial' && value.currentReview && value.signature === stored.head.lastAttemptSignature) : null;
+        const afterItems = replayTimeBatches([...stored.batches, batch], reachable);
+        const unresolvedIds = new Set((priorPartial?.itemErrors ?? []).flatMap(error => error.itemIds ?? []));
+        if (priorPartial) {
+          const answered = new Set(priorPartial.changes?.map(value => value.id) ?? []);
+          for (const id of priorPartial.currentReview.selectedItemIds ?? []) if (!answered.has(id)) unresolvedIds.add(id);
+        }
+        const hasUnlocated = Boolean(priorPartial?.itemErrors?.some(error => !error.itemIds?.length));
+        const unresolved = [...unresolvedIds].some(id => afterItems.find(value => value.id === id)?.status !== 'cancelled');
+        const resolvedByRemoval = lastRun?.status === 'partial' && priorPartial && !hasUnlocated && !unresolved;
+        if (resolvedByRemoval) Object.assign(lastRun, { status: 'completed', message: '本次未完成事项已移除；原内容未记作评估成功。' });
+        const { currentReviewAttempt: _currentReviewAttempt, ...headWithoutReviewAttempt } = stored.head;
+        const currentReviewAttempt = resolvedByRemoval && stored.head?.currentReviewAttempt?.status === 'partial'
+          ? { ...stored.head.currentReviewAttempt, status: 'resolved' } : null;
+        const nextHead = { ...headWithoutReviewAttempt, ...(currentReviewAttempt ? { currentReviewAttempt } : {}), batchIds: [...stored.head.batchIds, batch.id], ...(lastRun ? { lastRun } : {}) };
+        if (!createFields) await assertCurrentItems(stored, mergedEdits);
+        if (!valid()) throw new Error('当前聊天已变化，本次编辑未应用。');
+        try { await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal); }
+        catch (error) {
+          if ([error?.status, error?.httpStatus].includes(409) && attempt < 3) continue;
+          throw error;
+        }
+        projectionCache = null;
+        onInvalidate('manualTimeEdited');
+        if (!valid()) return getState();
+        cacheItems([...stored.batches, batch], reachable, null);
+        last = lastRun ? { ...last, ...lastRun } : last;
+        return getState();
       }
-      const batch = createFields ? await compileTimeCreate(createFields,reachable,`v3-time-batch-${newUuid()}`,`time-${newUuid()}`,currentItems)
-        : await compileTimeEdits(edits, reachable, `v3-time-batch-${newUuid()}`, currentItems);
-      const root = await foundationStore.readRoot();
-      if (!valid() || root.data?.chatId !== operation.chatId || root.data?.narrativeGeneration !== reachable.root.narrativeGeneration) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
-      if(createFields)stored=await ensureStart(reachable,stored,operation.controller.signal);
-      await store.putBatch(operation.chatId, batch, operation.controller.signal);
-      if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用。');
-      const lastRun = stored.head?.lastRun ? { ...stored.head.lastRun, items: itemCount([...stored.batches, batch], reachable) } : null;
-      if (lastRun) delete lastRun.initialProjectionCheckedSignature;
-      const priorPartial = lastRun?.currentReview ? stored.batches.findLast(value => value.status === 'partial' && value.currentReview && value.signature === stored.head.lastAttemptSignature) : null;
-      const afterItems = replayTimeBatches([...stored.batches, batch], reachable);
-      const unresolvedIds = new Set((priorPartial?.itemErrors ?? []).flatMap(error => error.itemIds ?? []));
-      if (priorPartial) {
-        const answered = new Set(priorPartial.changes?.map(value => value.id) ?? []);
-        for (const id of priorPartial.currentReview.selectedItemIds ?? []) if (!answered.has(id)) unresolvedIds.add(id);
-      }
-      const hasUnlocated = Boolean(priorPartial?.itemErrors?.some(error => !error.itemIds?.length));
-      const unresolved = [...unresolvedIds].some(id => afterItems.find(value => value.id === id)?.status !== 'cancelled');
-      const resolvedByRemoval = lastRun?.status === 'partial' && priorPartial && !hasUnlocated && !unresolved;
-      if (resolvedByRemoval) Object.assign(lastRun, { status: 'completed', message: '本次未完成事项已移除；原内容未记作评估成功。' });
-      const { currentReviewAttempt: _currentReviewAttempt, ...headWithoutReviewAttempt } = stored.head;
-      const currentReviewAttempt = resolvedByRemoval && stored.head?.currentReviewAttempt?.status === 'partial'
-        ? { ...stored.head.currentReviewAttempt, status: 'resolved' } : null;
-      const nextHead = { ...headWithoutReviewAttempt, ...(currentReviewAttempt ? { currentReviewAttempt } : {}), batchIds: [...stored.head.batchIds, batch.id], ...(lastRun ? { lastRun } : {}) };
-      if (!createFields) await assertCurrentItems(stored, edits);
-      if (!valid()) throw new Error('当前聊天已变化，本次编辑未应用。');
-      await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
-      if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用到当前事项。');
-      const freshAnnual = await annualSnapshot();
-      if (!valid()) throw new Error('当前聊天记忆已变化，本次编辑未应用到当前事项。');
-      cacheItems([...stored.batches, batch], reachable, currentAnnualRecords(nextHead, freshAnnual)); last = lastRun ? { ...last, ...lastRun } : last;
-      projectionCache = null; onInvalidate(); return getState();
     })();
     try { await operation.promise; }
     finally { if (active === operation) active = null; notify(); }
@@ -531,11 +598,13 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
     const operation = { epoch, chatId: identity().chatId, controller: new AbortController(), phase: 'saving', promise: null, manual: true };
     active = operation; notify();
     operation.promise = (async () => {
-      const reachable = await bodySource(), key = JSON.stringify([reachable.root.chatId, reachable.root.narrativeGeneration]);
+      let reachable = getReachable();
+      const key = JSON.stringify([reachable.root.chatId, reachable.root.narrativeGeneration]);
       const valid = () => current(operation) && JSON.stringify([getReachable()?.root?.chatId, getReachable()?.root?.narrativeGeneration]) === key && !manualBlock({ ignoreActive: true, storedItems: true });
       if (!valid() || !reachable?.root || reachable.root.chatId !== operation.chatId) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
       let stored = await store.read(operation.chatId);
       if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
+      reachable = storedTimeSource(reachable, stored.batches);
       await store.requirePermanentDelete();
       if (!valid()) throw new Error('当前聊天记忆已变化，请刷新事项后重试。');
       let pending = stored.head?.pendingDeletionRecords ?? [];
@@ -587,14 +656,15 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       if (!valid()) throw new Error('当前聊天已变化，清理结果尚未确认，可稍后继续。');
       const { pendingDeletionRecords: _pending, ...cleanHead } = stored.head;
       const saved = await store.putHead(operation.chatId, cleanHead, stored.revision, operation.controller.signal);
-      const freshAnnual = await annualSnapshot();
-      if (!valid()) throw new Error('当前聊天已变化，清理结果已保存但界面尚未刷新。');
-      cacheItems(stored.batches, reachable, currentAnnualRecords(cleanHead, freshAnnual));
+      projectionCache = null;
+      onInvalidate('manualTimeDeleted');
+      if (!valid()) return getState();
+      cacheItems(stored.batches, reachable, null);
       pendingDeletionCount = 0;
       last = { status: 'completed', items: trackedItems.length, message: items.length
         ? `已永久删除 ${items.length} 个停止事项及其时间历史；其他事项、摘要与千事保留。`
         : '待清理的旧历史记录已永久删除；停止事项清单保持不变。' };
-      statusKey = null; projectionCache = null; onInvalidate();
+      statusKey = null;
       return { ...stored, head: cleanHead, revision: saved.revision };
     })();
     try { await operation.promise; }
@@ -762,7 +832,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
             operation.failurePhase = 'compile';
             batch = await compileTimeResponse(result, prepared, stored.batches);
           } catch (error) {
-            if (!current(operation) || error?.name === 'AbortError') throw error;
+            if (!current(operation) || channelUnavailable(error)) throw error;
             const message = error?.code === 'QQJ_TIME_INVALID' && error.itemErrors?.length
               ? `${error.itemErrors.map(item => `第${item.index}项：${item.reason}`).join('；')} 本批未保存，可手动补查。`
               : publicErrorMessage({ code: error?.code, name: error?.name, status: error?.status }, { fallback: '本批时间正文处理失败；成功批次已保留，可补查本批。' });
@@ -791,7 +861,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           if (batch.currentReview) { completed.currentReview = batch.currentReview; completed.message = `当前评估：估计 ${batch.currentReview.updated} 项，依据不足 ${batch.currentReview.insufficient} 项，短期事项退出 ${batch.currentReview.retired ?? 0} 项，归并退出 ${batch.currentReview.merged ?? 0} 项，未纳入 ${batch.currentReview.omitted} 项。${completed.message ?? ''}`; }
           const nextHead = { ...head, ...(reviewAttempt ? { currentReviewAttempt: { ...reviewAttempt, status: completed.status } } : {}), batchIds: [...head.batchIds, batch.id], lastRun: completed };
           operation.failurePhase = 'saving';
+          operation.publishingHead = { data: nextHead, revision: stored.revision + 1 };
           const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
+          operation.publishingHead = null;
           if (!current(operation)) return;
           stored = { head: nextHead, revision: saved.revision, batches: [...stored.batches, batch] };
           operation.progress.completed += 1;
@@ -814,7 +886,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
             ...(failedBodyAttempts.length ? { failedBodyAttempts } : {}) };
           const nextHead = { ...stored.head, lastRun: aggregate };
           operation.failurePhase = 'saving';
+          operation.publishingHead = { data: nextHead, revision: stored.revision + 1 };
           const saved = await store.putHead(operation.chatId, nextHead, stored.revision, operation.controller.signal);
+          operation.publishingHead = null;
           stored = { ...stored, head: nextHead, revision: saved.revision };
           last = { ...aggregate, requests: operation.requests, persisted: true }; statusKey = null; notify();
         }
@@ -829,7 +903,16 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
           last = { status: 'failed', message, failure, persisted: false, ...(operation.currentReview ? { currentReview: { failed: true } } : {}) }; statusKey = null;
           try {
             const latest = await store.read(operation.chatId);
-            if (current(operation) && latest.head) { await store.putHead(operation.chatId, { ...latest.head, ...(latest.head.currentReviewAttempt?.status === 'running' ? { currentReviewAttempt: { ...latest.head.currentReviewAttempt, status: 'failed' } } : {}), lastRun: { ...latest.head.lastRun, status: 'failed', message, failure } }, latest.revision, operation.controller.signal); last.persisted = true; }
+            if (current(operation) && latest.head) {
+              const published = operation.publishingHead;
+              if (published?.revision === latest.revision && stableJson(published.data) === stableJson(latest.head)) {
+                last = { ...latest.head.lastRun, requests: operation.requests, persisted: true };
+                projectionCache = null; onInvalidate();
+              } else {
+                await store.putHead(operation.chatId, { ...latest.head, ...(latest.head.currentReviewAttempt?.status === 'running' ? { currentReviewAttempt: { ...latest.head.currentReviewAttempt, status: 'failed' } } : {}), lastRun: { ...latest.head.lastRun, status: 'failed', message, failure } }, latest.revision, operation.controller.signal);
+                last.persisted = true;
+              }
+            }
           } catch { /* Keep the visible failure if its status could not be saved. */ }
           notify();
         }
@@ -914,7 +997,9 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       if (history && !plan.groups.length && !source.bodyFloors.some(body => body.assistantSeq <= historyAuthorization.through && !body.floorId)) historyAuthorization = null;
       cacheItems(stored.batches, source, currentAnnualRecords(stored.head, settingSnapshot)); coverage = plan;
       clearAutomaticFailure();
-      if (annualSetting.pending) last = { status: 'partial', items: itemCount(stored.batches, source), message: `有 ${annualSetting.pending} 个年度设定来源超过单次输入预算，尚未标记为已处理。` };
+      if (annualSetting.pending) last = { status: 'partial', items: itemCount(stored.batches, source), message: annualSetting.suppressed
+        ? `有 ${annualSetting.pending} 个年度设定来源尚未完成补读，可在新正文或手动补查时重试。`
+        : `有 ${annualSetting.pending} 个年度设定来源超过单次输入预算，尚未标记为已处理。` };
       return notify();
     } catch (error) {
       if (token === epoch && !controller.signal.aborted && enabled() && identity().chatId === receipt?.chatId && error?.name !== 'AbortError'
@@ -938,7 +1023,7 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
   }
   async function recallProjection(source) {
     if (!enabled() || source?.status !== 'ready' || identity().chatId !== source.chatId) return null;
-    const token = epoch, bodyKey = sourceKey(getReachable()), annual = await annualSnapshot();
+    const token = epoch, bodyKey = sourceKey(getReachable()), annual = await optionalAnnualSnapshot();
     const key = JSON.stringify([source.chatId, source.headCheckpointId, source.rootRevision, source.identityProjection, bodyKey, annual.ready, annual.fingerprint]);
     if (projectionCache?.key === key) return projectionCache.value;
     try {
@@ -962,8 +1047,11 @@ export function createTimeRuntime({ store, foundationStore, hostAdapter, session
       catch { /* Optional associations never suppress the ordinary time projection. */ }
       const projection = timeRecallProjection(items, source, currentTime, currentAnnualRecords(stored.head, annual), qianshiProjection);
       if (currentBody) projection.currentBodyWitness = { hostLocator: currentBody.hostLocator, rawContent: currentBody.rawContent, canonicalContent: currentBody.content };
-      const value = { ...projection, fingerprint: await timeFingerprint([stored.head?.batchIds ?? [], annual.fingerprint, projection]) };
-      const freshAnnual = await annualSnapshot();
+      const manualItems = Object.fromEntries([...manualTimeEdits(stored.batches)].map(([itemId, edit]) => [itemId,
+        { revision: edit.revision, revisionsByObservation: edit.revisionsByObservation }]));
+      const value = { ...projection, manualTimeItems: manualItems, presentItemIds: [...new Set(stored.batches.flatMap(batch => (batch.changes ?? []).map(item => item.id)))],
+        fingerprint: await timeFingerprint([stored.head?.batchIds ?? [], annual.fingerprint, projection]) };
+      const freshAnnual = await optionalAnnualSnapshot();
       if (!enabled() || token !== epoch || identity().chatId !== source.chatId || sourceKey(getReachable()) !== bodyKey
         || freshAnnual.ready !== annual.ready || freshAnnual.fingerprint !== annual.fingerprint) return null;
       projectionCache = { key, value };

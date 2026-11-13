@@ -409,3 +409,17 @@ test('正文状态栏古法钟点与中文纪年由实际extractor入口完整�
     assert.equal(projectTime(approximate.text).clock,null);
   }
 });
+
+test('时间自动校正保人工CSE原句和原接收范围', () => {
+  const state = { stateId: 'manual-state', sourceFloorId: FLOOR, subjectEntityId: PERSON, subject: '甲', layer: 'situational', text: '人工确认的情感变化', reason: '用户纠正', visibility: 'private', origin: 'manual' };
+  const source = { entities: [{ entityId: PERSON, displayName: '甲' }], identityProjection: {}, currentState: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [state] }] };
+  const item = { id: 'item', subjectEntityId: PERSON, type: 'body', label: '旧观察', status: 'active', observation: '当时观察', observationKey: 'key', observationTime: projectTime('2026-05-09'), occurrenceTime: projectTime('2026-05-09'), dueTime: projectTime(''), stateRefs: [{ stateId: state.stateId, sourceFloorId: FLOOR }], projection: { text: '自动时间推测', observationKey: 'key', applicableTime: projectTime('2026-05-11') } };
+  const projection = timeRecallProjection([item], source, projectTime('2026-05-11'));
+  assert.deepEqual(projection.corrections, {});
+  const text = formatRecallInjection({ floors: [], states: [state], coverage: { memoryComplete: true, cseCurrent: true }, entityById: new Map(), timeProjection: projection });
+  assert.match(text, /人工确认的情感变化/u);
+  const oldProjection = { corrections: { [`${state.stateId}|${PERSON}|${FLOOR}`]: { itemId: item.id, text: '旧票自动推测', sourceSignature: 'old' } }, reminders: [] };
+  const legacyText = formatRecallInjection({ floors: [], states: [state], coverage: { memoryComplete: true, cseCurrent: true }, entityById: new Map(), timeProjection: oldProjection });
+  assert.match(legacyText, /人工确认的情感变化/u);
+  assert.doesNotMatch(legacyText, /旧票自动推测/u);
+});

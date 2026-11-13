@@ -1,3 +1,4 @@
+import { stableJson } from '../memory-transfer-json.js';
 import { validateEntityRecord } from './memory-schema.js';
 import { isUuid } from '../identity.js';
 import { validatePlaceFoundation, effectiveFoundationFacts, filterPlaceFoundationSources, coveredPlaceItemIds, projectPlaceParentLinks } from './place-foundation.js';
@@ -175,10 +176,21 @@ export function createPlaceWorkspaceStore({ client } = {}) {
   async function put(identity, data, expectedRevision) {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw fail('地点资料版本无效。');
     const safe = validatePlaceWorkspace(data, identity?.chatId);
-    const result = await client.put(`chat-${identity.chatId}`, PLACE_WORKSPACE_RECORD_ID, safe, expectedRevision);
-    if (result.revision !== expectedRevision + 1) throw fail('地点资料保存版本无效。');
-    const saved = { data: validatePlaceWorkspace(result.data, identity.chatId), revision: result.revision };
-    cache.set(identity.chatId, Promise.resolve(saved)); return saved;
+    try {
+      const result = await client.put(`chat-${identity.chatId}`, PLACE_WORKSPACE_RECORD_ID, safe, expectedRevision);
+      if (result.revision !== expectedRevision + 1) throw fail('地点资料保存版本无效。');
+      const saved = { data: validatePlaceWorkspace(result.data, identity.chatId), revision: result.revision };
+      cache.set(identity.chatId, Promise.resolve(saved)); return saved;
+    } catch (error) {
+      // A lost reply may follow a durable CAS. Confirm this exact write before
+      // reporting failure or allocating another manual place identity.
+      cache.delete(identity.chatId);
+      try {
+        const saved = await read(identity, { fresh: true });
+        if (saved.revision === expectedRevision + 1 && stableJson(saved.data) === stableJson(safe)) return saved;
+      } catch { cache.delete(identity.chatId); }
+      throw error;
+    }
   }
   async function copyFrom(sourceIdentity,targetIdentity,{floorIds=null,narrativeGeneration=null,sourceEntities=[],targetFloors=null}={}){
     const target=await read(targetIdentity,{fresh:true});if(target.data)return target;
@@ -193,9 +205,19 @@ export function createPlaceWorkspaceStore({ client } = {}) {
 // The boundary records which knowledge the user edited, not a story evidence source.
 export function placeWorkspaceForPrefix(workspace, floorIds = null) {
   if (!workspace || !floorIds) return workspace;
-  const scoped={ ...workspace, placesByEntityId: Object.fromEntries(Object.entries(workspace.placesByEntityId ?? {})
-    .map(([id, row]) => { const scoped = { scopes: {}, ...(row.createdEntity ? { createdEntity: row.createdEntity } : {}) }; for (const key of fields) if (own(row, key) && floorIds.has(row.scopes[key].knownThroughFloorId)) { scoped[key] = row[key]; scoped.scopes[key] = row.scopes[key]; } if (row.createdEntity && !Object.keys(scoped.scopes).length) delete scoped.createdEntity; return [id, scoped]; })),
-    deletionsByEntityId:Object.fromEntries(Object.entries(workspace.deletionsByEntityId??{}).filter(([,scope])=>scope.knownThroughFloorId?floorIds.has(scope.knownThroughFloorId):scope.coveredFloorIds.some(id=>floorIds.has(id))).map(([id,scope])=>[id,{...scope,coveredFloorIds:scope.coveredFloorIds.filter(id=>floorIds.has(id))}])) };
+  const deletionsByEntityId = Object.fromEntries(Object.entries(workspace.deletionsByEntityId ?? {})
+    .filter(([, scope]) => scope.knownThroughFloorId ? floorIds.has(scope.knownThroughFloorId) : scope.coveredFloorIds.some(id => floorIds.has(id)))
+    .map(([id, scope]) => [id, { ...scope, coveredFloorIds: scope.coveredFloorIds.filter(id => floorIds.has(id)) }]));
+  const scoped = { ...workspace, deletionsByEntityId,
+    placesByEntityId: Object.fromEntries(Object.entries(workspace.placesByEntityId ?? {}).map(([id, row]) => {
+      const scoped = { scopes: {}, ...(row.createdEntity ? { createdEntity: row.createdEntity } : {}) };
+      for (const key of fields) if (own(row, key) && floorIds.has(row.scopes[key].knownThroughFloorId)) {
+        scoped[key] = row[key]; scoped.scopes[key] = row.scopes[key];
+      }
+      if (row.createdEntity && !Object.keys(scoped.scopes).length && !deletionsByEntityId[id]) delete scoped.createdEntity;
+      return [id, scoped];
+    })),
+  };
   return filterPlaceFoundationSources(scoped,{floorIds});
 }
 

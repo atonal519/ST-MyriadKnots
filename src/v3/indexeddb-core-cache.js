@@ -157,7 +157,7 @@ export function createIndexedDbCoreRecordCache({
         return instance;
       } catch (error) {
         recordIoFailure('ready', error, 0, 0, 'rejected');
-        stats.available = false;
+        disableIo();
         return null;
       }
     })();
@@ -176,24 +176,25 @@ export function createIndexedDbCoreRecordCache({
   function openNativeDatabase() {
     if (nativeDatabase) return Promise.resolve(nativeDatabase);
     if (nativeReadyPromise) return nativeReadyPromise;
-    nativeReadyPromise = new Promise((resolve, reject) => {
-      let request;
+    nativeReadyPromise = boundedIo(new Promise((resolve, reject) => {
+      let request, accepting = true;
       try {
         const factory = indexedDBProvider?.();
         if (typeof factory?.open !== 'function') { resolve(null); return; }
         request = factory.open(DB_NAME);
       } catch (error) { reject(error); return; }
-      request.onblocked = () => reject(Object.assign(new Error('IDB_CACHE_DATABASE_BLOCKED'), { code: 'IDB_CACHE_DATABASE_BLOCKED' }));
-      request.onerror = () => reject(request.error ?? new Error('IDB_CACHE_DATABASE_OPEN_FAILED'));
+      request.onblocked = () => { accepting = false; reject(Object.assign(new Error('IDB_CACHE_DATABASE_BLOCKED'), { code: 'IDB_CACHE_DATABASE_BLOCKED' })); };
+      request.onerror = () => { accepting = false; reject(request.error ?? new Error('IDB_CACHE_DATABASE_OPEN_FAILED')); };
       request.onsuccess = () => {
         const database = request.result;
+        if (!accepting || ioUnavailable) { database?.close?.(); resolve(null); return; }
         if (!database?.objectStoreNames?.contains?.(STORE_NAME)) {
           database?.close?.(); resolve(null); return;
         }
         database.onversionchange = () => { database.close(); if (nativeDatabase === database) nativeDatabase = null; nativeReadyPromise = null; };
         nativeDatabase = database; resolve(database);
       };
-    }).catch(error => { recordIoFailure('native-open', error, 0, 0, 'rejected'); return null; }).finally(() => { if (!nativeDatabase) nativeReadyPromise = null; });
+    }), 'native-open').catch(error => { recordIoFailure('native-open', error, 0, 0, 'rejected'); disableIo(); return null; }).finally(() => { if (!nativeDatabase) nativeReadyPromise = null; });
     return nativeReadyPromise;
   }
 

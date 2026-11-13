@@ -634,7 +634,7 @@ test('召回展示只解析精确自有协议，保留同楼多事实并拒绝�
   assert.deepEqual(projected.historyGroups.map(value => [value.assistantSeq, value.floorId, value.items.length]), [[2, 'floor-2', 3], [1, 'floor-1', 2]], '来源组应按结由近到远，同组保留原材料次序');
   assert.equal(projected.historyItems[0].text, '递出钥匙，正文内的 [覆盖说明] 与 <qqj_recalled_context> 保持原样');
   assert.equal(projected.historyItems[1].text, '同楼另一件旧事：仍保留正文冒号'); assert.equal(projected.historyItems[2].text, '她没有说出口');
-  assert.equal(projected.historyItems[3].text, '当面承诺会留下'); assert.match(projected.historyItems[4].text, /表达者：裴晚生；接收者：江离州；渠道：spoken；内容：明早会离开/u);
+  assert.equal(projected.historyItems[3].text, '表达者：裴晚生。接收者：江离州。内容：当面承诺会留下'); assert.match(projected.historyItems[4].text, /表达者：裴晚生；接收者：江离州；渠道：spoken；内容：明早会离开/u);
   const unknownLine = projectInlineRecallReceipt({ ...receipt, injectionText: injectionText.replace('[客观相关旧事]', '[未知机器分组]') });
   assert.equal(unknownLine.protocolRecognized, false); assert.equal(unknownLine.historyItems.length, 0);
   const ambiguousSource = projectInlineRecallReceipt({ ...receipt, selectedFloors: [...receipt.selectedFloors, { floorId: 'other', assistantSeq: 1, reasons: [] }] });
@@ -2079,10 +2079,17 @@ test('事人处分工只认完整程序包装，叙事回顾和未知旧事保�
   const receipt = { schemaVersion: 18, strategyVersion: RECALL_STRATEGY_VERSION, status: 'ready', selectedFloors: [{ floorId: floor.floorId, assistantSeq: 1, reasons: ['manualArtifact'] }], selectedStates: [], selectedCseChanges: [], storylines, injectionText };
   const before = JSON.stringify(receipt), p = projectInlineRecallReceipt(receipt);
   assert.equal(p.protocolRecognized, true); assert.equal(p.personCount, 0, '无稳定身份的历史记录不能冒作人数');
-  assert.equal(p.personHistoryItems.length, 1); assert.match(p.personHistoryItems[0].text, /同名 → 同名：来源楼当时已作出/u);
+  assert.equal(p.personHistoryItems.length, 1); assert.match(p.personHistoryItems[0].text, /表达者：同名。接收者：同名。内容：来源楼当时已作出/u);
   assert.equal(p.historyCount, 4); assert.ok(p.historyItems.some(item => item.manualArtifact && item.text.endsWith(promise)));
   assert.ok(p.historyItems.some(item => item.materialKind === 'sourceFragment'));
   assert.ok(p.historyItems.some(item => item.text.includes('普通旧事'))); assert.equal(JSON.stringify(receipt), before);
+  assert.match(p.personHistoryItems[0].displayText, /表达者：同名。接收者：同名。内容：历史承诺·当时已作出：答应归还钥匙/u);
+  for (const malformed of ['表达者：同名；接收者：同名。内容：', '表达者：同名。接收者：。内容：', '表达者：同名。接收者：同名。摘录：']) {
+    const bad = projectInlineRecallReceipt({ ...receipt, injectionText: injectionText.replace('表达者：同名。接收者：同名。内容：', malformed) });
+    assert.equal(bad.personHistoryCount, 0, '不完整或未知程序包装不迁移旧事');
+    assert.equal(bad.historyCount, 5);
+    assert.ok(bad.historyItems.some(item => item.manualArtifact && item.text.endsWith(promise)), '人工原文不因承诺头迁栏');
+  }
 });
 
 test('旧事近期与相关两组默认直接列出，每段单开且不再有其余展开按钮', async () => {

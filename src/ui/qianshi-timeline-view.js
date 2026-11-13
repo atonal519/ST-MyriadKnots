@@ -15,11 +15,15 @@ const text = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase('z
 const searchText = event => text([event.title, event.description, event.object, event.storyTime, event.scheduledTime,
   ...(event.people ?? []).map(person => person.name)].filter(Boolean).join(' '));
 
-function incompleteQianshiFloors(runtimeState, snapshot) {
-  const degraded = new Set([...(snapshot?.diagnostics?.degradedFloorIds ?? []),
-    ...(snapshot?.diagnostics?.legacyReviewConflicts ?? []).map(conflict => conflict.floorId)]);
+function incompleteQianshiFloors(runtimeState) {
   return (runtimeState?.floors ?? []).filter(floor => floor.frozen !== true
-    && floor.memory?.recordStatus === 'active' && hasUnfinishedQianshiHistory(floor.memory, degraded.has(floor.floorId)));
+    && floor.memory?.recordStatus === 'active' && hasUnfinishedQianshiHistory(floor.memory));
+}
+
+function incompleteQianshiGuidance(runtimeState) {
+  return incompleteQianshiFloors(runtimeState).some(floor => !floor.memory.qianshiDelta?.events?.length)
+    ? '无旧记录的楼用“补齐旧楼”，已有记录的楼在“整理”中留空继续。'
+    : '点“整理”留空继续历史缺口。';
 }
 
 function coverageProjection(snapshot, runtimeState) {
@@ -29,17 +33,15 @@ function coverageProjection(snapshot, runtimeState) {
   const complete = Number(processable.completeFloors) || 0, eligible = Number(processable.eligibleFloors) || 0;
   const pending = Number(processable.pendingFloors) || 0;
   // 有可用事件的partial仍计入complete；刷新后的整理状态沿既有逐楼存档读取。
-  const retainedPartial = incompleteQianshiFloors(runtimeState, snapshot).length;
-  const partial = Math.max(Number(processable.partialFloors) || 0, retainedPartial);
+  const retainedPartial = incompleteQianshiFloors(runtimeState).length;
   const actionEligible = eligible;
   const frozenFloors = Number(processable.frozenFloors) || 0;
-  const degraded = Number(processable.degradedFloors) || 0, unavailable = Number(processable.unavailableFloors) || 0;
+  const unavailable = Number(processable.unavailableFloors) || 0;
   if (frozenFloors && actionEligible === 0) return { tone: 'checking', copy: '当前没有可处理楼' };
-  if (degraded > 0) return { tone: 'checking', copy: '部分关联需核对' };
   const uniqueIncomplete = Math.max(0, eligible - complete) + unavailable;
-  if (partial > 0 && pending === 0 && unavailable === 0 && (uniqueIncomplete === 0 || uniqueIncomplete === partial)) return { tone: 'checking', copy: `有 ${partial} 楼部分旧判断沿用原值；整理留空可继续。` };
-  if (uniqueIncomplete > 0 && pending === uniqueIncomplete) return { tone: 'checking', copy: `待覆盖 ${pending} 楼` };
+  if (pending > 0 && (pending === uniqueIncomplete || uniqueIncomplete === 0)) return { tone: 'checking', copy: `待覆盖 ${pending} 楼` };
   if (uniqueIncomplete > 0) return { tone: 'checking', copy: `有 ${uniqueIncomplete} 楼未确认完成` };
+  if (retainedPartial > 0) return { tone: 'checking', copy: `有 ${retainedPartial} 楼本次待继续` };
   return { tone: 'healthy', copy: '覆盖完整' };
 }
 
@@ -52,9 +54,12 @@ function rejudgeFailureCopy(history) {
   if (history.commitStatus === 'unknown') return `整理保存状态待核对。${reason}请先刷新酒馆页面，核对千事记录后再决定是否整理。`;
   if (!['notAttempted', 'conflict', 'saved'].includes(history.commitStatus)) return `整理未完成。${reason}保存状态缺少记录，请先刷新酒馆页面核对。`;
   if (history.commitStatus === 'saved') {
-    const saved = history.savedFloors > 0 ? `已保存 ${history.savedFloors} 楼。` : '整理结果已保存。';
-    const partial = history.savedPartialFloors > 0 ? `${history.savedPartialFloors} 楼部分旧判断沿用原值。` : '';
-    return `${saved}${partial}${reason}请刷新酒馆页面核对展示。`;
+    if (failure?.stage === 'history' && history.failedFloors > 0) {
+      const saved = history.savedFloors > 0 ? `已保存 ${history.savedFloors} 楼。` : '本轮无新判断，原记录保留。';
+      return `${saved}${history.failedFloors} 楼待继续。${reason}处理上述API问题后，点“整理”留空继续未完成楼。`;
+    }
+    const saved = history.savedFloors > 0 ? `已保存 ${history.savedFloors} 楼。` : '原记录及待续范围已保留。';
+    return `${saved}${reason}请刷新酒馆页面核对展示。`;
   }
   const stageCopy = { preparing: '整理未开始。', history: '历史重判中断。', followup: '跟进复核中断。', validating: '保存前核对中断。', saving: '整理保存中断。' }[failure?.stage] ?? '整理中断。';
   const diagnostic = ['本次未记录到具体原因。', '整理发生程序异常。'].includes(reason)
@@ -790,7 +795,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (historyBusy() || otherWorkBusy() || typeof runtime.prepareQianshiRejudge !== 'function'
       || typeof runtime.startQianshiRejudge !== 'function' || typeof dialog?.prompt !== 'function') return;
     const operationEpoch = ++epoch, targetIdentity = runtime.captureBusinessIdentity?.() ?? null;
-    const incompleteCount = incompleteQianshiFloors(runtimeState, snapshot).length;
+    const incompleteCount = incompleteQianshiFloors(runtimeState).filter(floor => floor.memory.qianshiDelta?.events?.length).length;
     try {
       const latestMessageIndex = (snapshot?.events ?? []).reduce((latest, event) => Number.isSafeInteger(event.sourceMessageIndex)
         ? Math.max(latest, event.sourceMessageIndex) : latest, -1);
@@ -820,7 +825,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
           : `历史 ${plan.historyApiCalls} 次＋${plan.followup.status === 'conditional' ? '全部历史完成后，' : ''}跟进预计 ${plan.followup.apiCalls} 次（当前 ${plan.followup.totalMatters} 项），合计预计 API ${plan.apiCalls} 次`;
       const confirmed = await dialog.confirm({ title: '确认整理千事',
         body: `${onlyIncomplete ? '仅继续未完成楼；' : ''}${rangeCopy}，${plan.totalFloors} 个 AI 楼、${recordCount} 条旧记录，分 ${plan.batchCount ?? plan.apiCalls} 批。${followupCopy}${Number.isFinite(plan.estimatedInputTokens) ? `，输入约 ${plan.estimatedInputTokens} token` : ''}。${plan.followup?.status === 'unavailable' ? `跟进复核暂不可用，${plan.followup.message}` : ''}`,
-        note: '全部历史楼完成后才做末尾复核，结合全部有效摘要与对应 USER 材料。跟进按重判后事项量计算实际次数。仍有缺口时先保存历史，整理留空只继续缺口。保留原事实和人工修订。统一保存，末尾失败仍保存有效历史。取消或原档变化则本轮不提交。',
+        note: '全部历史楼完成后才做末尾复核，结合全部有效摘要与对应 USER 材料。跟进按重判后事项量计算实际次数。仍有缺口时先保存历史；无旧记录的楼用“补齐旧楼”，已有记录的楼在“整理”中留空继续。保留原事实和人工修订。统一保存，末尾失败仍保存有效历史。取消或原档变化则本轮不提交。',
         confirmText: '开始整理', cancelText: '取消' });
       if (!active || operationEpoch !== epoch) return;
       if (!confirmed) { feedback = '已取消；没有调用模型或写入。'; render(); return; }
@@ -908,39 +913,38 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         ? '整组正在提交，提交中不能停止' : `已处理 ${history.processedFloors ?? 0}/${history.totalFloors ?? 0} 楼`}`;
       health.className = 'qqj-page-health checking';
     } else if (['failed', 'partial'].includes(history.status)) {
-      if (history.mode === 'rejudge' && history.status === 'partial' && history.commitStatus === 'saved'
-        && history.savedFloors > 0) {
-        health.textContent = history.savedPartialFloors > 0
-          ? `已保存 ${history.savedFloors} 楼，${history.savedPartialFloors} 楼部分旧判断沿用原值。`
-          : `已保存 ${history.savedFloors} 楼。`;
-        if (!history.followup) health.textContent += '整理留空可继续。';
+      if (history.mode === 'rejudge' && history.status === 'partial' && history.commitStatus === 'saved') {
+        health.textContent = history.savedFloors > 0 ? `已保存 ${history.savedFloors} 楼。` : '本轮未取得新判断，原记录保留。';
+        if (history.failedFloors > 0) health.textContent += `${history.failedFloors} 楼本次未完成。`;
+        if (!history.followup && (history.failedFloors > 0 || coverage.tone === 'checking')) health.textContent += incompleteQianshiGuidance(runtimeState);
       } else if (history.mode === 'rejudge') {
         health.textContent = rejudgeFailureCopy(history);
       } else health.textContent = '上次事项任务未完成，可重试。';
       health.className = history.mode === 'rejudge' && history.commitStatus === 'saved'
-        ? 'qqj-page-health checking' : 'qqj-page-health error';
+        ? `qqj-page-health ${history.failedFloors > 0 ? 'checking' : coverage.tone}` : 'qqj-page-health error';
     }
     if (history.mode === 'rejudge' && history.followup && history.status !== 'running'
       && ['saved', 'notNeeded'].includes(history.commitStatus)) {
       const followup = history.followup;
       if (followup.status === 'deferred') {
-        health.textContent += `${followup.message}点“整理”留空先继续历史缺口。`;
+        health.textContent += `${followup.message}${incompleteQianshiGuidance(runtimeState)}`;
         health.className = 'qqj-page-health checking';
       } else if (['failed', 'partial'].includes(followup.status)) {
-        if (!history.savedPartialFloors) health.textContent = history.savedFloors > 0 ? `历史已保存 ${history.savedFloors} 楼。` : '历史无需重判。';
+        if (!history.failedFloors) health.textContent = history.savedFloors > 0 ? `历史已保存 ${history.savedFloors} 楼。` : '历史无需重判。';
         const mappedReason = sanitizeSensitiveText(publicErrorMessage({ code: followup.reasonCode, message: followup.message })
           || publicErrorMessage(history.request?.error) || '部分事项未返回完整有效判断，原判断保留。');
         const reason = mappedReason === REDACTED ? '跟进复核发生异常，具体原因请查看状态诊断。' : mappedReason;
-        const nextStep = history.savedPartialFloors > 0
-          ? '点“整理”留空先补历史，全部完成后再复核跟进。' : '点“整理”留空仅预览末尾复核。';
+        const nextStep = incompleteQianshiFloors(runtimeState).length > 0
+          ? `${incompleteQianshiGuidance(runtimeState)}全部完成后再复核跟进。` : '点“整理”留空仅预览末尾复核。';
         health.textContent += `末尾跟进${followup.status === 'failed' ? '复核未成' : `已判断 ${followup.evaluated ?? 0} 项`}。${reason}${nextStep}`;
         if (history.failure?.detail && /(?:程序异常|未成)/u.test(reason)) health.textContent += '请到设置→记忆管理→详细诊断，复制状态诊断。';
         health.className = followup.status === 'failed' ? 'qqj-page-health error' : 'qqj-page-health checking';
       } else {
-        if (history.status === 'completed') health.textContent = coverage.copy;
-        else if (!history.savedPartialFloors) health.textContent = history.savedFloors > 0 ? `已保存 ${history.savedFloors} 楼。` : '历史无需重判。';
-        if (history.status === 'partial') health.className = 'qqj-page-health checking';
-        health.textContent += `跟进复核 ${followup.evaluated ?? 0} 项，继续 ${followup.continued ?? 0}、停止 ${followup.stopped ?? 0}、完成或取消 ${followup.completed ?? 0}、未获判断 ${followup.missing ?? 0}。`;
+        if (history.status === 'completed' || !history.failedFloors && coverage.tone === 'healthy') {
+          health.textContent = coverage.copy;
+          health.className = `qqj-page-health ${coverage.tone}`;
+        } else if (!history.failedFloors) health.textContent = history.savedFloors > 0 ? `已保存 ${history.savedFloors} 楼。` : '历史无需重判。';
+        health.textContent += ` 跟进复核 ${followup.evaluated ?? 0} 项，继续 ${followup.continued ?? 0}、停止 ${followup.stopped ?? 0}、完成或取消 ${followup.completed ?? 0}、未获判断 ${followup.missing ?? 0}。`;
       }
     }
     if (history.mode === 'rejudge' && history.failure && history.commitStatus === 'saved'
@@ -952,14 +956,14 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   }
 
   function retainedFloorDetails() {
-    const rows = incompleteQianshiFloors(runtimeState, snapshot);
+    const rows = incompleteQianshiFloors(runtimeState);
     if (!rows.length) return null;
     const details = element('details', 'qqj-qianshi-matter');
     details.append(element('summary', 'qqj-qianshi-matter-summary', `查看未完成楼（${rows.length}）`));
-    details.append(element('p', 'qqj-qianshi-description', '以下为已存档的未完成楼，可在“整理”中留空继续。'));
+    details.append(element('p', 'qqj-qianshi-description', '以下为已存档的未完成楼：无旧记录的楼用“补齐旧楼”，已有记录的楼在“整理”中留空继续。'));
     for (const floor of rows) {
       const label = validMessageIndex(floor.messageIndex) ? `第 ${floor.messageIndex} 楼` : `AI ${floor.assistantSeq ?? '未明'}`;
-      details.append(element('p', 'qqj-qianshi-description', `${label} · ${floor.memory.qianshiDelta?.reason || '千事尚未补齐，可用“补齐旧楼”处理。'}`));
+      details.append(element('p', 'qqj-qianshi-description', `${label} · ${floor.memory.qianshiDelta?.reason || '千事尚未补齐。'} ${floor.memory.qianshiDelta?.events?.length ? '在“整理”中留空继续。' : '用“补齐旧楼”处理。'}`));
     }
     return details;
   }

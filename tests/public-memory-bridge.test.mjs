@@ -50,6 +50,24 @@ function reachable({ revision = 7, head = '88888888-8888-4888-8888-888888888888'
 }
 
 const rootEnvelope = value => ({ status: 'ready', revision: value.rootRevision, data: structuredClone(value.root) });
+test('第一批辅助隔离：公开读取允许目录局部不可用并返回健康核心资料', async () => {
+  let reads = 0;
+  const bridge = createPublicMemoryBridge({
+    session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+    store: { readReachable: async () => source() }, hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) },
+    identityProjectionProvider: async (_target, options = {}) => {
+      assert.equal(options.allowUnavailable, true);
+      return { unavailableSources: ['people', 'places'] };
+    },
+    readSource: async ({ identityProjection }) => {
+      reads += 1; assert.deepEqual(identityProjection.unavailableSources, ['people', 'places']);
+      return source();
+    },
+  });
+  const result = await bridge.readMemory();
+  assert.equal(result.status, 'ready'); assert.equal(reads, 1);
+  assert.match(JSON.stringify(result), /用户修订后的长期摘要/);
+});
 const readyFoundation = value => ({ getState: () => ({ status: 'ready' }), getReachable: () => value });
 
 test('formatter 保留正式长期记忆和 CSE 可见性边界，不输出 privateCognition 原文', () => {
@@ -64,6 +82,7 @@ test('formatter 保留正式长期记忆和 CSE 可见性边界，不输出 priv
   assert.match(text, /仅 沈砚 本人知情/);
   assert.match(text, /仅连续到 AI #19，不代表当前完整状态/);
   assert.doesNotMatch(text, /不得对外暴露的原始内心全文/);
+  assert.match(formatPublicMemoryProjection(source()), /人工校准为最高依据/u);
 });
 
 test('公共桥只调用正式 projection 读取，区分宿主 chatId 与 QQJ UUID，且不触发任何写入或 AI', async () => {
@@ -355,17 +374,21 @@ test('getSnapshot 在关闭、未加载及聊天不匹配时不触发准备并�
   assert.equal(prepares, 0);
 });
 
-test('getSnapshot getter 异常只返回现有桥边界错误，不读取后续分区', () => {
+test('getSnapshot getter 异常保留后续健康人物分区', () => {
   let peopleReads = 0;
   const bridge = createPublicMemoryBridge({
     session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
     store: { readReachable: async () => source() },
     hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) },
     memoryRuntime: { getState: () => { throw new Error('snapshot provider failed'); } },
-    peopleRuntime: { getState: () => { peopleReads += 1; return {}; } },
+    peopleRuntime: { getState: () => { peopleReads += 1; return { chatId: QQJ_CHAT, status: 'ready', people: [{ entityId: PERSON, displayName: '健康人物' }] }; } },
   });
-  assert.deepEqual(bridge.getSnapshot(), { status: 'error', message: '千千结快照读取失败。', identity: { hostChatId: 'host-chat', qqjChatId: QQJ_CHAT, characterLocator: 'char.png', personaLocator: 'me.png' } });
-  assert.equal(peopleReads, 0);
+  const result = bridge.getSnapshot();
+  assert.equal(result.status, 'ready');
+  assert.equal(result.memory.status, 'error');
+  assert.equal(result.people.status, 'ready');
+  assert.equal(result.people.items[0].displayName, '健康人物');
+  assert.equal(peopleReads, 1);
 });
 
 test('getPeopleAvatars 批量读取已加载人物头像，不调用通用快照或其他读取入口', () => {
@@ -454,4 +477,101 @@ test('有效别名：公开人物DTO及人物上下文读取同一有效目录�
   const renamed = await bridge.readContext({ entityIds: [PERSON] });
   assert.match(renamed.actors[0].profileText, /name：裴新名/);
   assert.equal(bridge.getPeopleSnapshot().people.items[0].displayName, '裴新名');
+});
+
+
+const partitionMemory = () => ({ chatId: QQJ_CHAT, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle', headCheckpointId: 'head', cseReady: true,
+  floors: [{ floorId: FLOOR1, assistantSeq: 1, summary: '人工健康摘要', summarySource: 'user', memory: { recordStatus: 'active' } }], cseSubjects: [] });
+const partitionPeople = () => ({ chatId: QQJ_CHAT, status: 'ready', people: [{ entityId: PERSON, displayName: '人工名', aliases: [], profile: { notes: '', manualFields: ['notes'] } }] });
+test('公开快照分区：getter投影与复制错误只影响自身，memory/CSE共读一次', async t => {
+  for (const failure of ['people-get', 'people-project', 'people-copy', 'memory-copy', 'cse-project', 'cse-copy']) await t.test(failure, () => {
+    let memoryReads = 0, peopleReads = 0;
+    const memory = partitionMemory(), people = partitionPeople();
+    if (failure === 'people-project') people.people = {};
+    if (failure === 'people-copy') people.people[0].profile.source = () => 'bad copy';
+    if (failure === 'memory-copy') memory.floors[0].summary = () => 'bad copy';
+    if (failure === 'cse-project') memory.cseSubjects = {};
+    if (failure === 'cse-copy') memory.cseSubjects = [{ subjectEntityId: PERSON, core: [{ text: () => 'bad copy' }], adaptive: [], situational: [] }];
+    const bridge = createPublicMemoryBridge({ store: { readReachable: async () => source() }, hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) }, session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+      memoryRuntime: { getState: () => { memoryReads++; return memory; } },
+      peopleRuntime: { getState: () => { peopleReads++; if (failure === 'people-get') throw new Error('unavailable'); return people; } } });
+    const result = bridge.getSnapshot();
+    assert.equal(result.status, 'ready');
+    if (failure === 'memory-copy') assert.equal(result.memory.status, 'error');
+    else assert.equal(result.memory.floors[0].summary, '人工健康摘要');
+    assert.equal(result.people.status, failure.startsWith('people') ? 'error' : 'ready');
+    assert.equal(result.cse.ready, !failure.startsWith('cse'));
+    assert.equal(memoryReads, 1); assert.equal(peopleReads, 1);
+  });
+});
+
+test('人物上下文分区：未知人物保核心摘要不猜回身份，CSE失败保人工资料与清空', async t => {
+  for (const failure of ['people-get', 'people-project', 'people-copy', 'cse-get', 'cse-project', 'cse-copy']) await t.test(failure, async () => {
+    const value = reachable(); value.floorMemories[0].summary = { effectiveSource: 'user', userText: '人工健康摘要' };
+    const people = partitionPeople(); people.people[0].profile.manualFields = ['notes', 'personality']; people.people[0].profile.personality = '人工资料';
+    if (failure === 'people-project') people.people[0].profile.manualFields = {};
+    if (failure === 'people-copy') people.people[0].profile.personality = () => 'cannot clone';
+    const bridge = createPublicMemoryBridge({ store: { readReachable: async () => source() }, hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) }, session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+      foundationRuntime: readyFoundation(value), peopleRuntime: { getState: () => { if (failure === 'people-get') throw new Error('people unavailable'); return people; } },
+      memoryRuntime: { getCurrentSubjectStates: () => { if (failure === 'cse-get') throw new Error('CSE unavailable'); return { status: 'ready', subjects: failure === 'cse-project' ? {} : [{ subjectEntityId: PERSON, core: [{ text: failure === 'cse-copy' ? () => 'bad' : '健康CSE', visibility: 'private' }], adaptive: [], situational: [] }] }; } },
+    });
+    const result = await bridge.readContext({ entityIds: [PERSON] });
+    assert.equal(result.status, 'ready'); assert.match(result.routerText, /人工健康摘要/); assert.equal(result.coverage.partial, true);
+    if (failure.startsWith('people')) assert.equal(result.actors.length, 0);
+    else { assert.match(result.actors[0].profileText, /人工资料/); assert.match(result.actors[0].profileText, /已明确清空/); assert.equal(result.actors[0].stateText, ''); }
+  });
+});
+
+test('世界书返回仅按当前本地身份开关判断，A到B到A仍接受一次provider结果', async t => {
+  for (const change of ['same', 'switch', 'disabled', 'return', 'identity-error']) await t.test(change, async () => {
+    let current = identity(), enabled = true, release, calls = 0;
+    const bridge = createPublicMemoryBridge({ store: { readReachable: async () => source() }, hostAdapter: { snapshot: () => ({ chatId: 'host-chat', chat: [] }) }, session: { getState: () => ({ status: 'ready', identity: current }), identity: () => { if (!current) throw new Error('no identity'); return current; } },
+      isEnabled: () => enabled, readWorldInfoProvider: async () => { calls++; return new Promise(resolve => { release = resolve; }); } });
+    const task = bridge.readWorldInfo();
+    if (['switch', 'return'].includes(change)) current = { ...identity(), hostChatId: 'B', chatId: 'B' };
+    if (change === 'return') current = identity();
+    if (change === 'disabled') enabled = false;
+    if (change === 'identity-error') current = null;
+    release([{ uid: 'A-book', content: 'A资料' }]);
+    const result = await task; assert.equal(calls, 1);
+    if (['same', 'return'].includes(change)) { assert.equal(result.status, 'ready'); assert.equal(result.worldbook[0].content, 'A资料'); }
+    else { assert.notEqual(result.status, 'ready'); assert.deepEqual(result.worldbook, []); }
+  });
+});
+
+
+test('人物上下文只消费选中DTO，未消费临时字段不扩大复制边界', async () => {
+  const value = reachable(), people = partitionPeople();
+  people.transient = () => '不读'; people.people[0].profile.source = () => '未消费';
+  people.people[0].profile.notes = '健康人工备注'; people.people[0].profile.manualFields = ['notes'];
+  const bridge = createPublicMemoryBridge({ session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+    store: { readReachable: async () => value }, hostAdapter: { snapshot: () => ({ chatId: 'host-chat' }) },
+    foundationRuntime: readyFoundation(value), peopleRuntime: { getState: () => people },
+    memoryRuntime: { getCurrentSubjectStates: () => ({ status: 'ready', unused: () => '不读', subjects: [
+      { subjectEntityId: PERSON, unused: () => '不读', core: [], adaptive: [], situational: [{ text: '健康CSE', visibility: 'private', unused: () => '不读' }] },
+    ] }) },
+  });
+  const result = await bridge.readContext({ entityIds: [PERSON] });
+  assert.equal(result.status, 'ready'); assert.match(result.actors[0].profileText, /健康人工备注/); assert.match(result.actors[0].stateText, /健康CSE/);
+});
+
+test('人物初始未知只保核心摘要，loading已加载资料继续保人工备注和清空', async t => {
+  for (const kind of ['idle', 'loading-empty', 'loading-loaded']) await t.test(kind, async () => {
+    const value = reachable(), people = kind === 'loading-loaded' ? partitionPeople() : { chatId: QQJ_CHAT, people: [] };
+    value.floorMemories[0].summary = { effectiveSource: 'user', userText: '健康人工摘要' };
+    people.status = kind === 'idle' ? 'idle' : 'loading';
+    if (kind === 'loading-loaded') {
+      people.people[0].profile.notes = '人工备注';
+      people.people[0].profile.personality = '';
+      people.people[0].profile.manualFields = ['notes', 'personality'];
+    }
+    let reads = 0;
+    const bridge = createPublicMemoryBridge({ session: { getState: () => ({ status: 'ready', identity: identity() }), identity },
+      foundationRuntime: readyFoundation(value), store: { readReachable: async () => assert.fail('不增加后端读取') },
+      hostAdapter: { snapshot: () => ({ chatId: 'host-chat' }) }, peopleRuntime: { getState: () => { reads++; return people; } } });
+    const result = await bridge.readContext({ entityIds: [PERSON] });
+    assert.equal(result.status, 'ready'); assert.match(result.routerText, /健康人工摘要/); assert.equal(reads, 1);
+    if (kind !== 'loading-loaded') { assert.equal(result.actors.length, 0); assert.equal(result.coverage.partial, true); }
+    else { assert.equal(result.actors.length, 1); assert.match(result.actors[0].profileText, /人工备注/); assert.match(result.actors[0].profileText, /personality（人工决定）：已明确清空/); }
+  });
 });

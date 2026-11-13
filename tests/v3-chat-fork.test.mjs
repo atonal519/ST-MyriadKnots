@@ -4,6 +4,7 @@ import { captureTargetChatDescriptor, createHostAdapter } from '../src/v3/host-a
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
+import { createChatMemoryMigration } from '../src/chat-memory-migration.js';
 import { createChatBranchInitializer } from '../src/v3/chat-branch-inheritance.js';
 import { initializeMigrationGraph } from '../src/v3/memory-migration.js';
 import { MIGRATION_ALIAS_KEY, migrationPartition } from '../src/v3/migration-prefix.js';
@@ -22,6 +23,8 @@ import { selectRecallMemories } from '../src/v3/recall-source.js';
 import { createBackendClient } from '../src/backend-client.js';
 import { createExtractorEnvelope, normalizeExtractorResponse } from '../src/v3/extractor.js';
 import { createPluginActivity } from '../src/plugin-activity.js';
+import { createIndexedDbCoreRecordCache } from '../src/v3/indexeddb-core-cache.js';
+import { localForageHarness } from './helpers/indexeddb-harness.mjs';
 import { persistMessageFloorAnchors, readTargetChatFile } from '../src/v3/message-floor-anchor.js';
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -2161,4 +2164,213 @@ test('文件身份：ST和Luker分支及Checkpoint经真实initializer继承，�
     costs.push({ host: hostName, kind, captureShape, chatGets: reads, chatSaves: api.saves, fullCaptures: captures, reopenBindingIo: 0, reopenChatGets: 0, reopenFullCaptures: 0 });
   }
   console.log(JSON.stringify({ fileIdentityBranchCosts: costs }));
+});
+
+test('普通分支在异步读档前固定源历法，后续切聊仍只保存原目标历法', async () => {
+  const h = await sourceWithUnmarkedGaps({ gaps: [], count: 1 });
+  const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const raw = context('calendar-copy', SOURCE, structuredClone(h.raw.chat));
+  const sourceBefore = chatRecords(h.backend.records, SOURCE);
+  const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } });
+  const api = targetChatApi(raw);
+  const calendar = { months: 4, prefix: '源历' }, saved = [];
+  let moved = false;
+  const initialize = createChatBranchInitializer({ client: h.backend.client, hostAdapter: adapter, now: () => new Date(NOW),
+    captureCalendar: id => { assert.equal(id, SOURCE); return calendar; },
+    persistCalendar: async (id, value) => { saved.push([id, value]); },
+    fetchImpl: async (...args) => {
+      if (!moved) { moved = true; calendar.months = 12; calendar.prefix = '后来聊天历'; raw.chatId = 'later-chat'; }
+      return api.fetch(...args);
+    },
+  });
+  const result = await initialize({ raw, host: { hostChatId: 'calendar-copy', characterAvatar: 'character.png', personaAvatar: 'persona.png' },
+    sourceChatId: SOURCE, targetChatId: targetId });
+  assert.equal(result.status, 'inherited');
+  assert.deepEqual(saved, [[targetId, { months: 4, prefix: '源历' }]]);
+  assert.equal(chatRecords(h.backend.records, SOURCE), sourceBefore);
+  assert.equal(h.modelCalls, 0);
+});
+
+test('普通分支历法保存失败不发布目标文件或live身份，暂存图不回写源', async () => {
+  const h = await sourceWithUnmarkedGaps({ gaps: [], count: 1 });
+  const targetId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const raw = context('calendar-save-failure', SOURCE, structuredClone(h.raw.chat));
+  const sourceBefore = chatRecords(h.backend.records, SOURCE), liveBefore = structuredClone(raw.chatMetadata);
+  const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } });
+  const api = targetChatApi(raw), fileBefore = api.persistedHeader;
+  let calendarWrites = 0;
+  const initialize = createChatBranchInitializer({ client: h.backend.client, hostAdapter: adapter, now: () => new Date(NOW),
+    captureCalendar: () => ({ months: 4, prefix: '源历' }),
+    persistCalendar: (id, value) => {
+      calendarWrites++;
+      assert.equal(id, targetId); assert.deepEqual(value, { months: 4, prefix: '源历' });
+      throw new Error('calendar save rejected');
+    }, fetchImpl: api.fetch,
+  });
+  await assert.rejects(initialize({ raw,
+    host: { hostChatId: raw.chatId, characterAvatar: 'character.png', personaAvatar: 'persona.png' },
+    sourceChatId: SOURCE, targetChatId: targetId }), /calendar save rejected/);
+  assert.equal(calendarWrites, 1);
+  assert.equal(api.saves, 0);
+  assert.deepEqual(api.persistedHeader, fileBefore);
+  assert.deepEqual(raw.chatMetadata, liveBefore);
+  assert.equal(chatRecords(h.backend.records, SOURCE), sourceBefore);
+  assert.equal(h.modelCalls, 0);
+});
+
+// The protocol transport and the IndexedDB harness retain real envelope witnesses;
+// cache hits must avoid authoritative floor/summary reads, not just pass a constructor option.
+function branchIoTransport(backend, { generations = true } = {}) {
+  const requests = [], ids = new Map();
+  const envelope = (collection, key, value) => {
+    if (!generations) return value;
+    const id = `${collection}/${key}`;
+    if (!ids.has(id)) ids.set(id, crypto.randomUUID());
+    return { ...value, generationId: ids.get(id) };
+  };
+  const fetchImpl = async (url, options = {}) => {
+    const path = url.split('/v1/')[1].split('/').map(decodeURIComponent), body = options.body ? JSON.parse(options.body) : {};
+    const collection = path[2], key = path[3];
+    requests.push({ method: options.method ?? 'GET', kind: path[0], collection, key,
+      recordIds: body.recordIds ?? body.records?.map(item => item.recordId) ?? [], bytes: Buffer.byteLength(options.body ?? '') });
+    try {
+      if (path[0] === 'health') return Response.json({ ok: true, api: { current: 1, supported: [1] }, capabilities: { records: true, optimisticRevision: true, recordBatchRead: true, recordBatchWrite: true } });
+      const get = async id => envelope(collection, id, await backend.client.get(collection, id));
+      const put = async item => envelope(collection, item.recordId, await backend.client.put(collection, item.recordId, item.data, item.expectedRevision));
+      if (path[0] === 'record-batch') return Response.json(await Promise.all((body.recordIds ?? body.records).map(async item => {
+        const recordId = typeof item === 'string' ? item : item.recordId;
+        try { return { recordId, status: 200, envelope: typeof item === 'string' ? await get(item) : await put(item) }; }
+        catch (error) { return { recordId, status: error.status, error: 'not_found', message: 'Record unavailable' }; }
+      })));
+      return Response.json(options.method === 'PUT' ? await put({ recordId: key, data: body.data, expectedRevision: body.expectedRevision }) : await get(key));
+    } catch (error) { return Response.json({}, { status: error.status ?? 500 }); }
+  };
+  return { client: createBackendClient({ fetchImpl }), requests, freshClient: () => createBackendClient({ fetchImpl }) };
+}
+
+test('普通分支暖源和复制后首次准备命中正式核心缓存，人工摘要与独立归属保持', async t => {
+  for (const mode of ['native', 'luker', 'corrupt', 'publishFailure', 'disabled', 'oldEnvelope']) await t.test(mode, async () => {
+    const hostKind = mode === 'luker' ? 'Luker' : 'SillyTavern';
+    const h = await sourceWithUnmarkedGaps({ gaps: [], count: 64, hostKind });
+    const manual = h.backend.records.get(`chat-${SOURCE}/v3-floor-memory-${h.source.floorMemories[0].id}`);
+    manual.data.summary = { ...manual.data.summary, userText: '人工确认：钥匙在袖中，勿改。', effectiveSource: 'user', revisionNote: '分支前手改' };
+    let transport = branchIoTransport(h.backend, { generations: mode !== 'oldEnvelope' });
+    const idb = localForageHarness();
+    const cache = createIndexedDbCoreRecordCache({ localForage: idb.localForage,
+      indexedDBProvider: () => idb.indexedDB, keyRangeProvider: () => idb.keyRange,
+      accountHandleProvider: () => 'branch-test', originProvider: () => 'https://tavern.invalid' });
+    const selectedCache = mode === 'disabled' ? null : cache;
+    const sourceIdentity = identity(h.raw.chatId, SOURCE);
+    const source = await createFoundationStore({ client: transport.client, contextProvider: () => sourceIdentity, coreRecordCache: selectedCache }).readReachable();
+    if (!['disabled', 'oldEnvelope'].includes(mode)) {
+      const rootEnvelope = await transport.client.get(`chat-${SOURCE}`, 'v3-root');
+      const witness = { formatVersion: 1, generationId: rootEnvelope.generationId, revision: rootEnvelope.revision,
+        headCheckpointId: source.root.headCheckpointId, narrativeGeneration: source.root.narrativeGeneration, sourceSnapshotFingerprint: source.root.sourceSnapshotFingerprint };
+      const scope = await cache.scopeFor(sourceIdentity);
+      let manifest;
+      for (let attempt = 0; attempt < 200 && !manifest; attempt++) { manifest = await cache.readManifest(scope, witness); if (!manifest) await new Promise(resolve => setImmediate(resolve)); }
+      assert.ok(manifest, '先经真实store冷读发布源缓存');
+    }
+    if (mode === 'corrupt') {
+      const key = [...idb.data.keys()].find(key => key.startsWith('r:') && key.endsWith(encodeURIComponent(`v3-floor-memory-${source.floorMemories[0].id}`)));
+      assert.ok(key); idb.data.get(key).envelope.data.summary.userText = '坏缓存旧值';
+    }
+    transport.client = transport.freshClient();
+    const suppliedCache = mode === 'publishFailure' ? { ...cache, publish: async () => { throw new Error('injected cache publish failure'); } } : selectedCache;
+    const targetId = await deterministicUuid(['branch-io-target', mode]);
+    const raw = context(`branch-io-${mode}`, SOURCE, structuredClone(h.raw.chat));
+    const adapter = createHostAdapter({ globalRef: { [hostKind]: { getContext: () => raw } } }), api = targetChatApi(raw);
+    let providerCalls = 0;
+    const initialize = createChatBranchInitializer({ client: transport.client, hostAdapter: adapter, fetchImpl: api.fetch,
+      coreRecordCacheProvider: () => { providerCalls++; return suppliedCache; }, now: () => new Date(NOW) });
+    assert.equal(providerCalls, 0, '构造时不能读取index后声明的缓存');
+    const before = chatRecords(h.backend.records, SOURCE), hitsBefore = cache.getStats().hits;
+    transport.requests.length = 0; h.backend.calls.length = 0;
+    const result = await initialize({ raw, host: { hostChatId: raw.chatId, characterAvatar: 'character.png', personaAvatar: 'persona.png' }, sourceChatId: SOURCE, targetChatId: targetId });
+    assert.equal(result.inheritedFloors, 64);
+    const sourceReads = h.backend.calls.filter(([method, collection, key]) => method === 'get' && collection === `chat-${SOURCE}` && /^v3-floor-(?:memory-)?/u.test(key));
+    const branchRequests = structuredClone(transport.requests);
+    assert.ok(branchRequests.some(item => item.kind === 'record-batch' && item.method === 'PUT'), '新client即便暖源零批读也必须保批写收益');
+    if (!['disabled', 'oldEnvelope'].includes(mode)) {
+      assert.equal(providerCalls, 1);
+      assert.ok(cache.getStats().hits > hitsBefore, '分支实际从IndexedDB命中源图');
+      assert.equal(sourceReads.length, mode === 'corrupt' ? 1 : 0, '健康正文与摘要不回源，坏片单独回源');
+    } else assert.equal(sourceReads.length, 128, '关闭或旧envelope沿原后端回落');
+    assert.equal(chatRecords(h.backend.records, SOURCE), before);
+    const targetIdentity = identity(raw.chatId, targetId);
+    const targetStore = createFoundationStore({ client: transport.client, contextProvider: () => targetIdentity, coreRecordCache: selectedCache });
+    const foundation = createFoundationRuntime({ store: targetStore, hostAdapter: adapter, contextProvider: () => raw,
+      now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
+    transport.requests.length = 0; h.backend.calls.length = 0;
+    assert.equal((await foundation.start()).status, 'ready');
+    const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store: targetStore, hostAdapter: adapter,
+      generateAnalysisTask: h.noModel, generateUtilityTask: h.noModel, automationSettings: () => ({ enabled: false, batchSize: 1 }), logger: { warn() {} } });
+    await memory.start();
+    const target = foundation.getReachable();
+    const targetReads = h.backend.calls.filter(([method, collection, key]) => method === 'get' && collection === `chat-${targetId}` && /^v3-floor-(?:memory-)?/u.test(key));
+    assert.equal(targetReads.length, ['disabled', 'oldEnvelope', 'publishFailure'].includes(mode) ? 128 : 0, '正常首次准备沿根见证命中刚提交缓存；不可用正常回源');
+    assert.deepEqual(target.floorMemories.map(({ chatId, narrativeGeneration, ...item }) => item), source.floorMemories.map(({ chatId, narrativeGeneration, ...item }) => item));
+    assert.deepEqual(target.floors.map(item => item.content), source.floors.map(item => item.content));
+    assert.equal(target.root.chatId, targetId); assert.equal(target.floorMemories[0].summary.userText, '人工确认：钥匙在袖中，勿改。');
+    assert.equal(h.modelCalls, 0);
+    console.log(JSON.stringify({ branchCacheFixture: { mode, floors: 64, summaries: 64, sourceContentReads: sourceReads.length,
+      branchBatchReads: branchRequests.filter(item => item.kind === 'record-batch' && item.method === 'POST').length,
+      branchBatchWrites: branchRequests.filter(item => item.kind === 'record-batch' && item.method === 'PUT').length,
+      firstPrepareContentReads: targetReads.length, firstPrepareRequests: transport.requests.length, modelRequests: h.modelCalls } }));
+  });
+});
+
+test('搬家暖源使用新client仍批写，目标首次正常准备不再读取整图', async () => {
+  const h = await sourceWithUnmarkedGaps({ gaps: [], count: 64 });
+  h.backend.records.get(`chat-${SOURCE}/v3-floor-memory-${h.source.floorMemories[0].id}`).data.summary = {
+    ...h.source.floorMemories[0].summary, userText: '人工搬家原文：钥匙留在袖中。', effectiveSource: 'user', revisionNote: '人工修订' };
+  const transport = branchIoTransport(h.backend), idb = localForageHarness();
+  const cache = createIndexedDbCoreRecordCache({ localForage: idb.localForage, indexedDBProvider: () => idb.indexedDB,
+    keyRangeProvider: () => idb.keyRange, accountHandleProvider: () => 'migration-test', originProvider: () => 'https://tavern.invalid' });
+  const sourceIdentity = identity(h.raw.chatId, SOURCE);
+  const source = await createFoundationStore({ client: transport.client, contextProvider: () => sourceIdentity, coreRecordCache: cache }).readReachable({ mode: 'runtime' });
+  const rootEnvelope = await transport.client.get(`chat-${SOURCE}`, 'v3-root');
+  const witness = { formatVersion: 1, generationId: rootEnvelope.generationId, revision: rootEnvelope.revision,
+    headCheckpointId: source.root.headCheckpointId, narrativeGeneration: source.root.narrativeGeneration, sourceSnapshotFingerprint: source.root.sourceSnapshotFingerprint };
+  const scope = await cache.scopeFor(sourceIdentity);
+  let manifest;
+  for (let attempt = 0; attempt < 200 && !manifest; attempt++) { manifest = await cache.readManifest(scope, witness); if (!manifest) await new Promise(resolve => setImmediate(resolve)); }
+  assert.ok(manifest);
+  transport.client = transport.freshClient();
+  const files = new Map();
+  const migration = createChatMemoryMigration({ client: transport.client, session: { identity: () => sourceIdentity }, hostAdapter: createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.raw } } }),
+    sourceStoreForIdentity: owner => createFoundationStore({ client: transport.client, contextProvider: () => owner, coreRecordCache: cache }),
+    listHostChats: async () => [], freshUuid: uuidFactory(), now: () => new Date(NOW), fetchImpl: async (url, request) => {
+      const body = JSON.parse(request.body);
+      if (url.endsWith('/api/chats/save')) { files.set(body.file_name, structuredClone(body.chat)); return Response.json({}); }
+      if (url.endsWith('/api/chats/get')) return files.has(body.file_name) ? Response.json(files.get(body.file_name)) : Response.json({}, { status: 404 });
+      assert.fail(`unexpected host operation: ${url}`);
+    } });
+  const before = chatRecords(h.backend.records, SOURCE);
+  transport.requests.length = 0; h.backend.calls.length = 0;
+  const result = await migration.migrateCurrent(); assert.equal(result.status, 'completed');
+  const sourceReads = h.backend.calls.filter(([method, collection, key]) => method === 'get' && collection === `chat-${SOURCE}` && key.startsWith('v3-floor-'));
+  assert.equal(sourceReads.length, 0);
+  const batchRequests = transport.requests.filter(item => item.kind === 'record-batch' && item.method === 'PUT');
+  assert.ok(batchRequests.length > 0, '新client暖源零批读后仍协商到批写能力');
+  assert.equal(transport.requests.filter(item => item.kind === 'health').length, 1);
+  assert.equal(transport.requests.some(item => item.kind === 'record-batch' && item.method === 'POST'), false);
+  assert.equal(chatRecords(h.backend.records, SOURCE), before);
+  const [header, ...messages] = files.get(result.hostChatId);
+  const raw = context(result.hostChatId, result.chatId, messages); raw.chatMetadata = header.chat_metadata;
+  const adapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => raw } } });
+  const store = createFoundationStore({ client: transport.client, contextProvider: () => identity(raw.chatId, result.chatId), coreRecordCache: cache });
+  const foundation = createFoundationRuntime({ hostAdapter: adapter, store, contextProvider: () => raw, newUuid: uuidFactory(), now: () => new Date(NOW), logger: { warn() {} } });
+  transport.requests.length = 0; h.backend.calls.length = 0;
+  assert.equal((await foundation.start()).status, 'ready');
+  const target = foundation.getReachable();
+  const targetReads = h.backend.calls.filter(([method, collection, key]) => method === 'get' && collection === `chat-${result.chatId}` && key.startsWith('v3-floor-'));
+  assert.equal(targetReads.length, 0);
+  assert.equal(target.floors.length, 65); assert.equal(target.floorMemories.length, 65);
+  assert.equal(migrationPartition(target).frozenFloorIds.size, 64);
+  assert.deepEqual(target.floorMemories.slice(0, 64).map(({ chatId, narrativeGeneration, ...item }) => item), source.floorMemories.map(({ chatId, narrativeGeneration, ...item }) => item));
+  assert.equal(target.floorMemories[0].summary.userText, '人工搬家原文：钥匙留在袖中。');
+  assert.equal(h.modelCalls, 0);
+  console.log(JSON.stringify({ migrationWarmCacheFixture: { frozenFloors: 64, liveFloors: 1, summaries: 65, sourceContentReads: sourceReads.length,
+    batchWriteRequests: batchRequests.length, firstPrepareContentReads: targetReads.length, firstPrepareRequests: transport.requests.length, modelRequests: h.modelCalls } }));
 });
