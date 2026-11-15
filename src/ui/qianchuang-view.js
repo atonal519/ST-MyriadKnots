@@ -74,7 +74,8 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
       userAvatar={marker,symbol,layer,svg,outline,clipShape,image,fallback,hole,small:[],large:[],open:false,progress:0,frame:0,ready:false,url:null,failed:false};
       const state=userAvatar;image.addEventListener('load',()=>{state.ready=true;state.failed=false;paintUserAvatar(state,state.progress);});image.addEventListener('error',()=>{state.ready=false;state.failed=true;paintUserAvatar(state,state.progress);});
     }
-    const state=userAvatar,direction=anchorY>=114?'up':frame.height-anchorY>=114?'down':anchorX<frame.width/2?'right':'left',horizontal=direction==='right'||direction==='left',offset=horizontal?Math.max(52,Math.min(frame.height-52,anchorY))-anchorY:Math.max(52,Math.min(frame.width-52,anchorX))-anchorX,dx=direction==='left'?-offset:offset,tail=Math.max(dx-34,Math.min(dx+34,0));
+    // 框半宽48、圆角14、尾巴底边半宽9，尾巴中心只可偏至48-14-9=25。
+    const state=userAvatar,direction=anchorY>=114?'up':frame.height-anchorY>=114?'down':anchorX<frame.width/2?'right':'left',horizontal=direction==='right'||direction==='left',offset=horizontal?Math.max(52,Math.min(frame.height-52,anchorY))-anchorY:Math.max(52,Math.min(frame.width-52,anchorX))-anchorX,dx=direction==='left'?-offset:offset,tail=Math.max(dx-25,Math.min(dx+25,0));
     const orient=(x,y)=>direction==='up'?[x,y]:direction==='down'?[x,-y]:direction==='right'?[-y,x]:[y,-x];
     state.layer.style.left=`${pin.left+pin.width/2-host.left}px`;state.layer.style.top=`${pin.top+pin.height*22/24-host.top}px`;
     const raw=svgNode('path',{d:'M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0Z'}),large=svgNode('path',{d:`M${dx+48} -62 L${dx+48} -28 Q${dx+48} -14 ${dx+34} -14 L${tail+9} -14 L0 0 L${tail-9} -14 L${dx-34} -14 Q${dx-48} -14 ${dx-48} -28 L${dx-48} -96 Q${dx-48} -110 ${dx-34} -110 L${dx+34} -110 Q${dx+48} -110 ${dx+48} -96 Z`});

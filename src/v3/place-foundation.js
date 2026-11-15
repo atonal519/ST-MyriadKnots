@@ -23,10 +23,27 @@ function pathEvidence(entry, scope) {
       const book = scope.placeWorldbookSources?.find(source => source.sourceKey === ref.sourceKey), segments = locatePlaceQuote(book?.content, ref.exactQuote, {allowWhitespace:true,allowOmission:Boolean(ref.sourceKey)});
       return segments ? segments.map(({quote})=>({ source: { kind: 'worldbook', sourceName: book.sourceName ?? '', locator: book.locator, fingerprint: book.fingerprint, quote } })) : [null];
     }
+    if (ref.source === 'locationReference' || ref.source === 'storedPlaceEvidence' && scope.sourceFloorBindings?.some(binding => binding.evidenceKey === ref.sourceKey && binding.sourceType === 'locationReference')) {
+      // Tags support place identity and address paths, without entering body evidence.
+      const candidates = (scope.sourceFloorBindings ?? []).flatMap(binding => ref.source === 'storedPlaceEvidence'
+        ? binding.evidenceKey === ref.sourceKey && binding.sourceType === 'locationReference' ? [binding] : []
+        : ref.sourceFloorKey && binding.floorKey === ref.sourceFloorKey
+          ? (binding.locationReference ?? []).map((content, sourceSnapshotIndex) => ({ ...binding, canonicalContent: content, sourceSnapshotIndex })) : [])
+        .filter(binding => !Number.isSafeInteger(ref.sourceSnapshotIndex) || binding.sourceSnapshotIndex === ref.sourceSnapshotIndex);
+      const matches = candidates.flatMap(binding => {
+        const segments = locatePlaceQuote(binding.canonicalContent, ref.exactQuote, { allowWhitespace: true });
+        return segments ? [{ binding, segments }] : [];
+      });
+      if (matches.length !== 1) return [null];
+      const { binding, segments } = matches[0];
+      return segments.map(({ quote }) => ({ source: { kind: 'locationReference', floorId: binding.floorId,
+        sourceSnapshotIndex: binding.sourceSnapshotIndex, ...(binding.memoryId ? { memoryId: binding.memoryId } : {}),
+        locator: `floor:${binding.floorId}:location:${binding.sourceSnapshotIndex}`, fingerprint: binding.rawFingerprint, quote } }));
+    }
     if (!['canonicalContent','precedingUserInput','storedPlaceEvidence'].includes(ref.source)) return [null];
     const choices = (scope.sourceFloorBindings ?? []).flatMap(binding => ref.source === 'precedingUserInput'
       ? (binding.sourceUserInputSnapshot?.messages ?? []).map((message, sourceSnapshotIndex) => ({ ...binding, canonicalContent: message.content, sourceType: 'precedingUser', sourceSnapshotIndex }))
-      : [{ ...binding, sourceType: binding.sourceType ?? 'assistant' }]);
+      : binding.sourceType === 'locationReference' ? [] : [{ ...binding, sourceType: binding.sourceType ?? 'assistant' }]);
     const candidates = choices.filter(binding => ref.source === 'storedPlaceEvidence' ? binding.evidenceKey === ref.sourceKey
       : (!ref.sourceFloorKey || binding.floorKey === ref.sourceFloorKey) && (!Number.isSafeInteger(ref.sourceSnapshotIndex) || binding.sourceSnapshotIndex === ref.sourceSnapshotIndex));
     const match = allowOmission => candidates.flatMap(binding => {
@@ -69,6 +86,11 @@ function linkedBodyLeaf(entry, spatial, resolved, scope) {
 }
 
 const referencedSources = source => source?.references ?? (source ? [source] : []);
+export const isPlaceTagSource = source => source?.kind === 'locationReference' && referencedSources(source).every(ref => ref.kind === 'locationReference');
+export const placeParentSourceIntent = (fact, authority = 2) => ({ ...fact, ...(isPlaceTagSource(fact.source)
+  ? { authority: -1, identityChange: undefined, replacesItemIds: [] } : { authority }) });
+
+export const PLACE_LOCATION_GUIDANCE='locationReference是对应来源楼冻结的地点标签，可支持标签明确写出的地点名称与地址层级。原摘要用evidence:[{source:locationReference,sourceFloorKey,sourceSnapshotIndex?,exactQuote}]引用该楼标签，sourceSnapshotIndex为locationReference数组从0起的序号；整理中的sourceType:locationReference行同样是标签，用storedPlaceEvidence的sourceKey和必要exactQuote引用。保留标签来源，不冒充正文；标签不能单独证明篇末位置、人物在场、知情、陈设或活动。正文动作/篇末positions及人工修订优先。标签与已有正文明确归属冲突时保留正文链，只补有据缺层。结合本楼正文、标签和前楼身份参照，将房里、舱里等泛称对应到本次实际场所；在path段用placeKey关联本次spatialFacts.places的同一地点，或sameAsPlaceKey复用已知身份，不全局合并泛称，不沿上个房间强接新场景。明确某镇的夜市、客栈内的房间时输出完整placePaths或明确containments；相邻、途经、船只临时停靠只属关系，不把移动船只永久挂到停靠城镇，舱室归船。标签分隔符本身不证明行政级数，不补未知国家/城市。承载下级地点且构成独立活动范围的镇、渡口或其他完整地域，按本次材料在原path中明确mapLevel:scope；明确城市用city，普通房间/楼层仍为室内节点。mapRole:area不替代mapLevel，独立分区须显式给city/scope，人工mapLevel:null仍优先。';
 
 export const PLACE_CURRENT_GUIDANCE='地点description是本次已读资料合并后的完整、简洁当前简介，relations是完整当前方位说明，不是追加一段本楼复述。合并重复和同义说法，保留未改变的有效设施、布局和独立方位；新增或局部改造时只更新对应内容，不能因换书桌就丢床和卫浴。knownPlaces.description为已有合并简介，features为其余有来源事实；简介不作为可单项替换的known-feature。普通摘要在同一次输出placePaths中更新有真实新信息的地点，完整description/relations须保上述旧内容并合入本次变化；已有内容仅复述且无有效变化则省略字段，不重写。旧部分继续关联其原来源，exactQuote仅引用本次新增或变化的真实依据，不把旧陈设伪作本楼原句。人物临时在场、情绪、床单状态、灯光气味等现场不进入长期简介。显式整理还要把已有重复段落、多种同义方位视为需要归并的变化；即使无新增，也返回归并后的完整字段。省略保原，明确清空才返回空description或relations:[]。人工description/relations及空值优先。';
 
@@ -188,7 +210,7 @@ export function mergePlaceFoundation(workspace,patch={entities:[],facts:[]},remo
 export function filterPlaceFoundationSources(workspace,{filterWorldInfoSources=sources=>sources,floorIds=null}={}){
  if(!workspace?.foundation)return workspace;
  const facts=workspace.foundation.facts.filter(fact=>referencedSources(fact.source).every(source=>(source.kind!=='worldbook'||filterWorldInfoSources([{sourceName:source.sourceName??''}]).length)
-  &&(source.kind!=='body'||!floorIds||floorIds.has(source.floorId)))&&(!floorIds||!Array.isArray(fact.replacesItemIds)||!fact.knownFromFloorId||floorIds.has(fact.knownFromFloorId)));
+  &&(!['body','locationReference'].includes(source.kind)||!floorIds||floorIds.has(source.floorId)))&&(!floorIds||!Array.isArray(fact.replacesItemIds)||!fact.knownFromFloorId||floorIds.has(fact.knownFromFloorId)));
  const ids=new Set([...Object.keys(workspace.identityRedirectsByEntityId??{}),...Object.values(workspace.identityRedirectsByEntityId??{}),...facts.flatMap(fact=>[fact.placeEntityId,fact.parentEntityId,...(fact.referencePlaceEntityIds??[])].filter(Boolean))]);
  for(const [id,row]of Object.entries(workspace.placesByEntityId??{}))if(Object.keys(row.scopes??{}).length){ids.add(id);if(row.parentEntityId)ids.add(row.parentEntityId);}
  return {...workspace,foundation:{...workspace.foundation,facts,entities:workspace.foundation.entities.filter(entity=>ids.has(entity.id))}};
@@ -273,10 +295,11 @@ export function projectPlaceParentLinks(memories, workspace, seqById, throughAss
   const prefix = Number.isFinite(libraryThroughAssistantSeq) ? filterPlaceFoundationSources(workspace,
     { floorIds: new Set([...seqById].filter(([,seq]) => seq <= libraryThroughAssistantSeq).map(([id]) => id)) }) : workspace;
   for (const fact of effectiveFoundationFacts(prefix).filter(fact => fact.kind === 'containment')) {
-    const seq = seqById.get(fact.knownFromFloorId) ?? 0;
-    if (seq <= libraryThroughAssistantSeq) intents.push({ placeEntityId: resolve(fact.placeEntityId), parentEntityId: resolve(fact.parentEntityId), seq,
-      itemId:fact.itemId,replacesItemIds:fact.replacesItemIds,identityChange:fact.identityChange,
-      sourceFloorId: fact.knownFromFloorId ?? null, sourceAssistantSeq: seq, authority: 1 });
+    const sourceFloorId = isPlaceTagSource(fact.source) ? referencedSources(fact.source).reduce((latest, ref) =>
+      (seqById.get(ref.floorId) ?? 0) > (seqById.get(latest) ?? 0) ? ref.floorId : latest, fact.source.floorId) : fact.knownFromFloorId;
+    const seq = seqById.get(sourceFloorId) ?? 0;
+    if (seq <= libraryThroughAssistantSeq) intents.push({ ...placeParentSourceIntent(fact, 1), placeEntityId: resolve(fact.placeEntityId), parentEntityId: resolve(fact.parentEntityId), seq,
+      sourceFloorId: sourceFloorId ?? null, sourceAssistantSeq: seq });
   }
   const covered = new Set(intents.flatMap(intent => intent.replacesItemIds ?? []));
   const bySeq = new Map();
@@ -366,6 +389,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     const primary = resolved.find(ref => ref.source.kind === 'worldbook') ?? resolved[0];
     const autoSource = !bodySource || persistBodyPaths ? { ...primary.source,
       ...(resolved.length > 1 ? { references: resolved.map(ref => ref.source) } : {}) } : null;
+    if (clearParent && isPlaceTagSource(autoSource)) { isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SCOPE_CONFLICT', path: `placePaths[${index}]` }); continue; }
     const explicitLeafKey = entry.placeKey ?? entry.path.at(-1).placeKey;
     const nodeKeys = entry.path.map((segment, depth) => depth === entry.path.length - 1 ? explicitLeafKey : segment.placeKey).filter(key => key !== undefined);
     const explicitNodes = new Map();
@@ -403,7 +427,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       if (depth > 0 && id && originalParents.get(id)?.size && (!knownPrefix || !lineage(id).has(knownPrefix))) scopeConflict = true;
       if (id) knownPrefix = id;
     }
-    if (scopeConflict && entry.identityChange !== 'ownershipChanged' && envelope.request?.task !== 'organizePlaces') {
+    if (scopeConflict && (isPlaceTagSource(autoSource) || entry.identityChange !== 'ownershipChanged' && envelope.request?.task !== 'organizePlaces')) {
       isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SCOPE_CONFLICT', path: `placePaths[${index}]` }); continue;
     }
     // Resolve path identities before deciding the batch containment constraints.
@@ -477,7 +501,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       const description = typeof segment.description === 'string' ? segment.description : depth === segments.length - 1 ? entry.description : undefined;
       const relations = Array.isArray(segment.relations) ? segment.relations : depth === segments.length - 1 ? entry.relations : undefined;
       const facilities = normalizePlaceFacilities(segment.facilities);
-      const revision=envelope.request?.task==='organizePlaces'||depth===segments.length-1&&entry.identityChange==='ownershipChanged';
+      const revision=!isPlaceTagSource(autoSource)&&(envelope.request?.task==='organizePlaces'||depth===segments.length-1&&entry.identityChange==='ownershipChanged');
       const mapStyle=normalizeQianchuangMapStyle(segment.mapStyle),mapLayout=normalizeQianchuangMapLayout(segment.mapLayout,mapStyle);
       seenPaths.set(pathKey, entityId);
       const binding = bindings.find(binding => binding.entityId === entityId);
@@ -542,7 +566,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
         const unchanged=prior.length===texts.length&&prior.every(fact=>fact.current&&texts.includes(fact.text));
         const fact={...currentFact('relation',entityId,itemId,text,source,scope,unchanged),relationKind:'relative',referencePlaceEntityIds:[]};recordFact(fact.itemId,fact);
       }
-      if(autoSource&&parentId)replaceFields.push({entityId,kind:'containment'});
+      if(autoSource&&parentId&&!isPlaceTagSource(autoSource))replaceFields.push({entityId,kind:'containment'});
       if(autoSource){
         if(!Object.hasOwn(scope,'placeCurrentFactBindings')){
           if(description!==undefined)replaceFields.push({entityId,kind:'feature'});
@@ -564,7 +588,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
       identityChange: spatial.places.find(place => place?.key === edge.placeKey)?.identityChange,
       authority: edge._placePathIndex === undefined ? 0 : 1, edge,
     }]);
-    const foundationIntents = [...facts.values()].filter(fact => fact.kind === 'containment').map(fact => ({ ...fact, authority: 2 }));
+    const foundationIntents = [...facts.values()].filter(fact => fact.kind === 'containment').map(fact => placeParentSourceIntent(fact));
     const previous = new Map([...originalParents].map(([id, parents]) => [id, { parents: new Map([...parents].map(parent => [parent, {}])) }]));
     const manual = new Map(Object.entries(scope.identityProjection?.placeWorkspace?.placesByEntityId ?? {}).filter(([, row]) => Object.hasOwn(row, 'parentEntityId'))
       .map(([id, row]) => [id, new Map(row.parentEntityId ? [[row.parentEntityId, { manual: true }]] : [])]));
@@ -577,7 +601,7 @@ export async function expandPlacePaths({ packet, envelope, existingEntities = []
     });
     for (const fact of foundationIntents) if (decision.rejected.has(fact.placeEntityId)) facts.delete(fact.itemId);
     const rejectedPathIndexes = new Set([...bodyIntents.filter(intent => decision.rejected.has(intent.placeEntityId)).map(intent => intent.edge._placePathIndex),
-      ...foundationIntents.filter(intent => decision.rejected.has(intent.placeEntityId)).map(intent => parentPathIndex.get(intent.itemId))].filter(index => index !== undefined));
+      ...foundationIntents.filter(intent => decision.rejected.has(intent.placeEntityId) || isPlaceTagSource(intent.source) && !decision.compatible.has(intent)).map(intent => parentPathIndex.get(intent.itemId))].filter(index => index !== undefined));
     for (const index of rejectedPathIndexes) isolated.push({ field: 'placePaths', index, code: 'QQJ_PLACE_PATH_SCOPE_CONFLICT', path: `placePaths[${index}]` });
     for (const [itemId, owners] of factPathIndexes) if ([...owners].every(index => rejectedPathIndexes.has(index))) facts.delete(itemId);
     const rejectedEntities = new Set([...entityPathIndexes].filter(([id, owners]) => freshEntities.some(entity => entity.id === id)

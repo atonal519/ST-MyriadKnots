@@ -657,15 +657,15 @@ export function createFoundationRuntime({
         return publish('ready');
       }
       if (publicState.status !== 'running') publish('running');
-      if (!allowCached && cache?.status !== 'needsReseal' && !hadError && cacheMatchesCandidates(candidates)
+      if (cache?.root?.chatId === captured.identity.chatId && cache.status !== 'needsReseal' && !hadError
         && typeof store.readRoot === 'function') {
         const rootResult = await store.readRoot();
         if (inspectEpoch !== sessionEpoch) return publicState;
         if (sameCachedRoot(rootResult)) {
-          inspectedStableCount = cache.floors.length;
+          inspectedStableCount = stableCountFor(candidates, cache.floors);
           updateCandidateProjection(candidates, cache.floors, inspectedStableCount);
-          reviewReason = null;
-          return publish('ready');
+          reviewReason = graphReviewReason(cache, candidates);
+          return publish(reviewReason ? 'needsReview' : 'ready');
         }
       }
       const loaded = await store.readReachable({ mode: 'projection', signal: controller.signal });

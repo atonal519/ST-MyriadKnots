@@ -843,6 +843,33 @@ test('健康缓存打开与连续 fresh 刷新只核 root，版本变化才重�
   assert.ok(graphGets().length > 0, 'root 版本变化时必须重新读取受影响的完整图');
 });
 
+test('正文待核且root未变时，连续inspect只核root并保留原待核原因', async t => {
+  const scenarios = [
+    { name: '新增尾楼', change: h => h.context.chat.push(assistant('D')), reason: { code: 'stableCountMismatch', assistantSeq: 3, messageIndex: 2, expectedCount: 2, actualCount: 3 }, stableCount: 3 },
+    { name: '编辑正文', change: h => { h.context.chat[0] = assistant('A 已编辑'); }, reason: { code: 'fingerprintMismatch', assistantSeq: 1, messageIndex: 0, expectedCount: 2, actualCount: 3, markerStatus: 'none', rawFingerprintMatches: false, canonicalFingerprintMatches: false, sanitizerFingerprintMatches: true }, stableCount: 2 },
+    { name: '删除尾楼', change: h => h.context.chat.pop(), reason: { code: 'stableCountMismatch', assistantSeq: 2, messageIndex: 1, expectedCount: 2, actualCount: 1 }, stableCount: 1 },
+  ];
+  for (const scenario of scenarios) for (const allowCached of [false, true]) await t.test(`${scenario.name}, allowCached=${allowCached}`, async () => {
+    const h = harness();
+    await h.runtime.start();
+    const persisted = structuredClone(h.backend.records);
+    scenario.change(h);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      h.backend.calls.length = 0;
+      const state = await h.runtime.inspect('bodyChanged', { allowCached });
+      assert.equal(state.status, 'needsReview');
+      assert.deepEqual(state.reviewReason, scenario.reason);
+      assert.equal(state.inspectedStableCount, scenario.stableCount);
+      assert.equal(state.lastError, null);
+      assert.deepEqual(h.backend.calls, [['get', `chat-${CHAT}`, 'v3-root']], '同根待核只读取root，不重读图或保存');
+    }
+    assert.deepEqual(h.backend.records, persisted);
+    h.context.chat = [assistant('A'), assistant('B'), assistant('C')];
+    assert.equal((await h.runtime.inspect('bodyRestored', { allowCached: false })).status, 'ready');
+    assert.equal(h.runtime.getState().reviewReason, null);
+  });
+});
+
 test('canonical 相同的未摘要稳定编辑保留楼；无锚正文变化只待核并保留原存档', async () => {
   const h = harness([assistant(' A '), assistant('B'), assistant('C')]);
   await h.runtime.start();

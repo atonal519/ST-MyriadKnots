@@ -20,9 +20,98 @@ async function publishedBatch(count = 64, ioTimeoutMs = 50) {
   });
   assert.equal(await cache.publish(scope, witness, records, { floor: records.map(row => row.recordId) }), true);
   const manifest = await cache.readManifest(scope, witness);
+  const publishTransactions = [...h.transactions];
   h.transactions.length = 0;
-  return { h, cache, scope, records, manifest };
+  return { h, cache, scope, records, manifest, publishTransactions };
 }
+
+const recordWrites = transactions => transactions.filter(row => row.mode === 'readwrite' && row.gets.includes('b:core-cache') && row.gets.some(key => key.startsWith('r:')));
+const sidecarBytes = h => [...h.data].filter(([key]) => key.startsWith('s:')).reduce((total, [, value]) => total + value.bytes, 0);
+
+test('1024条缓存发布仅用16个串行记录事务，回读及持久预算保持准确', async () => {
+  const { h, cache, scope, records, manifest, publishTransactions } = await publishedBatch(1024);
+  const transactions = recordWrites(publishTransactions);
+  assert.equal(cache.getStats().writes, 1024);
+  assert.equal(cache.getStats().estimatedBytes, sidecarBytes(h));
+  assert.equal(h.data.get('b:core-cache').estimatedBytes, sidecarBytes(h));
+  for (let offset = 0; offset < records.length; offset += 64) {
+    const batch = records.slice(offset, offset + 64);
+    assert.deepEqual(await cache.readRecords(scope, witness, 'floor', batch.map(row => row.recordId), manifest), batch.map(row => row.envelope));
+  }
+  console.log(`CACHE_PUBLISH_1024 ${JSON.stringify({ recordTransactions: transactions.length, writes: cache.getStats().writes, estimatedBytes: cache.getStats().estimatedBytes, hits: cache.getStats().hits })}`);
+  assert.equal(transactions.length, 16, '1024条不再逐记录开启1024个写事务');
+  assert.deepEqual(transactions.map(row => row.gets.filter(key => key.startsWith('r:')).length), Array(16).fill(64));
+  assert.ok(transactions.every(row => row.gets.filter(key => key === 'b:core-cache').length === 1), '同批预算仅读一次');
+});
+
+test('跨批重发不增加记录数或预算，缺损元数据在批内补齐', async () => {
+  const { h, cache, scope, records, publishTransactions } = await publishedBatch(65);
+  const bytes = sidecarBytes(h);
+  assert.equal(await cache.publish(scope, witness, records, { floor: records.map(row => row.recordId) }), true);
+  assert.equal(cache.getStats().writes, 65);
+  assert.equal(sidecarBytes(h), bytes);
+  const metadataKey = [...h.data.keys()].find(key => key.startsWith('s:r:') && key.endsWith(':v3-floor-floor-64'));
+  h.data.get(metadataKey).bytes -= 11;
+  h.data.get('b:core-cache').estimatedBytes -= 11;
+  assert.equal(await cache.publish(scope, witness, records, { floor: records.map(row => row.recordId) }), true);
+  assert.equal(cache.getStats().writes, 65, '修复元数据不重写已有记录');
+  assert.equal(h.data.get('b:core-cache').estimatedBytes, bytes);
+  assert.equal(cache.getStats().estimatedBytes, sidecarBytes(h));
+  assert.deepEqual(recordWrites(publishTransactions).map(row => row.gets.filter(key => key.startsWith('r:')).length), [64, 1]);
+});
+
+test('同批同key保最后有效值且不重复计预算，跨批同key也保最终内容', async () => {
+  const { h, cache, scope, records } = await publishedBatch(65);
+  const updated = summary => ({ recordId: records[0].recordId, envelope: { ...records[0].envelope, data: { ...records[0].envelope.data, summary } } });
+  const next = { ...witness, revision: witness.revision + 1 };
+  const last = updated('本批最后有效内容，比初稿更长');
+  assert.equal(await cache.publish(scope, next, [updated('初稿'), last, { ...last, envelope: null }], { floor: [last.recordId] }), true);
+  const manifest = await cache.readManifest(scope, next);
+  assert.deepEqual(await cache.readRecord(scope, next, 'floor', last.recordId, manifest), last.envelope);
+  assert.equal(cache.getStats().writes, 66, '同批重复key只有最后有效记录实际写入');
+  assert.equal(cache.getStats().estimatedBytes, sidecarBytes(h));
+  assert.equal(h.data.get('b:core-cache').estimatedBytes, sidecarBytes(h));
+  const final = updated('跨批最后内容');
+  const latest = { ...witness, revision: witness.revision + 2 };
+  assert.equal(await cache.publish(scope, latest, [updated('第一批'), ...records.slice(1, 64), final], { floor: records.map(row => row.recordId) }), true);
+  assert.deepEqual(await cache.readRecord(scope, latest, 'floor', final.recordId, await cache.readManifest(scope, latest)), final.envelope);
+  assert.equal(cache.getStats().writes, 68);
+  assert.equal(cache.getStats().estimatedBytes, sidecarBytes(h));
+  assert.equal(h.data.get('b:core-cache').estimatedBytes, sidecarBytes(h));
+});
+
+test('批内末条写失败回滚整批和预算，不发布目录；下一自然publish可完成跨批写入', async () => {
+  const { h, cache, scope, records } = await publishedBatch(1);
+  const before = structuredClone(h.data);
+  const additions = Array.from({ length: 65 }, (_, index) => ({ recordId: `v3-floor-added-${index}`,
+    envelope: { ...floorEnvelope(), data: { ...floorEnvelope().data, id: `added-${index}` } } }));
+  const next = { ...witness, revision: witness.revision + 1 }, refs = { floor: [...records, ...additions].map(row => row.recordId) };
+  h.failNextPut(new Error('batch end failed'), `r:${scope}:generation-A:floor:v3-floor-added-63`);
+  assert.equal(await cache.publish(scope, next, additions, refs), false);
+  assert.deepEqual(h.data, before, '批内失败不能留下较早记录或预算变更');
+  assert.equal(cache.getStats().writes, 1);
+  assert.equal(await cache.readManifest(scope, next), null);
+  assert.equal(await cache.publish(scope, next, additions, refs), true);
+  assert.equal(cache.getStats().writes, 66);
+  const manifest = await cache.readManifest(scope, next);
+  for (const record of [additions[0], additions.at(-1)]) assert.deepEqual(await cache.readRecord(scope, next, 'floor', record.recordId, manifest), record.envelope);
+  assert.equal(cache.getStats().estimatedBytes, sidecarBytes(h));
+});
+
+test('大记录按约1MiB拆开事务，超限单条独立写入且不截断内容', async () => {
+  const { h, cache, scope } = await publishedBatch(1);
+  const records = [400000, 400000, 400000, 1200000, 20].map((length, index) => {
+    const envelope = floorEnvelope('x'.repeat(length)); envelope.data.id = `large-${index}`;
+    return { recordId: `v3-floor-large-${index}`, envelope };
+  });
+  const next = { ...witness, revision: witness.revision + 1 };
+  assert.equal(await cache.publish(scope, next, records, { floor: records.map(row => row.recordId) }), true);
+  const manifest = await cache.readManifest(scope, next);
+  assert.deepEqual(await cache.readRecords(scope, next, 'floor', records.map(row => row.recordId), manifest), records.map(row => row.envelope));
+  assert.equal(cache.getStats().writes, 6);
+  assert.equal(cache.getStats().estimatedBytes, sidecarBytes(h));
+  assert.deepEqual(recordWrites(h.transactions).map(row => row.gets.filter(key => key.startsWith('r:')).length), [2, 1, 1, 1], '大记录不组成超大事务，单条超限仍沿原单写能力提交');
+});
 
 test('批读64条只开启一个只读事务，按输入顺序返回；空批不读、超限拒绝', async () => {
   const { h, cache, scope, records, manifest } = await publishedBatch();
@@ -174,6 +263,8 @@ test('目录写事务失败会回滚manifest和目录，保留上一个可读版
   assert.ok(await reader.readManifest(scope, witness));
   assert.equal(await reader.readManifest(scope, next), null);
   assert.deepEqual(h.data.get(`d:${scope}`).items.map(item => item.revision), [witness.revision]);
+  assert.equal(await cache.publish(scope, next, [record], { floor: [record.recordId] }), true, '一次目录事务失败不封死之后自然发布');
+  assert.ok(await cache.readManifest(scope, next));
 });
 
 test('旧版本manifest只读逐条目录清理；预算持久计数与sidecar估值相等', async () => {
@@ -387,7 +478,7 @@ test('旧I/O的late observer不覆盖之后发生的last failure', async () => {
   assert.deepEqual(cache.getStats().lastFailure, laterFailure, '旧record完成只更新其own token，不替换较新的last failure');
 });
 
-test('发布写故障只停止后续发布，同页旧精确manifest和合法记录仍可读', async () => {
+test('发布写故障只结束当次，同页旧精确manifest仍可读且下次自然发布可成功', async () => {
   const { h, cache, scope, records } = await publishedBatch(2);
   h.failNextPut(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }), 'r:');
   const next = { ...witness, revision: witness.revision + 1 };
@@ -398,14 +489,14 @@ test('发布写故障只停止后续发布，同页旧精确manifest和合法记
   assert.ok(manifest);
   assert.deepEqual(await cache.readRecords(scope, witness, 'floor', records.map(record => record.recordId), manifest), records.map(record => record.envelope));
   assert.equal(await cache.readManifest(scope, next), null);
-  const transactions = h.transactions.length;
-  assert.equal(await cache.publish(scope, next, [added], { floor: [added.recordId] }), false);
-  assert.equal(h.transactions.length, transactions, '本页后续发布不再排队');
+  assert.equal(await cache.publish(scope, next, [added], { floor: [added.recordId] }), true);
+  const nextManifest = await cache.readManifest(scope, next);
+  assert.deepEqual(await cache.readRecord(scope, next, 'floor', added.recordId, nextManifest), added.envelope);
   assert.equal(await cache.invalidateScope(scope), true);
   assert.equal(await cache.readManifest(scope, witness), null, '真实删除的失效屏障仍工作');
 });
 
-test('发布原生读写事务串行完成，同一store不同时排队十六个事务', async () => {
+test('发布小批原生读写事务串行完成，同一store不并行排队', async () => {
   const h = localForageHarness();
   let active = 0, maximum = 0, recordDelayMs = 1;
   const indexedDBProvider = () => ({ open(name) {
@@ -426,26 +517,109 @@ test('发布原生读写事务串行完成，同一store不同时排队十六个
   const cache = createIndexedDbCoreRecordCache({ localForage: h.localForage, ...cacheOptions(h), indexedDBProvider,
     accountHandleProvider: () => 'user', originProvider: () => 'https://tavern.invalid', ioTimeoutMs: 20 });
   const scope = await cache.scopeFor({ chatId: '123e4567-e89b-42d3-a456-426614174000' });
-  const records = Array.from({ length: 16 }, (_, index) => {
+  const records = Array.from({ length: 129 }, (_, index) => {
     const envelope = floorEnvelope(`summary-${index}`); envelope.data.id = `floor-${index}`;
     return { recordId: `v3-floor-floor-${index}`, envelope };
   });
   assert.equal(await cache.publish(scope, witness, records, { floor: records.map(row => row.recordId) }), true);
   assert.equal(maximum, 1);
-  recordDelayMs = 60;
+  recordDelayMs = 1400;
   const next = { ...witness, revision: witness.revision + 1 };
   const envelope = floorEnvelope('new'); envelope.data.id = 'floor-new';
-  assert.equal(await cache.publish(scope, next, [{ recordId: 'v3-floor-floor-new', envelope }], { floor: ['v3-floor-floor-new'] }), false);
+  const publishing = cache.publish(scope, next, [{ recordId: 'v3-floor-floor-new', envelope }], { floor: ['v3-floor-floor-new'] });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await cache.readManifest(scope, next), null, '记录事务完成前不得提前发布目录');
+  assert.equal(await publishing, true, '约1.4秒的正常慢写应完成，而前台读取仍沿短期限');
   assert.equal(cache.getStats().available, true);
   const manifest = await cache.readManifest(scope, witness);
   assert.ok(manifest);
   assert.deepEqual(await cache.readRecord(scope, witness, 'floor', records[0].recordId, manifest), records[0].envelope);
   assert.equal(await cache.invalidateScope(scope), true);
-  await new Promise(resolve => setTimeout(resolve, 70));
-  assert.equal(cache.getStats().lastFailure.phase, 'publish-record-transaction');
-  assert.equal(cache.getStats().lastFailure.lateResult, 'fulfilled');
+  assert.equal(cache.getStats().writeFailures, 0);
+  assert.equal(maximum, 1);
   assert.equal(await cache.readManifest(scope, witness), null);
-  assert.equal(await cache.readManifest(scope, next), null, '迟到写事务没有重新发布已失效manifest');
+  assert.equal(await cache.readManifest(scope, next), null);
+});
+
+test('后台写事务真正挂起时有界abort，不发布目录且下一次自然publish仍可完成', async () => {
+  const { h, cache, scope, records } = await publishedBatch(1);
+  let hungTransaction;
+  const open = h.indexedDB.open;
+  // The cache already owns its connection; capture the next transaction from that database.
+  const request = open();
+  const database = await new Promise(resolve => { request.onsuccess = () => resolve(request.result); });
+  const transaction = database.transaction;
+  let hangRecord = true;
+  database.transaction = function (...args) {
+    const current = transaction.apply(this, args), objectStore = current.objectStore;
+    current.objectStore = (...storeArgs) => {
+      const store = objectStore(...storeArgs), get = store.get;
+      return { ...store, get(key) {
+        if (hangRecord && key.startsWith('r:')) { hangRecord = false; hungTransaction = current; h.hangNextGet(); }
+        return get(key);
+      } };
+    };
+    return current;
+  };
+  const next = { ...witness, revision: witness.revision + 1 };
+  const started = Date.now();
+  const publishing = cache.publish(scope, next, records, { floor: records.map(record => record.recordId) });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const hanging = hungTransaction;
+  assert.equal(hanging.aborted, false, '后台事务不沿前台短读期限结束');
+  assert.equal(await publishing, false);
+  assert.ok(Date.now() - started < 6500, '真正挂起的后台事务须在有限期限退出');
+  assert.equal(hanging.aborted, true, '超时必须abort释放事务锁');
+  assert.equal(cache.getStats().lastFailure.phase, 'publish-record-transaction');
+  assert.equal(await cache.readManifest(scope, next), null);
+  assert.equal(await cache.publish(scope, next, records, { floor: records.map(record => record.recordId) }), true);
+  assert.ok(await cache.readManifest(scope, next));
+});
+
+test('坏缓存清理挂起仍沿前台短期限返回miss并abort，不继承后台慢写预算', async () => {
+  const { h, cache, scope, records, manifest } = await publishedBatch(1, 20);
+  const recordKey = [...h.data.keys()].find(key => key.startsWith('r:'));
+  h.data.get(recordKey).digest = 'corrupt';
+  const request = h.indexedDB.open();
+  const database = await new Promise(resolve => { request.onsuccess = () => resolve(request.result); });
+  const original = database.transaction;
+  let removing;
+  database.transaction = function (...args) { removing = original.apply(this, args); return removing; };
+  h.hangNextGet();
+  const started = Date.now();
+  assert.equal(await cache.readRecord(scope, witness, 'floor', records[0].recordId, manifest), null);
+  assert.ok(Date.now() - started < 250, '坏项清理不能增加正式回源等待');
+  assert.equal(removing.aborted, true);
+  assert.equal(cache.getStats().lastFailure.phase, 'record-remove-transaction');
+});
+
+test('慢写在scope失效后结束不能复活目录，新版本只按新见证自然发布', async () => {
+  const { h, cache, scope, records } = await publishedBatch(1);
+  const request = h.indexedDB.open();
+  const database = await new Promise(resolve => { request.onsuccess = () => resolve(request.result); });
+  const original = database.transaction;
+  let release, started;
+  const writing = new Promise(resolve => { started = resolve; });
+  database.transaction = function (...args) {
+    const transaction = original.apply(this, args), trace = h.transactions.at(-1);
+    let completed;
+    Object.defineProperty(transaction, 'oncomplete', { set: value => { completed = value; }, get: () => () => {
+      if (trace.gets[0]?.startsWith('r:') && !release) { release = () => completed?.(); started(); }
+      else completed?.();
+    } });
+    return transaction;
+  };
+  const next = { ...witness, revision: witness.revision + 1 };
+  const publishing = cache.publish(scope, next, records, { floor: records.map(record => record.recordId) });
+  await writing;
+  const invalidating = cache.invalidateScope(scope);
+  release();
+  assert.equal(await publishing, false);
+  assert.equal(await invalidating, true);
+  assert.equal(await cache.readManifest(scope, next), null);
+  assert.equal(await cache.readManifest(scope, witness), null);
+  assert.equal(await cache.publish(scope, next, records, { floor: records.map(record => record.recordId) }, undefined, () => ({ generationId: witness.generationId, revision: next.revision })), true);
+  assert.ok(await cache.readManifest(scope, next));
 });
 
 test('第七批缓存：原生打开沿既有预算退出，迟到连接关闭且不重新启用缓存', async t => {

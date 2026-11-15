@@ -3783,6 +3783,10 @@ test('双丝网精确区分双方关系、自身状态与选中 NPC 的其他关
   const pair = flatten(container).find(node => node.className === 'qqj-relation-card'), pairCopy = flatten(pair).map(node => node.textContent).join('|');
   assert.match(pairCopy, /你 → 左佐.*当前态度.*此刻担心左佐.*长期相处方式.*会长期信任左佐.*左佐 → 你.*当前态度.*此刻等你回应.*长期相处方式.*会保护你.*会偿还你的恩情/, '下方关系栏仍保留同一条有对象长期倾向');
   assert.deepEqual(flatten(pair).filter(node => node.className === 'qqj-current-situation-visibility').map(node => node.textContent), ['共享', '可观察', '私密'], '双方当前态度与人物自身当前情境都显示已保存的信息范围');
+  for (const line of flatten(container).filter(node => node.className === 'qqj-current-situation-line')) {
+    assert.equal(line.children[0].className, 'v3-cse-item-text', '当前情境与当前态度先读正文，正文起点保持一致');
+    assert.equal(line.children.at(-1).className, 'qqj-current-situation-visibility', '信息范围标签紧随本段正文末尾');
+  }
   const pairHead = flatten(pair).find(node => node.className === 'qqj-relation-head'), pairMenu = pairHead.children.at(-1);
   assert.equal(pairMenu.tag, 'details'); assert.equal(pairMenu.className, 'qqj-memory-menu qqj-relation-menu');
   assert.equal(pairMenu.children[0].tag, 'summary'); assert.equal(pairMenu.children[0].textContent, '⋮'); assert.equal(pairMenu.children[0].attributes['aria-label'], '关系操作');

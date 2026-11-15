@@ -450,20 +450,20 @@ test('Batch19 真投影lastSeen可见，离开未知歧义删除不借旧确认�
 
 
 test('古风设施沿现成图标覆盖床榻陈列焚香屏风灯火与日常器物，不匹配孤字',()=>{
- const samples=[['罗汉榻','rest','床榻'],['竹榻和软榻与架子床','rest','床榻'],['博古架与多宝格','ShelvingUnit','陈列架'],['香炉','Flame','香炉'],['屏风','Columns3','屏风'],['油灯与烛台和灯笼','Flame','灯火'],['火炉和炭盆及泥炉','FlameKindling','炉火'],['茶案和书案与八仙桌','Table2','桌案'],['太师椅','Armchair','座椅'],['百子柜与中药柜','ShelvingUnit','药柜'],['盖碗与茶盏和紫砂壶','Coffee','茶具'],['陶瓮与酒坛','Amphora','陶瓮'],['木箱和妆奁','storage','箱笼']];
+ const samples=[['短榻和矮榻','rest','床榻'],['罗汉榻','rest','床榻'],['竹榻和软榻与架子床','rest','床榻'],['博古架与多宝格','ShelvingUnit','陈列架'],['香炉','Flame','香炉'],['屏风','Columns3','屏风'],['油灯与烛台和灯笼','Flame','灯火'],['火炉和炭盆及泥炉','FlameKindling','炉火'],['茶案和书案与八仙桌','Table2','桌案'],['太师椅','Armchair','座椅'],['百子柜与中药柜','ShelvingUnit','药柜'],['盖碗与茶盏和紫砂壶','Coffee','茶具'],['陶瓮与酒坛','Amphora','陶瓮'],['木箱和妆奁','storage','箱笼']];
  for(const [words,key,label] of samples)assert.deepEqual(module.qianchuangFacilityTags([{text:`设有${words}。`}]),[{key,label}],words);
  assert.deepEqual(module.qianchuangFacilityTags([{text:'一灯如豆；案牍繁忙，炉石传说，太师门下，博古通今。'}]),[]);
  assert.deepEqual(module.qianchuangFacilityTags([{text:'没有罗汉榻、博古架、香炉、屏风和油灯。计划添置烛台和火炉。'},{text:'配有茶案和太师椅。',kind:'temporary'},{text:'她拿起茶盏，走向屏风寻找线索。'}]),[]);
 });
 test('古风与旧设施按同canonical去重，香炉油灯同场保一个标签且原文不改',()=>{
- const features=[{text:'设有罗汉榻和双人床、博古架与多宝格、香炉和油灯及烛台。'}],before=structuredClone(features);
+ const features=[{text:'设有短榻和矮榻和罗汉榻和双人床、博古架与多宝格、香炉和油灯及烛台。'}],before=structuredClone(features);
  assert.deepEqual(module.qianchuangFacilityTags(features),[{key:'rest',label:'床榻'},{key:'ShelvingUnit',label:'陈列架'},{key:'Flame',label:'香炉'}]);
  assert.deepEqual(features,before);
  assert.deepEqual(module.qianchuangFacilityTags([{text:'设有油灯和香炉。'}]),[{key:'Flame',label:'灯火'}]);
  assert.deepEqual(module.qianchuangFacilityTags([{text:'设有双人床、衣柜和书桌、药柜。'}]).map(item=>item.key),['rest','storage','work','PillBottle']);
 });
 test('古风设施仅补省略facilities的展示，显式空列表与人工简介仍沿原合同',async()=>{
- const feature={text:'设有罗汉榻、博古架、香炉、油灯和屏风。'};
+ const feature={text:'设有短榻和矮榻、博古架、香炉、油灯和屏风。'};
  for(const explicit of [false,true]){
   const places=initial.places.map(node=>({...node,features:node.entityId==='root'?[feature]:[],...(explicit?{facilities:[]}:{} )}));
   const h=harness({snapshot:{...initial,places}});await h.view.activate();
@@ -471,4 +471,33 @@ test('古风设施仅补省略facilities的展示，显式空列表与人工简�
   assert.equal(h.find('qqj-window-copy').some(node=>node.textContent===feature.text),true);
   assert.equal(h.writes.length,0);
  }
+});
+
+test('边缘头像尾巴底边完整落在圆角切点之间，尖端固定且朝内开合方向保留',async t=>{
+ const cases=[
+  {name:'左边向上',width:400,height:400,x:20,y:380,dx:32,center:[32,-62]},
+  {name:'右边向上',width:400,height:400,x:380,y:380,dx:-32,center:[-32,-62]},
+  {name:'左边向下',width:400,height:400,x:20,y:20,dx:32,center:[32,62]},
+  {name:'右边向下',width:400,height:400,x:380,y:20,dx:-32,center:[-32,62]},
+  {name:'上边向右',width:120,height:120,x:20,y:20,dx:32,center:[62,32]},
+  {name:'下边向右',width:120,height:120,x:20,y:100,dx:-32,center:[62,-32]},
+  {name:'上边向左',width:120,height:120,x:100,y:20,dx:-32,center:[-62,32]},
+  {name:'下边向左',width:120,height:120,x:100,y:100,dx:32,center:[-62,-32]},
+ ];
+ for(const scenario of cases)await t.test(scenario.name,async()=>{
+  const h=harness({snapshot:{...initial,userPosition:{status:'confirmed',placeEntityId:'room',isCurrent:true}}});await h.view.activate();
+  const marker=h.find('qqj-window-marker')[0],symbol=marker.children[0],map=h.find('qqj-window-map')[0];
+  map.getBoundingClientRect=()=>({left:100,top:200,width:scenario.width,height:scenario.height});
+  symbol.getBoundingClientRect=()=>({left:100+scenario.x-12,top:200+scenario.y-22,width:24,height:24});
+  marker.getBoundingClientRect=()=>({left:100+scenario.x-22,top:200+scenario.y-22,width:44,height:44});
+  marker.fire('click');assert.equal(marker.attributes['aria-expanded'],'true');
+  // Read the actual unsampled outline; SvgNode's ellipse stub cannot prove its geometry.
+  const large=h.created.filter(node=>node.tag==='path'&&/^M[-\d.]+ -62 L/u.test(node.getAttribute('d')??'')).at(-1),d=large?.getAttribute('d');assert.ok(d);
+  const bottom=d.match(/Q([-\d.]+) -14 ([-\d.]+) -14 L([-\d.]+) -14 L0 0 L([-\d.]+) -14 L([-\d.]+) -14 Q([-\d.]+) -14/u);assert.ok(bottom);
+  const [rightEdge,rightCorner,tailRight,tailLeft,leftCorner,leftEdge]=bottom.slice(1).map(Number);
+  assert.equal(rightEdge-leftEdge,96);assert.equal(rightEdge-rightCorner,14);assert.equal(leftCorner-leftEdge,14);assert.equal((rightEdge+leftEdge)/2,scenario.dx);assert.equal(tailRight-tailLeft,18);
+  assert.ok(rightCorner>=tailRight&&tailRight>tailLeft&&tailLeft>=leftCorner,'底边从右向左单调，尾巴两底角不得进入圆角或反折');assert.equal((d.match(/L0 0/gu)??[]).length,1,'尾尖保持在原pin尖端');
+  const image=h.find('qqj-window-user-avatar-image')[0];assert.deepEqual([Number(image.getAttribute('x'))+40,Number(image.getAttribute('y'))+40],scenario.center,'保持原朝内旋转方向和框心');
+  const avatar=h.find('qqj-window-user-avatar')[0];assert.equal(avatar.style.left,'22px');assert.equal(avatar.style.top,'22px');marker.fire('click');assert.equal(marker.attributes['aria-expanded'],'false');assert.equal(avatar.hidden,true);marker.fire('click');assert.equal(marker.attributes['aria-expanded'],'true');assert.equal(avatar.hidden,false);assert.equal(h.writes.length,0);
+ });
 });

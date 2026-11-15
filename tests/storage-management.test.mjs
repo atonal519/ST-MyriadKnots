@@ -5,6 +5,8 @@ import { classifyStorageRecords, createStorageManagement, STORAGE_AUTO_BYTE_THRE
 import { createFoundationStore } from '../src/v3/foundation-store.js';
 import { buildFoundationIndexes } from '../src/v3/foundation-runtime.js';
 import { createSettingsStore } from '../src/settings.js';
+import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
+import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
 
 const CHAT = '123e4567-e89b-42d3-a456-426614174000';
 const HOST = 'host-chat';
@@ -86,8 +88,8 @@ function recordsWithOld(oldCount = 3) {
 function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId = CHAT, removeHook = null, warmCache = false,
   cacheRootChanged = false, scanFailure = null, stableCount = 10, autoEnabled = false, vectorRuntime = null,
   trashGcSupport = undefined, pluginEnabled = true, trashGcCompletedAt = '', trashGcPages = null, streamRecords = false,
-  extraRecords = [], reachableOverride = null, rootHeadCheckpointId = null, settingsStore = null } = {}) {
-  let items = [...recordsWithOld(oldCount), ...extraRecords], memoryState = { chatId: CHAT, stableCount }, isBusy = busy;
+  extraRecords = [], reachableOverride = null, rootHeadCheckpointId = null, settingsStore = null, memoryRuntimeOverride = null } = {}) {
+  let items = [...recordsWithOld(oldCount), ...extraRecords], memoryState = { chatId: CHAT, stableCount, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle' }, isBusy = busy;
   const removes = [], ordinaryRemoves = [], listeners = new Set(), sessionCalls = [];
   let listCalls = 0, rootReads = 0, fullReads = 0, listFailure = null, rootReadFailure = null, maintenanceRootFailure = null;
   let streamedRecords = 0;
@@ -169,7 +171,7 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
   let enabled = pluginEnabled;
   const hostAdapter = { snapshot: () => ({ chatId: HOST, context: { chatMetadata: { qianqianjie: { chatId: CHAT } } } }) };
   const manager = createStorageManagement({
-    client, store, settings, memoryRuntime, foundationRuntime: { getReachable: () => warmCache ? reachable() : null },
+    client, store, settings, memoryRuntime: memoryRuntimeOverride ?? memoryRuntime, foundationRuntime: { getReachable: () => warmCache ? reachable() : null },
     vectorRuntime,
     session,
     hostAdapter,
@@ -191,6 +193,7 @@ function fixture({ oldCount = 3, busy = false, rootChanged = false, rootChatId =
     setPluginEnabled(value) { enabled = value; },
     setTrashGcOnCall(callback) { trashGcOnCall = callback; },
     setStableCount(value) { memoryState = { ...memoryState, stableCount: value }; for (const listener of listeners) listener(memoryState); },
+    setMemoryActivity(patch) { memoryState = { ...memoryState, ...patch }; for (const listener of listeners) listener(memoryState); },
     records: () => items,
 };
 }
@@ -659,6 +662,95 @@ test('旧后端对永久路径全量 404 时零删除并明确要求更新白鳥
   assert.match(result.error.message, /永久清理需要更新白鳥后端/u);
   assert.equal(legacy.removes.length, 3);
   assert.deepEqual(legacy.ordinaryRemoves, []);
+});
+
+test('真实memory启动0→513不覆盖已确认基线，也不额外整档扫描', async () => {
+  const chat = [];
+  for (let seq = 1; seq <= 513; seq += 1) chat.push(
+    { is_user: false, is_system: false, mes: `记录第${seq}楼。` },
+    { is_user: true, is_system: false, mes: `继续第${seq}楼。` });
+  const candidates = await scanAssistantCandidates(chat, { chatId: CHAT });
+  const source = { ...reachable(), baseline: null, run: null, entities: [], floorMemories: [], stateDeltas: [], currentStates: [], indexes: [],
+    floors: candidates.map((candidate, index) => ({ ...validData('floor', oldId(index + 1)), assistantSeq: index + 1,
+      hostLocator: candidate.hostLocator, content: { ...validData('floor', FLOOR).content,
+        rawFingerprint: candidate.rawFingerprint, canonicalFingerprint: candidate.canonicalFingerprint,
+        canonicalContent: candidate.canonicalContent, sanitizerFingerprint: candidate.sanitizerFingerprint } })) };
+  const context = { chatId: HOST, chatMetadata: { qianqianjie: { chatId: CHAT } }, chat };
+  const foundationState = { status: 'ready', foundationStatus: 'ready', chatId: CHAT, inspectedStableCount: 513 };
+  const foundation = { getState: () => foundationState, getReachable: () => source, bind() {},
+    async start() { return foundationState; }, async inspect() { return foundationState; },
+    async refreshStatus() { return foundationState; }, async confirmLatest() { return foundationState; }, async setEnabled() { return foundationState; } };
+  const runtime = createV3MemoryRuntime({ foundationRuntime: foundation,
+    store: { async readReachable() { return source; }, async readRecord() { return { status: 'missing' }; },
+      async putRecord() { throw new Error('unexpected memory write'); }, async commitRoot() { throw new Error('unexpected root write'); },
+      recordKey: (_type, id) => id, invalidate() {} },
+    hostAdapter: { snapshot: () => ({ chatId: HOST, context, chat }) },
+    generateAnalysisTask: async () => { throw new Error('unexpected analysis'); },
+    generateUtilityTask: async () => { throw new Error('unexpected extraction'); },
+    isEnabled: () => true, automationSettings: () => ({ enabled: false, batchSize: 1 }), persistAnchors: null, failureStorage: null,
+    logger: { warn() {} },
+  });
+  assert.deepEqual([runtime.getActivityState().memorySnapshotStatus, runtime.getActivityState().memorySyncStatus, runtime.getActivityState().stableCount], ['unavailable', 'idle', 0]);
+  const settingsValue = { storageAutoCleanupEnabled: true, storageAutoCleanupProgress: { [CHAT]: 513 } }, writes = [];
+  const settings = { get: () => settingsValue, update(patch) { writes.push(structuredClone(patch)); Object.assign(settingsValue, structuredClone(patch)); } };
+  const f = fixture({ stableCount: 513, settingsStore: settings, memoryRuntimeOverride: { ...runtime,
+    getState() { throw new Error('automatic checks must use lightweight activity state'); } } });
+  try {
+    await tick();
+    const baselineBeforeLoad = settingsValue.storageAutoCleanupProgress[CHAT];
+    await runtime.start();
+    for (let index = 0; index < 200 && runtime.getActivityState().memorySyncStatus === 'syncing'; index += 1) await tick();
+    await tick();
+    assert.deepEqual([runtime.getActivityState().memorySnapshotStatus, runtime.getActivityState().memorySyncStatus, runtime.getActivityState().stableCount], ['ready', 'idle', 513]);
+    assert.equal(baselineBeforeLoad, 513, '未读记忆的临时0不能覆盖已确认基线');
+    assert.equal(settingsValue.storageAutoCleanupProgress[CHAT], 513);
+    assert.deepEqual(writes, [], '0→513期间不重写基线');
+    assert.deepEqual(f.counts(), { listCalls: 0, rootReads: 0, fullReads: 0, streamedRecords: 0 });
+  } finally { f.manager.dispose(); }
+});
+
+test('自动清理只按已同步楼数记基线；正常十楼、确认减楼及待核健康链保持', async () => {
+  const f = fixture({ stableCount: 513, autoEnabled: true, oldCount: 0 });
+  f.settingsValue.storageAutoCleanupProgress[CHAT] = 513;
+  try {
+    await tick();
+    assert.equal(f.counts().listCalls, 0, '513→513不扫描');
+    for (const state of [
+      { stableCount: 0, memorySnapshotStatus: 'unavailable', memorySyncStatus: 'idle' },
+      { stableCount: 0, memorySnapshotStatus: 'syncing', memorySyncStatus: 'syncing' },
+      { stableCount: 0, memorySnapshotStatus: 'ready', memorySyncStatus: 'syncing' },
+      { stableCount: 523, memorySnapshotStatus: 'ready', memorySyncStatus: 'syncing' },
+    ]) {
+      f.setMemoryActivity(state); await tick();
+      assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 513);
+      assert.equal(f.counts().listCalls, 0);
+    }
+    f.setMemoryActivity({ stableCount: 513, memorySnapshotStatus: 'ready', memorySyncStatus: 'idle' }); await tick();
+    assert.equal(f.counts().listCalls, 0);
+    // A readable review state or a single-floor analysis failure does not invalidate the loaded floor count.
+    f.setMemoryActivity({ stableCount: 523, status: 'needsReview', memorySyncStatus: 'needsReview', lastCseError: { floorId: FLOOR, code: 'SINGLE_FLOOR_FAILED' } });
+    for (let index = 0; index < 200 && f.settingsValue.storageAutoCleanupProgress[CHAT] !== 523; index += 1) await tick();
+    assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 523);
+    assert.equal(f.counts().listCalls, 1, '513→523仅扫描一次');
+    f.setMemoryActivity({ stableCount: 523 }); await tick();
+    assert.equal(f.counts().listCalls, 1, '同节点通知不重复扫描');
+    f.setMemoryActivity({ stableCount: 503, memorySyncStatus: 'idle' }); await tick();
+    assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 503, '同步确认后的真实减楼仍重置基线');
+    assert.equal(f.counts().listCalls, 1);
+  } finally { f.manager.dispose(); }
+});
+
+test('记忆未读时手动存储统计仍运行，不将临时楼数写为自动基线', async () => {
+  const f = fixture({ stableCount: 513, autoEnabled: true });
+  f.settingsValue.storageAutoCleanupProgress[CHAT] = 513;
+  f.setMemoryActivity({ stableCount: 0, memorySnapshotStatus: 'unavailable', memorySyncStatus: 'idle' });
+  try {
+    await f.manager.scan();
+    assert.equal(f.manager.getState().status, 'ready');
+    assert.equal(f.counts().listCalls, 1);
+    assert.equal(f.counts().fullReads, 1);
+    assert.equal(f.settingsValue.storageAutoCleanupProgress[CHAT], 513);
+  } finally { f.manager.dispose(); }
 });
 
 test('已显式关闭的自动清理可开启，每新增10个稳定楼检查，忙碌顺延且达到100条才删', async () => {

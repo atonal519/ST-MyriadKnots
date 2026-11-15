@@ -32,6 +32,50 @@ test('切换聊天只刷新页面身份，不取消已有业务任务；消息�
   assert.equal(refreshes, 1);
 });
 
+test('宿主逐监听await时，CHAT_CHANGED后台慢准备不阻塞后续失效通知', async () => {
+  const callbacks = [], calls = [], preparation = deferred();
+  const ready = { status: 'ready', identity: { chatId: 'branch-target' } };
+  const lifecycle = createPluginLifecycle({
+    session: { prepare() { calls.push('prepare'); return preparation.promise; }, invalidate() { calls.push('session:invalidate'); } },
+    onPrepared: ({ result }) => calls.push(`loaded:${result.identity.chatId}`),
+  });
+  lifecycle.bind({ eventSource: { on: (_name, handler) => callbacks.push(handler) }, eventTypes: { CHAT_CHANGED: 'chat' } });
+  callbacks.push(() => { calls.push('foundation:invalidate'); });
+  let listenerResult;
+  const emitting = (async () => {
+    for (const [index, handler] of callbacks.entries()) {
+      const value = handler();
+      if (index === 0) listenerResult = value;
+      await value;
+    }
+  })();
+  try {
+    await waitFor(() => calls.includes('prepare'), '后台准备未启动');
+    assert.equal(listenerResult, undefined, '宿主监听不返回后台准备Promise');
+    assert.equal(calls.includes('foundation:invalidate'), true, '慢准备仍在进行时后续失效通知已执行');
+    assert.equal(calls.some(call => call.startsWith('loaded:')), false);
+  } finally { preparation.resolve(ready); await emitting; }
+  await waitFor(() => calls.includes('loaded:branch-target'), '后台完成后未续接目标加载');
+});
+
+test('公开onChatChanged仍返回可等待的原准备Promise和目标结果', async () => {
+  const preparation = deferred(), calls = [];
+  const ready = { status: 'ready', identity: { chatId: 'direct-target' } };
+  const lifecycle = createPluginLifecycle({
+    session: { prepare: () => preparation.promise, invalidate: () => calls.push('invalidate') },
+    onPrepared: ({ result }) => calls.push(`loaded:${result.identity.chatId}`),
+  });
+  const pending = lifecycle.onChatChanged();
+  assert.equal(typeof pending?.then, 'function');
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, '直接调用仍等身份准备完成');
+  preparation.resolve(ready);
+  assert.equal(await pending, ready);
+  assert.deepEqual(calls, ['invalidate', 'loaded:direct-target']);
+});
+
 test('禁用立即 invalidate 全链；重新启用只准备身份与刷新 UI', async () => {
   let enabled = true;
   const calls = [];

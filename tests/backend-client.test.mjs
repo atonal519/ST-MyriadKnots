@@ -22,7 +22,7 @@ function withGlobals(values, callback) {
 
 const asBytes = body => typeof body === 'string' ? Buffer.from(body) : Buffer.from(body);
 
-test('TT默认客户端识别原生批读能力，每批仅一次请求且不走HTTP或批写', async () => {
+test('TT默认客户端识别原生批读写能力，复用现有批协议且不走HTTP', async () => {
   const slots = new Map(); let healthReads = 0, nativeReads = 0;
   const key = options => `${options.namespace}/${options.table}/${options.key}`;
   const store = {
@@ -46,9 +46,13 @@ test('TT默认客户端识别原生批读能力，每批仅一次请求且不走
     assert.equal(nativeReads, 3); assert.equal(healthReads, 1);
     await client.getMany('chat', ['first']);
     assert.equal(healthReads, 1, '后续批次复用能力结果');
-    assert.equal(await client.putMany('chat', [{ recordId: 'never', data: {}, expectedRevision: 0 }]), null, '原生写入仍使用原单条CAS');
-    assert.equal(await createBackendClient().putMany('chat', [{ recordId: 'a', data: {}, expectedRevision: 0 }, { recordId: 'b', data: {}, expectedRevision: 0 }], { negotiate: true }), null);
-    assert.equal(healthReads, 1, 'TT显式多条批组也不新增能力探测');
+    const saved = await client.putMany('chat', [{ recordId: 'third', data: { batch: true }, expectedRevision: 0 }]);
+    assert.equal(saved[0].status, 200); assert.equal(saved[0].envelope.revision, 1);
+    assert.deepEqual((await client.get('chat', 'third')).data, { batch: true });
+    assert.equal(healthReads, 1, '已有能力时批写不额外协商');
+    const fresh = await createBackendClient().putMany('chat', [{ recordId: 'a', data: {}, expectedRevision: 0 }, { recordId: 'b', data: {}, expectedRevision: 0 }], { negotiate: true });
+    assert.deepEqual(fresh.map(item => item.status), [200, 200]);
+    assert.equal(healthReads, 2, '新客户端多记录只协商一次原生能力');
   });
 });
 

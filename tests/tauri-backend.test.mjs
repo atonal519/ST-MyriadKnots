@@ -87,6 +87,89 @@ test('TT health checks native IO; read/put/list survive a new client/runtime', a
   await assert.rejects(f.client.health(), /read failure/);
 });
 
+test('TT批写四路独立记录保输入序及版本，原生最终提交仍可串行', async t => {
+  const f = await fixture(t); await f.client.health();
+  const original = f.store.setJson;
+  let active = 0, maximum = 0, tail = Promise.resolve();
+  f.store.setJson = async options => {
+    active++; maximum = Math.max(maximum, active);
+    try { await new Promise(resolve => setImmediate(resolve)); const saved = tail.then(() => original(options)); tail = saved.catch(() => {}); return await saved; }
+    finally { active--; }
+  };
+  const records = Array.from({ length: 64 }, (_, index) => ({ recordId: `batch-${index}`, expectedRevision: 0, data: { index, nested: { z: '先', a: [null, 3] } } }));
+  const saved = await f.client.putMany('c', records);
+  assert.deepEqual(saved.map(item => [item.recordId, item.status, item.envelope.revision]), records.map(item => [item.recordId, 200, 1]));
+  assert.equal(maximum, 4); assert.equal(f.writes(), 64);
+  for (const item of records) assert.deepEqual((await f.client.get('c', item.recordId)).data, item.data);
+  const old = saved[0].envelope;
+  const updated = (await f.client.putMany('c', [{ ...records[0], expectedRevision: 1, data: { updated: true } }]))[0].envelope;
+  assert.equal(updated.revision, 2); assert.equal(updated.createdAt, old.createdAt); assert.equal(updated.generationId, old.generationId);
+  await f.client.remove('c', records[0].recordId, 2);
+  const trash = await (await f.request('trash/qianqianjie')).json();
+  const recreated = (await f.client.putMany('c', [records[0]]))[0].envelope;
+  assert.notEqual(recreated.generationId, old.generationId); assert.equal(recreated.revision, 1);
+  assert.deepEqual(await (await f.request('trash/qianqianjie')).json(), trash);
+});
+
+test('TT批写逐项冲突/坏slot/读写失败不覆盖旧值，其余条仍成功', async t => {
+  const f = await fixture(t); await f.client.health();
+  const winner = await f.client.put('c', 'conflict', { winner: true }, 0);
+  const readWinner = await f.client.put('c', 'read-error', { winner: 'read' }, 0);
+  const table = nativeKey(JSON.stringify(['qianqianjie', 'c']));
+  const badOptions = { namespace: 'qqj-bainiao-v1', table, key: nativeKey('bad') };
+  const bad = { format: 'qqj-tt-json-v2', serialized: '{invalid' }; await f.store.setJson({ ...badOptions, value: bad });
+  const read = f.store.tryGetJson, write = f.store.setJson;
+  f.store.tryGetJson = options => options.key === nativeKey('read-error') ? Promise.reject(new Error('read failed')) : read(options);
+  f.store.setJson = options => options.key === nativeKey('write-error') ? Promise.reject(new Error('write failed')) : write(options);
+  const ids = ['conflict', 'bad', 'read-error', 'write-error', 'healthy'];
+  const result = await f.client.putMany('c', ids.map(recordId => ({ recordId, data: { attempted: true }, expectedRevision: recordId === 'read-error' ? 1 : 0 })));
+  assert.deepEqual(result.map(item => item.status), [409, 500, 500, 500, 200]);
+  f.store.tryGetJson = read; f.store.setJson = write;
+  assert.deepEqual(await f.client.get('c', 'conflict'), winner); assert.deepEqual(await f.client.get('c', 'read-error'), readWinner);
+  assert.deepEqual((await read(badOptions)).value, bad);
+  assert.deepEqual((await f.client.get('c', 'healthy')).data, { attempted: true });
+  await assert.rejects(f.client.get('c', 'write-error'), error => error.status === 404);
+});
+
+test('TT批写重复ID、超量、超字节和非法项全部前置拒绝，零native读写', async t => {
+  const f = await fixture(t);
+  const item = { recordId: 'a', data: {}, expectedRevision: 0 };
+  for (const records of [[item, item], Array.from({ length: 65 }, (_, index) => ({ ...item, recordId: `r-${index}` })),
+    [{ ...item, data: 'x'.repeat(1048576) }], [{ ...item, expectedRevision: -1 }], [item, { ...item, recordId: '../bad' }]]) {
+    assert.equal((await f.request('record-batch/qianqianjie/c', 'PUT', { records })).status, 400);
+  }
+  assert.equal(f.reads(), 0); assert.equal(f.writes(), 0);
+});
+
+for (const stage of ['read', 'write']) test(`TT批写取消${stage}阶段后收拢全部已发操作才释放namespace`, { timeout: 5000 }, async t => {
+  const f = await fixture(t); await f.client.health();
+  const records = Array.from({ length: 16 }, (_, index) => ({ recordId: `cancel-${index}`, data: { index }, expectedRevision: 0 }));
+  let announce, releaseFirst, releaseRest, finishFirst, submitted = 0, active = 0, laterRead = false;
+  const entered = new Promise(resolve => { announce = resolve; }), first = new Promise(resolve => { releaseFirst = resolve; });
+  const rest = new Promise(resolve => { releaseRest = resolve; }), firstDone = new Promise(resolve => { finishFirst = resolve; });
+  const original = f.store[stage === 'read' ? 'tryGetJson' : 'setJson'];
+  f.store[stage === 'read' ? 'tryGetJson' : 'setJson'] = async options => {
+    const index = submitted++; active++; if (submitted === 4) announce();
+    try { await (index === 0 ? first : rest); return await original(options); }
+    finally { active--; if (index === 0) finishFirst(); }
+  };
+  const controller = new AbortController();
+  const saving = f.client.putMany('c', records, { signal: controller.signal }).then(value => ({ value }), error => ({ error }));
+  let reading;
+  try {
+    assert.equal(await Promise.race([entered.then(() => 'entered'), saving.then(() => 'returned')]), 'entered');
+    controller.abort(); assert.equal((await saving).error.name, 'AbortError');
+    if (stage === 'read') f.store.tryGetJson = async options => { laterRead = true; assert.equal(active, 0); return original(options); };
+    else { const read = f.store.tryGetJson; f.store.tryGetJson = async options => { laterRead = true; assert.equal(active, 0); return read(options); }; }
+    reading = f.client.get('c', records[0].recordId).then(value => ({ value }), error => ({ error }));
+    releaseFirst(); await firstDone; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(laterRead, false); assert.equal(submitted, 4); assert.equal(active, 3);
+    releaseRest(); const result = await reading;
+    if (stage === 'read') { assert.equal(result.error.status, 404); assert.equal(f.writes(), 0); }
+    else { assert.deepEqual(result.value.data, { index: 0 }); assert.equal(f.writes(), 4); }
+  } finally { releaseFirst(); releaseRest(); await Promise.allSettled([saving, reading].filter(Boolean)); }
+});
+
 test('TT native responses retain nested JSON isolation without copying complete records again', async t => {
   const f = await fixture(t);
   const input = { z: { text: '手改摘要', rows: [1, { value: '原值' }] }, a: '保留字段顺序' };

@@ -5,6 +5,10 @@ const FORMAT = 'qqj-v3-core-cache-1';
 const CORE_TYPES = new Set(['floor', 'floorMemory', 'entity', 'stateDelta', 'index']);
 const MAX_BYTES = 128 * 1024 * 1024;
 const IO_TIMEOUT_MS = 900;
+// Background publication has room for slow commits; read-path cleanup keeps the short I/O budget.
+const WRITE_TIMEOUT_MS = 5000;
+const PUBLISH_BATCH_SIZE = 64;
+const PUBLISH_BATCH_BYTES = 1024 * 1024;
 const METADATA_READ_CONCURRENCY = 16;
 const encoder = new TextEncoder();
 const DB_NAME = 'qqj-v3-core-cache';
@@ -108,7 +112,7 @@ export function createIndexedDbCoreRecordCache({
       if (previous?.token === token) stats[key] = Object.freeze({ ...previous, lateResult, lateElapsedMs, lateAt });
     }
   };
-  const boundedIo = (promise, phase) => bounded(promise, ioTimeoutMs, phase, recordIoFailure, updateLateResult);
+  const boundedIo = (promise, phase, timeoutMs = ioTimeoutMs) => bounded(promise, timeoutMs, phase, recordIoFailure, updateLateResult);
   const publicFailure = value => {
     if (!value) return null;
     const { token, ...fields } = value;
@@ -121,8 +125,7 @@ export function createIndexedDbCoreRecordCache({
   let budgetReady = false;
   let budgetPromise = null;
   let ioUnavailable = false;
-  let publishUnavailable = false;
-  const disableIo = () => { ioUnavailable = true; publishUnavailable = true; stats.available = false; };
+  const disableIo = () => { ioUnavailable = true; stats.available = false; };
   const publishers = new Map();
   const scopeVersions = new Map();
   const identityVersions = new Map();
@@ -198,11 +201,11 @@ export function createIndexedDbCoreRecordCache({
     return nativeReadyPromise;
   }
 
-  function nativeTransaction(phase, begin, mode = 'readwrite') {
+  function nativeTransaction(phase, begin, mode = 'readwrite', timeoutMs = ioTimeoutMs) {
+    let transaction;
     return boundedIo(new Promise((resolve, reject) => {
       const database = nativeDatabase;
       if (!database) { resolve({ ok: false, unavailable: true }); return; }
-      let transaction;
       let value;
       try { transaction = database.transaction(STORE_NAME, mode); }
       catch (error) { reject(error); return; }
@@ -211,7 +214,12 @@ export function createIndexedDbCoreRecordCache({
       transaction.onabort = () => reject(transaction.error ?? new Error('IDB_CACHE_TRANSACTION_ABORTED'));
       try { begin(transaction.objectStore(STORE_NAME), transaction, result => { value = result; }); }
       catch (error) { try { transaction.abort(); } catch { /* transaction already ended */ } reject(error); }
-    }), phase);
+    }), phase, timeoutMs).catch(error => {
+      if (error?.code === 'IDB_CACHE_TIMEOUT') {
+        try { transaction?.abort(); } catch { /* transaction already ended */ }
+      }
+      throw error;
+    });
   }
 
   function entryBytes(key, value, metadataKey, metadata) {
@@ -613,34 +621,55 @@ export function createIndexedDbCoreRecordCache({
     return normalized;
   }
 
-  async function upsertRecord(scope, witness, recordType, recordId, envelope) {
-    const key = `r:${scope}:${encoded(witness.generationId)}:${recordType}:${encoded(recordId)}`;
-    const metadataKey = `s:${key}`;
-    const digest = await sha256(JSON.stringify(envelope));
-    const recordValue = { format: FORMAT, scope, rootGenerationId: witness.generationId, recordGenerationId: envelope.generationId,
-      recordType, recordId, revision: envelope.revision, digest, envelope };
-    const metadataBase = { cacheKey: key, recordKey: key, kind: 'record', createdAt: Date.now() };
-    const bytes = entryBytes(key, recordValue, metadataKey, metadataBase);
+  async function prepareRecords(scope, witness, records) {
+    const latest = new Map();
+    for (const { recordId, envelope } of records) {
+      const recordType = envelope.data.recordType;
+      const key = `r:${scope}:${encoded(witness.generationId)}:${recordType}:${encoded(recordId)}`;
+      latest.set(key, { key, recordType, recordId, envelope });
+    }
+    // Prepare every checksum before opening the transaction; duplicate keys keep the last valid input.
+    const prepared = [];
+    for (const { key, recordType, recordId, envelope } of latest.values()) {
+      const metadataKey = `s:${key}`, digest = await sha256(JSON.stringify(envelope));
+      const recordValue = { format: FORMAT, scope, rootGenerationId: witness.generationId, recordGenerationId: envelope.generationId,
+        recordType, recordId, revision: envelope.revision, digest, envelope };
+      const metadataBase = { cacheKey: key, recordKey: key, kind: 'record', createdAt: Date.now() };
+      const bytes = entryBytes(key, recordValue, metadataKey, metadataBase);
+      prepared.push({ key, metadataKey, digest, envelope, recordValue, metadataBase, bytes });
+    }
+    return prepared;
+  }
+
+  function upsertRecords(prepared) {
     return nativeTransaction('publish-record-transaction', (store, transaction, setResult) => {
-      const requests = [store.get(key), store.get(metadataKey), store.get(BUDGET_KEY)];
+      const requests = [...prepared.flatMap(item => [store.get(item.key), store.get(item.metadataKey)]), store.get(BUDGET_KEY)];
       const values = new Array(requests.length), ready = new Set();
       const finish = index => {
         values[index] = requests[index].result;
         ready.add(index);
         if (ready.size !== requests.length) return;
-        const [previous, previousMetadata, budget] = values;
-        const sameRecord = previous?.format === FORMAT && previous.digest === digest && previous.revision === envelope.revision;
-        const metadataMatches = Number.isSafeInteger(previousMetadata?.bytes) && previousMetadata.bytes === bytes
-          && previousMetadata.cacheKey === key && previousMetadata.kind === 'record';
-        if (!sameRecord) store.put(recordValue, key);
-        if (!metadataMatches) store.put({ ...metadataBase, createdAt: previousMetadata?.createdAt ?? metadataBase.createdAt, bytes }, metadataKey);
-        const previousBytes = Number.isSafeInteger(previousMetadata?.bytes) && previousMetadata.bytes >= 0 ? previousMetadata.bytes : 0;
-        const nextBytes = (Number.isSafeInteger(budget?.estimatedBytes) ? budget.estimatedBytes : 0) + (metadataMatches ? 0 : bytes - previousBytes);
-        if (!sameRecord || !metadataMatches) store.put({ format: FORMAT, estimatedBytes: Math.max(0, nextBytes) }, BUDGET_KEY);
-        setResult({ wrote: !sameRecord, repairedMetadata: !metadataMatches, estimatedBytes: Math.max(0, nextBytes) });
+        const budget = values.at(-1);
+        let nextBytes = Number.isSafeInteger(budget?.estimatedBytes) ? budget.estimatedBytes : 0;
+        let wrote = 0, repairedMetadata = false;
+        prepared.forEach(({ key, metadataKey, digest, envelope, recordValue, metadataBase, bytes }, recordIndex) => {
+          const previous = values[recordIndex * 2], previousMetadata = values[recordIndex * 2 + 1];
+          const sameRecord = previous?.format === FORMAT && previous.digest === digest && previous.revision === envelope.revision;
+          const metadataMatches = Number.isSafeInteger(previousMetadata?.bytes) && previousMetadata.bytes === bytes
+            && previousMetadata.cacheKey === key && previousMetadata.kind === 'record';
+          if (!sameRecord) { store.put(recordValue, key); wrote += 1; }
+          if (!metadataMatches) {
+            store.put({ ...metadataBase, createdAt: previousMetadata?.createdAt ?? metadataBase.createdAt, bytes }, metadataKey);
+            const previousBytes = Number.isSafeInteger(previousMetadata?.bytes) && previousMetadata.bytes >= 0 ? previousMetadata.bytes : 0;
+            nextBytes += bytes - previousBytes;
+            repairedMetadata = true;
+          }
+        });
+        if (wrote || repairedMetadata) store.put({ format: FORMAT, estimatedBytes: Math.max(0, nextBytes) }, BUDGET_KEY);
+        setResult({ wrote, repairedMetadata, estimatedBytes: Math.max(0, nextBytes) });
       };
       requests.forEach((request, index) => { request.onsuccess = () => finish(index); });
-    });
+    }, 'readwrite', WRITE_TIMEOUT_MS);
   }
 
   async function commitManifest(scope, witness, manifestKey, requestedRefs, observedDirectory, observedInvalidation, expectedVersion) {
@@ -707,7 +736,7 @@ export function createIndexedDbCoreRecordCache({
         staleMetaRequests.forEach((request, index) => { request.onsuccess = () => { staleMetadata[index] = request.result; if (--pending === 0) commit(); }; });
       };
       requests.forEach((request, index) => { request.onsuccess = () => finishRead(index); });
-    });
+    }, 'readwrite', WRITE_TIMEOUT_MS);
   }
 
   function captureScopeVersion(scope) { return scopeVersions.get(scope) ?? 0; }
@@ -717,7 +746,7 @@ export function createIndexedDbCoreRecordCache({
 
   async function publish(scope, witness, records, recordRefs = {}, expectedVersion = captureScopeVersion(scope), verifyRoot = null) {
     const lockKey = scope;
-    if (ioUnavailable || publishUnavailable) return false;
+    if (ioUnavailable) return false;
     const current = publishers.get(lockKey);
     if (current) return current;
     if (!publicationVersionIsCurrent(scope, expectedVersion)) return false;
@@ -732,8 +761,8 @@ export function createIndexedDbCoreRecordCache({
   async function publishNow(scope, witness, records, recordRefs, expectedVersion, verifyRoot) {
     const db = await ensureReady();
     if (!db || !scope || !witness?.generationId || !Array.isArray(records)) return false;
-    if (!await migrateLegacyDirectories()) { publishUnavailable = true; return false; }
-    if (ioUnavailable || publishUnavailable) return false;
+    if (!await migrateLegacyDirectories()) return false;
+    if (ioUnavailable) return false;
     const requestedRefs = normalizeRecordRefs(recordRefs);
     let observedDirectory, observedInvalidation;
     try {
@@ -756,29 +785,39 @@ export function createIndexedDbCoreRecordCache({
     const existingRefs = normalizeRecordRefs(previousManifest?.recordRefs);
     for (const type of CORE_TYPES) requestedRefs[type] = [...new Set([...existingRefs[type], ...requestedRefs[type]])].sort();
     let wroteRecords = false;
+    let publicationFailed = false;
     await hydrateBudget(db);
     let cursor = 0;
     async function worker() {
-      while (!publishUnavailable && publicationVersionIsCurrent(scope, expectedVersion) && cursor < records.length) {
-        const record = records[cursor++];
-        const recordType = record?.envelope?.data?.recordType;
-        const recordId = record?.recordId;
-        const envelope = record?.envelope;
-        if (!CORE_TYPES.has(recordType) || typeof recordId !== 'string' || !plainRecord(envelope)
-          || typeof envelope.generationId !== 'string' || !Number.isSafeInteger(envelope.revision)) continue;
+      while (!ioUnavailable && !publicationFailed && publicationVersionIsCurrent(scope, expectedVersion) && cursor < records.length) {
+        const batch = records.slice(cursor, cursor + PUBLISH_BATCH_SIZE).filter(record => {
+          const envelope = record?.envelope;
+          return CORE_TYPES.has(envelope?.data?.recordType) && typeof record?.recordId === 'string' && plainRecord(envelope)
+            && typeof envelope.generationId === 'string' && Number.isSafeInteger(envelope.revision);
+        });
+        cursor += PUBLISH_BATCH_SIZE;
+        if (!batch.length) continue;
         try {
-          const outcome = await upsertRecord(scope, witness, recordType, recordId, envelope);
-          if (outcome?.unavailable) throw new Error('IDB_CACHE_TRANSACTION_UNAVAILABLE');
-          if (Number.isSafeInteger(outcome?.estimatedBytes)) stats.estimatedBytes = outcome.estimatedBytes;
-          if (outcome?.wrote) { stats.writes += 1; wroteRecords = true; }
-          if (outcome?.repairedMetadata) wroteRecords = true;
-        } catch (error) { stats.writeFailures += 1; recordIoFailure('publish-record', error, 0, 0, 'rejected'); publishUnavailable = true; }
+          const prepared = await prepareRecords(scope, witness, batch);
+          let offset = 0;
+          while (offset < prepared.length && !ioUnavailable && publicationVersionIsCurrent(scope, expectedVersion)) {
+            let end = offset, bytes = 0;
+            // A large record keeps its original standalone transaction instead of enlarging the batch.
+            while (end < prepared.length && (end === offset || bytes + prepared[end].bytes <= PUBLISH_BATCH_BYTES)) bytes += prepared[end++].bytes;
+            const outcome = await upsertRecords(prepared.slice(offset, end));
+            offset = end;
+            if (outcome?.unavailable) throw new Error('IDB_CACHE_TRANSACTION_UNAVAILABLE');
+            if (Number.isSafeInteger(outcome?.estimatedBytes)) stats.estimatedBytes = outcome.estimatedBytes;
+            if (outcome?.wrote) { stats.writes += outcome.wrote; wroteRecords = true; }
+            if (outcome?.repairedMetadata) wroteRecords = true;
+          }
+        } catch (error) { stats.writeFailures += 1; recordIoFailure('publish-record', error, 0, 0, 'rejected'); publicationFailed = true; }
       }
     }
     try {
       // Native readwrite transactions share one store lock; queue the next only after this one completes.
       await worker();
-      if (ioUnavailable || publishUnavailable) return false;
+      if (ioUnavailable || publicationFailed) return false;
       const manifestKey = `v:${scope}:${await sha256(witnessKey(witness))}`;
       if (!publicationVersionIsCurrent(scope, expectedVersion)) return false;
       const committed = await commitManifest(scope, witness, manifestKey, requestedRefs, observedDirectory, observedInvalidation, expectedVersion);
@@ -789,7 +828,6 @@ export function createIndexedDbCoreRecordCache({
     } catch (error) {
       stats.writeFailures += 1;
       recordIoFailure('publish', error, 0, 0, 'rejected');
-      publishUnavailable = true;
       return false;
     }
   }
@@ -846,7 +884,7 @@ export function createIndexedDbCoreRecordCache({
 
   async function maintain() {
     const db = await ensureReady();
-    if (!db || ioUnavailable || publishUnavailable) return false;
+    if (!db || ioUnavailable) return false;
     if (!await migrateLegacyDirectories() || ioUnavailable) return false;
     await hydrateBudget(db);
     if (!ioUnavailable && stats.estimatedBytes > maxBytes) await evictToBudget(db);

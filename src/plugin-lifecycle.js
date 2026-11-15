@@ -113,7 +113,8 @@ export function createPluginLifecycle({
 
   function bind({ eventSource, eventTypes } = {}) {
     if (bound || !eventSource?.on || !eventTypes) return false;
-    if (eventTypes.CHAT_CHANGED) eventSource.on(eventTypes.CHAT_CHANGED, onChatChanged);
+    // The host awaits listeners; background preparation must not delay later chat invalidation.
+    if (eventTypes.CHAT_CHANGED) eventSource.on(eventTypes.CHAT_CHANGED, () => { void onChatChanged(); });
     if (eventTypes.PERSONA_CHANGED) eventSource.on(eventTypes.PERSONA_CHANGED, onIdentityChange);
     if (eventTypes.CHAT_RENAMED) eventSource.on(eventTypes.CHAT_RENAMED, onChatRenamed);
     if (eventTypes.CHARACTER_RENAMED) eventSource.on(eventTypes.CHARACTER_RENAMED, onCharacterRenamed);

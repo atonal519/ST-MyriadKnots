@@ -494,3 +494,56 @@ test('Batch17 明确path与唯一同来源spatial声明省略选填key也统一�
   assert.equal(result.packet.spatialFacts.containments.length,single?0:1);assert.ok(result.foundationPatch.facts.some(f=>f.kind==='feature'&&f.text==='灶房内有石灶。'));
  });
 });
+
+
+test('地点标签作为独立来源保存父链、按楼过滤冷读且不生成在场证据', async () => {
+ const text='河湾镇·临江客栈·东厢房', floorId=id(93);
+ const scoped={request:{payload:{knownPlaces:[]}},scope:{...envelope.scope,placeCatalogBindings:[],parentEntityIdsByPlaceId:new Map(),sourceFloorBindings:[{floorKey:'floor-1',floorId,rawFingerprint:'raw-1',canonicalContent:'你已离开客栈，来到码头。',locationReference:[text]}]}};
+ const packet={summary:'你来到码头。',placePaths:[{path:[{name:'河湾镇',mapLevel:'scope',mapRole:'area'},{name:'临江客栈'},{name:'东厢房',mapRole:'interior'}],source:'locationReference',sourceFloorKey:'floor-1',sourceSnapshotIndex:0,exactQuote:text}]};
+ const expanded=await foundation.expandPlacePaths({packet,envelope:scoped,now:'2026-11-14T00:00:00Z'});
+ assert.deepEqual(expanded.isolated,[]);assert.equal(expanded.freshEntities.length,3);
+ assert.equal(expanded.packet.spatialFacts.positions.length,0);assert.equal(expanded.packet.spatialFacts.places.length,0,'标签路径不伪造正文出现');
+ const ws=validatePlaceWorkspace(JSON.parse(JSON.stringify(foundation.mergePlaceFoundation(emptyPlaceWorkspace(id(90)),expanded.foundationPatch))),id(90));
+ const edges=ws.foundation.facts.filter(f=>f.kind==='containment');assert.equal(edges.length,2);
+ assert.ok(edges.every(f=>f.source.kind==='locationReference'&&f.source.floorId===floorId&&f.source.sourceSnapshotIndex===0&&f.source.quote===text));
+ const snapshot=applyPlaceSnapshot({chatId:id(90),places:ws.foundation.entities.map(e=>({entityId:e.id,displayName:e.displayName,features:[],relations:[],childEntityIds:[]})),containments:[],userPosition:{status:'unknown'}},ws);
+ assert.equal(snapshot.mapRootIds.length,1);assert.equal(snapshot.places.find(p=>p.displayName==='东厢房').parentEntityId,snapshot.places.find(p=>p.displayName==='临江客栈').entityId);
+ assert.equal(snapshot.userPosition.status,'unknown');
+ assert.equal(foundation.filterPlaceFoundationSources(ws,{floorIds:new Set()}).foundation.facts.length,0);
+ assert.equal(foundation.filterPlaceFoundationSources(ws,{floorIds:new Set([floorId])}).foundation.facts.length,ws.foundation.facts.length);
+});
+
+test('聚合地点标签只绑定自身楼与序号，坏路径隔离自身，缺失或清空标签不借正文', async () => {
+ const text='河湾镇·客栈', binding={floorKey:'floor-1',floorId:id(93),canonicalContent:text,locationReference:[text],rawFingerprint:'raw-1'};
+ const invoke=(bindings,ref)=>foundation.expandPlacePaths({packet:{summary:'健康摘要',placePaths:[{path:[{name:'河湾镇'},{name:'客栈'}],...ref},{path:[{name:'健康书屋'}],source:'worldbook',sourceKey:source.sourceKey,exactQuote:source.content}]},envelope:{scope:{...envelope.scope,placeCatalogBindings:[],parentEntityIdsByPlaceId:new Map(),sourceFloorBindings:bindings}},now:'2026-11-14T00:00:00Z'});
+ const ref={source:'locationReference',sourceFloorKey:'floor-1',sourceSnapshotIndex:0,exactQuote:text};
+ for(const [bindings,override] of [[[binding],{sourceFloorKey:'floor-9'}],[[{...binding,locationReference:null}],{}],[[{...binding,locationReference:undefined}],{}],[[binding],{sourceSnapshotIndex:1}],[[binding,{...binding,floorKey:'floor-2',floorId:id(94)}],{sourceFloorKey:undefined}]]){
+  const result=await invoke(bindings,{...ref,...override});assert.equal(result.isolated.length,1);assert.equal(result.packet.summary,'健康摘要');assert.deepEqual(result.freshEntities.map(e=>e.displayName),['健康书屋']);
+ }
+ const result=await invoke([binding,{...binding,floorKey:'floor-2',floorId:id(94),locationReference:['海上·驳船']}],ref);
+ assert.deepEqual(result.isolated,[]);assert.ok(result.foundationPatch.facts.filter(f=>f.source.kind==='locationReference').every(f=>f.source.floorId===id(93)));
+});
+
+test('整理旧标签父边仍按原标签楼回放，无显式修订特权越过同楼或后楼正文',()=>{
+ const f1=id(81),f2=id(82),seq=new Map([[f1,1],[f2,2]]),child=id(2),tagParent=id(1),bodyParent=id(3);
+ const source={kind:'locationReference',floorId:f1,sourceSnapshotIndex:0,quote:'甲馆·客房'};
+ const fact={itemId:id(301),kind:'containment',placeEntityId:child,parentEntityId:tagParent,identityChange:'ownershipChanged',replacesItemIds:[id(302)],knownFromFloorId:f2,source};
+ const ws={...emptyPlaceWorkspace(id(90)),foundation:{schemaVersion:1,entities:[],facts:[fact]}};
+ for(const bodyFloor of [f1,f2]){
+  const memories=[{floorId:bodyFloor,assistantSeq:seq.get(bodyFloor),spatialFacts:{containments:[{itemId:id(302),placeEntityId:child,parentEntityId:bodyParent,evidenceRefs:[{floorId:bodyFloor}]}]}}];
+  const projected=foundation.projectPlaceParentLinks(memories,ws,seq);assert.deepEqual([...projected.get(child).parents.keys()],[bodyParent]);
+ }
+});
+
+test('主动整理纯标签补缺父但不替换已有正文归属，不借修订标记跨枝或撤销',async()=>{
+ const floorId=id(93),text='别馆·客房',entities=[seed(1,'宿舍'),seed(2,'客房')];
+ const old={itemId:id(401),kind:'containment',placeEntityId:id(2),parentEntityId:id(1),knownFromFloorId:floorId,source:{kind:'body',floorId,sourceType:'assistant',quote:'客房属于宿舍。'}};
+ const ws={...emptyPlaceWorkspace(id(90)),foundation:{schemaVersion:1,entities,facts:[old]}},binding={floorId,sourceType:'locationReference',sourceSnapshotIndex:0,canonicalContent:text,evidenceKey:'tag-1'};
+ const scope={...envelope.scope,sourceFloorBindings:[binding],identityProjection:{placeWorkspace:ws},placeParentFactBindings:[old]};
+ for(const clear of [false,true]){
+  const entry={path:clear?[{sameAsPlaceKey:'place-2'}]:[{name:'别馆'},{sameAsPlaceKey:'place-2'}],identityChange:'ownershipChanged',...(clear?{parentPlaceKey:null}:{}),source:'storedPlaceEvidence',sourceKey:'tag-1',exactQuote:text};
+  const result=await foundation.expandPlacePaths({packet:{placePaths:[entry]},envelope:{request:{task:'organizePlaces'},scope},existingEntities:entities,now:'2026-11-14T00:00:00Z',persistBodyPaths:true});assert.equal(result.isolated.length,1);assert.equal(result.foundationPatch.facts.length,0);assert.equal(result.freshEntities.length,0);assert.deepEqual(foundation.mergePlaceFoundation(ws,result.foundationPatch).foundation.facts,[old]);
+ }
+ const result=await foundation.expandPlacePaths({packet:{placePaths:[{path:[{name:'别馆'},{sameAsPlaceKey:'place-2'}],source:'storedPlaceEvidence',sourceKey:'tag-1',exactQuote:text}]},envelope:{request:{task:'organizePlaces'},scope:{...scope,parentEntityIdsByPlaceId:new Map(),placeParentFactBindings:[],identityProjection:{placeWorkspace:emptyPlaceWorkspace(id(90))}}},existingEntities:entities,now:'2026-11-14T00:00:00Z',persistBodyPaths:true});
+ assert.deepEqual(result.isolated,[]);const edge=result.foundationPatch.facts.find(f=>f.kind==='containment');assert.equal(Object.hasOwn(edge,'replacesItemIds'),false);assert.equal(Object.hasOwn(edge,'identityChange'),false);assert.equal(result.foundationPatch.replaceFields.some(f=>f.kind==='containment'),false);
+});

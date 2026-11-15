@@ -608,6 +608,8 @@ export function createStorageManagement({
     if (isEnabled?.()) await collectExpiredTrash({ automatic: true });
     if (disposed || !autoEnabled() || automaticCheck) return;
     const memory = memoryRuntime.getActivityState();
+    // Coverage can still be zero after the current chat identity is available.
+    if (memory?.memorySnapshotStatus !== 'ready' || memory.memorySyncStatus === 'syncing') return;
     if (!memory?.chatId || !Number.isSafeInteger(memory.stableCount) || memory.stableCount < 0) return;
     const identity = (() => { try { return capture(); } catch { return null; } })();
     if (!identity || identity.chatId !== memory.chatId) return;

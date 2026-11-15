@@ -1,7 +1,7 @@
 import {isUuid} from '../identity.js';
 
 export function validatePlaceSource(source) {
- const valid=ref=>ref&&typeof ref==='object'&&['body','worldbook','characterCard'].includes(ref.kind)&&typeof ref.quote==='string'&&ref.quote.length>0&&(ref.kind!=='body'||isUuid(ref.floorId));
+ const valid=ref=>ref&&typeof ref==='object'&&['body','worldbook','characterCard','locationReference'].includes(ref.kind)&&typeof ref.quote==='string'&&ref.quote.length>0&&(!['body','locationReference'].includes(ref.kind)||isUuid(ref.floorId))&&(ref.kind!=='locationReference'||Number.isSafeInteger(ref.sourceSnapshotIndex)&&ref.sourceSnapshotIndex>=0);
  if(!valid(source)||source.references!==undefined&&(!Array.isArray(source.references)||source.references.some(ref=>!valid(ref)||ref.references!==undefined))||source.replacesItemIds!==undefined&&(!Array.isArray(source.replacesItemIds)||source.replacesItemIds.some(id=>!isUuid(id)))||source.knownFromFloorId!==undefined&&!isUuid(source.knownFromFloorId))throw new TypeError('地点来源格式无效。');
  return source;
 }
@@ -29,6 +29,7 @@ export function locatePlaceQuote(content, quote, { allowWhitespace = false, allo
 import { projectVectorSources } from './vector-source.js';
 import { storedSourceUserInput } from './user-input-source.js';
 import { memorySourceFloorIds } from './memory-schema.js';
+import { placeSourceLocationReference } from './spatial-domain.js';
 
 
 export async function collectMissingPlaceSources({ entities, entityKeys, bodySources, floors, memoriesByFloor }) {
@@ -76,7 +77,7 @@ function paragraphContext(content, names, quotes) {
   return ranges.map(({start,end})=>({content:content.slice(start,end),offset:start}));
 }
 
-export async function collectPlaceOrganizationSources({entities,entityKeys,places,bodySources,contextSources=bodySources,floors,memoriesByFloor,parentFacts=[],resolveEntityId=id=>id}) {
+export async function collectPlaceOrganizationSources({entities,entityKeys,places,bodySources,contextSources=bodySources,floors,memoriesByFloor,parentFacts=[],sourceFacts=parentFacts,resolveEntityId=id=>id}) {
   const keysByFloor=new Map(),available=new Set(floors.map(floor=>floor.id));
   const add=(floorId,ids)=>{
     if(!available.has(floorId))return;
@@ -85,10 +86,10 @@ export async function collectPlaceOrganizationSources({entities,entityKeys,place
     if(keys.size)keysByFloor.set(floorId,keys);
   };
   for(const entity of entities)if(entity.entityType==='place')add(entity.firstSeenFloorId,[entity.id]);
-  for(const fact of parentFacts){
+  for(const fact of sourceFacts){
     const ids=[fact.placeEntityId,fact.parentEntityId];
     for(const ref of fact.evidenceRefs??[])add(ref.floorId,ids);
-    for(const ref of fact.source?[fact.source,...(fact.source.references??[])]:[])if(ref.kind==='body')add(ref.floorId,ids);
+    for(const ref of fact.source?[fact.source,...(fact.source.references??[])]:[])if(['body','locationReference'].includes(ref.kind))add(ref.floorId,ids);
   }
   const coveredKeys=new Set([...keysByFloor.values()].flatMap(keys=>[...keys]));
   // Library identities can lack a first-seen floor. Their saved mentions still
@@ -117,6 +118,7 @@ export async function collectPlaceOrganizationSources({entities,entityKeys,place
     const memory=memoriesByFloor.get(source.floorId),base={floorId:source.floorId,memoryId:source.floorMemoryId,
       placeKeys:[...keysByFloor.get(source.floorId)],rawFingerprint:source.floorMemoryId,requiresExactQuote:true};
     const sources=[{...base,sourceType:'assistant',canonicalContent:source.canonicalContent},
+      ...placeSourceLocationReference(memory,source.floorId).map((content,sourceSnapshotIndex)=>({...base,sourceType:'locationReference',sourceSnapshotIndex,canonicalContent:content})),
       ...(storedSourceUserInput(memory,source.floorId)?.messages??[]).map((message,sourceSnapshotIndex)=>({...base,sourceType:'precedingUser',sourceSnapshotIndex,canonicalContent:message.content}))];
     for(const candidate of sources){
       const related=bodySources.filter(row=>sameSource(row,candidate));
@@ -124,7 +126,7 @@ export async function collectPlaceOrganizationSources({entities,entityKeys,place
       const names=[...new Set([...placeKeys].flatMap(key=>{const place=placesByKey.get(key);return place?[place.displayName,...(place.aliases??[])]:[];})
         .filter(name=>typeof name==='string'&&name.length>=2).map(name=>name.toLocaleLowerCase()))];
       const quotes=contextSources.filter(row=>sameSource(row,candidate)).map(row=>row.canonicalContent);
-      let ranges=paragraphContext(candidate.canonicalContent,names,quotes);
+      let ranges=candidate.sourceType==='locationReference'?[{content:candidate.canonicalContent,offset:0}]:paragraphContext(candidate.canonicalContent,names,quotes);
       if(!ranges.length&&candidate.sourceType==='assistant')ranges=[{content:candidate.canonicalContent,offset:0}];
       for(const range of ranges)contexts.push({...candidate,canonicalContent:range.content,sourceOffset:range.offset});
     }

@@ -224,7 +224,8 @@ for (const targetCalendar of [undefined, null, { months: 12, prefix: '人工历'
   activeHost.eventTypes = eventTypes;
   activeHost.eventSource = eventSource;
   activeHost.generateTask = async () => { hostAiCalls += 1; throw new Error('候选分支不得调用模型'); };
-  for (const handler of listeners.get(eventTypes.CHAT_CHANGED) ?? []) handler();
+  // The host awaits each listener before invoking the next one.
+  for (const handler of listeners.get(eventTypes.CHAT_CHANGED) ?? []) await handler();
 
   let targetBinding;
   await waitFor(() => {
@@ -243,4 +244,17 @@ for (const targetCalendar of [undefined, null, { months: 12, prefix: '人工历'
   assert.equal(calendarSettings.qianqianjie.storyCalendars[SOURCE].prefix, '测试历');
   assert.equal(candidateAiCalls + hostAiCalls, 0);
   assert.equal(snapshotSource(backend.records), sourceBefore);
+  const bridge = context.qqj_qianshi_backend_v1;
+  assert.ok(bridge, '生产入口已安装公开千事状态');
+  await waitFor(() => bridge.getStatus().status === 'ready', '分支存档已就绪，但当前页面未完成记忆加载');
+  const currentRoot = await createFoundationStore({ client: backend.client, contextProvider: () => identity('复制聊天', targetChatId) }).readRoot();
+  assert.equal(currentRoot.status, 'ready');
+  assert.equal(currentRoot.data.chatId, targetChatId);
+  const status = bridge.getStatus();
+  assert.equal(status.anchor.narrativeGeneration, currentRoot.data.narrativeGeneration);
+  assert.equal(status.anchor.headCheckpointId, currentRoot.data.headCheckpointId);
+  assert.equal(status.anchor.rootRevision, currentRoot.revision);
+  assert.equal(bridge.getSnapshot().identity.qqjChatId, targetChatId, '页面读取目标分支，不能仍显示源档');
+  assert.equal(candidateAiCalls + hostAiCalls, 0, '页面加载完成也不调用模型');
+  assert.equal(snapshotSource(backend.records), sourceBefore, '页面加载不改源档');
 });

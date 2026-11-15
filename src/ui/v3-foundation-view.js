@@ -358,7 +358,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (value !== '') node.textContent = value;
     return node;
   };
-  const currentSituationLine = value => { const line = element('span', 'qqj-current-situation-line'); line.append(element('small', 'qqj-current-situation-visibility', visibilityBadgeCopy(value.visibility)), element('span', 'v3-cse-item-text', cseReadingText(value.text))); return line; };
+  const currentSituationLine = value => { const line = element('span', 'qqj-current-situation-line'); line.append(element('span', 'v3-cse-item-text', cseReadingText(value.text)), element('small', 'qqj-current-situation-visibility', visibilityBadgeCopy(value.visibility))); return line; };
   const confirmHistoricalMode = async ({ fullRebuild = false } = {}) => {
     const title = fullRebuild ? '完全重构当前聊天记忆' : '补齐当前聊天记忆';
     const hasArchivedPrefix = typeof foundationState?.migrationDescriptorId === 'string' && foundationState.migrationDescriptorId.length > 0;

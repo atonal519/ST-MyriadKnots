@@ -161,3 +161,16 @@ test('缺首见地点的聚合引用只展开有证据的成员，不借锚楼�
     assert.deepEqual(await placeEvidence.collectPlaceOrganizationSources({ ...args, memoriesByFloor: new Map([['f1', changed], ['f2', changed]]) }), []);
   }
 });
+
+
+test('旧地点整理承接每楼已存标签独立来源，聚合缺成员及显式清空不借锚楼',async()=>{
+ const first='你在房里。',second='你在舱里。';
+ const floors=[{id:'f1',assistantSeq:1,content:{canonicalContent:first}},{id:'f2',assistantSeq:2,content:{canonicalContent:second}}];
+ const memory={id:'aggregate',floorId:'f2',sourceFloorIds:['f1','f2'],sourceLocationReference:['不能借的锚标签'],sourceFloorSnapshots:[{floorId:'f1',canonicalContent:first,locationReference:['河湾镇·临江客栈·东厢房']},{floorId:'f2',canonicalContent:second,locationReference:['驳船·舱底']} ]};
+ const args={entities:[{id:'room',entityType:'place',firstSeenFloorId:'f1'},{id:'cabin',entityType:'place',firstSeenFloorId:'f2'}],entityKeys:new Map([['room','place-1'],['cabin','place-2']]),places:[{entityId:'room',displayName:'房里',aliases:[]},{entityId:'cabin',displayName:'舱里',aliases:[]}],bodySources:[],floors,memoriesByFloor:new Map([['f1',memory],['f2',memory]])};
+ const rows=await placeEvidence.collectPlaceOrganizationSources(args),tags=rows.filter(row=>row.sourceType==='locationReference');
+ assert.equal(tags.length,2);assert.deepEqual(tags.map(row=>[row.floorId,row.canonicalContent,row.placeKeys]),[['f1','河湾镇·临江客栈·东厢房',['place-1']],['f2','驳船·舱底',['place-2']]]);assert.ok(tags.every(row=>row.sourceSnapshotIndex===0&&row.requiresExactQuote));
+ for(const snapshots of [[{...memory.sourceFloorSnapshots[0],locationReference:null},memory.sourceFloorSnapshots[1]],memory.sourceFloorSnapshots.slice(1)]){
+  const changed={...memory,sourceFloorSnapshots:snapshots};const next=await placeEvidence.collectPlaceOrganizationSources({...args,memoriesByFloor:new Map([['f1',changed],['f2',changed]])});assert.equal(next.some(row=>row.sourceType==='locationReference'&&row.floorId==='f1'),false);
+ }
+});

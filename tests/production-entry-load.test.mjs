@@ -363,6 +363,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const backendRecords = new Map();
   const ttRecords = new Map();
   const ttReadKeys = [];
+  const ttRootChecks = [];
+  let ttWritesInFlight = 0, ttMaxWritesInFlight = 0;
   let backendWriteCalls = 0;
   let saveMetadataCalls = 0;
   let chatSaveCalls = 0;
@@ -370,7 +372,26 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const ttStore = {
     async tryGetJson(options) { const key = ttKey(options); ttReadKeys.push(key); return ttRecords.has(key) ? { found: true, value: structuredClone(ttRecords.get(key)) } : { found: false }; },
     async deleteJson(options) { ttRecords.delete(ttKey(options)); },
-    async setJson(options) { ttRecords.set(ttKey(options), nativeJson(options.value)); },
+    async setJson(options) {
+      if (!tauri || !nativeBranch) { ttRecords.set(ttKey(options), nativeJson(options.value)); return; }
+      ttWritesInFlight++; ttMaxWritesInFlight = Math.max(ttMaxWritesInFlight, ttWritesInFlight);
+      try {
+        await new Promise(resolve => setImmediate(resolve));
+        const slot = JSON.parse(options.value.serialized), data = slot.current?.data;
+        if (data?.recordType === 'root' && data.chatId !== branchSource?.chatId && data.headCheckpointId) {
+          const saved = new Map([...ttRecords.values()].map(value => JSON.parse(value.serialized))
+            .filter(item => item.collection === slot.collection).map(item => [item.recordId, item.current?.data]));
+          const checkpoint = saved.get(`v3-checkpoint-${data.headCheckpointId}`);
+          assert.ok(checkpoint, 'TT root不能先于checkpoint保存');
+          for (const [field, prefix] of [['floors', 'v3-floor-'], ['floorMemories', 'v3-floor-memory-'], ['entities', 'v3-entity-'], ['stateDeltas', 'v3-state-delta-'], ['currentStates', 'v3-current-state-']]) {
+            for (const id of checkpoint.producedRefs[field]) assert.ok(saved.has(prefix + id), 'root发布前所有引用记录均已完成');
+          }
+          for (const key of checkpoint.producedRefs.indexes) assert.ok(saved.has(key));
+          ttRootChecks.push(data.chatId);
+        }
+        ttRecords.set(ttKey(options), nativeJson(options.value));
+      } finally { ttWritesInFlight--; }
+    },
     async listKeys({ namespace, table = 'main' }) { const prefix = `${namespace}/${table}/`; return [...ttRecords.keys()].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)); },
     async listTables({ namespace }) { return [...new Set([...ttRecords.keys()].filter(key => key.startsWith(`${namespace}/`)).map(key => key.split('/')[1]))]; },
   };
@@ -669,7 +690,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
+  return { status: entry.status, ttRootChecks, ttMaxWritesInFlight, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
 }
 
 for (const host of ['SillyTavern', 'Luker']) {
@@ -753,6 +774,18 @@ test('实际生产包无需打开面板或保存聊天，私有通道自动记�
   assert.equal(latest.last.receiptPersistence, 'none');
   assert.deepEqual(latest.last.skipReasons, ['emptyUserInput']);
   assert.doesNotMatch(JSON.stringify(records), /host-chat|char\.png|injectionText|apiKey/u);
+});
+
+test('TT生产默认路由分支批写四路并在全部引用保存后才发布root', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true, nativeBranch: 'full3', coreCacheEnabled: false });
+  const snapshot = JSON.parse(JSON.stringify(result.getPublicSnapshot())), target = result.finalQqjMetadata.chatId;
+  assert.equal(snapshot.status, 'ready'); assert.equal(snapshot.memory.syncStatus, 'idle');
+  assert.equal(snapshot.identity.qqjChatId, target); assert.notEqual(target, result.branchSource.chatId);
+  assert.deepEqual(snapshot.memory.floors.map(floor => floor.summary), ['源旧摘要1', '源旧摘要2', '源旧摘要3']);
+  assert.ok(result.ttMaxWritesInFlight > 1 && result.ttMaxWritesInFlight <= 4);
+  assert.ok(result.ttRootChecks.length > 0 && result.ttRootChecks.every(chatId => chatId === target));
+  assert.equal(result.fetchRequests.some(request => request.url.includes('/api/plugins/st-bainiaodata')), false, '默认TT保存走真实装配的native适配器');
+  assert.equal(result.fetchRequests.some(request => /generate|completion|openai|embedding/iu.test(request.url)), false);
 });
 
 test('TT production bundle reads the file identity graph through native store without BaiNiao HTTP', async () => {
@@ -861,7 +894,7 @@ test('manifest 唯一登记主入口，生产分包依赖完整、内容哈希�
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.2.0');
+  assert.equal(manifest.version, '1.2.1');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));

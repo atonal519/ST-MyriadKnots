@@ -284,7 +284,6 @@ export function createBackendClient({ fetchImpl, headers = () => ({}), baseUrl =
         || new Set(records.map(item => item.recordId)).size !== records.length) throw new TypeError('批量保存参数无效');
       const body = JSON.stringify({ records });
       if (new TextEncoder().encode(body).length > BATCH_WRITE_BYTES) throw new TypeError('批量保存超过1MiB');
-      if (useTauri) return null;
       // A warm core cache can skip every batch read. Negotiate once for an explicit
       // multi-record save; a failed probe keeps subsequent packages on single CAS.
       if (negotiate && records.length > 1 && !capabilities) {
