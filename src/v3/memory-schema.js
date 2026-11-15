@@ -130,7 +130,8 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
   if (hasSourceSnapshot) text(value.sourceCanonicalContent, 'V3_FLOORMEMORY_INVALID', 'sourceCanonicalContent', { max: 2000000 });
   if (hasSourceUserInputSnapshot) validateUserInputSnapshot(value.sourceUserInputSnapshot);
   if (hasSourceRawFingerprint && (typeof value.sourceRawFingerprint !== 'string' || !HASH.test(value.sourceRawFingerprint))) fail('V3_FLOORMEMORY_INVALID', 'sourceRawFingerprint');
-  if (hasSourceStoryClockSignature && (typeof value.sourceStoryClockSignature !== 'string' || value.sourceStoryClockSignature.length > 500)) fail('V3_FLOORMEMORY_INVALID', 'sourceStoryClockSignature');
+  // 内部签名包含原始时间标记或参考文本，长度随合法来源增长，比较时须保留原值。
+  if (hasSourceStoryClockSignature && typeof value.sourceStoryClockSignature !== 'string') fail('V3_FLOORMEMORY_INVALID', 'sourceStoryClockSignature');
   const validateLocationReference = (reference, path) => {
     if (reference === null) return null;
     const items = boundedArray(reference, 'V3_FLOORMEMORY_INVALID', path, 8);
@@ -156,7 +157,7 @@ export function validateFloorMemory(input, { expectedChatId } = {}) {
       text(snapshot.canonicalContent, 'V3_FLOORMEMORY_INVALID', `${path}.canonicalContent`, { max: 200000 });
       validateUserInputSnapshot(snapshot.sourceUserInputSnapshot);
       if (typeof snapshot.rawFingerprint !== 'string' || !HASH.test(snapshot.rawFingerprint)) fail('V3_FLOORMEMORY_INVALID', `${path}.rawFingerprint`);
-      if (typeof snapshot.storyClockSignature !== 'string' || snapshot.storyClockSignature.length > 500) fail('V3_FLOORMEMORY_INVALID', `${path}.storyClockSignature`);
+      if (typeof snapshot.storyClockSignature !== 'string') fail('V3_FLOORMEMORY_INVALID', `${path}.storyClockSignature`);
       if (hasLocationReference) snapshot.locationReference = validateLocationReference(snapshot.locationReference, `${path}.locationReference`);
     });
   } else if (sourceFloorIds.length > 1) fail('V3_FLOORMEMORY_INVALID', 'sourceFloorSnapshots');

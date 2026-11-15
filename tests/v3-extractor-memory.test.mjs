@@ -30,6 +30,7 @@ import { projectInlineMemoryFloor } from '../src/ui/inline-projection.js';
 import { collectFloorMemoryEntityIds, collectStateDeltaEntityIds, validateEntityRecord, validateFloorMemory, validateMemoryGraph } from '../src/v3/memory-schema.js';
 import { captureFloorVariableReference } from '../src/v3/floor-variable-reference.js';
 import { readLocationReference } from '../src/v3/location-reference.js';
+import { resolveStoryClock } from '../src/story-clock.js';
 import { deterministicUuid } from '../src/v3/foundation-domain.js';
 import { createCompactApiClient } from '../src/compact-api-client.js';
 import { createTaskRouter } from '../src/api-routing.js';
@@ -6298,6 +6299,69 @@ test('残缺同楼时间戳进入同次提取但不合成主线时间，前序�
 
   const memory = h.runtime.getState().floors[1].memory;
   assert.deepEqual(memory.chronology, [], '仅起点不被当成本篇当前时间，模型未给主线时间时保留空值');
+});
+
+test('长内部时间签名经真实提取保存及冷读完整保留，旧档与类型合同不变', async t => {
+  const cases = [
+    { name: '长时间参考', tags: 'clock', raw: `<clock>天历三百一十二年六月十五日。${'时间参考信息。'.repeat(80)}</clock>本楼正文。` },
+    { name: '多个合法时间戳', tags: '', raw: Array.from({ length: 6 }, (_, index) => `<!-- QQJ-start | date=10月30日 | weekday=周五 | time=${10 + index}:00 -->本楼正文。<!-- QQJ-end | date=10月30日 | weekday=周五 | time=${10 + index}:30 -->`).join('') },
+  ];
+  for (const { name, tags, raw } of cases) await t.test(name, async () => {
+    const signature = resolveStoryClock(raw, tags).signature;
+    assert.ok(signature.length > 500, '生产时间签名确实超过旧门槛');
+    const h = harness({ text: raw, storyClockReferenceTags: tags, utility: () => ({ jsonData: { summary: '正常本楼摘要。' } }) });
+    await h.runtime.start();
+    const floorId = h.runtime.getState().floors[0].floorId;
+    await h.runtime.extractFloor(floorId, { analyzeState: false });
+    const memory = h.runtime.getState().floors[0].memory;
+    assert.ok(memory, JSON.stringify(h.runtime.getState().floors[0]));
+    assert.equal(memory.summary.aiText, '正常本楼摘要。');
+    assert.equal(memory.sourceStoryClockSignature, signature);
+    const coldStore = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT,
+      characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+    const saved = await coldStore.readReachable({ mode: 'full' });
+    assert.equal(saved.status, 'ready');
+    assert.equal(saved.floorMemories.find(item => item.floorId === floorId).sourceStoryClockSignature, signature, '存储冷读不截断或改写签名');
+    assert.equal(h.calls.length, 1, '正常摘要仅调用既有一次合成提取响应');
+    const legacy = structuredClone(memory);
+    delete legacy.sourceStoryClockSignature;
+    assert.doesNotThrow(() => validateFloorMemory(legacy));
+    assert.doesNotThrow(() => validateFloorMemory({ ...legacy, sourceStoryClockSignature: '' }));
+    for (const invalid of [null, 1, {}, []]) assert.throws(() => validateFloorMemory({ ...legacy, sourceStoryClockSignature: invalid }),
+      error => error.code === 'V3_FLOORMEMORY_INVALID' && error.message.includes('sourceStoryClockSignature'));
+  });
+});
+
+test('长内部时间签名经真实高楼聚合保存为各来源快照且不截断', async () => {
+  const raw = index => `<clock>第${index}楼时间参考。${'时间参考信息。'.repeat(80)}</clock>第${index}楼正文。`;
+  const h = harness({ modernAnchors: true, storyClockReferenceTags: 'clock',
+    initialChat: Array.from({ length: 11 }, (_, index) => [assistant(raw(index)), user(`确认${index}`)]).flat(),
+    automation: { enabled: false, batchSize: 1 },
+    utility: options => ({ jsonData: JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
+      ? { summary: '正常摘要。' } : { noMaterialChange: true } }),
+  });
+  await h.foundationRuntime.reconcile('longStoryClockSignature');
+  await h.runtime.start();
+  await h.runtime.extractFloor(h.runtime.getState().floors[0].floorId, { analyzeState: false });
+  await h.runtime.startHistoricalRebuild({ aggregate: true });
+  await waitFor(() => !h.runtime.getState().activeAutoMemory, () => JSON.stringify(h.runtime.getState()));
+  const coldStore = createFoundationStore({ client: h.backend.client, contextProvider: () => ({ hostChatId: h.context.chatId, chatId: CHAT,
+    characterLocator: 'character.png', personaLocator: 'persona.png' }) });
+  const saved = await coldStore.readReachable({ mode: 'full' });
+  const aggregate = saved.floorMemories.find(item => item.sourceFloorIds?.length === 10);
+  assert.ok(aggregate, '真实历史重建生成十楼聚合记忆');
+  assert.equal(aggregate.sourceFloorSnapshots.length, 10);
+  for (const [index, snapshot] of aggregate.sourceFloorSnapshots.entries()) {
+    const signature = resolveStoryClock(raw(index + 1), 'clock').signature;
+    assert.ok(signature.length > 500);
+    assert.equal(snapshot.storyClockSignature, signature, '每个来源楼快照保留自身完整签名');
+  }
+  assert.equal(aggregate.sourceStoryClockSignature, resolveStoryClock(raw(10), 'clock').signature);
+  const withSnapshotSignature = value => ({ ...structuredClone(aggregate), sourceFloorSnapshots: aggregate.sourceFloorSnapshots.map((snapshot, index) => index ? snapshot : { ...snapshot, storyClockSignature: value }) });
+  assert.doesNotThrow(() => validateFloorMemory(withSnapshotSignature('')));
+  for (const invalid of [null, 1, {}, []]) assert.throws(() => validateFloorMemory(withSnapshotSignature(invalid)),
+    error => error.code === 'V3_FLOORMEMORY_INVALID' && error.message.includes('sourceFloorSnapshots[0].storyClockSignature'));
+  assert.equal(h.calls.filter(call => JSON.parse(call.taskMessages[0].content).task === 'extractFloorSemantics').length, 2, '首楼与十楼聚合各一次合成响应');
 });
 
 test('原文时间参考标签进入本楼与前楼语义输入，漏写时间时整段 unresolved 兜底且不读取未来楼', async () => {

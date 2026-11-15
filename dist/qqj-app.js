@@ -6269,7 +6269,7 @@ function uo(e, { expectedChatId: t } = {}) {
 		"updatedAt",
 		"recordStatus",
 		"supersedes"
-	], "V3_FLOORMEMORY_INVALID"), io(r, "floorMemory", t), $a(r.floorId, "V3_FLOORMEMORY_INVALID", "floorId"), Qa(r.extractorVersion, "V3_FLOORMEMORY_INVALID", "extractorVersion", { max: 160 }), i && Qa(r.sourceCanonicalContent, "V3_FLOORMEMORY_INVALID", "sourceCanonicalContent", { max: 2e6 }), a && oo(r.sourceUserInputSnapshot), s && (typeof r.sourceRawFingerprint != "string" || !qa.test(r.sourceRawFingerprint)) && Ja("V3_FLOORMEMORY_INVALID", "sourceRawFingerprint"), c && (typeof r.sourceStoryClockSignature != "string" || r.sourceStoryClockSignature.length > 500) && Ja("V3_FLOORMEMORY_INVALID", "sourceStoryClockSignature");
+	], "V3_FLOORMEMORY_INVALID"), io(r, "floorMemory", t), $a(r.floorId, "V3_FLOORMEMORY_INVALID", "floorId"), Qa(r.extractorVersion, "V3_FLOORMEMORY_INVALID", "extractorVersion", { max: 160 }), i && Qa(r.sourceCanonicalContent, "V3_FLOORMEMORY_INVALID", "sourceCanonicalContent", { max: 2e6 }), a && oo(r.sourceUserInputSnapshot), s && (typeof r.sourceRawFingerprint != "string" || !qa.test(r.sourceRawFingerprint)) && Ja("V3_FLOORMEMORY_INVALID", "sourceRawFingerprint"), c && typeof r.sourceStoryClockSignature != "string" && Ja("V3_FLOORMEMORY_INVALID", "sourceStoryClockSignature");
 	let h = (e, t) => {
 		if (e === null) return null;
 		let n = no(e, "V3_FLOORMEMORY_INVALID", t, 8);
@@ -6288,7 +6288,7 @@ function uo(e, { expectedChatId: t } = {}) {
 			"rawFingerprint",
 			"storyClockSignature",
 			...r ? ["locationReference"] : []
-		], "V3_FLOORMEMORY_INVALID", n), $a(e.floorId, "V3_FLOORMEMORY_INVALID", `${n}.floorId`), e.floorId !== g[t] && Ja("V3_FLOORMEMORY_INVALID", `${n}.floorId`), Qa(e.canonicalContent, "V3_FLOORMEMORY_INVALID", `${n}.canonicalContent`, { max: 2e5 }), oo(e.sourceUserInputSnapshot), (typeof e.rawFingerprint != "string" || !qa.test(e.rawFingerprint)) && Ja("V3_FLOORMEMORY_INVALID", `${n}.rawFingerprint`), (typeof e.storyClockSignature != "string" || e.storyClockSignature.length > 500) && Ja("V3_FLOORMEMORY_INVALID", `${n}.storyClockSignature`), r && (e.locationReference = h(e.locationReference, `${n}.locationReference`));
+		], "V3_FLOORMEMORY_INVALID", n), $a(e.floorId, "V3_FLOORMEMORY_INVALID", `${n}.floorId`), e.floorId !== g[t] && Ja("V3_FLOORMEMORY_INVALID", `${n}.floorId`), Qa(e.canonicalContent, "V3_FLOORMEMORY_INVALID", `${n}.canonicalContent`, { max: 2e5 }), oo(e.sourceUserInputSnapshot), (typeof e.rawFingerprint != "string" || !qa.test(e.rawFingerprint)) && Ja("V3_FLOORMEMORY_INVALID", `${n}.rawFingerprint`), typeof e.storyClockSignature != "string" && Ja("V3_FLOORMEMORY_INVALID", `${n}.storyClockSignature`), r && (e.locationReference = h(e.locationReference, `${n}.locationReference`));
 	})) : g.length > 1 && Ja("V3_FLOORMEMORY_INVALID", "sourceFloorSnapshots"), f && (r.qianshiDelta = Fa(r.qianshiDelta, { floorIds: g })), p) {
 		let e = r.spatialFacts;
 		Za(e, [
@@ -14721,7 +14721,7 @@ async function af({ store: e, targetIdentity: t, cachedReachable: n = null, getR
 }
 //#endregion
 //#region manifest.json
-var of = "1.2.1", sf = "CHANGELOG.md", cf = /* @__PURE__ */ new Set([
+var of = "1.2.2", sf = "CHANGELOG.md", cf = /* @__PURE__ */ new Set([
 	"bodyVersion",
 	"replySelection",
 	"timeEvidence",
@@ -20911,7 +20911,7 @@ function n_({ fetchImpl: e, headers: t = () => ({}), retryWait: n = Qg, timeoutM
 	};
 }
 //#endregion
-//#region node_modules/graphology/dist/graphology.mjs
+//#region ../../../../public/scripts/extensions/third-party/ST-QianQianJie/node_modules/graphology/dist/graphology.mjs
 var r_ = (/* @__PURE__ */ k(((e, t) => {
 	var n = typeof Reflect == "object" ? Reflect : null, r = n && typeof n.apply == "function" ? n.apply : function(e, t, n) {
 		return Function.prototype.apply.call(e, t, n);
@@ -24559,7 +24559,7 @@ function Xv(e) {
 }
 Xv(Wv), Xv(Gv), Xv(Kv), Xv(qv), Xv(Jv), Xv(Yv), Wv.Graph = Wv, Wv.DirectedGraph = Gv, Wv.UndirectedGraph = Kv, Wv.MultiGraph = qv, Wv.MultiDirectedGraph = Jv, Wv.MultiUndirectedGraph = Yv, Wv.InvalidArgumentsGraphError = g_, Wv.NotFoundGraphError = __, Wv.UsageGraphError = v_;
 //#endregion
-//#region node_modules/graphology-utils/is-graph.js
+//#region ../../../../public/scripts/extensions/third-party/ST-QianQianJie/node_modules/graphology-utils/is-graph.js
 var Zv = /* @__PURE__ */ k(((e, t) => {
 	/**
 	* Graphology isGraph
