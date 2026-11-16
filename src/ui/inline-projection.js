@@ -1,4 +1,5 @@
 import { readManualArtifactBlocks, RECALL_KNOWLEDGE_GUIDANCE, RECALL_COMPACT_KNOWLEDGE_GUIDANCE } from '../v3/recall-text.js';
+import { CSE_QUANTIFICATION_GUIDANCE } from '../v3/cse-quantification.js';
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
 import { recallReceiptSelectionLimits, renderedQianshiProgressText, RECALL_STRATEGY_VERSION } from '../v3/recall-runtime.js';
@@ -20,6 +21,18 @@ const isMaterialScopeLine = line => {
   const match = /^本轮资料范围：已稳定到 AI #(\d+)。$/u.exec(line ?? '');
   return Boolean(match && Number(match[1]) > 0 && Number.isSafeInteger(Number(match[1])));
 };
+const RECALL_QUANTIFICATION_LINES = new Set([CSE_QUANTIFICATION_GUIDANCE,
+  '量化为0—100独立强度，结合该条文字与对象理解，不是整个人格或合计比例。']);
+
+// 数值说明是可选程序头；按已知行推进，未知文本仍留给正文协议核验。
+function recallBodyStart(lines) {
+  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE || !RECALL_NOTICES.has(lines[1]) || !RECALL_BOUNDARY_LINES.has(lines[2])) return null;
+  let cursor = 3;
+  if (RECALL_QUANTIFICATION_LINES.has(lines[cursor])) cursor += 1;
+  if (isMaterialScopeLine(lines[cursor])) cursor += 1;
+  return cursor;
+}
+
 const STORYLINE_NOTICE = '各组只表示存在已记录的关联证据；组内按时间排列，不自动证明因果。';
 const COMPACT_STORYLINE_NOTICE = '各组按来源、邻近、主题或当前输入匹配。';
 const COMPACT_STORYLINE_NOTICES = new Set([COMPACT_STORYLINE_NOTICE, '各组只按已记录的来源、邻近、具体主题或当前输入直接匹配分组；组内按来源时间排列，不证明因果。']);
@@ -153,8 +166,11 @@ function splitTimeReference(injectionText) {
     historyLines = [...lines.slice(0, index), RECALL_CLOSE];
   }
   const corrections = historyLines.filter(line => line.startsWith('- [时间校正] ')).map(line => line.slice(2));
+  const bodyStart = recallBodyStart(historyLines);
   return { historyText: historyLines.join('\n'), items: [...corrections, ...items],
-    onlyTime: items.length > 0 && historyLines.slice(1, -1).every(line => !line || [...RECALL_NOTICES, ...RECALL_BOUNDARY_LINES, STORYLINE_NOTICE, ...COMPACT_STORYLINE_NOTICES].includes(line)) };
+    onlyTime: items.length > 0 && (bodyStart === null
+      ? historyLines.slice(1, -1).every(line => !line)
+      : historyLines.slice(bodyStart, -1).every(line => !line || line === STORYLINE_NOTICE || COMPACT_STORYLINE_NOTICES.has(line))) };
 }
 
 const LOCATION_REFERENCE_HEADINGS = ['[原消息地点标注]', '[原消息地点标注（仅作来源补充参照；当前正文与人工修订优先，不代表当前位置或人物在场）]'];
@@ -272,8 +288,8 @@ function qianshiObjectItems(text) {
 function parseRecallHistory(injectionText, selectedFloors, manualBlocks = null) {
   if (typeof injectionText !== 'string' || !injectionText) return null;
   const lines = injectionText.split('\n');
-  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE || !RECALL_NOTICES.has(lines[1]) || !RECALL_BOUNDARY_LINES.has(lines[2])) return null;
-  const bodyStart = isMaterialScopeLine(lines[3]) ? 4 : 3;
+  const bodyStart = recallBodyStart(lines);
+  if (bodyStart === null) return null;
   const sequenceFloors = new Map();
   for (const value of selectedFloors) {
     if (!Number.isSafeInteger(value.assistantSeq)) continue;
@@ -315,10 +331,11 @@ function parseRecallHistory(injectionText, selectedFloors, manualBlocks = null) 
 function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, storylines, manualBlocks = null) {
   if (typeof injectionText !== 'string' || !injectionText || !Array.isArray(storylines)) return null;
   const lines = injectionText.split('\n');
-  const noticeIndex = isMaterialScopeLine(lines[3]) ? 4 : 3;
+  const noticeIndex = recallBodyStart(lines);
+  if (noticeIndex === null) return null;
   const compact = COMPACT_STORYLINE_NOTICES.has(lines[noticeIndex]);
   const bodyStart = noticeIndex + 1;
-  if (lines[0] !== RECALL_OPEN || lines.at(-1) !== RECALL_CLOSE || !RECALL_NOTICES.has(lines[1]) || !RECALL_BOUNDARY_LINES.has(lines[2]) || !compact && lines[noticeIndex] !== STORYLINE_NOTICE) return null;
+  if (!compact && lines[noticeIndex] !== STORYLINE_NOTICE) return null;
   const historySequences = new Set(selectedFloors.map(value => value.assistantSeq).filter(Number.isSafeInteger));
   const changeSequences = new Set(selectedChanges.map(value => value.assistantSeq).filter(Number.isSafeInteger));
   const allowedSequences = new Set([...historySequences, ...changeSequences]);

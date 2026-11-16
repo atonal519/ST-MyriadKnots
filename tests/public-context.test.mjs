@@ -50,6 +50,23 @@ function fixture({ query = '', profileA = '人工档案甲', profileB = '人工�
   return { bridge, calls, reachable };
 }
 
+test('可选量化：公开readContext沿原状态文字承接数字，紧预算先保文字且零模型/回源', async () => {
+  const value = state(personA, '原文核心'); value.situational = [{ text: '亲近但不满冒险', visibility: 'private', reason: '明确表达', sourceAssistantSeq: 1,
+    quantification: { emotions: { 亲近: 65, 不满: 45 }, expression: 0 } }];
+  value.adaptive = [{ text: '愿求助仍自己决定', visibility: 'expressed', reason: '既有经历', sourceAssistantSeq: 1, quantification: { strength: 35 } }];
+  const h = fixture({ cse: [value] });
+  const result = await h.bridge.readContext({ entityIds: [personA], maxCharacters: 12000, summaryCharacters: 0 });
+  assert.match(result.actors[0].stateText, /亲近但不满冒险.*情绪强度：亲近65、不满45/u);
+  assert.match(result.actors[0].stateText, /倾向强度：35/u);
+  assert.match(result.actors[0].stateText, /外露程度：0/u);
+  assert.match(result.actors[0].stateText, /0—100独立强度.*不是整个人格或合计比例/u);
+  const plain = result.actors[0].stateText.split('\n').filter(line => !line.startsWith('量化为')).join('\n').replace(/（(?:情绪|倾向)强度：[^）]*）/gu, '');
+  const tight = await h.bridge.readContext({ entityIds: [personA], maxCharacters: Math.ceil(plain.length / 0.3), summaryCharacters: 0 });
+  assert.ok(tight.actors[0].stateText.includes('亲近但不满冒险'));
+  assert.equal(tight.actors[0].stateText, plain);
+  assert.equal(h.calls.model, 0); assert.equal(h.calls.sourceReader, 0);
+});
+
 test('bounded summary selection keeps up to twenty complete relevant memories in source order', async () => {
   const h = fixture();
   h.reachable.floors = Array.from({ length: 1000 }, (_, i) => ({ id: `floor-${i + 1}`, assistantSeq: i + 1 }));

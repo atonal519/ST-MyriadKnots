@@ -11,9 +11,10 @@ import { CSE_ISOLATION_CODES, CSE_VISIBILITIES, LATEST_CSE_CALIBRATION_VERSION, 
 import { withBaseProcessingPrompt } from '../internal-processing-prompt.js';
 import { buildEntityIdentityDirectory, identityLabelKey } from './entity-identity.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
+import { normalizeCseQuantification, advanceAdaptiveStrength, cseQuantificationFields, isCseQuantificationOnlyChange } from './cse-quantification.js';
 
-export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-50';
-export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-22';
+export const CSE_PROMPT_VERSION = 'qqj-v3-cse-prompt-55';
+export const CSE_COMPILER_VERSION = 'qqj-v3-cse-prompt-2/calibration-compiler-24';
 export const CSE_CALIBRATION_VERSION = LATEST_CSE_CALIBRATION_VERSION;
 
 export const DEFAULT_CSE_GUIDANCE = `你是千千结的双丝网人物成长记录员。结合上一轮已保存状态与本楼新经历，归纳本楼结束时仍有效的情感、关系、边界及成长结果；分类门槛、旧项复核及人工校准遵循固定合同。
@@ -27,14 +28,15 @@ Core、Adaptive、Situational 只记录有依据的人物心理、情感、信�
 动作、身体症状、场面安排、身份归属及约定本身由摘要、时间、千事或身份目录承接；它们可作为人物变化的依据，入网时只写有证据的结果。参与事件或存在 toward 不足以证明心理变化。证据不足时省略该项，不为事件编造情绪、心理动机、潜意识或性格，不改塞其它分类或身份简介。
 
 【通用准入例】
-1. 甲熬夜后疲倦，乙递水：仅有身体与动作则省略，不补出感激、信任或依赖。
+1. 甲熬夜后疲倦，乙递水；或甲只托乙向丙传话：仅有身体、动作或传递对象则省略，不补出感激、熟悉、信任、依赖或不满。
 2. 甲先后向乙表达困难、请求协助，并明确坚持决定由自己作出：可归纳“愿向乙求助，仍坚持自己作决定”，不按开口、配合等动作各记一条。不拔高全面信任或长期依赖，按实际证据用 observable/expressed，不限内心独白。
 3. 甲此前向乙表达的旧自动项“担心乙不守约”“对乙履约仍不放心”含义相同；本楼甲又明确表示，听过解释后安心些，但事成前仍有顾虑：归纳为“对乙履约的顾虑有所缓解，仍需等结果确认”。保留限制，不改成完全信任；约定本身归千事。
 4. 一次配合或争执不推出“甲习惯依赖／总会防备”的长期 Adaptive；只支持当前结果时归 Situational，不能把同场多个动作凑作独立经历。
 5. 旧自动“困倦、备水、待命”从完整情境列表退出；仍影响人物或关系的误会顾虑保留。人工项及明确人工清空仍为最高校准。
+6. 甲乙谈论丙；乙明确认为甲在掩饰顾虑，并以熟人式口吻调侃，甲明确对乙当众揭私事不满：可分别归纳乙→甲“认为甲在掩饰顾虑，仍以熟人式态度相处”和甲→乙“对乙当众揭私事仍有不满”。两向各有依据；丙只是话题时，不把这两项改放成对丙的态度。乙的判断仍是乙的看法，visibility 按原文，不写成甲的客观性格或共同知识。
 
 【固定事实与隐私边界】
-trackedSubjects 中每个人都获得同等检查机会，按本楼证据分别检查经历沉淀的情感、关系与成长及对不同对象的有向关系，不以用户、角色卡主角或历史出场频次决定先后。检查机会不表示人物在场、知情或存在可推断的内心；没有新依据时可不输出该人的更新，不要求人物或关系填满。
+trackedSubjects 中每个人都获得同等检查机会。归纳时先逐人找出本楼有据的认识、误解、情感与关系反应，再按正文实际涉及的人物对确认：谁持有看法或反应，实际针对谁，谁只是被谈论者。各方向分别判断，NPC之间有独立意义的结果也按同一证据标准保留，不只把其他人物用作用户关系的佐证，不以用户、角色卡主角或历史出场频次决定先后。认识或误解归持有看法的人，text 保留“认为”“怀疑”等口径；谈论丙不抹掉甲乙彼此的关系，谈论本身也不证明任何关系态度。检查机会不表示人物在场、知情或存在可推断的内心；只检查有依据的方向，不穷举全部人物组合，没有新依据或关系未变时可省略更新，不要求逐人、逐对产出。
 正文 canonicalContent 与对应 currentUserInput 共同提供本楼剧情事实，按发生顺序与明确修订判断；结构化楼层记忆和 subjectRelevantEvidence 只是证据索引，可能稀疏或缺项，冲突时按本次AI与USER原文的发生顺序和明确修订判断。某个结构数组为空或没有某人物，不等于正文没有发生相关事件，也不等于该人物不知道。初始设定属于作者设定，不等于任何角色已经知道它。私密想法只属于其本人，不能自动变成其他人物的认知。
 
 auxiliaryStateSnapshot 若存在，是目标楼当前分支当时已保存的只读变量快照，只用于辅助理解状态。它可能同时包含多个人物、不完整或过时信息，不能整体归给某一人物，也不能当作用户手动 Core 纠正或可引用的权威证据；与正文或用户明确事实冲突时以正文和用户明确事实为准。
@@ -60,8 +62,12 @@ identityBriefTargets 列出本楼识别到的 NPC，不代表在场、知情或�
 
 仅针对填写了 toward 的 Adaptive，text 直接写具体长期倾向，省略“在和某人相处过程中”“面对某人时”等仅重复 toward 对象、没有新增语义的套话开头。例如同一含义应写成“更愿意主动解释误会”，不要写成“在和人物乙相处过程中，更愿意主动解释误会”。必要的适用条件、第三人，以及本身有实际语义的对象名称仍应保留；不要为调整措辞增加证据、扩大长期程度、放宽 refine/evidence 合同，也不要把应 keep 的旧项强制改成 refine。
 
-Situational 记录经历沉淀后仍影响人物塑造的情感变化、关系反应、心理边界和成长结果。结合 previousState 与本楼新经历更新当前结果；即时情绪须有持续的人物或关系意义才进入；身体症状、衣着、位置、物品收放、待办、约定及行动流水由摘要、时间和千事承接。本楼正常分析的主体，其同一主体、同一 toward（含无对象）、同一 visibility 且没有实质冲突、确为同一意义的相近旧自动项，与本楼新变化一起归纳为当前结果；不把历次触动、动作和阶段判断逐条续留。保留有独立意义的区别、条件、例外、程度及未解顾虑，不跨对象或信息范围合并，不为变短扩大信任、改成长久倾向或抹平矛盾。逐项复核 previousState 的旧自动 Situational，已结束、被替代、仅属事件或失去人物塑造意义的项退出当前列表，无需等待剧情宣布事件已经结束。旧 Core/Adaptive 仍按原 review 与 evidence 门槛变更。离场本身不证明情感或关系结束，仍有持续意义的结果保留。历史事实继续保在原剧情资料中。人工项和明确人工清空为最高校准，人工条目独立保留，不参与自动归纳；在场人物后续有实际剧情变化时，按该时点的新依据判断自然演进。
-每次输出 situational 使用完整分区对象 {"self":[...],"relations":[...]}。self 记录自身情感与成长，relations 使用 toward 唯一指向相应人物。两区都明确为 [] 才清空整类，结构不完整或省略分类沿用旧值。关系对象无法唯一绑定时按既有规则隔离，不能改放进 self。text 写归纳后的当前结果，reason 仅简述支持它的依据，不把多条经历或历次状态串成一句长记录；连续未变的旧观察保持原含义与可见性。明确结束后再次发生按本楼新经历理解。编译后总数上限120。
+【Situational 当前结果与分区】
+Situational 记录经历沉淀后仍影响人物塑造的情感变化、关系反应、心理边界和成长结果。结合 previousState 与本楼新经历，先归纳本楼结束时仍有效的人物结果，再按含义选择分区。即时情绪须有持续的人物或关系意义才进入；身体症状、衣着、位置、物品收放、待办、约定及行动流水由摘要、时间和千事承接。text 直接写当前结果，必要时保留仍影响当下的原因、条件、程度与未解顾虑；支持它的具体动作和原句放 reason/evidence，不沿旧 text 逐楼续接动作。
+对本楼正常分析的主体，逐项复核 previousState 的旧自动 Situational，与本楼新变化一起整理。同一含义只保留一份完整结果，旧项原在 self 或 relations、原 toward 为空或原 reason 不同，都不是保留重复项的理由；observable 与 expressed 的标签差异本身不足以证明两条独立信息；仅是同一反应的不同标注时，按证据选合适的 visibility，不各写一次。确有独立含义、不同对象、不同外露内容或不同知情范围的信息，以及有据的表里差异、心理矛盾分别保留；不跨对象或信息范围合并，不为变短扩大信任、改成长久倾向或抹平矛盾。
+分区只决定结果放在哪里：主要是人物自身情感、边界或成长时放 self；中心是对某个明确人物的态度或相处反应时，完整放 relations 并填写 toward。同一对象引起的一次心理反应，若已在 relations 完整表达，就不在 self 换说法再记一条；有另行证据支持的独立自身变化，才另记 self。例如甲因乙履约而安心，只在对乙的 relations 记“履约顾虑缓解”；若正文另写甲对自己独立应对困难更有把握，才另在 self 记这项变化。任一区都可为空，不要求两区都有内容。
+旧自动 Situational 中已结束、被替代、仅属事件或失去人物塑造意义的项退出当前列表，无需等待剧情宣布事件已经结束。离场本身不证明情感或关系结束，仍有持续意义的结果保留。历史事实继续保在原剧情资料中。旧 Core/Adaptive 仍按原 review 与 evidence 门槛变更。人工项和明确人工清空为最高校准，人工条目独立保留，不参与自动归纳；在场人物后续有实际剧情变化时，按该时点的新依据判断自然演进。
+每次输出 situational 使用完整分区对象 {"self":[...],"relations":[...]}。两区都明确为 [] 才清空整类，结构不完整或省略分类沿用旧值。关系对象无法唯一绑定时按既有规则隔离，不能改放进 self。连续未变且含义独立的旧观察保持原含义与可见性；明确结束后再次发生按本楼新经历理解。编译后总数上限120。
 trackedSubjects 中 reviewOnly=true 的人物仅复核其 previousState.ownState.situational 旧自动项，按已有意义保留或移除，保留项沿用原 text、visibility 与 toward。其人工项和其它分类由程序保留，无需回抄。该范围不用于新增情境、Core、Adaptive或身份资料。可在原一次响应中输出其完整 self/relations 自动列表，确认全部退出时两区均为空。
 
 【持续校准合同】
@@ -69,14 +75,12 @@ trackedSubjects 中 reviewOnly=true 的人物仅复核其 previousState.ownState
 
 每次都审视本楼相关人物的已有 Core 与 Adaptive，并把它们同最新作者设定、明确用户纠正和本楼正文一起判断。旧结论本身及其旧 reason 不能自证；相容且没有新依据时保持原项，出现可定位反证或明确的新适用条件时才 refine/remove。剧情允许人物改变，但不强制每楼改写；单个戏剧性场景不能覆盖明确作者锚点，普通角色扮演中的用户台词、动作或心理也不自动等于作者纠正。
 
-单次事件造成的即时情绪、动作或台词须形成有持续人物塑造意义的情感或关系结果，才进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式；两项有限历史例外是用户自身的独立历史检查任务，以及本次提供 relationHistory 的有效人物对：前者沿原用户任务，后者只用于带toward的关系Adaptive；均可用所附事件判断独立模式，新增时仍须引用本楼确认其当前适用的原句。没有这些限定历史材料的新增 Adaptive 仍遵守正文证据合同。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据，不能据此新增或扩大 Adaptive；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。单个反例也不自动证明旧模式完全反转；若证据只说明适用条件变窄，用 refine 写清条件。
-
 【Adaptive 更新步骤】
-人物自身的长期应对模式与针对每个明确对象（toward）的模式，分别按同一证据标准判断；各方向独立，不自动镜像。先依据上面的条件判断是否可改变长期状态；同一连续事件的多次动作、程度变化或多条 quote 不构成彼此独立的经历，楼数本身也不能证明独立。证据不足或模式未变时省略旧项，由现有状态沿用；明确作者设定和纠正仍按原合同处理。
-
-有依据 refine 时，将整项写成当前仍有效的模式，保留相互独立的含义、适用条件、关键例外，以及理解当前模式所需的形成原因或已证实转折；用短句归纳，不逐楼续写动作。只写证据支持的变化；证据仅支持适用范围收窄时，明确写出条件，不得改成整体反转。同一模式的动作流水交给摘要，仍影响当下的后果才进入 Situational。reason 只解释本次变化；quote 用足以支持判断的最短完整原句。
-
-若明确设定只在紧急救援时允许必要接触，refine 时应保留该条件和其他仍有效的例外，不能为缩短文本而删掉。
+单次事件造成的即时情绪、动作或台词须形成有持续人物塑造意义的情感或关系结果，才进入 Situational；不要求每个动作都写成情境，也不得把它改写成“当 X 时总会/会……”之类长期条件模式，不能据此概括人物“总是”“习惯”“一贯如此”。
+新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式；两项有限历史例外是用户自身的独立历史检查任务，以及本次提供 relationHistory 的有效人物对：前者沿原用户任务，后者只用于带toward的关系Adaptive；均可用所附事件判断独立模式，新增时仍须引用本楼确认其当前适用的原句。没有这些限定历史材料的新增 Adaptive 仍遵守正文证据合同。同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据；不得拿 previousState、旧状态的 reason 或自行假设的未提供历史补足独立证据。
+人物自身的长期应对模式与针对每个明确对象（toward）的模式，分别按同一证据标准判断；各方向独立，不自动镜像。先比较拟写 text 与旧项的长期含义：增加独立长期判断、追加习惯、扩大对象或适用情境，都按上述新增 Adaptive 门槛判断，即使写在旧项的 refine 中也一样。已有模式的证据不能自动支持新含义；一次配合、回应、修辞或同场多个 quote 不足时，保留原长期模式，当次反应只有持续意义才写 Situational。
+已有模式遇到可定位反证、明确适用条件收窄或作者明确纠正，可据该证据 refine/remove，不要求为收窄或撤回再凑多个事件。单个反例也不自动证明旧模式完全反转；只证明条件变窄时，用 refine 写清条件。证据不足或模式未变时省略旧项，由现有状态沿用，不为改措辞强制 refine。
+有依据 refine 时，将整项写成当前仍有效的模式，保留相互独立的有效含义、适用条件、关键例外，以及理解当前模式所需的形成原因或已证实转折；用短句归纳，不逐楼续写动作。reason 只解释本次变化；quote 用足以支持判断的最短完整原句。例如旧项是“愿向乙求助，仍坚持自己作决定”，甲本次爽快照办乙的一项安排，不追加“也习惯听从乙的安排”；若作者明确纠正“只有紧急救援时才向乙求助”，则可按该句 refine 为“紧急救援时愿向乙求助，仍坚持自己作决定”。
 
 【稀疏输出】只返回实际变化操作：未变人物、分类和旧项省略，不逐项回写 keep；省略分类仍按原合同保留。若输出某人物的 Situational，仍须提供本楼结束时的完整有效列表。没有新变化且无须更新旧状态时返回 {"subjects":[]}；这会保旧，不能用来移除旧自动情境。移除仍须输出完整 situational self/relations 列表。
 
@@ -87,15 +91,23 @@ Core 以明确作者设定为锚，普通单楼情绪、动作或台词不足以
 currentUserInput 只在生成该 FloorMemory 时捕获到目标 AI 楼前方连续 user 输入时提供，可能包含一条或多条按时间正序冻结的原文。它可能是普通角色台词、动作、插件参考，也可能是作者明确校正；必须按语义区分，不能把整组输入一律当可信设定。evidence.source 必须逐字使用 evidenceSourceCatalog 中的 source；世界书使用其中的具体键，例如 worldbook:1，不填写书名或泛称 worldbook。quote 必须逐字存在于对应实际材料。userPersona 只支持用户本人；characterCard 和 worldbook 是可能包含多个人物设定的作者材料，按来源原文明确描述的人物判断归属；不因卡名或来源名称推断归属，也不把一个人物的设定套给他人。引用可定位不等于语义必然成立，仍须判断其是否真的支持操作。
 authorNote 是作者侧持续参考，其中的未来要求、写作风格或塑造方向不等于已经发生的事实、所有人物已经知情或人物的永久性格。它不能单独作为新增或改写 Core 的证据。
 
-本轮合作、分歧、协调和约定带来的经历若沉淀为情感或关系变化，分别判断每人的有向Situational及自身成长。relationHistory 只为当楼有效人物对补充作者侧旧动作、沟通和承诺，不代表双方已知；仅可支持带明确toward的Adaptive新增、refine/remove，且同项必须有canonicalContent或currentUserInput的原句确认模式现在仍适用或应结束。新增长期模式仍须多个独立经历；一次持续事件、多个quote或楼数不自动算独立经历。历史不能用于Core、身份简介、第三人或无toward泛人格，不自动镜像，也不强迫产出长期项。Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
+本轮合作、分歧、协调和约定带来的经历若沉淀为情感或关系变化，按当前结果与分区合同分别判断每人有依据的结果。relationHistory 只为当楼有效人物对补充作者侧旧动作、沟通和承诺，不代表双方已知；仅可支持带明确toward的Adaptive新增、refine/remove，且同项必须有canonicalContent或currentUserInput的原句确认模式现在仍适用或应结束。新增或在 refine 中追加、扩大长期含义，均按上述 Adaptive 门槛；一次持续事件、多个quote或楼数不自动算独立经历。历史不能用于Core、身份简介、第三人或无toward泛人格，不自动镜像，也不强迫产出长期项。Core/Adaptive 只用 review/additions 输出，不直接返回 core 或 adaptive 完整状态数组。review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项，action 只能是 keep、refine、remove；refine 还需 text。未提到项保留。新增项放 additions。refine、remove 及每个新增项都必须给 evidence:[{source,quote}]；reason 可省略，keep 可不带 evidence。不要把 previousState、旧 reason 或 authorialOtherStateContext 写成 evidence source。
 
 省略人物或分类表示保留已有状态。situational 使用自身与关系两个完整分区；两区都为 [] 表示有依据清空整类，没有足够依据更新时省略分类。review 或 additions 中某类的空数组只表示没有相应操作，不清空旧项；清除旧 Core/Adaptive 须逐项 remove 并给证据。
+
+【可选情绪、外露与成长强度】
+有效文字、主体、对象及信息范围仍是权威，可依据实际言行、心理和上下文作与证据相称的克制推断。默认逐人审视本楼有依据的多种感受及有据成长，对有量化依据的有效条目给数字；旧文字已存在不表示可以忽略本楼强度变化。真正未知、仅离场复核reviewOnly或预算不足时才省略数字，不为量化新造状态，不改人工校准，不输出长分析过程。
+Situational同条可返回quantification:{emotions:{"亲近":65,"担忧":45},expression:20}。维度仅亲近、满足、兴奋、松弛、期待、担忧、恐惧、失望、悲伤、不满、反感、羞怯、愧疚、嫉妒；每项0—100、至多一位小数，独立强度不合计100，省略是未知而非0，不要求凑齐14项或非零。取本楼结束时仍有效的感受，去留和回落按本次原文；不按楼数自动递增。
+expression是该条当前感受或态度在言行中的外露程度，0—100、至多一位小数；0表示未显露，省略是未知。它与emotions独立可选，依据实际言行和叙述判断，不由情绪分数换算，不替代visibility或知情范围；私密内心即使强烈，也不能因此成为他人已知。
+text/reason简洁写本楼结束时的当前结果、实际对象、触发原因及仍保留的顾虑，结合既有人格与适用条件呈现多种情绪如何牵制，不只取最高分、不相减成净好感、不据分数指定固定动作或关系阶段。只有已提供且含义、对象和条件可比的前后状态才概括变化，缺数值不能当0或臆造轨迹；保持当前结果归纳与去重合同。
+例如甲见乙平安归来，亲近65但仍因其冒险不满45，可以愿意照顾仍明确反对再冒险；甲担忧80却克制未表露，expression可为0，按实际叙述保private，不能把乙写成已经看穿。强颜欢笑不等于内心满足；先担忧后释然按楼末仍有效感受记录，变化原因有据时写入原text/reason。
+Adaptive合法新增或review条目可加quantification:{strength:70}，只表示该条有条件长期倾向的目标强度，不是整个人格比例、好感度或置信度。只有有新证据的refine才能推进已知强度；程序从本楼之前的旧值按round1(S+clamp(0.2*(T-S),-5,5))接纳。keep不累计，仅可为未知旧值登记初值。一次接受关心不扩大为普遍信任；持续经历或明确转折的成长保对象、条件和矛盾。Core不评分，不能用数值绕过文字和原证据门槛。
 
 返回一个实际分析结果的 JSON 对象。确无需要输出的状态变化时，返回 {"subjects":[]}；不要返回 JSON Schema、空对象、null 或格式说明。所有 JSON 字符串都必须使用标准 JSON 转义：字符串内容中的英文双引号写成 \\", 反斜杠写成 \\\\, 实际换行写成 \\n；evidence.quote 引用正文原句时也必须遵守同一转义规则。JSON 解码后的 quote 必须保留原文字面，不得换成其他引号、删去字符或改写内容。
 英文 JSON 字段名保持示例写法；状态 text、reason 使用中文。变化说明由程序按实际前后状态生成，无需填写 changeSummary。根级 changeSummary/summary 不会被当作人物状态，也不得用来代替 subjects。
 
-推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：自身情境不填写 toward；正文明确指向某人的当下态度仍在影响人物时，可单独列出该情境并填写对象姓名。
-{"subjects":[{"subject":"主体甲","review":{"adaptive":[{"previousText":"旧模式","toward":"对象乙","action":"refine","text":"保留有效条件与例外的当前模式","reason":"本楼支持调整的原因","evidence":[{"source":"canonicalContent","quote":"正文原句"}]}]},"situational":{"self":[{"reason":"经历沉淀后仍影响人物的情感变化","text":"理解自己的需要后更愿意表达边界","visibility":"private","origin":"floor"}],"relations":[{"reason":"主体甲明确说误会虽已解释，此刻仍难以完全信任对象乙","text":"误会后此刻对对象乙的信任仍有保留，尚不愿完全依赖对方","toward":"对象乙","visibility":"expressed","origin":"floor"}]}}]}
+推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：此例只有对乙的当前关系结果，self 为空；有独立自身变化时才填写 self。Adaptive 按上面的证据与更新步骤另行判断，没有变化时省略 review/additions。
+{"subjects":[{"subject":"主体甲","situational":{"self":[],"relations":[{"reason":"主体甲明确说误会虽已解释，此刻仍难以完全信任对象乙","text":"误会后此刻对对象乙的信任仍有保留，尚不愿完全依赖对方","toward":"对象乙","visibility":"expressed","origin":"floor"}]}}]}
 不确定的可选人物或分类宁可省略。只输出 JSON，不要解释。`;
 
 // 新生成统一走证据校准协议；编译器仍可读取旧 after-state 格式。
@@ -268,9 +280,9 @@ function subjectRelevantEvidence(memory, tracked, entities) {
   });
 }
 
-function semanticItems(items, entities, { includeReason = true } = {}) {
+function semanticItems(items, entities, { includeReason = true, category } = {}) {
   const byId = new Map(entities.map(entity => [entity.id, entity.displayName]));
-  return items.map(item => ({ text: item.text, visibility: item.visibility, ...(includeReason ? { reason: item.reason } : {}), origin: item.origin, ...(item.towardEntityId ? { toward: byId.get(item.towardEntityId) ?? null } : {}) }));
+  return items.map(item => ({ text: item.text, visibility: item.visibility, ...(includeReason ? { reason: item.reason } : {}), origin: item.origin, ...(item.towardEntityId ? { toward: byId.get(item.towardEntityId) ?? null } : {}), ...cseQuantificationFields(item, category) }));
 }
 
 function previousSubjectsForPrompt(currentState, tracked) {
@@ -283,7 +295,7 @@ function previousForPrompt(subjects, entities, coreUserEditedSubjectEntityIds) {
     const owner = entities.find(entity => entity.id === subject.subjectEntityId);
     // Core/Adaptive 旧 reason 是前次解释，请求只传状态语义；Situational 复核沿用原观察依据。
     return { subject: owner?.displayName ?? '未知人物', coreUserEdited: coreUserEditedSubjectEntityIds.has(subject.subjectEntityId), ownState: {
-      core: semanticItems(subject.core, entities, { includeReason: false }), adaptive: semanticItems(subject.adaptive, entities, { includeReason: false }), situational: semanticItems(subject.situational, entities),
+      core: semanticItems(subject.core, entities, { includeReason: false, category: 'core' }), adaptive: semanticItems(subject.adaptive, entities, { includeReason: false, category: 'adaptive' }), situational: semanticItems(subject.situational, entities, { category: 'situational' }),
     } };
   });
 }
@@ -319,9 +331,9 @@ function authorialOtherStateContext(currentState, entities, previousSubjectIds) 
   const visible = items => items.filter(item => item.visibility !== 'private' && item.visibility !== 'authorial');
   return (currentState?.subjects ?? []).filter(subject => !previousSubjectIds.has(subject.subjectEntityId)).map(subject => ({
     subject: entities.find(entity => entity.id === subject.subjectEntityId)?.displayName ?? '未知人物',
-    core: semanticItems(visible(subject.core), entities, { includeReason: false }),
-    adaptive: semanticItems(visible(subject.adaptive), entities, { includeReason: false }),
-    situational: semanticItems(visible(subject.situational), entities),
+    core: semanticItems(visible(subject.core), entities, { includeReason: false, category: 'core' }),
+    adaptive: semanticItems(visible(subject.adaptive), entities, { includeReason: false, category: 'adaptive' }),
+    situational: semanticItems(visible(subject.situational), entities, { category: 'situational' }),
   }));
 }
 
@@ -577,7 +589,7 @@ function parsePacket(value, { finishReason, compareUserCoreExtraction = false } 
       if (candidates.some(candidate => formalPacketSignature(candidate, { compareUserCoreExtraction }) !== signature)) {
         throw errorWith('V3_CSE_SUBJECT_RESULT_AMBIGUOUS', '模型返回了多份不同的人物状态，无法确认；请重新分析本楼。');
       }
-      return candidates[0];
+      return reconcileQuantification(candidates);
     }
   }
   return parsePacketContent(raw, { finishReason });
@@ -600,8 +612,19 @@ function subjectResultCandidates(packet) {
 
 function stableCandidate(value) {
   if (Array.isArray(value)) return `[${value.map(stableCandidate).join(',')}]`;
-  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableCandidate(value[key])}`).join(',')}}`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).filter(key => key !== 'quantification').sort().map(key => `${JSON.stringify(key)}:${stableCandidate(value[key])}`).join(',')}}`;
   return JSON.stringify(value);
+}
+
+// Equivalent text packets share the result; only an agreed optional number survives.
+function reconcileQuantification(values) {
+  const first = values[0];
+  if (Array.isArray(first)) return first.map((_, index) => reconcileQuantification(values.map(value => value?.[index])));
+  if (!first || typeof first !== 'object') return first;
+  return Object.fromEntries(Object.entries(first).flatMap(([key, value]) => {
+    if (key === 'quantification') return values.every(item => stableCandidate(item?.[key]) === stableCandidate(value)) ? [[key, value]] : [];
+    return [[key, reconcileQuantification(values.map(item => item?.[key]))]];
+  }));
 }
 
 function selectSubjectResults(packet) {
@@ -610,6 +633,7 @@ function selectSubjectResults(packet) {
   if (nonempty.length > 1 && nonempty.some(candidate => stableCandidate(candidate.value) !== stableCandidate(nonempty[0].value))) {
     throw errorWith('V3_CSE_SUBJECT_RESULT_AMBIGUOUS', 'CSE 返回了互相冲突的人物状态字段。');
   }
+  if (nonempty.length > 1) return reconcileQuantification(nonempty.map(candidate => candidate.value));
   const standard = candidates.find(candidate => candidate.name === 'subjects' && (Array.isArray(candidate.value) || candidate.value));
   if (standard && (Array.isArray(standard.value) ? standard.value.length > 0 : Object.keys(standard.value).length > 0)) return standard.value;
   if (nonempty.length) return nonempty[0].value;
@@ -639,7 +663,8 @@ const visibility = value => ({ private: 'private', 私密: 'private', 内心: 'p
 const origin = value => ({ baseline: 'baseline', 初始设定: 'baseline', floor: 'floor', 本楼: 'floor', reasonableprogression: 'reasonableProgression', naturalprogression: 'reasonableProgression', 合理进展: 'reasonableProgression', 自然进展: 'reasonableProgression' }[normalized(value)] ?? 'floor');
 const itemSemantic = item => typeof item === 'string' ? item.trim() : text(field(item, ['text', 'state', 'description', 'content', '状态', '描述', '内容']), 4000);
 const stateMeaning = item => [item.text, item.visibility, item.reason, item.origin, item.towardEntityId ?? ''];
-const storedProjection = subject => ({ core: subject.core.map(stateMeaning), adaptive: subject.adaptive.map(stateMeaning), situational: subject.situational.map(stateMeaning) });
+const storedProjection = subject => Object.fromEntries(['core', 'adaptive', 'situational'].map(category => [category,
+  subject[category].map(item => [...stateMeaning(item), normalizeCseQuantification(item.quantification, category)])]));
 
 async function compileItems({ raw, category, binding, knownBindings, deltaId, floorId, isolated, acceptedIntents }) {
   const output = [];
@@ -656,7 +681,7 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
       towardEntityId = toward.entityId;
     }
     const reason = typeof item === 'object' ? text(field(item, ['reason', 'because', '依据', '原因']), 4000) : '';
-    output.push({ id: await deterministicUuid(['v3-cse-state-item', deltaId, binding.entityId, category, index, value, towardEntityId]), text: value, visibility: visibility(typeof item === 'object' ? field(item, ['visibility', '可见性']) : null), reason: reason || '未提供依据', origin: origin(typeof item === 'object' ? field(item, ['origin', '来源']) : null), towardEntityId, sourceFloorId: floorId, sourceDeltaId: deltaId });
+    output.push({ id: await deterministicUuid(['v3-cse-state-item', deltaId, binding.entityId, category, index, value, towardEntityId]), text: value, visibility: visibility(typeof item === 'object' ? field(item, ['visibility', '可见性']) : null), reason: reason || '未提供依据', origin: origin(typeof item === 'object' ? field(item, ['origin', '来源']) : null), towardEntityId, sourceFloorId: floorId, sourceDeltaId: deltaId, ...cseQuantificationFields(item, category === 'adaptive' ? null : category) });
     acceptedIntents.count += 1;
   }
   return output;
@@ -664,6 +689,11 @@ async function compileItems({ raw, category, binding, knownBindings, deltaId, fl
 
 async function compileAfterStateCategory(options) {
   const output = await compileItems(options);
+  if (options.category === 'adaptive' && options.previous.some(item => normalizeCseQuantification(item.quantification, 'adaptive'))) for (const item of output) {
+    const matches = options.previous.filter(value => sameItemMeaning(value, item));
+    const quantification = matches.length === 1 ? normalizeCseQuantification(matches[0].quantification, 'adaptive') : null;
+    if (quantification) item.quantification = quantification;
+  }
   if (Array.isArray(options.raw) && options.raw.length === 0) { options.acceptedIntents.count += 1; return output; }
   return output.length ? output : options.previous;
 }
@@ -699,7 +729,8 @@ async function compileSituationalCategory(options) {
     const index = options.previous.findIndex((previous, position) => !used.has(position) && sameItemMeaning(previous, item));
     if (index < 0) return item;
     used.add(index);
-    return options.previous[index];
+    const previous = options.previous[index];
+    return previous.origin === 'manual' ? previous : { ...previous, ...cseQuantificationFields(item, 'situational') };
   });
 }
 
@@ -868,6 +899,8 @@ async function calibratedStateItem({ raw, category, binding, knownBindings, delt
   }
   const visibilityRaw = typeof raw === 'object' ? field(raw, ['visibility', '可见性']) : null;
   const sourceOrigin = evidence.every(item => item.kind === 'authorialSetting') ? 'baseline' : 'floor';
+  const quantification = normalizeCseQuantification(raw?.quantification, category);
+  if (category === 'adaptive' && quantification) quantification.strength = advanceAdaptiveStrength(original?.quantification?.strength, quantification.strength);
   return {
     id: await deterministicUuid(['v3-cse-calibrated-state-item', deltaId, binding.entityId, category, index, value, towardEntityId]),
     text: value,
@@ -877,6 +910,7 @@ async function calibratedStateItem({ raw, category, binding, knownBindings, delt
     towardEntityId,
     sourceFloorId: floorId,
     sourceDeltaId: deltaId,
+    ...(quantification ? { quantification } : {}),
   };
 }
 
@@ -928,7 +962,13 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
     reviewedIds.add(matched.id);
     const historyEvidence = relationHistoryEvidence(review, { envelope, binding, category, original: matched, index, isolated });
     if (historyEvidence === null) { acceptedIntents.count += 1; continue; }
-    if (action === 'keep') { acceptedIntents.count += 1; continue; }
+    if (action === 'keep') {
+      if (category === 'adaptive' && matched.origin !== 'manual' && !normalizeCseQuantification(matched.quantification, category)) {
+        const quantification = normalizeCseQuantification(review.quantification, category);
+        if (quantification) output.splice(output.findIndex(item => item.id === matched.id), 1, { ...matched, quantification });
+      }
+      acceptedIntents.count += 1; continue;
+    }
     const evidence = historyEvidence ?? calibratedEvidence(review, { envelope, binding, category, index, isolated });
     if (!calibratedMutationAllowed({ category, evidence, manualCore })) { isolated.push({ field: `${category}.review`, index, code: 'V3_CSE_CALIBRATION_EVIDENCE_INSUFFICIENT' }); continue; }
     const currentIndex = output.findIndex(item => item.id === matched.id);
@@ -943,6 +983,8 @@ async function compileCalibratedCategory({ rawSubject, category, binding, previo
     if (replacement && !sameItemMeaning(matched, replacement)) {
       output.splice(currentIndex, 1, replacement);
       calibrationAudit.push(calibrationAuditEntry({ binding, category, action, original: matched, item: replacement, raw: review, evidence }));
+    } else if (replacement?.quantification && matched.origin !== 'manual') {
+      output.splice(currentIndex, 1, { ...matched, ...cseQuantificationFields(replacement, category) });
     }
     if (replacement) acceptedIntents.count += 1;
   }
@@ -1072,6 +1114,7 @@ export async function compileCseResponse({ response, finishReason, envelope, pre
     return {
       ...subject,
       changeSummary: actualSubjectChanges({ before: previous, after: subject, audits })
+        .filter(change => !isCseQuantificationOnlyChange(change))
         .map(change => summarizeActualChange(change, envelope.scope.knownBindings))
         .slice(0, 40),
     };
@@ -1321,7 +1364,11 @@ function categoryChanges({ before, after, category, audits }) {
   const beforeKeys = before.map(itemMeaningKey), afterKeys = after.map(itemMeaningKey);
   for (let beforeIndex = 0; beforeIndex < before.length; beforeIndex += 1) {
     const afterIndex = afterKeys.findIndex((key, index) => !usedAfter.has(index) && key === beforeKeys[beforeIndex]);
-    if (afterIndex >= 0) { usedBefore.add(beforeIndex); usedAfter.add(afterIndex); }
+    if (afterIndex >= 0) {
+      usedBefore.add(beforeIndex); usedAfter.add(afterIndex);
+      const change = { category, action: 'update', before: before[beforeIndex], after: after[afterIndex] };
+      if (isCseQuantificationOnlyChange(change)) changes.push(change);
+    }
   }
   const findBefore = (value, toward) => before.findIndex((item, index) => !usedBefore.has(index) && normalized(item.text) === normalized(value) && (item.towardEntityId ?? null) === (toward ?? null));
   const findAfter = (value, toward) => after.findIndex((item, index) => !usedAfter.has(index) && normalized(item.text) === normalized(value) && (item.towardEntityId ?? null) === (toward ?? null));

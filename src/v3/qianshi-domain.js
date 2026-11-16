@@ -974,7 +974,7 @@ const pendingStatusLine = matter => {
   const latestTime = formatStoryTime(matter.parsedStoryTime, matter.storyTime);
   const originTime = formatStoryTime(matter.origin?.parsedStoryTime, matter.origin?.storyTime);
   const origin = originTime !== latestTime ? `。起始记录：${originTime}（AI #${matter.origin.sourceAssistantSeq}）` : '';
-  return `- ${matter.title}${matter.object ? `（${matter.object}）` : ''}。最近剧情记录：${latestTime}${source}${origin}${matter.scheduledTime ? `。约定：${matter.scheduledTime}` : ''}。记录状态：${({ planned: '待办', inProgress: '进行中', completed: '已完成' })[matter.status] ?? '未知'}。${matter.trackingOverride === true ? '人工关注：持续追踪' : '跟进选择：持续追踪'}。`;
+  return `- ${matter.title}${matter.object ? `（${matter.object}）` : ''}。最近剧情记录：${latestTime}${source}${origin}${matter.scheduledTime ? `。计划时间：${matter.scheduledTime}` : ''}。记录状态：${({ planned: '待办', inProgress: '进行中', completed: '已完成' })[matter.status] ?? '未知'}。${matter.trackingOverride === true ? '人工关注：持续追踪' : '跟进选择：持续追踪'}。`;
 };
 const pendingRecallRow = (matter, assistantSeq = matter.sourceAssistantSeq) => {
   const origin = clean(matter.origin?.description, 4000), latest = clean(matter.description, 4000);

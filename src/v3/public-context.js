@@ -1,3 +1,4 @@
+import { cseQuantificationFields, formatCseQuantification, CSE_QUANTIFICATION_GUIDANCE } from './cse-quantification.js';
 import { selectRecallMemories } from './recall-source.js';
 import { rankRecallDocuments } from './recall-ranking.js';
 import { buildEntityIdentityDirectory, deriveUserIdentityProjection, resolveIdentityEntityId } from './entity-identity.js';
@@ -101,17 +102,20 @@ function profileLinesFor(person, entry, floorById) {
 function stateLinesFor(subject) {
   const state = structuredClone(Object.fromEntries(['core', 'adaptive', 'situational'].map(layer => [layer,
     (subject?.[layer] ?? []).map(item => ({ text: item.text, visibility: item.visibility, reason: item.reason,
-      sourceAssistantSeq: item.sourceAssistantSeq, sourceFloorId: item.sourceFloorId, towardEntityId: item.towardEntityId })),
+      sourceAssistantSeq: item.sourceAssistantSeq, sourceFloorId: item.sourceFloorId, towardEntityId: item.towardEntityId, ...cseQuantificationFields(item, layer) })),
   ])));
-  const stateLines = [];
-  for (const [label, items] of [['核心', state?.core], ['经历变化', state?.adaptive], ['当前情境', state?.situational]]) for (const item of items ?? []) {
+  const stateLines = [], plainStateLines = [];
+  for (const [label, layer] of [['核心', 'core'], ['经历变化', 'adaptive'], ['当前情境', 'situational']]) for (const item of state?.[layer] ?? []) {
     const text = clean(item.text);
     const visibility = item.visibility === 'authorial' ? '作者塑造参考，不代表人物知情' : item.visibility === 'private' ? '本人私密状态' : item.visibility === 'shared' ? '已共享' : item.visibility === 'expressed' ? '已表达' : '可观察';
     const source = item.sourceAssistantSeq ? `AI #${item.sourceAssistantSeq}` : item.sourceFloorId ?? '来源未知';
     const toward = item.towardEntityId ? `；态度对象：${item.towardEntityId}` : '';
-    stateLines.push(`- ${label} / ${visibility}（${source}）：${text}${toward}${item.reason ? `；依据：${clean(item.reason)}` : ''}`);
+    const line = `- ${label} / ${visibility}（${source}）：${text}${toward}${item.reason ? `；依据：${clean(item.reason)}` : ''}`;
+    plainStateLines.push(line);
+    stateLines.push(`${line}${formatCseQuantification(item, layer)}`);
   }
-  return stateLines;
+  const quantified = Object.entries(state ?? {}).some(([layer, items]) => items.some(item => formatCseQuantification(item, layer)));
+  return { lines: quantified ? [CSE_QUANTIFICATION_GUIDANCE, ...stateLines] : stateLines, plainLines: plainStateLines };
 }
 
 export function buildPublicContext({
@@ -190,8 +194,10 @@ export function buildPublicContext({
     const person = profilesById.get(entityId);
     const profileLines = profileLinesById.get(entityId) ?? [];
     const profileFit = fitLines(profileLines, Math.floor(actorBudget * 0.4));
-    const stateLines = stateLinesById.get(entityId) ?? [];
-    const stateFit = fitLines(stateLines, Math.floor(actorBudget * 0.3));
+    const stateLines = stateLinesById.get(entityId) ?? { lines: [], plainLines: [] };
+    const stateBudget = Math.floor(actorBudget * 0.3);
+    let stateFit = fitLines(stateLines.lines, stateBudget);
+    if (stateFit.omitted) stateFit = fitLines(stateLines.plainLines, stateBudget);
     const docs = [];
     for (const memory of activeMemories) docs.push(...actorDocuments(memory, entityId, id => peopleById.get(id)?.displayName ?? '未知人物', projection, floorById));
     const scores = rankRecallDocuments({ documents: docs.map(item => ({ id: item.id, text: item.text })), queries });

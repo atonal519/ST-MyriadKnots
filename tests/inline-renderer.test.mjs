@@ -8,6 +8,7 @@ import { createV3RecallRuntime } from '../src/v3/recall-runtime.js';
 import { readRecallSource } from '../src/v3/recall-source.js';
 import { CSE_RECALL_KNOWLEDGE_BOUNDARY, historySelectionContext, selectRecall } from '../src/v3/recall-selector.js';
 import { formatRecallInjection, placeRecallBlocks } from '../src/v3/recall-selector.js';
+import { CSE_QUANTIFICATION_GUIDANCE } from '../src/v3/cse-quantification.js';
 import { compileCseResponse } from '../src/v3/cse-engine.js';
 import { MESSAGE_FLOOR_ANCHOR_KEY } from '../src/v3/message-floor-anchor.js';
 import { MIGRATION_ALIAS_KEY } from '../src/v3/migration-prefix.js';
@@ -136,6 +137,57 @@ test('当前CSE知情边界说明可投影普通与剧情线四楼历史并保�
   const timeProjection = projectInlineRecallReceipt({ schemaVersion: 17, strategyVersion: 'continuity-v17', status: 'ready', injectionText: pureTime, selectedFloors: [], selectedStates: [], storylines: [] });
   assert.equal(timeProjection.protocolRecognized, true);
   assert.deepEqual(timeProjection.timeReferenceItems, [reminder]);
+});
+
+test('量化说明兼容普通与剧情线的实际旧事栏，旧说明及范围行可读且未知行拒绝', async t => {
+  const legacyGuidance = '量化为0—100独立强度，结合该条文字与对象理解，不是整个人格或合计比例。';
+  const storyline = { storylineId: 'numeric-history', title: '钥匙交接', basis: '已记录来源' };
+  const literal = `原信全文\n${CSE_QUANTIFICATION_GUIDANCE}\n本轮资料范围：其他来源。`;
+  const floor = { floorId: 'numeric-floor', assistantSeq: 4, chronology: [], section: 'recent', items: [
+    { category: 'objective', text: '甲把旧钥匙交还乙', storylineId: storyline.storylineId },
+    { category: 'objective', kind: 'manualArtifact', carrier: '信件', exactText: literal, knownEntityIds: [], storylineId: storyline.storylineId },
+  ] };
+  const state = { stateId: 'numeric-state', subjectEntityId: '甲', subject: '甲', sourceFloorId: floor.floorId, sourceAssistantSeq: 4,
+    layer: 'situational', visibility: 'private', text: '仍担忧乙是否赶得及', reason: '乙尚未到站', quantification: { emotions: { 担忧: 70 }, expression: 0 }, storylineId: storyline.storylineId };
+  for (const layout of ['ordinary', 'storyline']) for (const guidance of [CSE_QUANTIFICATION_GUIDANCE, legacyGuidance]) for (const scoped of [false, true]) {
+    await t.test(`${layout}/${guidance === legacyGuidance ? '旧说明' : '当前说明'}/${scoped ? '范围' : '无范围'}`, async () => {
+      const injectionText = formatRecallInjection({ coverage: { memoryComplete: true, cseCurrent: true, ...(scoped ? { stableThroughAssistantSeq: 9 } : {}) },
+        floors: [floor], states: [state], cseChanges: [], entityById: new Map(), ...(layout === 'storyline' ? { storylines: [storyline] } : {}) });
+      const receipt = { schemaVersion: layout === 'storyline' ? RECALL_RECEIPT_SCHEMA_VERSION : 11, status: 'ready',
+        strategyVersion: layout === 'storyline' ? RECALL_STRATEGY_VERSION : 'continuity-v11', injectionText: injectionText.replace(CSE_QUANTIFICATION_GUIDANCE, guidance),
+        selectedFloors: [{ floorId: floor.floorId, assistantSeq: floor.assistantSeq, reasons: ['manualArtifact'] }], selectedStates: [state], selectedCseChanges: [], storylines: layout === 'storyline' ? [storyline] : [] };
+      const original = JSON.stringify(receipt), projected = projectInlineRecallReceipt(receipt);
+      assert.equal(projected.protocolRecognized, true);
+      assert.ok(projected.historyItems.some(item => item.text === '甲把旧钥匙交还乙'));
+      assert.ok(projected.historyItems.some(item => item.manualArtifact && item.text.endsWith(literal)));
+      assert.equal(projected.personCount, 1);
+      const chat = [{ is_user: true, is_system: false, mes: '继续', extra: { [RECALL_RECEIPT_KEY]: receipt } }];
+      const h = createHarness({ chat, memoryState: { floors: [], memoryEntities: [] }, projectReceipt: async () => receipt });
+      const node = messageElement(0, { user: true }); h.chatRoot.append(node); h.renderer.start(); await h.flushMicrotasks();
+      const card = resolveInlineAnchor(node).querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard;
+      assert.ok(card.recallUi.eventEntries.length > 0);
+      const visible = card.recallUi.eventEntries.flatMap((_, index) => openEvent(card.recallUi, index).querySelectorAll('.event-copy').map(node => node.textContent)).join('\n');
+      assert.ok(visible.includes('甲把旧钥匙交还乙')); assert.ok(visible.includes(literal));
+      assert.equal(JSON.stringify(receipt), original);
+      for (const unknown of ['本轮资料范围：其他来源。', `${guidance}额外未知内容`]) {
+        const badText = receipt.injectionText.replace(guidance, `${guidance}\n${unknown}`);
+        assert.equal(projectInlineRecallReceipt({ ...receipt, injectionText: badText }).protocolRecognized, false);
+      }
+      h.renderer.destroy();
+    });
+  }
+});
+
+test('纯时间程序头承接已知量化和资料范围，未知说明保拒绝', () => {
+  const reminder = { itemId: 'numeric-time', text: '甲的归还期限尚未确认', distance: 0 };
+  const pureTime = formatRecallInjection({ coverage: {}, floors: [], states: [], entityById: new Map(), timeReminders: [reminder] });
+  for (const guidance of [CSE_QUANTIFICATION_GUIDANCE, '量化为0—100独立强度，结合该条文字与对象理解，不是整个人格或合计比例。']) for (const scope of ['', '本轮资料范围：已稳定到 AI #9。\n']) {
+    const injectionText = pureTime.replace('<qqj_recalled_context>\n', `<qqj_recalled_context>\n本轮选中的历史资料与人物状态：\n${CSE_RECALL_KNOWLEDGE_BOUNDARY}\n${guidance}\n${scope}`);
+    const receipt = { schemaVersion: RECALL_RECEIPT_SCHEMA_VERSION, status: 'ready', selectedFloors: [], selectedStates: [], selectedCseChanges: [], storylines: [], injectionText };
+    const projected = projectInlineRecallReceipt(receipt);
+    assert.equal(projected.protocolRecognized, true); assert.deepEqual(projected.timeReferenceItems, [reminder.text]);
+    assert.equal(projectInlineRecallReceipt({ ...receipt, injectionText: injectionText.replace(guidance, guidance + '额外未知内容') }).protocolRecognized, false);
+  }
 });
 
 test('正式范围行不阻断普通与剧情线旧事投影，旧格式仍兼容且未知行仍拒绝', () => {

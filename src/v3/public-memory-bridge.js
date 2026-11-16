@@ -1,3 +1,4 @@
+import { cseQuantificationFields } from './cse-quantification.js';
 import { identityBriefFields } from './identity-brief.js';
 import { formatChronologyAnchor, projectRecallSource, readRecallSource } from './recall-source.js';
 import { PEOPLE_PROFILE_FIELDS } from './people-profile-fields.js';
@@ -145,7 +146,7 @@ const sameReachableRoot = (value, rootResult) => rootResult?.status === 'ready'
   && rootResult.data?.narrativeGeneration === value?.root?.narrativeGeneration
   && rootResult.data?.sourceSnapshotFingerprint === value?.root?.sourceSnapshotFingerprint;
 
-const publicStateItem = value => ({
+const publicStateItem = (value, category) => ({
   id: value?.id ?? null,
   text: value?.text ?? '',
   visibility: value?.visibility ?? null,
@@ -155,14 +156,15 @@ const publicStateItem = value => ({
   towardDisplayName: value?.towardDisplayName ?? null,
   sourceFloorId: value?.sourceFloorId ?? null,
   sourceAssistantSeq: value?.sourceAssistantSeq ?? null,
+  ...cseQuantificationFields(value, category),
 });
 
 const publicSubject = value => ({
   subjectEntityId: value?.subjectEntityId ?? null,
   displayName: value?.displayName ?? '未知人物',
-  core: (value?.core ?? []).map(publicStateItem),
-  adaptive: (value?.adaptive ?? []).map(publicStateItem),
-  situational: (value?.situational ?? []).map(publicStateItem),
+  core: (value?.core ?? []).map(item => publicStateItem(item, 'core')),
+  adaptive: (value?.adaptive ?? []).map(item => publicStateItem(item, 'adaptive')),
+  situational: (value?.situational ?? []).map(item => publicStateItem(item, 'situational')),
 });
 
 const emptyMemorySnapshot = (status = 'not-ready', syncStatus = 'idle') => ({
@@ -218,8 +220,8 @@ function publicCseSnapshot(value, chatId) {
           changes: (subject.changes ?? []).map(change => ({
             category: change.category,
             action: change.action,
-            before: change.before ? publicStateItem(change.before) : null,
-            after: change.after ? publicStateItem(change.after) : null,
+            before: change.before ? publicStateItem(change.before, change.category) : null,
+            after: change.after ? publicStateItem(change.after, change.category) : null,
           })),
         })) : null,
         savedSubjects: (cse.record?.endStateSubjects ?? []).map(publicSubject),

@@ -7,7 +7,7 @@ import { createFoundationRuntime } from '../src/v3/foundation-runtime.js';
 import { createV3MemoryRuntime } from '../src/v3/memory-runtime.js';
 import { EXTRACTOR_SYSTEM_PROMPT } from '../src/v3/extractor.js';
 import {
-  CSE_CALIBRATION_VERSION, CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, CSE_SYSTEM_PROMPT, buildCseSystemPrompt, captureCseBaseline, compileCseResponse, createCseEnvelope, createManualCseCorrection, deriveCseTimeline, replayCurrentState, runCseRequest, selectTrackedSubjects,
+  CSE_CALIBRATION_VERSION, CSE_COMPILER_VERSION, CSE_PROMPT_VERSION, CSE_SYSTEM_PROMPT, buildCseSystemPrompt, captureCseBaseline, compileCseResponse, createCseEnvelope, createManualCseCorrection, deriveCseTimeline, preserveManualCseDelta, replayCurrentState, runCseRequest, selectTrackedSubjects,
 } from '../src/v3/cse-engine.js';
 import { stateFingerprint, validateStateDeltaRecord } from '../src/v3/cse-schema.js';
 import { scanAssistantCandidates } from '../src/v3/foundation-domain.js';
@@ -135,6 +135,136 @@ const entities = [
 const baseline = { id: '88888888-1111-4111-8111-111111111111', userPersona: { entityId: USER, name: '林岚', description: '用户设定' }, characterCard: { entityId: A, name: '甲', description: '', personality: '', scenario: '' }, worldInfoSources: [{ sourceName: '世界', content: '作者事实', activated: true }] };
 const memory = id => ({ id, summary: { effectiveSource: 'ai', aiText: '摘要' }, chronology: [], locations: [], participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] });
 const floor = (id, content) => ({ id, chatId: CHAT, narrativeGeneration: GEN, content: { canonicalContent: content } });
+
+test('可选量化：复合情绪与数字单独更新保存重放，不编造文字变化；坏数字不补请求', async () => {
+  const make = currentState => createCseEnvelope({ floor: floor(FLOOR1, '甲说喜欢相处，也反感冒险。'), floorMemory: memory(MEMORY1), baseline,
+    currentState, trackedSubjects: [entities[1]], entities });
+  const response = (emotions, expression) => ({ subjects: [{ subject: '甲', situational: [{ text: '喜欢与乙相处，仍反感乙冒险。', toward: '乙', visibility: 'expressed', reason: '本楼明确表达', quantification: { emotions, expression } }] }] });
+  let calls = 0;
+  const first = await runCseRequest({ generateAnalysisTask: async () => { calls++; return { jsonData: response({ 亲近: 65, 反感: 45 }, 0) }; },
+    envelope: make(null), previousCurrentState: null, now: NOW, deltaId: '99999999-1111-4111-8111-111111111111' });
+  const original = first.delta.subjectSnapshots[0].situational[0];
+  assert.deepEqual(original.quantification, { emotions: { 亲近: 65, 反感: 45 }, expression: 0 });
+  const previous = { id: '99999998-1111-4111-8111-111111111111', subjects: first.delta.subjectSnapshots };
+  const envelope = make(previous);
+  assert.deepEqual(envelope.request.payload.previousState[0].ownState.situational[0].quantification, original.quantification);
+  const second = await compileCseResponse({ response: response({ 亲近: 70, 反感: 40 }, 20), envelope, previousCurrentState: previous, now: NOW, deltaId: '99999997-1111-4111-8111-111111111111' });
+  const next = second.delta.subjectSnapshots[0].situational[0];
+  assert.deepEqual(next.quantification, { emotions: { 亲近: 70, 反感: 40 }, expression: 20 });
+  assert.equal(next.id, original.id); assert.deepEqual(second.delta.subjectSnapshots[0].changeSummary, []);
+  assert.equal(second.delta.fixedChanges[0].items.length, 1); assert.equal(second.delta.noMaterialChange, false);
+  const secondState = { id: '99999987-1111-4111-8111-111111111111', subjects: second.delta.subjectSnapshots };
+  const third = await compileCseResponse({ response: response({ 亲近: 70, 反感: 40 }, 55), envelope: make(secondState), previousCurrentState: secondState,
+    now: NOW, deltaId: '99999986-1111-4111-8111-111111111111' });
+  const expressionOnly = third.delta.subjectSnapshots[0].situational[0];
+  assert.equal(expressionOnly.quantification.expression, 55); assert.equal(expressionOnly.id, original.id);
+  assert.equal(expressionOnly.towardEntityId, B); assert.equal(expressionOnly.visibility, 'expressed');
+  assert.deepEqual(third.delta.subjectSnapshots[0].changeSummary, []); assert.equal(third.delta.fixedChanges[0].items.length, 1);
+  assert.equal(third.delta.noMaterialChange, false);
+  assert.deepEqual(make({ id: secondState.id, subjects: third.delta.subjectSnapshots }).request.payload.previousState[0].ownState.situational[0].quantification, expressionOnly.quantification);
+  const replay = await replayCurrentState({ chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id,
+    floors: [floor(FLOOR1, '甲说喜欢相处，也反感冒险。')], floorMemories: [memory(MEMORY1)], stateDeltas: [third.delta], now: NOW });
+  assert.deepEqual(replay.subjects[0].situational[0].quantification, expressionOnly.quantification);
+  const bad = await runCseRequest({ generateAnalysisTask: async () => { calls++; return { jsonData: response({ 亲近: '60', 反感: 101 }) }; },
+    envelope: make(null), previousCurrentState: null, now: NOW, deltaId: '99999996-1111-4111-8111-111111111111' });
+  assert.equal(bad.delta.subjectSnapshots[0].situational[0].text, original.text);
+  assert.equal(bad.delta.subjectSnapshots[0].situational[0].quantification, undefined);
+  assert.deepEqual(bad.isolated, []); assert.equal(calls, 2);
+});
+
+test('可选量化：Adaptive refine沿原review目标平滑，keep不累计，未知keep可初始化，重复楼从同一前态算', async () => {
+  const item = { id: '99999995-1111-4111-8111-111111111111', text: '向乙求助仍坚持自己决定', visibility: 'expressed', reason: '旧依据', origin: 'floor', towardEntityId: B,
+    sourceFloorId: FLOOR1, sourceDeltaId: '99999994-1111-4111-8111-111111111111', quantification: { strength: 30 } };
+  const previous = { id: '99999993-1111-4111-8111-111111111111', subjects: [{ subjectEntityId: A, core: [], adaptive: [item], situational: [] }] };
+  const envelope = createCseEnvelope({ floor: floor(FLOOR2, '甲说我愿意向乙求助，但最后仍自己决定。'), floorMemory: memory(MEMORY2), baseline,
+    currentState: previous, trackedSubjects: [entities[1]], entities });
+  const compile = (action, current = previous) => compileCseResponse({ response: { subjects: [{ subject: '甲', review: { adaptive: [{ previousText: item.text, action, text: item.text, toward: '乙',
+    evidence: [{ source: 'canonicalContent', quote: '我愿意向乙求助，但最后仍自己决定' }], quantification: { strength: 80 } }] } }] },
+    envelope, previousCurrentState: current, now: NOW, deltaId: '99999992-1111-4111-8111-111111111111' });
+  assert.equal((await compile('refine')).delta.subjectSnapshots[0].adaptive[0].quantification.strength, 35);
+  assert.equal((await compile('refine')).delta.subjectSnapshots[0].adaptive[0].quantification.strength, 35);
+  assert.equal((await compile('keep')).delta.subjectSnapshots[0].adaptive[0].quantification.strength, 30);
+  const unknown = structuredClone(previous); delete unknown.subjects[0].adaptive[0].quantification;
+  assert.equal((await compile('keep', unknown)).delta.subjectSnapshots[0].adaptive[0].quantification.strength, 80);
+});
+
+test('可选量化：人工改单项撤该项数字，未改项保持，清空不复活；包装仅数字不同不构成文字歧义', async () => {
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲表达担忧，同时愿意接近乙。'), floorMemory: memory(MEMORY1), baseline,
+    currentState: null, trackedSubjects: [entities[1]], entities });
+  const packet = { subjects: [{ subject: '甲', situational: [
+    { text: '仍有担忧', reason: '明确表达', visibility: 'expressed', quantification: { emotions: { 担忧: 40 } } },
+    { text: '愿意接近乙', toward: '乙', reason: '明确表达', visibility: 'expressed', quantification: { emotions: { 亲近: 60 }, expression: 70 } },
+  ] }] };
+  const another = structuredClone(packet); another.subjects[0].situational[0].quantification.emotions.担忧 = 50;
+  const result = await compileCseResponse({ response: '```json\n' + JSON.stringify(packet) + '\n```\n```json\n' + JSON.stringify(another) + '\n```', envelope, previousCurrentState: null, now: NOW, deltaId: '99999991-1111-4111-8111-111111111111' });
+  assert.equal(result.delta.subjectSnapshots[0].situational[0].quantification, undefined, '同文包装数字冲突只省该项数字');
+  assert.deepEqual(result.delta.subjectSnapshots[0].situational[1].quantification, { emotions: { 亲近: 60 }, expression: 70 }, '不冲突条目保合法数字');
+  const subject = result.delta.subjectSnapshots[0], currentState = { subjects: [subject] };
+  const edits = subject.situational.map((item, index) => ({ itemId: item.id, text: index ? item.text : '已安心', visibility: item.visibility, towardEntityId: item.towardEntityId }));
+  const correction = await createManualCseCorrection({ anchorDelta: result.delta, currentState, subjectEntityId: A,
+    edits: { situational: edits }, allowedTowardEntityIds: [B], deltaId: '99999990-1111-4111-8111-111111111111', now: NOW });
+  assert.equal(correction.delta.subjectSnapshots[0].situational[0].quantification, undefined);
+  assert.deepEqual(correction.delta.subjectSnapshots[0].situational[1].quantification, { emotions: { 亲近: 60 }, expression: 70 });
+  for (const patch of [{ text: '保持礼貌距离' }, { visibility: 'private' }, { towardEntityId: null }]) {
+    const changedEdits = edits.map((item, index) => index ? { ...item, ...patch } : item);
+    const changed = await createManualCseCorrection({ anchorDelta: result.delta, currentState, subjectEntityId: A,
+      edits: { situational: changedEdits }, allowedTowardEntityIds: [B], deltaId: '99999985-1111-4111-8111-111111111111', now: NOW });
+    assert.equal(changed.delta.subjectSnapshots[0].situational[1].quantification, undefined, JSON.stringify(patch));
+  }
+  const lateAutomatic = await compileCseResponse({ response: packet, envelope, previousCurrentState: currentState, now: NOW, deltaId: '99999984-1111-4111-8111-111111111111' });
+  const preserved = await preserveManualCseDelta(lateAutomatic.delta, correction.delta);
+  assert.ok(preserved.subjectSnapshots[0].situational.some(item => item.text === '已安心' && !item.quantification));
+  assert.equal(preserved.subjectSnapshots[0].situational.some(item => item.text === '仍有担忧'), false, '迟到自动数字不能盖回人工文字');
+  const clear = await createManualCseCorrection({ anchorDelta: correction.delta, currentState: { subjects: correction.delta.subjectSnapshots }, subjectEntityId: A,
+    edits: { situational: [] }, deltaId: '99999989-1111-4111-8111-111111111111', now: NOW });
+  assert.deepEqual(clear.delta.subjectSnapshots[0].situational, []);
+});
+
+test('可选量化：旧式Adaptive整表仅保文字，未变manual的keep及同文回抄不附自动数字', async () => {
+  const item = { id: '99999988-1111-4111-8111-111111111111', text: '仍自己决定', visibility: 'private', reason: '人工校准', origin: 'manual', towardEntityId: null,
+    sourceFloorId: FLOOR1, sourceDeltaId: '99999987-1111-4111-8111-111111111111' };
+  const previous = { subjects: [{ subjectEntityId: A, core: [], adaptive: [item], situational: [{ ...item, text: '愿意亲近但有顾虑' }] }] };
+  const envelope = createCseEnvelope({ floor: floor(FLOOR2, '甲再次说仍自己决定，也有顾虑。'), floorMemory: memory(MEMORY2), baseline, currentState: previous, trackedSubjects: [entities[1]], entities });
+  const keep = await compileCseResponse({ response: { subjects: [{ subject: '甲', review: { adaptive: [{ previousText: item.text, action: 'keep', quantification: { strength: 90 } }] },
+    situational: [{ text: '愿意亲近但有顾虑', visibility: 'private', quantification: { emotions: { 亲近: 90 } } }] }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '99999986-1111-4111-8111-111111111111' });
+  assert.deepEqual(keep.delta.subjectSnapshots[0].adaptive[0], item);
+  assert.deepEqual(keep.delta.subjectSnapshots[0].situational[0], previous.subjects[0].situational[0]);
+  const legacy = await compileCseResponse({ response: { subjects: [{ subject: '甲', adaptive: [{ text: '仍自己决定', quantification: { strength: 90 } }] }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: '99999985-1111-4111-8111-111111111111' });
+  assert.equal(legacy.delta.subjectSnapshots[0].adaptive[0].text, '仍自己决定'); assert.equal(legacy.delta.subjectSnapshots[0].adaptive[0].quantification, undefined);
+  const duplicated = structuredClone(previous); duplicated.subjects[0].adaptive = [10, 70].map((strength, index) => ({ ...item, id: index ? '99999983-1111-4111-8111-111111111111' : item.id, origin: 'floor', quantification: { strength } }));
+  const ambiguous = await compileCseResponse({ response: { subjects: [{ subject: '甲', adaptive: [{ text: item.text, visibility: item.visibility }] }] },
+    envelope, previousCurrentState: duplicated, now: NOW, deltaId: '99999982-1111-4111-8111-111111111111' });
+  assert.equal(ambiguous.delta.subjectSnapshots[0].adaptive[0].quantification, undefined, '同文重复旧项不猜首项分数');
+});
+
+test('可选量化：真实逐楼保存和同楼重算均从楼前强度计算，人工修订与冷读保结果且不补调用', async () => {
+  const starts = [];
+  const h = runtimeHarness({ chat: [user('开始'), assistant('裴晚生说愿求助仍自己决定。'), user('继续'), assistant('后来裴晚生又说愿求助仍自己决定。'), user('确认')], cse: options => {
+    const payload = JSON.parse(options.taskMessages[0].content).payload, later = payload.canonicalContent.startsWith('后来');
+    const old = payload.previousState.find(item => item.subject === '裴晚生')?.ownState.adaptive?.[0];
+    if (later) starts.push(old?.quantification?.strength);
+    const item = { text: '愿求助仍自己决定', visibility: 'expressed', evidence: [{ source: 'canonicalContent', quote: payload.canonicalContent }], quantification: { strength: later ? 80 : 30 } };
+    return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [{ subject: '裴晚生',
+      ...(later ? { review: { adaptive: [{ ...item, previousText: item.text, action: 'refine' }] } } : { additions: { adaptive: [item] } }),
+      situational: [{ text: '平安后安心仍不满冒险', visibility: 'expressed', reason: '本楼表达', quantification: { emotions: { 满足: 60, 不满: 30 } } }],
+    }] } };
+  } });
+  await h.runtime.start(); await h.runtime.extractNext(); let state = await h.runtime.extractNext();
+  const target = state.floors[1].floorId; state = await h.runtime.retryStateAnalysis(target);
+  const subject = state.cseSubjects.find(item => item.displayName === '裴晚生'); assert.equal(subject.adaptive[0].quantification.strength, 35);
+  assert.deepEqual(starts, [30, 30]); assert.equal(h.calls.filter(call => call.testRoute === 'analysis').length, 3);
+  state = await h.runtime.correctSubjectState(subject.subjectEntityId, { expectedCurrentStateId: state.currentStateId, expectedCurrentStateFingerprint: state.currentStateFingerprint,
+    core: subject.core.map(item => ({ itemId: item.id, ...item })), adaptive: subject.adaptive.map(item => ({ itemId: item.id, ...item })),
+    situational: subject.situational.map(item => ({ itemId: item.id, ...item, text: '人工确认已经释然' })),
+  });
+  const corrected = state.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId);
+  assert.equal(corrected.situational[0].quantification, undefined); assert.equal(corrected.adaptive[0].quantification.strength, 35);
+  const cold = runtimeHarness({ sharedBackend: h.backend, chat: h.context.chat }); const reopened = await cold.runtime.start();
+  const saved = reopened.cseSubjects.find(item => item.subjectEntityId === subject.subjectEntityId);
+  assert.equal(saved.adaptive[0].quantification.strength, 35); assert.equal(saved.situational[0].quantification, undefined); assert.equal(cold.calls.length, 0);
+});
 
 test('单方明晚邀约在同次CSE材料中保提出者和made，提示不代替接受方答应',()=>{
   const target=memory(MEMORY1);target.commitments=[{speakerEntityId:A,targetEntityIds:[USER],kind:'plan',content:'明晚一起做饭',status:'made'}];
@@ -2099,8 +2229,8 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-50');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-22');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-55');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-24');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词须形成有持续人物塑造意义的情感或关系结果，才进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
   assert.match(CSE_SYSTEM_PROMPT, /旧裸identityBrief只作身份对照，不是证据/);
@@ -2336,12 +2466,12 @@ test('导入前情作为 CSE 独立作者背景，不进入证据目录或编译
   }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED', '前情伪证据沿原编译机制不应被接受');
 });
 
-test('生产 CSE 请求 seam 固定样例可并存自身无对象与行为关系对象，且自定义引导不覆盖固定边界合同', async () => {
+test('生产 CSE 请求 seam 固定样例允许自身空区与明确关系对象，且自定义引导不覆盖固定边界合同', async () => {
   const sampleEntities = entities.map(entity => entity.id === A ? { ...entity, displayName: '主体甲' }
     : entity.id === B ? { ...entity, displayName: '对象乙' } : entity);
   const sampleBaseline = { ...baseline, characterCard: { ...baseline.characterCard, name: '主体甲' } };
   const envelope = createCseEnvelope({
-    floor: floor(FLOOR1, '主体甲理解了自己的需要，想到以后更愿意表达边界。误会已经解释，她对对象乙说“我此刻仍难以完全信任你，暂时无法完全依赖你”。'),
+    floor: floor(FLOOR1, '误会已经解释，主体甲对对象乙说“我此刻仍难以完全信任你，暂时无法完全依赖你”。'),
     floorMemory: memory(MEMORY1),
     baseline: sampleBaseline,
     currentState: null,
@@ -2378,8 +2508,7 @@ test('生产 CSE 请求 seam 固定样例可并存自身无对象与行为关系
   const sampleSituation = recommendation.subjects[0].situational;
   assert.equal(recommendation.subjects[0].subject, '主体甲');
   assert.deepEqual(Object.keys(sampleSituation).sort(), ['relations', 'self'], '推荐 JSON 必须给齐两类完整分区');
-  assert.equal(sampleSituation.self.length, 1, '推荐 JSON 示范自身情境');
-  assert.equal(Object.hasOwn(sampleSituation.self[0], 'toward'), false, '自身情境不填写对象');
+  assert.deepEqual(sampleSituation.self, [], '完整分区允许自身无独立结果');
   assert.equal(sampleSituation.relations.length, 1, '推荐 JSON 示范对人情境');
   assert.equal(sampleSituation.relations[0].toward, '对象乙', '明确关系反应填写唯一对象');
   assert.match(sampleSituation.relations[0].text, /此刻|仍/);
@@ -2398,7 +2527,6 @@ test('生产 CSE 请求 seam 固定样例可并存自身无对象与行为关系
   assert.match(sentSystemPrompt, /两区都明确为 \[\] 才清空整类/);
   assert.match(sentSystemPrompt, /结构不完整或省略分类沿用旧值/);
   assert.deepEqual(result.delta.subjectSnapshots[0].situational.map(item => [item.text, item.towardEntityId, item.visibility]), [
-    [sampleSituation.self[0].text, null, sampleSituation.self[0].visibility],
     [sampleSituation.relations[0].text, B, sampleSituation.relations[0].visibility],
   ]);
 

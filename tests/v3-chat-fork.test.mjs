@@ -1020,9 +1020,9 @@ test('native/Luker普通分支从冻结历史接续，只继承实际C前缀并�
     assert.equal((await archiveFoundation.start()).status, 'ready');
     const archiveMemory = createV3MemoryRuntime({ foundationRuntime: archiveFoundation, store: archiveStore, hostAdapter: archiveAdapter,
       automationSettings: () => ({ enabled: false, batchSize: 1 }),
-      generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+      generateAnalysisTask: async options => ({ jsonData: { subjects: JSON.parse(options.taskMessages[0].content).payload.trackedSubjects.map(({ name }) => ({ subject: name, situational: [{ text: '归档时仍有顾虑', visibility: 'private', reason: '归档合成证据', quantification: { emotions: { 担忧: 20 } } }] })) } }),
       generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
-        ? { jsonData: { summary: '归档日志记录。' } } : { jsonData: { noMaterialChange: true } },
+        ? { jsonData: { summary: '归档日志记录。', people: [{ name: '裴晚生', presence: 'present' }] } } : { jsonData: { noMaterialChange: true } },
       now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
     await archiveMemory.start();
     for (const floor of archiveMemory.getState().floors) await archiveMemory.extractFloor(floor.floorId, { analyzeState: false });
@@ -1217,6 +1217,7 @@ test('native/Luker普通分支从冻结历史接续，只继承实际C前缀并�
     assert.equal(target.stateDeltas.some(delta => delta.floorId === sourceReachable.floors.at(-1).id), false, '分叉点之后C状态不继承');
     const targetCurrentState = target.currentStates[0];
     assert.ok(targetCurrentState);
+    assert.ok(targetCurrentState.subjects.some(subject => subject.situational.some(item => item.quantification?.emotions?.担忧 === 20)), '冻结前缀量化原值随既有重放继承，不补模型');
     assert.equal(targetCurrentState.headFloorId, sourceReachable.floors[2].id, '重放状态停在分叉前最后保留楼');
     assert.ok(!targetCurrentState.appliedDeltaIds.includes(sourceReachable.stateDeltas.find(delta => delta.floorId === sourceReachable.floors.at(-1).id)?.id),
       '当前状态不引用分叉后C楼delta');
@@ -1650,7 +1651,7 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
     }
     cseCalls += 1;
     const { trackedSubjects } = JSON.parse(options.taskMessages[0].content).payload;
-    return { jsonData: { subjects: trackedSubjects.map(({ name }) => ({ subject: name, situational: [{ text: `源状态-${cseCalls}`, visibility: 'observable', reason: `第${cseCalls}楼正文` }] })) }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
+    return { jsonData: { subjects: trackedSubjects.map(({ name }) => ({ subject: name, situational: [{ text: `源状态-${cseCalls}`, visibility: 'observable', reason: `第${cseCalls}楼正文`, quantification: { emotions: { 担忧: cseCalls * 10 } } }] })) }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
   };
   const sourceMemory = createV3MemoryRuntime({
     foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter, generateAnalysisTask: generateUtilityTask, generateUtilityTask,
@@ -1858,6 +1859,7 @@ test('CHAT_CHANGED 初始化同角色副本时只继承实际前缀，保留摘�
   assert.deepEqual(inherited.currentStates[0].subjects, replayed.subjects);
   assert.deepEqual(inherited.currentStates[0].appliedDeltaIds, replayed.appliedDeltaIds);
   assert.equal(inherited.currentStates[0].subjects.find(subject => subject.subjectEntityId === inherited.baseline.characterCard.entityId).situational[0].text, '源状态-2', '目标状态必须停在分叉截点，不能携带源后缀状态');
+  assert.equal(inherited.currentStates[0].subjects.find(subject => subject.subjectEntityId === inherited.baseline.characterCard.entityId).situational[0].quantification.emotions.担忧, 20, '分支保截点的量化，不借后缀30');
   const inheritedPeople = await peopleStore.read(identity('复制聊天', targetChatId));
   assert.equal(inheritedPeople.data.profilesByEntityId[charEntity.id].name, '裴晚生最新版');
   assert.deepEqual(inheritedPeople.data.profilesByEntityId[charEntity.id].manualFields, ['name']);

@@ -1,3 +1,4 @@
+import { cseQuantificationFields, isCseQuantificationOnlyChange } from './cse-quantification.js';
 import { placeWorkspaceDependency } from './place-foundation.js';
 import { deriveCseTimeline, filterReachableDeltas, projectCseDeltasForSources, replayCurrentState } from './cse-engine.js';
 import { assessMemoryCoverageFromHost, memoryCoverageHostBindings } from './memory-coverage.js';
@@ -111,7 +112,7 @@ function personaCoreStateIds(deltas) {
 
 export function stateDto(replayed, entities, floorSeq, personaCoreIds) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
-  const item = value => Object.freeze({
+  const item = (value, category) => Object.freeze({
     stateId: value.id,
     text: safeText(value.text),
     visibility: ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility) ? value.visibility : 'private',
@@ -121,18 +122,19 @@ export function stateDto(replayed, entities, floorSeq, personaCoreIds) {
     sourceFloorId: value.sourceFloorId ?? null,
     sourceDeltaId: value.sourceDeltaId ?? null,
     sourceAssistantSeq: floorSeq.get(value.sourceFloorId) ?? null,
+    ...(!value.towardEntityId || activeEntityIds.has(value.towardEntityId) ? cseQuantificationFields(value, category) : {}),
   });
   return Object.freeze((replayed?.subjects ?? []).filter(subject => activeEntityIds.has(subject.subjectEntityId)).map(subject => Object.freeze({
     subjectEntityId: subject.subjectEntityId,
-    core: Object.freeze((subject.core ?? []).filter(value => value.origin !== 'baseline' || !personaCoreIds.has(value.id)).map(item)),
-    adaptive: Object.freeze((subject.adaptive ?? []).map(item)),
-    situational: Object.freeze((subject.situational ?? []).map(item)),
+    core: Object.freeze((subject.core ?? []).filter(value => value.origin !== 'baseline' || !personaCoreIds.has(value.id)).map(value => item(value, 'core'))),
+    adaptive: Object.freeze((subject.adaptive ?? []).map(value => item(value, 'adaptive'))),
+    situational: Object.freeze((subject.situational ?? []).map(value => item(value, 'situational'))),
   })));
 }
 
 export function cseChangesDto(timeline, entities, floorSeq, identityProjection, personaCoreIds, manualSubjectsByDelta = new Map()) {
   const activeEntityIds = new Set(entities.map(entity => entity.entityId));
-  const state = value => value ? Object.freeze({
+  const state = (value, category) => value ? Object.freeze({
     stateId: value.id,
     text: safeText(value.text),
     visibility: ['private', 'observable', 'expressed', 'shared', 'authorial'].includes(value.visibility) ? value.visibility : 'private',
@@ -142,6 +144,7 @@ export function cseChangesDto(timeline, entities, floorSeq, identityProjection, 
     sourceFloorId: value.sourceFloorId ?? null,
     sourceDeltaId: value.sourceDeltaId ?? null,
     sourceAssistantSeq: floorSeq.get(value.sourceFloorId) ?? null,
+    ...(!value.towardEntityId || activeEntityIds.has(resolveIdentityEntityId(value.towardEntityId, identityProjection)) ? cseQuantificationFields(value, category) : {}),
   }) : null;
   return Object.freeze(timeline.flatMap(entry => {
     const assistantSeq = floorSeq.get(entry.floorId) ?? null;
@@ -149,7 +152,7 @@ export function cseChangesDto(timeline, entities, floorSeq, identityProjection, 
     return entry.changes.flatMap(subject => {
       const subjectEntityId = resolveIdentityEntityId(subject.subjectEntityId, identityProjection);
       if (!activeEntityIds.has(subjectEntityId)) return [];
-      return subject.items.filter(change => !(change.category === 'core' && change.action === 'add'
+      return subject.items.filter(change => !isCseQuantificationOnlyChange(change) && !(change.category === 'core' && change.action === 'add'
         && change.after?.origin === 'baseline' && personaCoreIds.has(change.after.id))).map(change => Object.freeze({
         deltaId: entry.deltaId,
         floorId: entry.floorId,
@@ -158,8 +161,8 @@ export function cseChangesDto(timeline, entities, floorSeq, identityProjection, 
         layer: change.category,
         action: change.action,
         ...(manualSubjectsByDelta.get(entry.deltaId)?.has(subject.subjectEntityId) && (change.action === 'remove' || change.after?.origin === 'manual') ? { origin: 'manual' } : {}),
-        before: state(change.before),
-        after: state(change.after),
+        before: state(change.before, change.category),
+        after: state(change.after, change.category),
       }));
     });
   }));

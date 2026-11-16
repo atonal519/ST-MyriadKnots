@@ -11,6 +11,7 @@ import { dirname, resolve, basename, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { normalizeStoryCalendar } from '../src/v3/calendar-rules.js';
+import { DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT } from '../src/story-clock.js';
 import { ChatSessionError } from '../src/chat-session.js';
 import { cloneHostJsonMetadata, readHostState } from '../src/host-context.js';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
@@ -56,7 +57,7 @@ const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 const fingerprintText = value => `sha256:${createHash('sha256').update(String(value ?? '')).digest('hex')}`;
 
-async function readyFoundationRecords(hostGlobalName, host, manualAliases = false, { expectedFloors = 1, summaries = false } = {}) {
+async function readyFoundationRecords(hostGlobalName, host, manualAliases = false, { expectedFloors = 1, summaries = false, numericCse = null } = {}) {
   const records = new Map();
   const failed = status => Object.assign(new Error(`HTTP ${status}`), { status });
   const envelope = (data, revision) => ({ schemaVersion: 1, revision, generationId: '11111111-1111-4111-8111-111111111111',
@@ -95,17 +96,29 @@ async function readyFoundationRecords(hostGlobalName, host, manualAliases = fals
   assert.ok(reachable.checkpoint, '召回来源必须有经正式Store验证的checkpoint');
   assert.equal(reachable.floors.length, expectedFloors);
   let memory;
-  if (manualAliases || summaries) {
-    let summaryCalls = 0;
+  if (manualAliases || summaries || numericCse) {
+    let summaryCalls = 0, numericCseCalls = 0;
     memory = createV3MemoryRuntime({ foundationRuntime: runtime, store, hostAdapter, isEnabled: () => true,
       automationSettings: () => ({ enabled: false, batchSize: 1 }),
       sanitizerOptions: () => ({ keepTags: 'content' }),
-      generateUtilityTask: async () => { summaryCalls++; return { jsonData: summaries ? { summary: `源旧摘要${summaryCalls}` }
+      generateUtilityTask: async () => { summaryCalls++; return { jsonData: numericCse ? { summary: '角色平安归来后继续交谈。', people: [{ name: '角色', presence: 'present' }, { name: '你', role: 'user', presence: 'present' }] } : summaries ? { summary: `源旧摘要${summaryCalls}` }
         : { summary: '合成人物到场。', people: [{ name: '合成人物', aliases: ['旧称'], presence: 'present' }] } }; },
-      generateAnalysisTask: async () => { if (summaries) assert.fail('离线fixture不应请求CSE'); return { jsonData: { noMaterialChange: true } }; }, logger: { warn() {} } });
+      generateAnalysisTask: async () => {
+        if (summaries) assert.fail('离线fixture不应请求CSE');
+        if (!numericCse) return { jsonData: { noMaterialChange: true } };
+        numericCseCalls++;
+        const quant = numericCse === 'valid' ? { emotions: { 满足: 65, 不满: 45 }, expression: 20 } : numericCse === 'expression' ? { emotions: { 满足: '坏值' }, expression: 0 } : numericCse === 'bad' ? { emotions: { 满足: '65', 不满: 101 }, expression: '20' } : undefined;
+        const strength = ['valid', 'expression'].includes(numericCse) ? { strength: 70 } : numericCse === 'bad' ? { strength: '70' } : undefined;
+        return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [{ subject: '角色',
+          situational: [{ text: '高兴于平安，仍不满冒险', visibility: 'expressed', reason: '本楼明确表达', ...(quant ? { quantification: quant } : {}) }],
+          additions: { adaptive: [{ text: '愿求助仍自己决定', visibility: 'expressed', evidence: [{ source: 'canonicalContent', quote: '已有几次经历让角色愿求助仍自己决定' }], ...(strength ? { quantification: strength } : {}) }] },
+        }] } };
+      }, logger: { warn() {} } });
     await memory.start();
-    for (const floor of summaries ? reachable.floors : reachable.floors.slice(0, 1)) await memory.extractFloor(floor.id, { analyzeState: false });
+    for (const floor of summaries ? reachable.floors : reachable.floors.slice(0, 1)) await memory.extractFloor(floor.id, { analyzeState: Boolean(numericCse) });
     assert.equal(summaryCalls, summaries ? expectedFloors : 1);
+    if (numericCse) { assert.equal(numericCseCalls, 1); records.numericCseCalls = numericCseCalls; }
+    if (numericCse === 'legacy') for (const value of records.values()) if (value.data?.recordType === 'stateDelta') { value.data.source.promptVersion = 'qqj-v3-cse-prompt-50'; value.data.source.compilerVersion = 'qqj-v3-cse-prompt-2/calibration-compiler-22'; }
   }
   if (manualAliases) {
     const people = createPeopleWorkspaceRuntime({ store: createPeopleWorkspaceStore({ client }), session: { identity: () => identity },
@@ -352,10 +365,11 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, numericCse = null, recallInterrupt = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const seededSettings = wrapperSeed ? structuredClone(wrapperSeed) : { qianqianjie: {}, 'schedule-planner': {} };
+  if (numericCse) Object.assign(seededSettings.qianqianjie, { apiUrl: 'https://numeric-fixture.invalid/v1', apiKey: 'synthetic-only', apiModel: 'mock', ...(recallInterrupt ? { apiStream: true, apiQianqianjieRetryCount: 4 } : {}) });
   const eventRegistrations = new Map();
   const startupWarnings = [];
   const fetchRequests = [];
@@ -365,7 +379,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const ttReadKeys = [];
   const ttRootChecks = [];
   let ttWritesInFlight = 0, ttMaxWritesInFlight = 0;
-  let backendWriteCalls = 0;
+  let backendWriteCalls = 0, numericRecallCalls = 0;
   let saveMetadataCalls = 0;
   let chatSaveCalls = 0;
   const ttKey = ({ namespace, table = 'main', key }) => `${namespace}/${table}/${key}`;
@@ -400,7 +414,10 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   let ai0BodyReads = 0;
   const ai0Text = '新聊天正在生成的 AI0 正文';
   const ai0Message = { is_user: false, is_system: false, get mes() { ai0BodyReads += 1; return ai0Text; }, swipes: [ai0Text], swipe_id: 0 };
-  const hostChat = firstIdentityChat ? structuredClone(firstIdentityChat.live) : locationReferenceChat ? [
+  const hostChat = numericCse ? [
+    { is_user: false, is_system: false, is_hidden: true, mes: '角色看到你平安归来，开心但不满冒险；已有几次经历让角色愿求助仍自己决定。' },
+    { is_user: true, is_system: false, mes: '角色，继续讨论平安归来与求助。', send_date: '2026-09-13T00:00:00.000Z', extra: {} },
+  ] : firstIdentityChat ? structuredClone(firstIdentityChat.live) : locationReferenceChat ? [
     { is_user: false, is_system: false, mes: '明天继续讨论住处。<location>东区公寓·卧室</location>', swipes: ['明天继续讨论住处。<location>东区公寓·卧室</location>'], swipe_id: 0 },
     { is_user: true, is_system: false, mes: '接着说下去', send_date: '2026-09-13T00:00:00.000Z', extra: {} },
   ] : legacyReceiptUi ? [
@@ -426,13 +443,13 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     mainApi,
     uuidv4: () => '11111111-1111-4111-8111-111111111111',
     async saveMetadata() { saveMetadataCalls += 1; },
-    ...(locationReferenceChat ? { async saveChat() { chatSaveCalls += 1; return true; } } : {}),
+    ...(locationReferenceChat ? { async saveChat() { chatSaveCalls += 1; if (numericCse) hostFile = { header: { chat_metadata: structuredClone(host.chatMetadata) }, chat: structuredClone(host.chat) }; return true; } } : {}),
     getRequestHeaders: () => ({}), eventTypes: { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
     eventSource: { once(name, callback) { assert.equal(name, 'app-ready'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); assert.equal(callback(), undefined, '已就绪宿主回放不等待QQJ准备'); }, on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
   if (firstIdentityChat) host.chatMetadata = { otherPlugin: { header: '保留' } };
   let branchSource = null;
-  let readyRecords = locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? await readyFoundationRecords(hostGlobalName, host, manualAliases) : null;
+  let readyRecords = locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? await readyFoundationRecords(hostGlobalName, host, manualAliases, { numericCse }) : null;
   if (nativeBranch) {
     const sourceChatId = host.chatMetadata.qianqianjie.chatId;
     const sourceHost = { ...host, chatId: 'source-chat', chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: sourceChatId,
@@ -506,7 +523,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   let mesAppendCalls = 0;
   let styleAppendCalls = 0;
   let observerInstances = 0;
-  let abortCalls = 0;
+  let abortCalls = 0, mainDispatches = 0, streamReads = 0;
   const promptCalls = [];
   const unloads = [], privateRecords = new Map();
   host.constants = { promptTypes: { IN_CHAT: 17 }, promptRoles: { SYSTEM: 29 } };
@@ -518,13 +535,13 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     append(...nodes) { mesAppendCalls += nodes.length; this.children.push(...nodes); },
   };
   const existingPanel = { __qqjInstance: { show() {}, refresh() {}, setEnabled() {}, openMemory() {} } };
-  const receiptDocument = legacyReceiptUi ? new ReceiptUiDocument(hostChat) : null;
-  const documentRef = legacyReceiptUi ? receiptDocument : withExistingPanel ? {
+  const receiptDocument = legacyReceiptUi || numericCse ? new ReceiptUiDocument(hostChat) : null;
+  const documentRef = receiptDocument ?? (withExistingPanel ? {
     body: { append() {} }, head: { append(...nodes) { styleAppendCalls += nodes.length; } },
     getElementById: id => id === 'qqj-panel-host' ? existingPanel : null,
     querySelectorAll: selector => selector === '.mes[mesid]' ? [message] : [],
     createElement: tag => ({ tag, dataset: {}, style: {}, children: [], append(...nodes) { this.children.push(...nodes); }, replaceChildren(...nodes) { this.children = [...nodes]; }, addEventListener() {}, querySelector: () => null }),
-  } : undefined;
+  } : undefined);
   const context = createContext({
     ...(tauri ? { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } },
       location: { origin: 'tauri://localhost' }, indexedDB: ttIdb.indexedDB, IDBKeyRange: ttIdb.keyRange } : {}),
@@ -532,6 +549,22 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
       fetchRequests.push({ url: String(url), method: options.method ?? 'GET' });
+      if (String(url) === '/fixture/main-generation') { mainDispatches++; return { ok: true }; }
+      if (numericCse && String(url) === '/api/backends/chat-completions/generate') {
+        numericRecallCalls++;
+        assert.equal(options.method, 'POST'); const request = JSON.parse(options.body);
+        assert.match(request.reverse_proxy, /^https:\/\/numeric-fixture\.invalid\//u);
+        assert.match(JSON.stringify(request.messages), /state_exclude_keys/u);
+        if (recallInterrupt) {
+          assert.equal(request.stream, true);
+          const reader = { async read() {
+            if (streamReads++ === 0) return { done: false, value: new TextEncoder().encode('data: ' + JSON.stringify({ choices: [{ delta: { content: '{"history_exclude_keys":[],"state_exclude_keys":[]}' } }] }) + '\n\n') };
+            throw new DOMException('Stream interrupted', 'AbortError');
+          }, cancel() {}, releaseLock() {} };
+          return { ok: true, status: 200, headers: { get: () => 'text/event-stream' }, body: { getReader: () => reader } };
+        }
+        return { ok: true, status: 200, async json() { return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ history_exclude_keys: [], state_exclude_keys: [] }) } }] }; } };
+      }
       if (isPublicMapCatalogUrl(url)) {
         assert.equal(options.method ?? 'GET', 'GET'); assert.equal(options.credentials, 'omit');
         assert.equal(options.body, undefined); assert.equal(options.headers, undefined);
@@ -647,13 +680,18 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
       startupWarnings: startupWarnings.map(args => args.map(value => value instanceof Error ? { message: value.message, code: value.code } : String(value))),
       backendDataRequestPaths }));
     assert.equal(snapshot?.identity?.qqjChatId, host.chatMetadata.qianqianjie.chatId);
-    if (!nativeBranch) assert.equal(snapshot.memory.syncStatus, 'idle');
+    if (!nativeBranch) assert.equal(snapshot.memory.syncStatus, 'idle', JSON.stringify({ snapshot, startupWarnings: startupWarnings.map(args => args.map(value => value?.code ?? String(value))) }));
   }
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
   let locationReferenceResult = null;
   if (invokeLocationReference) {
-    const cleanedCore = hostChat.map(message => ({ ...message, mes: message.mes.replace(/<location>[\s\S]*?<\/location>/giu, '').trim() }));
-    locationReferenceResult = await context.qqj_v3_recall_interceptor(cleanedCore, 8192, () => { abortCalls += 1; }, 'normal');
+    // 数值场景的旧AI正文在本次宿主窗口外，由正式摘要召回承接。
+    const generationWindow = numericCse ? hostChat.filter(message => message.is_user) : hostChat;
+    const cleanedCore = generationWindow.map(message => ({ ...message, mes: message.mes.replace(/<location>[\s\S]*?<\/location>/giu, '').trim() }));
+    let aborted = false;
+    // 宿主等待拦截器，以abort(true)标记阻止后续正文派发。
+    locationReferenceResult = await context[manifest.generate_interceptor](cleanedCore, 8192, value => { abortCalls += 1; if (value === true) aborted = true; }, 'normal');
+    if (recallInterrupt && !aborted) await context.fetch('/fixture/main-generation', { method: 'POST' });
     await new Promise(resolvePromise => setImmediate(resolvePromise));
   }
   let legacyReceiptPrequelBudgetResult = null;
@@ -690,7 +728,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, ttRootChecks, ttMaxWritesInFlight, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
+  return { status: entry.status, mainDispatches, streamReads, numericRecallCalls, seedCseCalls: readyRecords?.numericCseCalls ?? 0, ttRootChecks, ttMaxWritesInFlight, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
 }
 
 for (const host of ['SillyTavern', 'Luker']) {
@@ -774,6 +812,74 @@ test('实际生产包无需打开面板或保存聊天，私有通道自动记�
   assert.equal(latest.last.receiptPersistence, 'none');
   assert.deepEqual(latest.last.skipReasons, ['emptyUserInput']);
   assert.doesNotMatch(JSON.stringify(records), /host-chat|char\.png|injectionText|apiKey/u);
+});
+
+test('可选量化：真实CSE一次保存后最终bundle冷读重放并注入，坏数字和旧档保文字不补CSE', async () => {
+  const counts = [];
+  for (const numericCse of ['valid', 'expression', 'bad', 'legacy']) {
+    const result = await isolateBundle('SillyTavern', { enabled: true, numericCse, coreCacheEnabled: false, fileOwnedIdentity: true, locationReferenceChat: true, invokeLocationReference: true });
+    assert.equal(result.seedCseCalls, 1);
+    assert.equal(result.numericRecallCalls, 1, JSON.stringify(result.fetchRequests));
+    assert.equal(result.fetchRequests.filter(request => /generate|completion|embedding/iu.test(request.url)).length, 1, '仅既有召回选材的本地假响应');
+    const prompt = result.promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context').at(-1)?.[1] ?? '';
+    assert.match(prompt, /高兴于平安，仍不满冒险/u, JSON.stringify(result.locationReferenceResult));
+    assert.match(prompt, /愿求助仍自己决定/u);
+    const receipt = result.hostChat[1].extra.qqj_v3_recall_receipt; assert.ok(receipt);
+    if (['valid', 'expression'].includes(numericCse)) {
+      if (numericCse === 'valid') assert.match(prompt, /情绪强度：满足65、不满45/u);
+      else assert.doesNotMatch(prompt, /情绪强度/u);
+      const expectedExpression = numericCse === 'valid' ? 20 : 0;
+      assert.ok(prompt.includes(`外露程度：${expectedExpression}`)); assert.match(prompt, /倾向强度：70/u);
+      const selected = receipt.selectedStates.find(item => item.quantification?.expression === expectedExpression);
+      assert.ok(selected); assert.equal(selected.visibility, 'expressed');
+      const publicSubject = result.getPublicSnapshot().cse.currentSubjects.find(subject => subject.situational.some(item => item.quantification?.expression === expectedExpression));
+      assert.ok(publicSubject);
+      const publicItem = publicSubject.situational.find(item => item.quantification?.expression === expectedExpression);
+      assert.ok(publicItem); assert.equal(publicItem.visibility, 'expressed');
+      assert.equal(selected.subjectEntityId, publicSubject.subjectEntityId);
+      assert.equal(selected.towardEntityId ?? null, publicItem.towardEntityId ?? null);
+      assert.ok(receipt.selectedStates.some(item => item.quantification?.strength === 70));
+      assert.match(prompt, /0—100独立强度.*不是整个人格或合计比例/u);
+      assert.ok(result.getPublicSnapshot().cse.currentSubjects.some(subject => subject.adaptive.some(item => item.quantification?.strength === 70)));
+      const deltas = [...result.backendRecords.values()].filter(value => value.data?.recordType === 'stateDelta');
+      assert.equal(deltas.length, 1);
+      assert.equal(deltas[0].data.subjectSnapshots.flatMap(subject => subject.situational).find(item => item.text === '高兴于平安，仍不满冒险').quantification.expression, expectedExpression);
+      assert.equal(deltas[0].data.subjectSnapshots.find(subject => subject.adaptive.length).adaptive[0].quantification.strength, 70);
+    } else {
+      assert.doesNotMatch(prompt, /情绪强度|倾向强度|外露程度：/u);
+      assert.equal(receipt.selectedStates.some(item => item.quantification), false);
+    }
+    assert.ok(receipt.selectedFloors.length > 0, `${numericCse} 宿主窗口外摘要应入选`);
+    let card;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const message = result.receiptDocument.chat.querySelectorAll('.mes')[1];
+      card = message?.querySelector('.mes_text')?.querySelector('[data-qqj-inline-host="true"]')?.__qqjInlineCard;
+      if (card?.projection?.historyItems?.length) break;
+      await new Promise(resolvePromise => setImmediate(resolvePromise));
+    }
+    assert.ok(card); assert.equal(card.projection.protocolRecognized, true, numericCse);
+    assert.ok(card.recallUi.eventEntries.length > 0, `${numericCse} 旧事栏应提供已选摘要`);
+    for (const entry of card.recallUi.eventEntries) entry.trigger.click();
+    const visibleHistory = card.recallUi.events.querySelectorAll('.event-copy').map(node => node.textContent).join('\n');
+    assert.ok(visibleHistory.includes('角色平安归来后继续交谈。'), `${numericCse} 实际旧事栏可见已选摘要`);
+    counts.push(result.backendDataCalls);
+  }
+  assert.equal(new Set(counts).size, 1, '同图数字有无不增加首次读取请求');
+});
+
+test('最终TT bundle召回SSE中断通过宿主abort阻止正文派发', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true, numericCse: 'valid', recallInterrupt: true,
+    coreCacheEnabled: false, fileOwnedIdentity: true, locationReferenceChat: true, invokeLocationReference: true });
+  assert.equal(result.numericRecallCalls, 1, '四次重试配置下中断仍只发一次召回');
+  assert.equal(result.streamReads, 2, '读完一段合法事件后在下一次read中断');
+  assert.deepEqual({ aborts: result.abortCalls, mainDispatches: result.mainDispatches }, { aborts: 1, mainDispatches: 0 });
+  assert.equal(result.fetchRequests.some(request => request.url === '/fixture/main-generation'), false);
+  assert.equal(result.locationReferenceResult.lastRecall.status, 'error');
+  assert.equal(result.locationReferenceResult.lastRecallError.code, 'AbortError');
+  assert.equal(result.hostChat[1].extra.qqj_v3_recall_receipt, undefined);
+  for (const slot of ['qqj_v3_recalled_context', 'qqj_v3_prequel_context']) {
+    assert.equal(result.promptCalls.filter(call => call[0] === slot).at(-1)?.[1] ?? '', '');
+  }
 });
 
 test('TT生产默认路由分支批写四路并在全部引用保存后才发布root', async () => {
@@ -894,7 +1000,7 @@ test('manifest 唯一登记主入口，生产分包依赖完整、内容哈希�
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.2.2');
+  assert.equal(manifest.version, '1.3.0');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));
@@ -1703,6 +1809,13 @@ test('生产 bundle 在 official-only 且插件启用时按文件身份读取旧
   assert.match(clockCalls[1][1], /<!-- QQJ-start/);
   assert.match(clockCalls[1][1], /<!-- QQJ-end/);
   assert.deepEqual(clockCalls[1].slice(2), [17, 0, false, 29]);
+  assert.equal(clockCalls[1][1], DEFAULT_MYKNOTS_STORY_CLOCK_PROMPT, '实际bundle注入当前默认合同');
+  const custom = '  自定义故事时标\n保持原文  ';
+  const customResult = await isolateBundle('SillyTavern', { enabled: true, fileOwnedIdentity: true,
+    wrapperSeed: { qianqianjie: { storyClockPrompt: custom }, 'schedule-planner': {} } });
+  const customCalls = customResult.promptCalls.filter(call => call[0] === 'myknots_story_clock');
+  assert.equal(customCalls.at(-1)[1], custom, '自定义提示包括空白仍逐字注入');
+  assert.deepEqual(customCalls.at(-1).slice(2), [17, 0, false, 29]);
 });
 
 test('生产dist在原生SillyTavern与Luker关闭缓存后不创建IndexedDB实例，仍读取文件ID对应的V3图', async () => {
@@ -2060,7 +2173,7 @@ test('分包原构建重复执行保素材属性，仅提示词变化只写核�
   const repeated = await buildPlugin({ outDir: directory });
   assert.deepEqual(repeated.written, [], '相同输入的正常npm build底层必须不改文件');
   const changed = await buildPlugin({ outDir: directory, plugins: [{ name: 'offline-prompt-change', transform(code, id) {
-    if (id.endsWith('/src/v3/cse-engine.js')) return code.replace('qqj-v3-cse-prompt-50', 'qqj-v3-cse-prompt-50-offline-cache-probe');
+    if (id.endsWith('/src/v3/cse-engine.js')) return code.replace('qqj-v3-cse-prompt-55', 'qqj-v3-cse-prompt-55-offline-cache-probe');
   } }] });
   assert.deepEqual(changed.written, ['qqj-app.js']);
   const after = await stat(resolve(directory, basename(materialPath)));

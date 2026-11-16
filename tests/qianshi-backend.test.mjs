@@ -1430,7 +1430,7 @@ test('未竟事项不受当前话题、旧日期、跨月或未知历法筛除�
     recentStoryTimes: [projectTime('2026-06-14 23:45'), currentTime] });
   assert.match(recall.text, /\[相关跟进事项\]/u);
   for (const title of ['旧宴后归还餐盒', '守住北门钥匙', '前往钟楼换岗', '苍月祭后兑现承诺']) assert.match(recall.text, new RegExp(`${title}[^\n]*状态：(?:待办|进行中)`, 'u'));
-  assert.match(recall.text, /前往钟楼换岗。最近剧情记录：2026-06-15 00:05（AI #1）。约定：2026-06-15 00:30。记录状态：待办。跟进选择：持续追踪。/u);
+  assert.match(recall.text, /前往钟楼换岗。最近剧情记录：2026-06-15 00:05（AI #1）。计划时间：2026-06-15 00:30。记录状态：待办。跟进选择：持续追踪。/u);
   assert.doesNotMatch(recall.text, /交回南门徽章/u);
   assert.doesNotMatch(recall.text, /00:30：前往钟楼换岗/u, 'scheduledTime 不能冒充已经发生的时间');
 
@@ -2534,7 +2534,7 @@ test('千事时效候选及末端保真实剧情时间，复核楼不刷新剧�
   assert.match(output.text, /最近剧情记录：2024-03-18 07:45（AI #1）/u);
   assert.match(output.text, /记录状态：待办/u);
   assert.match(output.text, /人工关注/u);
-  assert.match(output.text, /约定：2024-04-01/u);
+  assert.match(output.text, /计划时间：2024-04-01/u);
   assert.match(output.text, /两人私下约好/u);
   assert.equal(output.characterCount, output.text.length);
   assert.ok(output.characterCount <= 4000);

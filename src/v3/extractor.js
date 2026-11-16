@@ -21,7 +21,7 @@ import { normalizeLocationReference } from './location-reference.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-67';
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-68';
 export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-37`;
 export const QIANSHI_OUTPUT_CAPACITY_GUIDANCE = '每个千事保存单元最多输出 160 条事件、320 条不同有效关系，每条事件最多 40 位人物；order 不要重复关系。';
 const PERSON_ALIAS_DESCRIPTION = '人物只收可长期复用的姓名、昵称或稳定称谓；不收代词、指示词及一次性外貌或身份描述。';
@@ -129,6 +129,7 @@ const SINGLE_FLOOR_SUMMARY_GUIDANCE = `普通单楼 summary 通常以 200–300 
 
 export const QIANSHI_LIFECYCLE_GUIDANCE = `【千事事项生命周期】
 status 表示整线事实状态，actionStatus 表示本楼局部动作状态，following 表示是否继续跟进，三者分别判断。并读 AI 正文与对应 USER 叙述，按已发生动作、结果、后续上下文判断，过程被省略也可支持目标已完成。未来要求、写作指令与假设保其原义。
+邀请、提议或代他人安排须保留提出者及对方实际回应。尚未接受或已拒绝的提议不成为接受方待办或双方约定，拟议时间只随提议原义保在 description。scheduledTime 只归本事件或事项确已成立的安排、明确个人计划或期限，不把旁支提议的时间挪给“议论”等事件。个人能自行执行的明确计划照常记录 scheduledTime，不要求另一个人同意；只拒绝某环节时，区分并保留仍有效的个人行动，不整段取消。
 新建 matter=true 只用于确实需要跨场景继续关注的具体目标、承诺或持续影响。普通日常安排、短暂动作及当场互动即使还在进行，也优先留在摘要。有独立后续价值的一次性新事实用 matter=false。进入持续事项的记录及 progress 明确填写 following，先判断未来还需要关注什么，再决定是否建线或续追。
 逐项检查全部旧候选，主动清理已经失去后续意义的跟进。普通临时事项的有效时间或场景已经过去、后文没有承接且没有独立未决后果时，主动结束跟进，following:false。无需等正文逐字宣布完成。仅调整跟进也用 progress 链接对应候选，description 说明临时情境已过去及停追依据，保留原 status 和 latestProgress 中有据的 storyTime、scheduledTime，来源归当前判断楼。事实完成证据不足时保 planned/inProgress，跟进仍可结束。说明只记录跟进判断，保持原有动作事实与时间。债务、交付、长期承诺、关键伏笔等仍影响后续的独立未决目标，以及尚待履行的未来约定，继续 following:true。按实际上下文判断剩余意义与履行情况。局部动作结束也不关闭另一个剩余目标。
 上下文足够表明目标已达成或取消时，必须链接对应候选，记录 progress 并更新整线 completed/cancelled，结果同时记入摘要与千事。重要事项同样按后文明确蕴含的结果判断完成，保留仍有具体未决目标的事项。人工修订的状态与跟进选择优先。manualStatus=true 的候选保人工状态，tracking=following 的候选保持续跟进。已停止的事项只作历史提及用 context，保持 following:false。出现新的具体推进、重新约定或待解决目标才用 progress、following:true。`;

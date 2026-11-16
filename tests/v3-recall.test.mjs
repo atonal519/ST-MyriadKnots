@@ -76,6 +76,59 @@ function reachable({ head = '88888888-8888-4888-8888-888888888888', revision = 4
 
 const sourceAttempts = exitPoint => ({ reachableReads: 1, exitPoint });
 
+test('可选量化：DTO到最终注入与回执恢复保数字，数字更新不增剧情候选', async () => {
+  const value = reachable(), subject = value.stateDeltas[0].subjectSnapshots[0];
+  subject.situational[0].quantification = { emotions: { 亲近: 65, 反感: 45 }, expression: 0 };
+  subject.adaptive.push({ ...subject.situational[0], id: '11111111-7777-4777-8777-777777777777', text: '向阿裴求助仍保留自己决定', quantification: { strength: 35 } });
+  const source = await readRecallSource({ store: { readReachable: async () => structuredClone(value) }, now: () => new Date(NOW) });
+  assert.deepEqual(source.currentState[0].situational[0].quantification, { emotions: { 亲近: 65, 反感: 45 }, expression: 0 });
+  assert.deepEqual(source.currentState[0].adaptive[0].quantification, { strength: 35 });
+  const queryContext = { text: '阿裴的约定，向阿裴求助仍保留自己决定', latestUserText: '阿裴的约定', messageCount: 1 };
+  const selection = selectRecall({ source, queryContext, selectedHistoryCandidates: [], contextSize: 12000 });
+  assert.match(selection.injectionText, /情绪强度：亲近65、反感45/u); assert.match(selection.injectionText, /倾向强度：35/u);
+  assert.match(selection.injectionText, /外露程度：0/u);
+  assert.equal(source.currentState[0].situational[0].visibility, subject.situational[0].visibility);
+  assert.equal(source.currentState[0].situational[0].towardEntityId, subject.situational[0].towardEntityId);
+  const changed = structuredClone(value.stateDeltas[0].fixedChanges[0].items[0]);
+  changed.before = structuredClone(changed.after); changed.before.quantification = structuredClone(subject.situational[0].quantification); changed.action = 'update'; changed.after.quantification = { emotions: { 亲近: 65, 反感: 45 }, expression: 45 };
+  const updated = structuredClone(value); updated.stateDeltas[0].fixedChanges[0].items = [changed];
+  assert.deepEqual((await readRecallSource({ store: { readReachable: async () => structuredClone(updated) }, now: () => new Date(NOW) })).cseChanges, []);
+  const h = createRuntimeHarness({ sourceReader: async () => structuredClone(source), reachableReader: async () => structuredClone(value) });
+  await h.runtime.intercept(h.chat, 12000, null, 'normal');
+  const receipt = h.userMessage.extra?.[RECALL_RECEIPT_KEY]; assert.ok(receipt, JSON.stringify(h.runtime.getState().lastRecall));
+  assert.ok(receipt.selectedStates.some(item => item.quantification?.emotions?.亲近 === 65 && item.quantification?.expression === 0));
+  h.runtime.clearCurrent(); await h.runtime.restorePersistedReceipt();
+  assert.equal(h.runtime.getState().lastRecall.restoredReceipt, true);
+  assert.match(h.runtime.getState().lastRecall.injectionText, /情绪强度：亲近65、反感45/u);
+  assert.match(h.runtime.getState().lastRecall.injectionText, /外露程度：0/u);
+  const malformed = structuredClone(receipt); malformed.selectedStates[0].quantification = { emotions: { 亲近: '坏值' }, strength: -1, expression: '坏值' };
+  malformed.receiptFingerprint = await receiptFingerprint(malformed); h.userMessage.extra[RECALL_RECEIPT_KEY] = malformed;
+  h.runtime.clearCurrent(); await h.runtime.restorePersistedReceipt();
+  assert.equal(h.runtime.getState().lastRecall.status, 'ready'); assert.equal(h.runtime.getState().lastRecall.selectedStates[0].quantification, undefined, '坏可选数字不使整份已签回执失效');
+});
+
+test('可选量化：预算不足先撤数字保文字，时间校正文字不携旧量化', () => {
+  const quantification = { emotions: Object.fromEntries(['亲近', '满足', '兴奋', '松弛', '期待', '担忧', '恐惧', '失望', '悲伤', '不满', '反感', '羞怯', '愧疚', '嫉妒'].map(key => [key, 50])), expression: 100 };
+  const source = selectorSource({ memories: [], currentState: [{ subjectEntityId: PERSON, core: [], adaptive: [], situational: [{ stateId: 'q-state', text: '阿裴仍愿一起赴约', visibility: 'private', reason: '明确表达', sourceFloorId: FLOOR1, sourceAssistantSeq: 1, quantification }] }] });
+  const queryContext = { text: '阿裴一起赴约', latestUserText: '阿裴一起赴约', messageCount: 1 };
+  const plain = structuredClone(source); delete plain.currentState[0].situational[0].quantification;
+  const base = selectRecall({ source: plain, queryContext, contextSize: 12000 }); assert.equal(base.states.length, 1);
+  const result = selectRecall({ source, queryContext, contextSize: 12000, reservedCharacters: recallBudget(12000).characterLimit - base.injectionText.length });
+  assert.equal(result.states.length, 1); assert.ok(result.injectionText.includes('阿裴仍愿一起赴约'));
+  assert.equal(result.injectionText, base.injectionText); assert.equal(result.states[0].quantification, undefined);
+  const state = { subjectEntityId: PERSON, subject: '裴晚生', layer: 'situational', stateId: 'q-state', text: '等待赴约', visibility: 'private', reason: '旧依据', sourceFloorId: FLOOR1, quantification };
+  const text = formatRecallInjection({ coverage: source.coverage, floors: [], states: [state], cseChanges: [], entityById: new Map(), timeProjection: { corrections: { [`q-state|${PERSON}|${FLOOR1}`]: { text: '约会已经结束', itemId: 'correction' } } } });
+  assert.ok(text.includes('约会已经结束')); assert.equal(text.includes('情绪强度'), false);
+});
+
+test('可选量化：失效toward降为null时保文字但不把关系数字改作自身数字', async () => {
+  const value = reachable(), item = value.stateDeltas[0].subjectSnapshots[0].situational[0];
+  item.towardEntityId = '99999999-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; item.quantification = { emotions: { 亲近: 90 } };
+  const source = await readRecallSource({ store: { readReachable: async () => structuredClone(value) }, now: () => new Date(NOW) });
+  assert.equal(source.currentState[0].situational[0].text, item.text); assert.equal(source.currentState[0].situational[0].towardEntityId, null);
+  assert.equal(source.currentState[0].situational[0].quantification, undefined); assert.equal(source.cseChanges[0].after.quantification, undefined);
+});
+
 test('fresh recall source 将合并双方历史、主体与 toward 投影到保留人物，并只按同 ID 去重', async () => {
   const target = '99999999-9999-4999-8999-999999999999';
   const value = reachable();
@@ -6046,13 +6099,14 @@ test('root 变化后的 fresh 严格准备失败时可用同一次容错来源�
 
 test('runtime 在LLM选材等待中STOP/ENDED/切聊会留最后步骤且不以fallback复活旧BM25', async () => {
   for (const [event, sourceEvent] of [['generation-stopped', 'GENERATION_STOPPED'], ['generation-ended', 'GENERATION_ENDED'], ['chat-changed', 'CHAT_CHANGED']]) {
-    let entered;
+    let entered, hostAborts = 0;
+    const notifications = [];
     const started = new Promise(resolve => { entered = resolve; });
-    const harness = createRuntimeHarness({ useDefaultSelector: true,
+    const harness = createRuntimeHarness({ useDefaultSelector: true, notifyUser: value => notifications.push(value),
       generateUtilityTask: async ({ signal }) => { entered(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })); },
     });
     harness.handlers.get('generation-started')('normal', null, false);
-    const pending = harness.runtime.intercept(harness.chat, 12000, null, 'normal');
+    const pending = harness.runtime.intercept(harness.chat, 12000, () => hostAborts++, 'normal');
     await started;
     if (event === 'chat-changed') harness.context.chatMetadata.qianqianjie.chatId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
     harness.handlers.get(event)();
@@ -6074,6 +6128,7 @@ test('runtime 在LLM选材等待中STOP/ENDED/切聊会留最后步骤且不以f
     assert.equal(harness.runtime.getState().lastTerminated.pendingStep, 'utilityTask', event);
     assert.equal(harness.runtime.getState().lastTerminated.lastCompletedStep, 'candidateBuild', event);
     assert.equal(harness.saves, 0, event);
+    assert.equal(hostAborts, 0, event); assert.deepEqual(notifications, [], event);
   }
 });
 
@@ -9100,14 +9155,54 @@ test('模型成功后prompt或root暂错只重本地提交，连接零次与两�
   }
 });
 
-test('底层AbortError即使未改operation信号也立即停止，零次与四次均不由召回外层重发',async()=>{
- for(const retryCount of [0,4]){
-  let calls=0;const route={kind:'independent',config:{url:'https://fixture.invalid',key:'fixture',qqjRetryCount:retryCount}};
-  const client=createCompactApiClient({retryWait:async()=>{},fetchImpl:async()=>{calls++;throw new DOMException('Stopped','AbortError');}});
-  const router=createTaskRouter({resolver:{resolve:()=>route,resolveUtility:()=>route},compactClient:client});
-  const h=createRuntimeHarness({useDefaultSelector:true,generateUtilityTask:router.generateUtilityTask});
-  const result=await h.runtime.intercept(h.chat,12000,()=>{},'normal');assert.equal(calls,1);assert.equal(result.lastRecall.status,'stale');assert.equal(result.lastRecall.injectionText,'');
- }
+test('底层fetch与SSE中断在operation有效时停止正文，零次与四次均不重发', async t => {
+  for (const retryCount of [0, 4]) for (const mode of ['fetch', 'sse']) await t.test(`${retryCount}/${mode}`, async () => {
+    let calls = 0, reads = 0, operationSignal, requestSignal, mainApiCalls = 0;
+    const hostAborts = [], notifications = [];
+    const route = { kind: 'independent', config: { url: 'https://fixture.invalid', key: 'fixture', qqjRetryCount: retryCount, stream: mode === 'sse' } };
+    const client = createCompactApiClient({ retryWait: async () => {}, fetchImpl: async (_url, options) => {
+      calls++; requestSignal = options.signal;
+      if (mode === 'fetch') throw new DOMException('Stopped', 'AbortError');
+      const reader = { async read() {
+        if (reads++ === 0) return { done: false, value: new TextEncoder().encode('data: ' + JSON.stringify({ choices: [{ delta: { content: '{"history_exclude_keys":[],"state_exclude_keys":[]}' } }] }) + '\n\n') };
+        throw new DOMException('Stream interrupted', 'AbortError');
+      }, cancel() {}, releaseLock() {} };
+      return { ok: true, status: 200, headers: { get: () => 'text/event-stream' }, body: { getReader: () => reader } };
+    } });
+    const router = createTaskRouter({ resolver: { resolve: () => route, resolveUtility: () => route }, compactClient: client });
+    const h = createRuntimeHarness({ useDefaultSelector: true, notifyUser: value => notifications.push(value),
+      generateUtilityTask: options => { operationSignal = options.signal; return router.generateUtilityTask(options); } });
+    const result = await h.runtime.intercept(h.chat, 12000, value => hostAborts.push(value), 'normal');
+    if (!hostAborts.includes(true)) mainApiCalls++;
+    assert.equal(calls, 1); assert.equal(reads, mode === 'sse' ? 2 : 0);
+    assert.equal(operationSignal.aborted, false); assert.equal(requestSignal.aborted, false);
+    assert.deepEqual(hostAborts, [true], '请求中断必须通过宿主abort停止正文');
+    assert.equal(mainApiCalls, 0, '宿主收到停止标记后不派发正文');
+    assert.equal(result.lastRecall.status, 'error'); assert.equal(result.lastRecall.injectionText, '');
+    assert.equal(result.lastRecallError.code, 'AbortError'); assert.equal(result.lastRecall.error.code, 'AbortError');
+    assert.equal(h.saves, 0); assert.equal(h.userMessage.extra?.[RECALL_RECEIPT_KEY], undefined);
+    assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), '');
+    assert.equal(notifications.length, 1); assert.match(notifications[0].text, /已停止正文生成/u);
+  });
+});
+
+test('选材成功后本地提交AbortError停止正文且不重试提交或选材', async () => {
+  let selections = 0, commits = 0, mainApiCalls = 0;
+  const hostAborts = [], notifications = [];
+  const h = createRuntimeHarness({ selector: input => { selections++; return selectRecall(input); }, notifyUser: value => notifications.push(value) });
+  h.context.setExtensionPrompt = (...args) => {
+    h.prompts.push(args);
+    if (args[0] === RECALL_PROMPT_SLOT && args[1]) { commits++; throw new DOMException('Commit interrupted', 'AbortError'); }
+  };
+  const result = await h.runtime.intercept(h.chat, 12000, value => hostAborts.push(value), 'normal');
+  if (!hostAborts.includes(true)) mainApiCalls++;
+  assert.equal(selections, 1); assert.equal(commits, 1);
+  assert.deepEqual(hostAborts, [true]); assert.equal(mainApiCalls, 0);
+  assert.equal(result.lastRecall.status, 'error'); assert.equal(result.lastRecallError.code, 'AbortError');
+  assert.equal(result.lastRecall.selectionStatus, 'completed'); assert.equal(result.lastRecall.injectionText, '');
+  assert.equal(latestPromptValue(h.prompts, RECALL_PROMPT_SLOT), '');
+  assert.equal(h.saves, 0); assert.equal(h.userMessage.extra?.[RECALL_RECEIPT_KEY], undefined);
+  assert.equal(notifications.length, 1); assert.match(notifications[0].text, /已停止正文生成/u);
 });
 
 test('普通召回不独立追加正文与已选旧楼地点标注，不占名额或字符且保摘要地点及档案',()=>{

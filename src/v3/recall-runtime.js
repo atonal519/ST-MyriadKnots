@@ -1,3 +1,4 @@
+import { cseQuantificationFields } from './cse-quantification.js';
 import { resolveIdentityEntityId, isIdentityDeleted } from './entity-identity.js';
 import { filterPlaceMemory } from './place-workspace.js';
 import { readManualArtifactBlocks, RECALL_KNOWLEDGE_GUIDANCE, RECALL_COMPACT_KNOWLEDGE_GUIDANCE } from './recall-text.js';
@@ -1075,6 +1076,11 @@ async function historicalSignedReceiptValid(receipt, { chatId, userIndex, userFi
   }
 }
 
+function receiptStateItem(value, category) {
+  const { quantification, ...item } = value;
+  return { ...item, ...cseQuantificationFields(value, category) };
+}
+
 function stateFromReceipt(receipt, { generationType = receipt.generationType, restoredReceipt = false, reusedReceipt = !restoredReceipt, timings = null } = {}) {
   return Object.freeze({
     schemaVersion: receipt.schemaVersion,
@@ -1086,8 +1092,10 @@ function stateFromReceipt(receipt, { generationType = receipt.generationType, re
     selectedFloors: Object.freeze(clone(receipt.selectedFloors ?? [])),
     selectedLocationReferences: Object.freeze(clone(receipt.selectedLocationReferences ?? [])),
     selectedPlaces: Object.freeze(clone(receipt.selectedPlaces ?? [])),
-    selectedStates: Object.freeze(clone(receipt.selectedStates ?? [])),
-    selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? [])),
+    selectedStates: Object.freeze(clone(receipt.selectedStates ?? []).map(value => receiptStateItem(value, value.layer))),
+    selectedCseChanges: Object.freeze(clone(receipt.selectedCseChanges ?? []).map(value => ({ ...value,
+      before: value.before ? receiptStateItem(value.before, value.layer) : null,
+      after: value.after ? receiptStateItem(value.after, value.layer) : null }))),
     qianshiProgress: receipt.qianshiProgress ? Object.freeze(clone(receipt.qianshiProgress)) : null,
     // 实时楼内展示需沿用同一时间去重依据，否则千事尾块对不上会连带隐藏已召回旧事。
     timeDependencies: receipt.timeDependencies ? Object.freeze(clone(receipt.timeDependencies)) : null,
@@ -2626,6 +2634,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           stateId: value.stateId, sourceFloorId: value.sourceFloorId, sourceDeltaId: value.sourceDeltaId,
           subjectEntityId: value.subjectEntityId, subject: value.subject, layer: value.layer,
           towardEntityId: value.towardEntityId, toward: value.toward, text: value.text, reason: value.reason,
+          ...cseQuantificationFields(value, value.layer),
           visibility: value.visibility, ...(value.origin !== undefined ? { origin: value.origin } : {}),
           sourceAssistantSeq: value.sourceAssistantSeq, storylineId: value.storylineId,
         })),
@@ -2639,8 +2648,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           storylineId: value.storylineId,
           ...(value.origin === 'manual' ? { origin: 'manual' } : {}),
           relationEvidence: value.relationEvidence,
-          before: value.before ? { stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, toward: value.before.toward, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
-          after: value.after ? { stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, toward: value.after.toward, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
+          before: value.before ? { ...cseQuantificationFields(value.before, value.layer), stateId: value.before.stateId, sourceFloorId: value.before.sourceFloorId, sourceDeltaId: value.before.sourceDeltaId, text: value.before.text, visibility: value.before.visibility, reason: value.before.reason, origin: value.before.origin, towardEntityId: value.before.towardEntityId, toward: value.before.toward, sourceAssistantSeq: value.before.sourceAssistantSeq } : null,
+          after: value.after ? { ...cseQuantificationFields(value.after, value.layer), stateId: value.after.stateId, sourceFloorId: value.after.sourceFloorId, sourceDeltaId: value.after.sourceDeltaId, text: value.after.text, visibility: value.after.visibility, reason: value.after.reason, origin: value.after.origin, towardEntityId: value.after.towardEntityId, toward: value.after.toward, sourceAssistantSeq: value.after.sourceAssistantSeq } : null,
         })),
         storylines: (selection.storylines ?? []).map(value => ({ storylineId: value.storylineId, title: value.title, basis: value.basis })),
         selectorDiagnostic: selectorDiagnosticSnapshot(selection.selectorDiagnostic),
@@ -2696,7 +2705,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           sealedReceipt = Object.freeze({ ...receiptBase, receiptFingerprint: await fingerprint(JSON.stringify(receiptMaterial(receiptBase))) });
           break;
         } catch (error) {
-          if (token !== epoch || operation.controller.signal.aborted || error?.name === 'AbortError') return finishStale(operation, timings);
+          if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
+          if (error?.name === 'AbortError') throw error;
           clearSlot(token);
           operation.prequelCommitted = false;
           lastPrequel = null;
@@ -2737,12 +2747,13 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       notify(); return getState();
       } catch (error) {
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
-      if (error?.name === 'AbortError') return finishStale(operation, timings, 'stopped');
+      // 下游请求中断不代表宿主正文已停；有效轮次仍须走错误出口通知宿主停止。
       clearSlot(token);
       operation.prequelCommitted = false;
       lastPrequel = null;
       const taskMetadata = sanitizeTaskMetadata(error?.taskMetadata);
-      const safe = Object.freeze({ code: clean(error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全停止。', 500),
+      const requestAborted = error?.name === 'AbortError';
+      const safe = Object.freeze({ code: clean(requestAborted ? 'AbortError' : error?.code ?? error?.name ?? 'V3_RECALL_FAILED', 120), message: clean(error?.message ?? '召回失败，已安全停止。', 500),
         source: taskMetadata.source, sourceLabel: taskMetadata.sourceLabel, model: taskMetadata.model,
         sourceStage: error?.selectorDiagnostic?.sourceStage || taskMetadata.sourceStage || diagnostic.phase,
         httpStatus: Number.isSafeInteger(error?.httpStatus ?? error?.status) ? error.httpStatus ?? error.status : taskMetadata.httpStatus,
@@ -2751,7 +2762,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (error?.selectorDiagnostic) diagnostic.selectorDiagnostic = selectorDiagnosticSnapshot(error.selectorDiagnostic);
       diagnostic.error = safe; diagnostic.timings = clone({ ...timings, totalMs: Date.now() - diagnostic.started });
       const status = error?.httpStatus ?? error?.status;
-      const nonRetryable = ['QQJ_CONFIG', 'QQJ_PRESET_INVALID', 'QQJ_DISABLED', 'QQJ_AUTH', 'QQJ_NOT_FOUND', 'QQJ_REQUEST_FORMAT'].includes(error?.code)
+      const nonRetryable = requestAborted
+        || ['QQJ_CONFIG', 'QQJ_PRESET_INVALID', 'QQJ_DISABLED', 'QQJ_AUTH', 'QQJ_NOT_FOUND', 'QQJ_REQUEST_FORMAT'].includes(error?.code)
         || Number.isInteger(status) && status >= 400 && status < 500 && status !== 429;
       if (!nonRetryable && diagnostic.selectionStatus !== 'completed' && attempt + 1 < (operation.transportBudget.totalAttempts ?? 2) && operation.transportBudget.remaining > 0) {
         try { notifyUser?.({ kind: 'warning', text: '记忆召回未完成，正在重试。' }); } catch { /* notification must not affect recall */ }

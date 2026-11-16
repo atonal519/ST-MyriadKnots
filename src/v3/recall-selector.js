@@ -1,3 +1,4 @@
+import { cseQuantificationFields, formatCseQuantification, CSE_QUANTIFICATION_GUIDANCE } from './cse-quantification.js';
 import { RECALL_KNOWLEDGE_GUIDANCE } from './recall-text.js';
 import { effectiveFoundationFacts } from './place-foundation.js';
 import { manualPlaceFacts } from './place-workspace.js';
@@ -272,6 +273,7 @@ function stateCandidates(source, involvedIds) {
         towardEntityId: value.towardEntityId,
         toward: entityById.get(value.towardEntityId)?.displayName ?? null,
         text: value.text,
+        ...cseQuantificationFields(value, layer),
         reason: value.reason,
         visibility,
         ...(value.origin !== undefined ? { origin: value.origin } : {}),
@@ -374,7 +376,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
     }
     return `${relation}${value.text}`;
   };
-  const stateSide = (value, currentEquivalent = false, timelineAssistantSeq = null, priorAssistantSeq = null) => {
+  const stateSide = (value, currentEquivalent = false, timelineAssistantSeq = null, priorAssistantSeq = null, layer) => {
     if (!value) return '无';
     const target = value.toward ? `，态度对象：${value.toward}` : '';
     const source = Number.isSafeInteger(value.sourceAssistantSeq) ? `，来源 AI #${value.sourceAssistantSeq}`
@@ -382,7 +384,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
     const basis = `依据：${value.reason || '未提供'}${source}`;
     if (currentEquivalent) return  `可见性：${recallVisibility(value.visibility)}${target}：正文与本线当前快照相同（${basis}）`;
     if (Number.isSafeInteger(priorAssistantSeq)) return  `可见性：${recallVisibility(value.visibility)}${target}：正文相同，完整正文见 AI #${priorAssistantSeq} 上述“之后”状态（本条${basis}）`;
-    return  `可见性：${recallVisibility(value.visibility)}${target}：${value.text}（${basis}）`;
+    return  `可见性：${recallVisibility(value.visibility)}${target}：${value.text}${formatCseQuantification(value, layer)}（${basis}）`;
   };
   for (const storyline of storylines) {
     lines.push('', `[剧情线 ${storyline.storylineId}｜${storyline.title}]`);
@@ -407,10 +409,10 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
         const currentEquivalent = value.after && lineStates.some(state => state.subjectEntityId === value.subjectEntityId && state.layer === value.layer && sameStateBody(state, value.after));
         if (value.origin === 'manual') {
           lines.push(value.action === 'remove' ? `- [变化] 主体：${value.subject} / ${value.layer}：人工移除或清空。`
-            : `- [变化] 主体：${value.subject} / ${value.layer}：人工${action[value.action] ?? '校准'}。${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq)}。`);
+            : `- [变化] 主体：${value.subject} / ${value.layer}：人工${action[value.action] ?? '校准'}。${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq, value.layer)}。`);
           continue;
         }
-        lines.push(`- [变化] 主体：${value.subject} / ${value.layer}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, assistantSeq, priorAfter?.assistantSeq)}；之后 ${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq)}。`);
+        lines.push(`- [变化] 主体：${value.subject} / ${value.layer}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, assistantSeq, priorAfter?.assistantSeq, value.layer)}；之后 ${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq, value.layer)}。`);
         if (value.after && !currentEquivalent && !priorSameBodyAfter) renderedAfters.push({ subjectEntityId: value.subjectEntityId, layer: value.layer, state: value.after, assistantSeq });
       }
     }
@@ -419,7 +421,7 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
       if (value._timeDependency) timeDependencies?.corrections.push(value._timeDependency);
       const target = value.toward ? `，态度对象：${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
-        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}[${value.layer === 'situational' ? '已保存场景快照' : '当前'}] 主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}（依据：${value.reason}${source}）`);
+        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}[${value.layer === 'situational' ? '已保存场景快照' : '当前'}] 主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}${formatCseQuantification(value, value.layer)}（依据：${value.reason}${source}）`);
     }
   }
   if (!coverage.memoryComplete || !coverage.cseCurrent) {
@@ -481,14 +483,23 @@ export function placeRecallBlocks(places = [], legacy = false, grouped = !legacy
  return blocks;
 }
 
+const withoutQuantification = value => {
+  if (!value) return value;
+  const { quantification, ...rest } = value;
+  return rest;
+};
+
 export function formatRecallInjection(input) {
   const corrections = input.timeProjection?.corrections ?? {};
   const states = input.states.map(state => {
     const correction = state.origin === 'manual' ? null : corrections[`${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`];
-    return correction ? { ...state, text: correction.text, _timeCorrection: true, _timeDependency: { key: `${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`, itemId: correction.itemId, text: correction.text, sourceSignature: correction.sourceSignature ?? null } } : state;
+    return correction ? { ...withoutQuantification(state), text: correction.text, _timeCorrection: true, _timeDependency: { key: `${state.stateId}|${state.subjectEntityId}|${state.sourceFloorId}`, itemId: correction.itemId, text: correction.text, sourceSignature: correction.sourceSignature ?? null } } : state;
   });
   const timeDependencies = input.timeDependencies ?? { corrections: [], reminders: [] };
   let base = formatBaseRecallInjection({ ...input, states, timeDependencies });
+  const quantified = states.some(value => formatCseQuantification(value, value.layer))
+    || (input.cseChanges ?? []).some(value => [value.before, value.after].some(item => formatCseQuantification(item, value.layer)));
+  if (quantified && base) base = base.replace(CSE_RECALL_KNOWLEDGE_BOUNDARY, `${CSE_RECALL_KNOWLEDGE_BOUNDARY}\n${CSE_QUANTIFICATION_GUIDANCE}`);
   for (const block of placeRecallBlocks(input.manualPlaces ?? [], false, input.groupPlaces !== false, input.deduplicatePlaces !== false)) base = base ? base.replace('</qqj_recalled_context>', `${block}\n</qqj_recalled_context>`) : `<qqj_recalled_context>\n${block}\n</qqj_recalled_context>`;
   const correctedIds = new Set(timeDependencies.corrections.map(value => value.itemId));
   const reminders = (input.timeReminders ?? []).filter(value => !correctedIds.has(value.itemId));
@@ -565,18 +576,18 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
       if (value._timeDependency) timeDependencies?.corrections.push(value._timeDependency);
       const target = value.toward ? `，态度对象：${value.toward}` : '';
       const source = value.sourceAssistantSeq ? `，来源 AI #${value.sourceAssistantSeq}` : '';
-        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}${value.layer === 'situational' ? '[已保存场景快照] ' : ''}主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}（依据：${value.reason}${source}）`);
+        lines.push(`- ${value._timeCorrection ? '[时间校正] ' : ''}${value.layer === 'situational' ? '[已保存场景快照] ' : ''}主体：${value.subject} / ${value.layer}${target} / 可见性：${recallVisibility(value.visibility)}：${value.text}${formatCseQuantification(value, value.layer)}（依据：${value.reason}${source}）`);
     }
   }
   if (cseChanges.length) {
-    const stateSide = (value, currentEquivalent = false, priorAssistantSeq = null) => {
+    const stateSide = (value, currentEquivalent = false, priorAssistantSeq = null, layer) => {
       if (!value) return '无';
       const target = value.toward ? `，态度对象：${value.toward}` : '';
         const source = Number.isSafeInteger(value.sourceAssistantSeq) ? `，来源 AI #${value.sourceAssistantSeq}` : '';
       const basis = `依据：${value.reason || '未提供'}${source}`;
       if (currentEquivalent) return  `可见性：${recallVisibility(value.visibility)}${target}：正文与该人物当前快照相同（${basis}）`;
       if (Number.isSafeInteger(priorAssistantSeq)) return  `可见性：${recallVisibility(value.visibility)}${target}：正文相同，完整正文见 AI #${priorAssistantSeq} 上述“之后”状态（本条${basis}）`;
-      return  `可见性：${recallVisibility(value.visibility)}${target}：${value.text}（${basis}）`;
+      return  `可见性：${recallVisibility(value.visibility)}${target}：${value.text}${formatCseQuantification(value, layer)}（${basis}）`;
     };
     const action = { add: '新增', remove: '移除', update: '更新', refine: '调整' };
     const renderedAfters = [];
@@ -589,10 +600,10 @@ function formatBaseRecallInjection({ coverage, floors, states, cseChanges = [], 
       const currentEquivalent = value.after && states.some(state => state.subjectEntityId === value.subjectEntityId && state.layer === value.layer && sameStateBody(state, value.after));
       if (value.origin === 'manual') {
         lines.push(value.action === 'remove' ? `- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：人工移除或清空。`
-          : `- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：人工${action[value.action] ?? '校准'}。${stateSide(value.after, currentEquivalent, priorSameBodyAfter?.assistantSeq)}。`);
+          : `- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：人工${action[value.action] ?? '校准'}。${stateSide(value.after, currentEquivalent, priorSameBodyAfter?.assistantSeq, value.layer)}。`);
         continue;
       }
-      lines.push(`- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, priorAfter?.assistantSeq)}；之后 ${stateSide(value.after, currentEquivalent, priorSameBodyAfter?.assistantSeq)}。`);
+      lines.push(`- 主体：${value.subject} / ${value.layer} / 来源 AI #${value.assistantSeq}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, priorAfter?.assistantSeq, value.layer)}；之后 ${stateSide(value.after, currentEquivalent, priorSameBodyAfter?.assistantSeq, value.layer)}。`);
       if (value.after && !currentEquivalent && !priorSameBodyAfter) renderedAfters.push({ storylineId: value.storylineId, subjectEntityId: value.subjectEntityId, layer: value.layer, state: value.after, assistantSeq: value.assistantSeq });
     }
   }
@@ -1643,11 +1654,11 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     }
     const floors = [...floorMap.values()].map(floor => ({ ...floor, reasons: [...floor.reasons] })).sort((a, b) => a.assistantSeq - b.assistantSeq || String(a.floorId ?? '').localeCompare(String(b.floorId ?? '')));
     const subjectOrder = new Map((source.entities ?? []).map((entity, index) => [entity.entityId, index]));
-    const publicStates = [...states]
+    let publicStates = [...states]
       .sort((a, b) => (subjectOrder.get(a.subjectEntityId) ?? Number.MAX_SAFE_INTEGER) - (subjectOrder.get(b.subjectEntityId) ?? Number.MAX_SAFE_INTEGER)
         || a.layer.localeCompare(b.layer) || (a.sourceAssistantSeq ?? 0) - (b.sourceAssistantSeq ?? 0))
       .map(publicItem);
-    const publicChanges = [...changes]
+    let publicChanges = [...changes]
       .sort((a, b) => (subjectOrder.get(a.subjectEntityId) ?? Number.MAX_SAFE_INTEGER) - (subjectOrder.get(b.subjectEntityId) ?? Number.MAX_SAFE_INTEGER)
         || a.assistantSeq - b.assistantSeq || a.layer.localeCompare(b.layer))
       .map(value => ({ ...publicItem(value), floorId: value.floorId, assistantSeq: value.assistantSeq }));
@@ -1659,7 +1670,13 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
     const storylines = storylineDefinitions.filter(value => activeIds.has(value.storylineId));
     const locationReferences = [];
     const timeDependencies = { mode: 'selected', corrections: [], reminders: [] };
-    const text = formatRecallInjection({ coverage: source.coverage, floors, manualPlaces, states: publicStates, cseChanges: publicChanges, entityById, storylines, locationReferences, timeProjection: source.timeProjection, timeReminders: chosenTimeReminders, timeDependencies });
+    const format = () => formatRecallInjection({ coverage: source.coverage, floors, manualPlaces, states: publicStates, cseChanges: publicChanges, entityById, storylines, locationReferences, timeProjection: source.timeProjection, timeReminders: chosenTimeReminders, timeDependencies });
+    let text = format();
+    if (!fitsBudget(text) && (publicStates.some(value => value.quantification) || publicChanges.some(value => value.before?.quantification || value.after?.quantification))) {
+      publicStates = publicStates.map(withoutQuantification);
+      publicChanges = publicChanges.map(value => ({ ...value, before: withoutQuantification(value.before), after: withoutQuantification(value.after) }));
+      text = format();
+    }
     return { floors, manualPlaces, states: publicStates, cseChanges: publicChanges, storylines, locationReferences, timeDependencies, text };
   };
   let dropSemanticDuplicate = 0, budgetDropped = 0, evidenceFiltered = 0;

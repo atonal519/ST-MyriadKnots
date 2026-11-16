@@ -3133,8 +3133,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assertQianshiLifecycleGuidance(buildExtractorSystemPrompt('用户自定义偏好'));
   assert.doesNotMatch(buildHighFloorExtractorSystemPrompt(), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
   assert.match(call.systemPrompt, /summary、承诺与千事description保留原有知情范围/u);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-67');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-67/schema-3/semantic-compiler-37');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-68');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-68/schema-3/semantic-compiler-37');
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.aliases.maxItems, 20);
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.maxLength, 400);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /identityBriefEvidence.*identityFacts/u);

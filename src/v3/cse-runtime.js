@@ -1,3 +1,4 @@
+import { cseQuantificationFields, isCseQuantificationOnlyChange } from './cse-quantification.js';
 import { identityBriefFields } from './identity-brief.js';
 import { memoriesBySourceFloor, selectedUserInput, storedSourceUserInput } from './user-input-source.js';
 import { newIdentityUuid, sha256 } from '../identity.js';
@@ -492,7 +493,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
       const deltaByFloor = new Map(reachableDeltas.map(delta => [delta.floorId, delta]));
       const timelineByFloor = new Map(deriveCseTimeline(reachableDeltas).map(item => [item.floorId, item]));
       const floorSeq = new Map(floors.map(floor => [floor.id, floor.assistantSeq]));
-      const historyItem = item => item ? Object.freeze({
+      const historyItem = (item, category) => item ? Object.freeze({
         text: item.text,
         visibility: item.visibility,
         reason: item.reason,
@@ -501,6 +502,7 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
         towardDisplayName: entities.get(resolveIdentityEntityId(item.towardEntityId, identityProjection))?.displayName ?? null,
         sourceFloorId: item.sourceFloorId ?? null,
         sourceAssistantSeq: floorSeq.get(item.sourceFloorId) ?? null,
+        ...cseQuantificationFields(item, category),
       }) : null;
       const groupedTimelineSubjects = subjects => {
         const grouped = new Map();
@@ -519,24 +521,24 @@ export function createCseRuntime({ store, hostAdapter, generateAnalysisTask, isE
           fixedChangesAvailable: Object.hasOwn(delta, 'fixedChanges'),
           noMaterialChange: timeline?.noMaterialChange ?? true,
           isolationSummary: timeline?.isolationSummary ?? null,
-          subjects: Object.freeze(groupedTimelineSubjects(timeline?.changes).map(subject => Object.freeze({
+          subjects: Object.freeze(groupedTimelineSubjects(timeline?.changes).filter(subject => subject.items.some(item => !isCseQuantificationOnlyChange(item))).map(subject => Object.freeze({
             subjectEntityId: subject.subjectEntityId,
             displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
-            changes: Object.freeze(subject.items.map(item => Object.freeze({
+            changes: Object.freeze(subject.items.filter(item => !isCseQuantificationOnlyChange(item)).map(item => Object.freeze({
               category: item.category,
               action: item.action,
               beforeText: item.before?.text ?? null,
               afterText: item.after?.text ?? null,
-              before: historyItem(item.before),
-              after: historyItem(item.after),
+              before: historyItem(item.before, item.category),
+              after: historyItem(item.after, item.category),
             }))),
           }))),
           endStateSubjects: Object.freeze((projectCseStateIdentityReferences({ subjects: timeline?.endStateSubjects ?? [] }, identityProjection)?.subjects ?? []).filter(subject => ['core', 'adaptive', 'situational'].some(category => subject[category]?.length)).map(subject => Object.freeze({
             subjectEntityId: subject.subjectEntityId,
             displayName: entities.get(subject.subjectEntityId)?.displayName ?? '未知人物',
-            core: Object.freeze((subject.core ?? []).map(historyItem)),
-            adaptive: Object.freeze((subject.adaptive ?? []).map(historyItem)),
-            situational: Object.freeze((subject.situational ?? []).map(historyItem)),
+            core: Object.freeze((subject.core ?? []).map(item => historyItem(item, 'core'))),
+            adaptive: Object.freeze((subject.adaptive ?? []).map(item => historyItem(item, 'adaptive'))),
+            situational: Object.freeze((subject.situational ?? []).map(item => historyItem(item, 'situational'))),
           }))),
         }));
       }
