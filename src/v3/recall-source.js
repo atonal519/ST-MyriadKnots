@@ -10,11 +10,32 @@ import { memorySourceFloorIds } from './memory-schema.js';
 import { projectVectorSources } from './vector-source.js';
 import { migrationPartition } from './migration-prefix.js';
 import { isMemoryExcludedFloor } from './memory-exclusion.js';
+import { sanitizeMemoryContent } from '../memory-content-sanitizer.js';
 
 const safeText = (value, maximum = 4000) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maximum);
 const aliasText = alias => safeText(typeof alias === 'string' ? alias : alias?.name, 500);
 const summaryText = memory => safeText(memory.summary?.effectiveSource === 'user' ? memory.summary?.userText : memory.summary?.aiText);
 const sourceStatus = value => value?.status === 'stale' ? 'stale' : 'unavailable';
+const selectionUserSources = new WeakMap();
+
+export function readRecallSelectionUserEvidence(memory, characterBudget = 300) {
+  const source = selectionUserSources.get(memory);
+  if (!source) return [];
+  let remaining = Math.min(300, characterBudget);
+  return source.snapshots.flatMap(snapshot => (snapshot.sourceUserInputSnapshot?.messages ?? []).flatMap(message => {
+    if (remaining <= 0 || !Number.isSafeInteger(message.messageIndex)) return [];
+    let content;
+    try { content = sanitizeMemoryContent(message.content, source.sanitizerOptions); } catch { return []; }
+    const fullContent = String(content ?? '');
+    content = fullContent.slice(0, remaining);
+    if (/[\uD800-\uDBFF]$/u.test(content)) content = content.slice(0, -1);
+    if (!content.trim()) return [];
+    remaining -= content.length;
+    return [{ sourceFloorId: snapshot.floorId, assistantSeq: source.floorSeqById.get(snapshot.floorId) ?? null,
+      messageIndex: message.messageIndex, swipeId: message.swipeId ?? null, selectedSwipeIndex: message.selectedSwipeIndex ?? null,
+      content, truncated: content.length < fullContent.length }];
+  }));
+}
 
 const chronologyText = item => safeText(item?.time?.sourceText || item?.time?.normalized || item?.description, 2000);
 const CHRONOLOGY_KIND = Object.freeze({ explicit: '明确时间', relative: '相对时间', sequenceOnly: '先后顺序', unknown: '时间未知' });
@@ -51,7 +72,7 @@ function chronologyDto(memory, floorSeqById) {
   })));
 }
 
-function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new Map(), floorById = new Map() } = {}) {
+function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new Map(), floorById = new Map(), sanitizerOptions = {}, userEvidenceAllowed = true } = {}) {
   const sourceFloorIds = memorySourceFloorIds(memory);
   const currentSource=item=>item.source?{source:Object.freeze({kind:item.source.kind,locator:item.source.locator,knownFromFloorId:item.source.knownFromFloorId,knownFromAssistantSeq:floorSeqById.get(item.source.knownFromFloorId??memory.floorId)??null}),replacesItemIds:Object.freeze([...new Set([...(item.replacesItemIds??[]),...(item.source.replacesItemIds??[])])])}:{};
   const sourceRefs = refs => Object.freeze((refs ?? []).map(ref => Object.freeze({
@@ -59,7 +80,7 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
     assistantSeq: floorSeqById.get(ref.floorId) ?? null,
     quotedText: safeText(ref.quotedText, 500),
   })));
-  return Object.freeze({
+  const dto = Object.freeze({
     floorId: floor.id,
     floorMemoryId: memory.id,
     assistantSeq: floor.assistantSeq,
@@ -94,6 +115,8 @@ function memoryDto(memory, floor, { chronologyAllowed = true, floorSeqById = new
     privateCognition: Object.freeze((memory.privateCognition ?? []).map(item => ({ ownerEntityId: item.ownerEntityId, kind: item.kind, content: safeText(item.content) }))),
     informationTransfers: Object.freeze((memory.informationTransfers ?? []).map(item => ({ fromEntityId: item.fromEntityId ?? null, toEntityIds: Object.freeze([...(item.toEntityIds ?? [])]), claimText: safeText(item.claimText), channel: item.channel }))),
   });
+  if (userEvidenceAllowed) selectionUserSources.set(dto, { snapshots: memory.sourceFloorSnapshots ?? [{ floorId: memory.floorId, sourceUserInputSnapshot: memory.sourceUserInputSnapshot }], sanitizerOptions, floorSeqById });
+  return dto;
 }
 
 function personaCoreStateIds(deltas) {
@@ -198,10 +221,14 @@ export function isolateRecallAuxiliarySources(source, projection) {
   const manualEntityNames = { ...(source.manualEntityNames ?? {}), ...Object.fromEntries(source.entities
     .filter(entity => entity.entityType === 'person' && manualKnownIds.has(entity.entityId))
     .map(entity => [entity.entityId, entity.displayName])) };
-  const floorMemories = source.floorMemories.map(memory => ({ ...memory,
-    ...(places ? { locations: [], spatialFacts: null } : {}),
-    ...(people ? { participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] } : {}),
-  }));
+  const floorMemories = source.floorMemories.map(memory => {
+    const projected = { ...memory,
+      ...(places ? { locations: [], spatialFacts: null } : {}),
+      ...(people ? { participants: [], actions: [], observations: [], informationTransfers: [], privateCognition: [], commitments: [], cseSignals: [] } : {}),
+    };
+    if (selectionUserSources.has(memory)) selectionUserSources.set(projected, selectionUserSources.get(memory));
+    return projected;
+  });
   return Object.freeze({ ...source, floorMemories,
     entities: source.entities.filter(entity => !(people && entity.entityType === 'person') && !(places && entity.entityType === 'place')),
     ...(people ? { currentState: [], cseChanges: [], manualEntityNames } : {}), ...(places ? { placeWorkspace: null } : {}),
@@ -318,7 +345,8 @@ export async function projectRecallSource(first, now, sourceReadAttempts = null,
     }).filter(Boolean), ...(readiness?.unregisteredSummaryRefs ?? [])]),
     floorMemories: Object.freeze(projectedMemories.map(memory => {
       const floor = floorById.get(memory.floorId);
-      return memoryDto(memory, floor, { floorSeqById: floorSeq, floorById });
+      return memoryDto(memory, floor, { floorSeqById: floorSeq, floorById, sanitizerOptions,
+        userEvidenceAllowed: !memorySourceFloorIds(memory).some(id => unmatchedFloorIds.has(id)) });
     })),
     ...vectors,
     rawSources: Object.freeze(vectors.rawSources.filter(source => !unmatchedFloorIds.has(source.floorId))),

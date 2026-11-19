@@ -249,7 +249,7 @@ function historySummary(memory) {
     floorId: memory.floorId, floorMemoryId: memory.floorMemoryId, assistantSeq: memory.assistantSeq, sourceAssistantSeqs: memory.sourceAssistantSeqs,
     _rankText: text, _entityText: '', _coreText: text, _summary: text,
     _subjectKey: involvedEntityIds.sort().join(','), _visibilityKey: 'narrative', _statusKey: '', _sourceOrder: -1,
-    _chronology: memory.chronology, _poolGroup: 'summary', truncated,
+    _chronology: memory.chronology, _poolGroup: 'summary', _summarySource: memory.summarySource, truncated,
   };
 }
 
@@ -749,7 +749,7 @@ const cseStableKey = value => value._recallCseKind === 'change'
   ? ['change', value.deltaId, value.floorId, value.assistantSeq, value.subjectEntityId, value.layer, value.action, stateSourceKey(value.before), stateSourceKey(value.after)].join('|')
   : ['current', value.subjectEntityId, value.layer, stateSourceKey(value), duplicateKey(value)].join('|');
 const publicItem = value => {
-  const { _placeMembers, _contextScore, _rankText, _entityText, _coreText, _summary, _summaryScore, _subjectKey, _visibilityKey, _statusKey, _sourceOrder, _chronology, _poolGroup, _adjacentSummary, _recallCseKind, _relationEvidence, _relationAnchorFloorId, _relationAnchorStableKey, _relationAnchorCseKey, _relationTerms, _storylineId, floorId, floorMemoryId, assistantSeq, branchScores, entityBranchScores, summaryScores, score, ...rest } = value;
+  const { _placeMembers, _contextScore, _rankText, _entityText, _coreText, _summary, _summarySource, _summaryScore, _subjectKey, _visibilityKey, _statusKey, _sourceOrder, _chronology, _poolGroup, _adjacentSummary, _recallCseKind, _relationEvidence, _relationAnchorFloorId, _relationAnchorStableKey, _relationAnchorCseKey, _relationTerms, _storylineId, floorId, floorMemoryId, assistantSeq, branchScores, entityBranchScores, summaryScores, score, ...rest } = value;
   return { ...rest, ...(_relationEvidence ? { relationEvidence: _relationEvidence } : {}), ...(_storylineId ? { storylineId: _storylineId } : {}), rankScore: Number(score.toFixed(6)), rankBranches: branchScores, rankEntityBranches: entityBranchScores };
 };
 
@@ -786,18 +786,18 @@ const currentSources = values => uniqueReferences(values.flatMap(value => [
   ...(value.sourceRefs ?? []).map(ref => ({ kind: 'body', floorId: ref.floorId, quote: ref.quotedText })),
 ]));
 
-function placeFeatureCandidates(source, queryContext, entityById, queries, memories) {
+function placeFeatureCandidates(source, queryContext, entityById, queries, memories, selectedPlaceIds = null) {
   const placeFloors = (source.bodyMatchRefs ?? []).map(floor => ({ id: floor.floorId, assistantSeq: floor.assistantSeq }));
   const scenePlaces = currentPlaceEntityIds(memories, source.coverage.stableThroughAssistantSeq, placeFloors, source.placeWorkspace);
-  let places = new Set(scenePlaces);
+  let places = new Set(selectedPlaceIds ?? scenePlaces);
   const explicit = compact(queryContext?.latestUserText ?? queryContext?.text), placesByLabel = new Map();
   for (const entity of source.entities ?? []) if (entity.entityType === 'place') for (const label of entityLabels(entity)) {
     const key = compact(label);
     if (isGenericPlaceAlias(label) || key.length < 2) continue;
     const ids = placesByLabel.get(key) ?? new Set(); ids.add(entity.entityId); placesByLabel.set(key, ids);
   }
-  for (const [label, ids] of placesByLabel) if (explicit.includes(label) && ids.size === 1) places.add(ids.values().next().value);
-  places = expandPlaceParents(places, memories, source.coverage.stableThroughAssistantSeq, placeFloors, source.placeWorkspace);
+  for (const [label, ids] of placesByLabel) if (!selectedPlaceIds && explicit.includes(label) && ids.size === 1) places.add(ids.values().next().value);
+  if (!selectedPlaceIds) places = expandPlaceParents(places, memories, source.coverage.stableThroughAssistantSeq, placeFloors, source.placeWorkspace);
   const current = projectPlaceFeatures({ floorMemories: memories, throughAssistantSeq: source.coverage.stableThroughAssistantSeq });
   const currentReferences = (source.bodyMatch?.locationReferences ?? []).map(ref => ref.text);
   const candidates = current.filter(feature => places.has(feature.placeEntityId)).map((feature, index) => {
@@ -872,6 +872,34 @@ function bundlePlaceCandidates(facts) {
   return [...facts.filter(value => !['placeFoundation', 'manualPlace'].includes(value.kind) && !absorbed.has(value)), ...bundles];
 }
 
+function manualPlaceCandidates(source, entityById) {
+  return manualPlaceFacts(source.placeWorkspace).flatMap(row => {
+    if (!entityById.has(row.entityId)) return [];
+    const texts = [Object.hasOwn(row, 'description') && row.description.trim() ? `地点描述：${row.description}` : '',
+      ...String(row.relations ?? '').split(/\r?\n/u).filter(text => text.trim()).map(text => `方位说明：${text}`),
+      row.parentEntityId ? `所属地点：${entityName(row.parentEntityId, entityById)}` : ''].filter(Boolean);
+    return texts.map((text, index) => ({ category: 'objective', kind: 'manualPlace', manual: true, placeEntityId: row.entityId,
+      itemId: `manual-place-${row.entityId}-${index}`, text: `${entityName(row.entityId, entityById)}：${text}`,
+      floorId: `manual-place-${row.entityId}`, floorMemoryId: null, assistantSeq: 0, priority: 110,
+      _rankText: `${entityName(row.entityId, entityById)} ${text}`, _coreText: text, _entityText: entityName(row.entityId, entityById), _summary: '',
+      _subjectKey: row.entityId, _visibilityKey: 'manualPlace', _statusKey: String(index), _sourceOrder: 400000 + index, _chronology: [], _poolGroup: 'fact' }));
+  });
+}
+
+export function projectSelectedRecallPlaces(source, selectedPlaceIds) {
+  const ids = new Set(selectedPlaceIds);
+  if (!ids.size || source?.status !== 'ready') return [];
+  const entityById = new Map(source.entities.map(entity => [entity.entityId, entity]));
+  // 冻结回执按已选地点更新资料，不借缺失的新查询扩大地点范围。
+  try {
+    return bundlePlaceCandidates([
+      ...placeFeatureCandidates(source, null, entityById, [], source.floorMemories, ids),
+      ...manualPlaceCandidates(source, entityById).filter(item => ids.has(item.placeEntityId)),
+    ]).flatMap(item => item._placeMembers ?? [item])
+      .filter(item => ids.has(item.placeEntityId) && ['manualPlace', 'placeFoundation'].includes(item.kind));
+  } catch { return null; }
+}
+
 export function historySelectionContext(source, queryContext) {
   const query = clean(queryContext?.text, MAX_QUERY_CHARACTERS);
   if (source?.status !== 'ready' || !query) return null;
@@ -902,17 +930,7 @@ export function historySelectionContext(source, queryContext) {
       placeCandidates = bundlePlaceCandidates([
         ...scoreCandidates(floorMemories.filter(memory => bodyCoverage(memory) !== 'all').flatMap(memory => placeHistoryFacts(memory, entityById, bodyCoveredFloorIds, source.coverage.stableThroughAssistantSeq)), queries, { keepUnmatched: true }),
         ...placeFeatureCandidates(source, queryContext, entityById, queries, floorMemories),
-        ...scoreCandidates(manualPlaceFacts(source.placeWorkspace).flatMap(row => {
-          if (!entityById.has(row.entityId)) return [];
-          const texts = [Object.hasOwn(row, 'description') && row.description.trim() ? `地点描述：${row.description}` : '',
-            ...String(row.relations ?? '').split(/\r?\n/u).filter(text => text.trim()).map(text => `方位说明：${text}`),
-            row.parentEntityId ? `所属地点：${entityName(row.parentEntityId, entityById)}` : ''].filter(Boolean);
-          return texts.map((text, index) => ({ category: 'objective', kind: 'manualPlace', manual: true, placeEntityId: row.entityId,
-            itemId: `manual-place-${row.entityId}-${index}`, text: `${entityName(row.entityId, entityById)}：${text}`,
-            floorId: `manual-place-${row.entityId}`, floorMemoryId: null, assistantSeq: 0, priority: 110,
-            _rankText: `${entityName(row.entityId, entityById)} ${text}`, _coreText: text, _entityText: entityName(row.entityId, entityById), _summary: '',
-            _subjectKey: row.entityId, _visibilityKey: 'manualPlace', _statusKey: String(index), _sourceOrder: 400000 + index, _chronology: [], _poolGroup: 'fact' }));
-        }), queries, { keepUnmatched: true })]);
+        ...scoreCandidates(manualPlaceCandidates(source, entityById), queries, { keepUnmatched: true })]);
     } catch { placesUnavailable = true; }
   }
   const historyMemories = placesUnavailable ? oldMemories.map(memory => ({ ...memory, locations: [], spatialFacts: null })) : oldMemories;
@@ -1447,6 +1465,17 @@ export function buildRecallHistoryCandidatePool({ source, queryContext, historyC
     addedValues.add(value);
     return true;
   };
+  const pendingSourceIds = new Set((source?.qianshiCandidates ?? []).filter(candidate => candidate.kind === 'pending')
+    .flatMap(candidate => candidate.sourceFloorIds ?? []));
+  const preferredSummaryByFloor = new Map();
+  if (pendingSourceIds.size) {
+    const memoryById = new Map(context.oldMemories.map(memory => [memory.floorMemoryId, memory]));
+    for (const value of values) {
+      if (value.kind !== 'summary') continue;
+      const memory = memoryById.get(value.floorMemoryId);
+      if ((memory?.sourceFloorIds ?? [value.floorId]).some(id => pendingSourceIds.has(id))) preferredSummaryByFloor.set(value.floorId, value);
+    }
+  }
   const rankedValues = values.sort(relationAnchorOrder);
   // Give each eligible source floor its best-ranked fitting item before filling remaining slots with same-floor details.
   const firstByFloor = new Set();
@@ -1454,7 +1483,9 @@ export function buildRecallHistoryCandidatePool({ source, queryContext, historyC
     if (candidates.length >= itemLimit) break;
     const floorId = value.floorId ?? value.sourceFloorId ?? historyStableKey(value);
     if (firstByFloor.has(floorId)) continue;
-    if (tryAdd(value)) firstByFloor.add(floorId);
+    // 仅在该楼原先的位置优先展示事项来源摘要；资格、全局顺序及预算不变。
+    const summary = preferredSummaryByFloor.get(floorId);
+    if (summary && tryAdd(summary) || tryAdd(value)) firstByFloor.add(floorId);
   }
   for (const value of rankedValues) {
     if (candidates.length >= itemLimit) break;
@@ -1568,7 +1599,11 @@ export function selectRecall({ source, queryContext, historyContext: providedHis
   const explicitHistorySelection = Array.isArray(selectedHistoryCandidates);
   const historicalByStableKey = new Map([...historyContext.direct, ...historyContext.adjacent, ...(historyContext.manualArtifacts ?? [])].map(value => [historyStableKey(value), value]));
   const historical = (explicitHistorySelection
-    ? selectedHistoryCandidates.map(value => historicalByStableKey.get(value?.stableKey ?? historyStableKey(value?.value ?? value))).filter(Boolean)
+    ? selectedHistoryCandidates.map(candidate => {
+      const value = historicalByStableKey.get(candidate?.stableKey ?? historyStableKey(candidate?.value ?? candidate));
+      return value?.kind === 'summary' && value._summarySource === 'ai' && candidate.summaryText
+        ? { ...value, text: candidate.summaryText } : value;
+    }).filter(Boolean)
     : historyContext.direct).map(value => ({ ...value, recallSection: 'distant' }));
   const explicitCseSelection = Array.isArray(selectedCseCandidates);
   const cseByStableKey = new Map([...(cseContext?.states ?? []), ...(cseContext?.changes ?? [])].map(value => [cseStableKey(value), value]));

@@ -1091,6 +1091,8 @@ export function prepareQianshiRecallCandidates(reachable, { queryContext = null,
     const currentAssistantSeq = selected.eventById.get(matter.currentEventId)?.assistantSeq ?? matter.sourceAssistantSeq;
     const pendingRow = pendingRecallRow(matter, currentAssistantSeq);
     add({ kind: 'pending', fact: { title: matter.title, status: matter.status, people: matter.people.map(person => person.name), object: matter.object, originDescription: matter.origin.description, description: matter.description, storyTime: formatStoryTime(matter.parsedStoryTime, matter.storyTime), originStoryTime: formatStoryTime(matter.origin.parsedStoryTime, matter.origin.storyTime), narrativeSourceAssistantSeq: matter.narrativeSourceAssistantSeq, scheduledTime: matter.scheduledTime, tracking: matter.trackingOverride === true ? 'manual' : 'automatic', currentStatusLine },
+      sourceFloorIds: frozen([...new Set((matter.eventIds ?? []).map(id => selected.eventById.get(id))
+        .filter(event => event && !event.followingReviewOfEventId).map(event => event.sourceFloorId).filter(Boolean))]),
       eventIds: frozen([]), matterIds: frozen([matter.matterId]), eventRows: frozen([]), pendingRows: frozen([pendingRow]) });
   }
   for (const { matter } of selected.directMatters) {

@@ -2229,7 +2229,7 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-55');
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-56');
   assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-24');
   assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词须形成有持续人物塑造意义的情感或关系结果，才进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
@@ -5192,4 +5192,70 @@ test('CSE失效关系仅隔离对应自动项，全坏分类与健康替换前�
       floors: saved.floors, floorMemories: saved.floorMemories, stateDeltas: saved.stateDeltas, now: NOW });
     assert.equal(replay.fingerprint, saved.currentStates.at(-1).fingerprint);
   });
+});
+
+test('原一次CSE发送完整前态与归拢合同，有据Core合并和情境替换冷读仍保独立含义及范围', async () => {
+  const id = n => `${String(n).padStart(8, '0')}-1919-4191-8191-191919191919`;
+  const item = (n, text, patch = {}) => ({ id: id(n), text, visibility: 'authorial', reason: '原依据', origin: 'baseline', towardEntityId: null, sourceFloorId: FLOOR1, sourceDeltaId: id(99), ...patch });
+  const first = item(1, '愿意倾听他人表达'), duplicate = item(2, '耐心听完对方说话'), independent = item(3, '重视兑现承诺');
+  const manual = item(4, '人工确认的原则', { origin: 'manual' });
+  const old = item(5, '先递水，后来陪伴，再帮忙处理文件，因此愿意沟通', { visibility: 'private', origin: 'floor', towardEntityId: B });
+  const hidden = item(6, '仍对乙的保证有所保留', { visibility: 'private', origin: 'floor', towardEntityId: B, quantification: { emotions: { 担忧: 40 }, expression: 0 } });
+  const previous = { subjects: [{ subjectEntityId: A, core: [first, duplicate, independent], adaptive: [], situational: [old, hidden] }, { subjectEntityId: B, core: [manual], adaptive: [], situational: [] }] };
+  const authorQuote = '甲愿耐心听完他人表达，也重视兑现承诺。乙以履约优先，不再遵循原原则。';
+  const state = { text: '愿向乙求助，仍坚持自己决定', toward: '乙', visibility: 'expressed', reason: '甲明确表达了求助意愿与决定边界', quantification: { emotions: { 亲近: 60, 担忧: 20 }, expression: 35 } };
+  const envelope = createCseEnvelope({ floor: floor(FLOOR2, '甲说愿向乙求助，但决定仍由自己作出。'), floorMemory: memory(MEMORY2), baseline: { ...baseline, characterCard: { ...baseline.characterCard, description: authorQuote } }, currentState: previous, trackedSubjects: entities.slice(1), entities });
+  let calls = 0;
+  const result = await runCseRequest({ envelope, previousCurrentState: previous, now: NOW, deltaId: id(100), promptGuidance: '保留这份自定义指引原文。', generateAnalysisTask: async options => {
+    calls++;
+    const payload = JSON.parse(options.taskMessages[0].content).payload;
+    assert.deepEqual(payload.previousState.find(row => row.subject === '甲').ownState.core.map(row => row.text), [first.text, duplicate.text, independent.text]);
+    assert.equal(payload.previousState.find(row => row.subject === '甲').ownState.situational[0].text, old.text);
+    assert.match(options.systemPrompt, /新增 Core 前.*全部已有 Core/u);
+    assert.match(options.systemPrompt, /归拢旧自动重复.*review\/refine\/remove/u);
+    assert.match(options.systemPrompt, /旧重复或动作流水.*完整.*列表/u);
+    assert.match(options.systemPrompt, /text.*当前结果.*reason.*支持动作/u);
+    assert.ok(options.systemPrompt.includes('保留这份自定义指引原文。'));
+    return { jsonData: { subjects: [{ subject: '甲', review: { core: [
+      { previousText: first.text, action: 'refine', text: '愿耐心听完他人表达', evidence: [{ source: 'characterCard', quote: authorQuote }] },
+      { previousText: duplicate.text, action: 'remove', evidence: [{ source: 'characterCard', quote: authorQuote }] },
+    ] }, additions: { core: [{ text: '无依据新增', evidence: [{ source: 'characterCard', quote: '不存在的原文' }] }] }, situational: { self: [], relations: [state, { ...hidden, toward: '乙' }] } },
+    { subject: '乙', review: { core: [{ previousText: manual.text, action: 'remove', evidence: [{ source: 'characterCard', quote: authorQuote }] }] } }] } };
+  } });
+  assert.equal(calls, 1);
+  const after = result.delta.subjectSnapshots.find(row => row.subjectEntityId === A);
+  assert.deepEqual(after.core.map(row => row.text), ['愿耐心听完他人表达', independent.text]);
+  assert.deepEqual(result.delta.subjectSnapshots.find(row => row.subjectEntityId === B).core, [manual]);
+  assert.deepEqual(after.situational.map(row => row.text), [state.text, hidden.text]);
+  assert.deepEqual(after.situational[0].quantification, state.quantification);
+  assert.equal(after.situational[0].towardEntityId, B); assert.equal(after.situational[0].visibility, 'expressed');
+  assert.deepEqual(after.situational[1], hidden);
+  const cold = await replayCurrentState({ chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id, floors: [{ id: FLOOR2 }], floorMemories: [{ id: MEMORY2, floorId: FLOOR2, recordStatus: 'active' }], stateDeltas: [structuredClone(result.delta)], now: NOW });
+  assert.deepEqual(cold.subjects.find(row => row.subjectEntityId === A).situational, after.situational);
+  assert.equal(result.delta.source.compilerVersion, CSE_COMPILER_VERSION);
+  const { projectRecallSource } = await import('../src/v3/recall-source.js');
+  const { selectRecall } = await import('../src/v3/recall-selector.js');
+  const recalledSource = await projectRecallSource({ status: 'ready', rootRevision: 1,
+    root: { chatId: CHAT, narrativeGeneration: GEN, headCheckpointId: 'cold-cse' }, checkpoint: { id: 'cold-cse' }, baseline,
+    floors: [{ id: FLOOR1, assistantSeq: 1 }, { id: FLOOR2, assistantSeq: 2 }],
+    floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }, { ...memory(MEMORY2), floorId: FLOOR2, recordStatus: 'active' }],
+    entities: entities.map(entity => ({ ...entity, recordStatus: 'active', status: 'established' })), stateDeltas: [structuredClone(result.delta)], currentStates: [] }, () => new Date(NOW));
+  const recalled = selectRecall({ source: recalledSource, queryContext: { text: '甲对乙求助与保证的态度', latestUserText: '甲对乙求助与保证的态度' }, contextSize: 48000 });
+  assert.match(recalled.injectionText, /愿向乙求助，仍坚持自己决定/u);
+  assert.match(recalled.injectionText, /外露程度：35/u);
+  const publicState = recalled.states.find(value => value.text === state.text);
+  assert.equal(publicState.visibility, 'expressed'); assert.equal(publicState.towardEntityId, B);
+  assert.equal(recalled.states.find(value => value.text === hidden.text).visibility, 'private');
+});
+
+test('CSE56冷读旧55保存结果，不把提示升级当作整档分析缺口', async () => {
+  const h = runtimeHarness(); await h.runtime.start(); await h.runtime.extractNext();
+  const deltas = [...h.backend.records.values()].filter(value => value.data?.recordType === 'stateDelta');
+  assert.ok(deltas.length);
+  for (const value of deltas) value.data.source.promptVersion = 'qqj-v3-cse-prompt-55';
+  const cold = runtimeHarness({ sharedBackend: h.backend, chat: structuredClone(h.context.chat), cse: () => assert.fail('旧55不得因升级自动重算') });
+  await cold.runtime.start();
+  assert.equal(cold.calls.filter(call => call.testRoute === 'analysis').length, 0);
+  assert.equal(cold.runtime.getState().csePendingCount, 0);
+  assert.equal(cold.runtime.getState().csePromptVersion, 'qqj-v3-cse-prompt-56');
 });

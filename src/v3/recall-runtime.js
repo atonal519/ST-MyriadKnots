@@ -6,7 +6,7 @@ import { sha256 } from '../identity.js';
 import { rawWitnessShape, rawWitnessValid, summaryCandidateText, summaryWitnessShape, summaryWitnessValid } from './vector-source.js';
 import { sanitizeSensitiveText, sanitizeTaskMetadata } from './safe-metadata.js';
 import { projectRecallSource, readRecallSource, isolateRecallAuxiliarySources, stateDto, cseChangesDto } from './recall-source.js';
-import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens, recallBudget, groupRecallPlaces, historySelectionContext, placeRecallBlocks, CSE_RECALL_KNOWLEDGE_BOUNDARY, LEGACY_CSE_RECALL_KNOWLEDGE_BOUNDARY } from './recall-selector.js';
+import { buildRecallQueryContext, buildRecallQueryFrame, formatRecallInjection, estimateRecallTokens, recallBudget, groupRecallPlaces, historySelectionContext, projectSelectedRecallPlaces, placeRecallBlocks, CSE_RECALL_KNOWLEDGE_BOUNDARY, LEGACY_CSE_RECALL_KNOWLEDGE_BOUNDARY } from './recall-selector.js';
 import { selectRecallWithLlm } from './recall-llm-selector.js';
 import { selectAssistantMessage } from './foundation-domain.js';
 import { inspectMessageFloorAnchor } from './message-floor-anchor.js';
@@ -80,7 +80,23 @@ function latestUser(snapshot) {
   return null;
 }
 
-const liveRecallFrameKey = snapshot => JSON.stringify(buildRecallQueryFrame({ coreChat: snapshot?.chat, assistantTurns: 1 }).messages.map(message => [message.role, message.text]));
+function recallFrameAssistantContents(coreChat, sanitizerOptions, canonicalByRaw = null) {
+  const canonicalByIndex = new Map();
+  // 先按原 frame 定位所需 AI，再清洗完整原文，避免排除块占掉正文截断额度。
+  for (const message of buildRecallQueryFrame({ coreChat, assistantTurns: 1, canonicalAssistantByCoreIndex: new Map() }).messages) {
+    if (message.role !== 'assistant') continue;
+    const raw = String(coreChat[message.index].mes ?? '').replace(/\r\n?/g, '\n');
+    const canonical = sanitizeMemoryContent(raw, sanitizerOptions);
+    canonicalByIndex.set(message.index, canonical);
+    canonicalByRaw?.set(raw, canonical);
+  }
+  return canonicalByIndex;
+}
+const liveRecallFrameKey = (snapshot, sanitizerOptions) => {
+  const coreChat = snapshot?.chat;
+  const canonicalAssistantByCoreIndex = recallFrameAssistantContents(coreChat, sanitizerOptions);
+  return JSON.stringify(buildRecallQueryFrame({ coreChat, assistantTurns: 1, canonicalAssistantByCoreIndex }).messages.map(message => [message.role, message.text]));
+};
 function captureLatestLocationReference(snapshot, sanitizerOptions, maximumFloors, beforeIndex = Infinity) {
   const chat = Array.isArray(snapshot?.chat) ? snapshot.chat : [];
   let visible = 0;
@@ -726,7 +742,7 @@ function refreshLegacyAuxiliaryText(receipt, places, peopleUnavailable, placesUn
 function refreshAuxiliaryReceipt(receipt, source, queryContext) {
   const oldPlaces = receipt.selectedPlaces ?? [], plan = receipt.timeDependencies?.renderPlan;
   const peopleUnavailable = source.unavailableSources?.includes('people');
-  const placesUnavailable = source.unavailableSources?.includes('places');
+  let placesUnavailable = source.unavailableSources?.includes('places');
   const projection = source.identityProjection ?? {};
   const names = new Map(source.entities.map(entity => [entity.entityId, entity.displayName]));
   const resolveToward = value => {
@@ -759,7 +775,10 @@ function refreshAuxiliaryReceipt(receipt, source, queryContext) {
   const scopedPlaceItems = plan?.floors.flatMap(floor => floor.items.filter(item => !placeItemCurrent(item, floor.floorId))) ?? [];
   const scopedPlaceChanged = scopedPlaceItems.length > 0;
   const placeIds = new Set([...oldPlaces, ...scopedPlaceItems].map(place => place.placeEntityId));
-  const facts = historySelectionContext(source, queryContext).facts.flatMap(item => item._placeMembers ?? [item]);
+  const facts = queryContext?.latestUserText
+    ? historySelectionContext(source, queryContext).facts.flatMap(item => item._placeMembers ?? [item])
+    : projectSelectedRecallPlaces(source, placeIds);
+  if (facts === null) placesUnavailable = true;
   const places = placesUnavailable ? [] : facts.filter(item => placeIds.has(item.placeEntityId) && ['manualPlace', 'placeFoundation'].includes(item.kind)).map(item => {
     const value = Object.fromEntries(Object.entries(item).filter(([key]) => !key.startsWith('_') && !['floorId', 'floorMemoryId', 'assistantSeq', 'branchScores', 'entityBranchScores', 'summaryScores', 'score'].includes(key)));
     return value;
@@ -1411,21 +1430,20 @@ async function captureCoveredBodyGuards(source, currentSource, snapshot, sanitiz
       const selected = selectAssistantMessage(message);
       if (!selected) return null;
       const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
-      const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonicalContent)]);
-      if (rawFingerprint !== current.rawFingerprint || canonicalFingerprint !== current.canonicalFingerprint) return null;
+      const canonicalFingerprint = await fingerprint(canonicalContent);
+      if (canonicalFingerprint !== current.canonicalFingerprint) return null;
       guards.push(Object.freeze({ hostLocator: Object.freeze({ messageIndex: currentCovered.liveIndex,
-        swipeId: selected.swipeId, selectedSwipeIndex: selected.selectedSwipeIndex }), rawContent: selected.rawContent, canonicalContent }));
+        swipeId: selected.swipeId, selectedSwipeIndex: selected.selectedSwipeIndex }), canonicalContent }));
       continue;
     }
     const message = snapshot?.chat?.[current.hostLocator.messageIndex];
     const selected = selectAssistantMessage(message);
     if (!selected || selected.swipeId !== current.hostLocator.swipeId || selected.selectedSwipeIndex !== current.hostLocator.selectedSwipeIndex) return null;
     const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
-    const [rawFingerprint, canonicalFingerprint] = await Promise.all([fingerprint(selected.rawContent), fingerprint(canonicalContent)]);
-    if (rawFingerprint !== current.rawFingerprint || canonicalFingerprint !== current.canonicalFingerprint) return null;
+    const canonicalFingerprint = await fingerprint(canonicalContent);
+    if (canonicalFingerprint !== current.canonicalFingerprint) return null;
     guards.push(Object.freeze({
       hostLocator: current.hostLocator,
-      rawContent: selected.rawContent,
       canonicalContent,
     }));
   }
@@ -1438,7 +1456,6 @@ function coveredBodyGuardsCurrent(guards, snapshot, sanitizerOptions) {
     return Boolean(selected
       && selected.swipeId === guard.hostLocator.swipeId
       && selected.selectedSwipeIndex === guard.hostLocator.selectedSwipeIndex
-      && selected.rawContent === guard.rawContent
       && sanitizeMemoryContent(selected.rawContent, sanitizerOptions) === guard.canonicalContent);
   });
 }
@@ -1941,7 +1958,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const user = latestUser(snapshot);
     if (currentHostChatId(snapshot) !== operation.hostChatId) return { ok: false, reason: 'chatChanged' };
     if (user?.index !== operation.user.index || user.message !== operation.user.message || user.message.mes !== operation.userText) return { ok: false, reason: 'userChanged' };
-    if (liveRecallFrameKey(snapshot) !== operation.liveFrameKey) return { ok: false, reason: 'narrativeChanged' };
+    if (liveRecallFrameKey(snapshot, operation.sanitizerOptions) !== operation.liveFrameKey) return { ok: false, reason: 'narrativeChanged' };
     promptPrequel(operation.prequelSelection.injectionText, operation.token, snapshot.context, { chatId: operation.chatId, hostChatId: operation.hostChatId });
     return { ok: true, committed: true, snapshot, user };
   }
@@ -2124,7 +2141,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       && user?.index === userIndex
       && user.message === hostGuard.userMessage
       && user.message.mes === hostGuard.userText
-      && liveRecallFrameKey(snapshot) === operation.liveFrameKey;
+      && liveRecallFrameKey(snapshot, operation.sanitizerOptions) === operation.liveFrameKey;
     if (!current) {
       if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
       if (currentHostChatId(snapshot) !== operation.hostChatId || currentChatId(snapshot) !== receipt.chatId) return { ok: false, reason: 'chatChanged' };
@@ -2151,12 +2168,12 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     if (currentChatId(before) !== source.chatId) return { ok: false, reason: 'chatChanged' };
     if (beforeUser?.index !== userIndex || beforeUser?.message !== hostGuard.userMessage) return { ok: false, reason: 'userChanged' };
     if (beforeUser.message.mes !== hostGuard.userText) return { ok: false, reason: 'userChanged' };
-    if (liveRecallFrameKey(before) !== operation.liveFrameKey) return { ok: false, reason: 'narrativeChanged' };
+    if (liveRecallFrameKey(before, operation.sanitizerOptions) !== operation.liveFrameKey) return { ok: false, reason: 'narrativeChanged' };
     const currentUserFingerprint = await fingerprint(beforeUser.message.mes);
     if (currentUserFingerprint !== userFingerprint) return { ok: false, reason: 'userChanged' };
     if (operation.token !== epoch || operation.controller.signal.aborted) return { ok: false, reason: abortReason(operation) };
     const verifyHostCoverage = source.readiness !== null && source.readiness !== undefined;
-    let currentSource = await basePreparedSource(verifyHostCoverage ? before : null, currentSanitizerOptions(), { fresh: true, operation, sourceToVerify: source });
+    let currentSource = await basePreparedSource(verifyHostCoverage ? before : null, operation.sanitizerOptions, { fresh: true, operation, sourceToVerify: source });
     if (currentSource !== source) {
       if (currentSource?.status !== 'ready') {
         const reason = currentSource?.status === 'stale' ? 'sourceStale' : 'sourceUnavailable';
@@ -2210,7 +2227,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       markVerificationFailure(failedReference?.step ?? 'selectedReference', 'changed', failedReference);
       return { ok: false, reason: 'selectedRefsChanged' };
     }
-    const bodyGuardSanitizer = currentSanitizerOptions();
+    const bodyGuardSanitizer = operation.sanitizerOptions;
     const selectedSourceGuards = await captureSelectedSourceGuards({ selectedFloors, selectedStates, selectedCseChanges }, currentSource, before);
     if (selectedSourceGuards === null) { markVerificationFailure('sourceBodyGuard', 'changed'); return { ok: false, reason: 'selectedRefsChanged' }; }
     const coveredBodyGuards = await captureCoveredBodyGuards(source, currentSource, before, bodyGuardSanitizer, fingerprint);
@@ -2229,7 +2246,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       && afterUser.message === hostGuard.userMessage
       && afterUser.message === beforeUser.message
       && afterUser.message.mes === hostGuard.userText
-      && liveRecallFrameKey(after) === operation.liveFrameKey
+      && liveRecallFrameKey(after, operation.sanitizerOptions) === operation.liveFrameKey
       && selectedSourcesCurrent
       && coveredBodyGuardsCurrent(coveredBodyGuards, after, bodyGuardSanitizer);
     if (!current) {
@@ -2293,8 +2310,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     active = operation; lastError = null; notify();
     const timings = {};
     operation.timings = timings;
+    const missingQueryError = () => Object.assign(new Error('本轮未收到可用于召回的用户输入，且没有可复用的有效回执。请发送新的用户消息，或检查预设的用户输入正则。'), { code: 'V3_RECALL_QUERY_EMPTY' });
     const stopForFinalSafety = reason => {
       if (!['chatChanged', 'userChanged', 'stopped', 'superseded', 'disabled'].includes(reason)) {
+        if (operation.queryContext && !operation.queryContext.latestUserText) throw missingQueryError();
         try { notifyUser?.({ kind: 'warning', text: '生成前记忆来源发生变化，本轮已放弃旧记忆注入，正文继续生成。' }); } catch { /* notification must not affect recall */ }
       }
       return finishStale(operation, timings, reason);
@@ -2317,25 +2336,20 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       operation.chatId = currentChatId(before);
       operation.hostChatId = currentHostChatId(before);
       operation.userText = user.message.mes;
-      operation.liveFrameKey = liveRecallFrameKey(before);
       operation.sanitizerOptions = currentSanitizerOptions();
+      operation.liveFrameKey = liveRecallFrameKey(before, operation.sanitizerOptions);
       operation.locationReferenceSnapshot = captureLatestLocationReference(before, operation.sanitizerOptions, recentBodyFloorLimit(),
         ['swipe', 'regenerate'].includes(type) ? user.index : undefined);
       notify();
       advanceOperation(operation, 'queryContext');
-      const canonicalByRaw = new Map(), canonicalAssistantByCoreIndex = new Map();
-      for (const message of buildRecallQueryFrame({coreChat:coreInput,assistantTurns:1}).messages.filter(value=>value.role==='assistant')) {
-        const raw = String(coreInput[message.index].mes ?? '').replace(/\r\n?/g,'\n');
-        const canonical = sanitizeMemoryContent(raw,operation.sanitizerOptions);
-        canonicalByRaw.set(raw,canonical); canonicalAssistantByCoreIndex.set(message.index,canonical);
-      }
+      const canonicalByRaw = new Map();
+      const canonicalAssistantByCoreIndex = recallFrameAssistantContents(coreInput, operation.sanitizerOptions, canonicalByRaw);
       const queryContext = queryBuilder({ coreChat: coreInput, assistantTurns: 1, canonicalAssistantByCoreIndex });
       operation.queryContext = queryContext;
       operation.prequelSourceText = currentPrequelText(before);
       advanceOperation(operation, 'prequelSelection');
       operation.prequelSelection = selectPrequel({ text: operation.prequelSourceText, queryContext, contextSize });
       const hostGuard = { userMessage: user.message, userText: user.message.mes };
-      if (!queryContext.latestUserText) return finishSkipped(operation, 'emptyUserInput', timings);
       const inputStarted = Date.now();
       const userFingerprint = await fingerprint(user.message.mes);
       timings.inputMs = Date.now() - inputStarted;
@@ -2350,8 +2364,10 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
           : !operation.locationReferenceSnapshot?.values?.length;
         if (snapshot && locationDependencyMatches) { candidate = snapshot; candidateOwner = owner; break; }
       }
+      if (!queryContext.latestUserText && !candidate) throw missingQueryError();
+      // 无有效新查询时仅核验冻结票，不走近期正文跳过或重新选材。
       // Apply the no-old-history rule before a saved early receipt can restore its CSE block.
-      const earlyScope = operation.prequelSourceText.trim() ? null
+      const earlyScope = !queryContext.latestUserText || operation.prequelSourceText.trim() ? null
         : earlyBodyScope(before, coreInput, type, user.index, recentBodyFloorLimit(), operation.sanitizerOptions);
       let earlyPreparedSource = null, earlyBodyWitness = null, earlySourceMs = 0;
       if (earlyScope && (!candidate || candidate.coverage.stableThroughAssistantSeq <= earlyScope.maximumSourceSeq)) {
@@ -2375,7 +2391,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
             const current = hostAdapter.snapshot(), currentUser = latestUser(current);
             if (currentChatId(current) !== operation.chatId || currentHostChatId(current) !== operation.hostChatId) return finishStale(operation, timings, 'chatChanged');
             if (currentUser?.message !== user.message || currentUser?.message?.mes !== operation.userText) return finishStale(operation, timings, 'userChanged');
-            if (liveRecallFrameKey(current) !== operation.liveFrameKey) return finishStale(operation, timings, 'narrativeChanged');
+            if (liveRecallFrameKey(current, operation.sanitizerOptions) !== operation.liveFrameKey) return finishStale(operation, timings, 'narrativeChanged');
             return finishSkipped(operation, 'recentBodyOnly', timings);
           }
         }
@@ -2747,6 +2763,11 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       notify(); return getState();
       } catch (error) {
       if (token !== epoch || operation.controller.signal.aborted) return finishStale(operation, timings);
+      if (error?.code === 'V3_RECALL_QUERY_EMPTY') {
+        const current = hostAdapter.snapshot(), currentUser = latestUser(current);
+        if (currentChatId(current) !== operation.chatId || currentHostChatId(current) !== operation.hostChatId) return finishStale(operation, timings, 'chatChanged');
+        if (currentUser?.index !== operation.user.index || currentUser.message !== operation.user.message || currentUser.message.mes !== operation.userText) return finishStale(operation, timings, 'userChanged');
+      }
       // 下游请求中断不代表宿主正文已停；有效轮次仍须走错误出口通知宿主停止。
       clearSlot(token);
       operation.prequelCommitted = false;
@@ -2762,7 +2783,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (error?.selectorDiagnostic) diagnostic.selectorDiagnostic = selectorDiagnosticSnapshot(error.selectorDiagnostic);
       diagnostic.error = safe; diagnostic.timings = clone({ ...timings, totalMs: Date.now() - diagnostic.started });
       const status = error?.httpStatus ?? error?.status;
-      const nonRetryable = requestAborted
+      const nonRetryable = requestAborted || error?.code === 'V3_RECALL_QUERY_EMPTY'
         || ['QQJ_CONFIG', 'QQJ_PRESET_INVALID', 'QQJ_DISABLED', 'QQJ_AUTH', 'QQJ_NOT_FOUND', 'QQJ_REQUEST_FORMAT'].includes(error?.code)
         || Number.isInteger(status) && status >= 400 && status < 500 && status !== 429;
       if (!nonRetryable && diagnostic.selectionStatus !== 'completed' && attempt + 1 < (operation.transportBudget.totalAttempts ?? 2) && operation.transportBudget.remaining > 0) {
@@ -2892,7 +2913,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       if (active) {
         if (currentChatId(current) !== active.chatId) activeReason = 'chatChanged';
         else if (user?.message !== active.user?.message || user?.message?.mes !== active.userText) activeReason = 'userChanged';
-        else if (liveRecallFrameKey(current) !== active.liveFrameKey) activeReason = 'narrativeChanged';
+        else if (liveRecallFrameKey(current, active.sanitizerOptions) !== active.liveFrameKey) activeReason = 'narrativeChanged';
       }
       if (!parentChanged && !activeReason) return;
       if (active && activeReason) retainTerminated(active, activeReason, name);

@@ -10,7 +10,7 @@ const bridge = globalThis.qqj_v3_public_bridge_v1;
 
 界面中的调用说明和复制示例位于“设置 → 教程与配置文件 → API 接口”。
 
-## 八个方法
+## 十个方法
 
 ### `getStatus()`
 
@@ -72,6 +72,28 @@ if (snapshot.status === 'ready') {
 ```
 
 每次返回的都是独立深复制。调用方修改其中的数组、人物档案或 CSE 条目，不会修改千千结内部状态。
+
+### `getReadiness({ afterMessageIndex = -1 } = {})`
+
+同步读取当前已加载的正式就绪范围，不读后端、不调用模型、不复制完整记忆、CSE或人物档案。返回当前`identity`、`status`、`readyThroughMessageIndex`和首个尚未就绪的`pendingMessageIndex`；无就绪楼时上界为`null`。楼号均为宿主0基`messageIndex`，不是AI独立序号`assistantSeq`。
+
+`afterMessageIndex`指定调用方已处理的位置，只检查其后已登记的楼。摘要须为正式active记录，其CSE须为有已存deltaId的`ready`或`noChange`；明确排除的楼无须等待，冻结楼沿runtime的`archived`语义处理。聚合摘要按`sourceMessageIndexes`覆盖多楼，不要求每AI各存一条摘要，也不要求assistantSeq连续。较晚楼尚未完成时保留此前可用上界；人物工作区或其他任务忙碌不影响已保存资料。
+
+`status: 'ready'`表示当前范围可以检查，上界仍可能为空。身份未就绪、内存未加载或失败时返回`not-ready`或`error`；插件关闭返回`disabled`。调用方须用`identity.qqjChatId`对齐自己正在处理的聊天，且只读取上界内正文。
+
+### `subscribeReadiness(listener)`
+
+复用memory runtime现有通知，向监听器传入上述不含正文的轻量进度；不轮询，不重新读取或复制完整快照。订阅本身不立即调用监听器，需要当前进度时调用`getReadiness()`。返回unsubscribe函数；各监听器异常隔离，最后一个监听器移除时释放runtime订阅。
+
+```js
+const stop = bridge.subscribeReadiness(progress => {
+  if (progress.status === 'ready') {
+    const current = bridge.getReadiness({ afterMessageIndex: processedIndex });
+    // 对齐current.identity.qqjChatId，再消费current.readyThroughMessageIndex以内的正文。
+  }
+});
+// 消费者卸载时调用stop()；桥晚加载或替换时可沿正常宿主事件重新订阅。
+```
 
 ### `getPeopleSnapshot()`
 

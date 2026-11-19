@@ -2595,3 +2595,27 @@ test('千事时效预算跳过超长整项后保健康后项，二次扩容保�
   assert.equal((result.text.match(/- 第二健康短项/gu) ?? []).length, 1);
   assert.ok(result.characterCount <= 1000);
 });
+
+test('pending候选保完整事项真实来源楼，不受五代表抽样或同名先后事项影响', async () => {
+  const id = n => `${String(n).padStart(8, '0')}-2121-4212-8212-212121212121`;
+  const floors = [], memories = []; let previous;
+  for (let n = 1; n <= 7; n++) {
+    const f = floor(id(n), n); floors.push(f);
+    const d = await compileQianshiDelta({ floor: f, now: NOW, candidateBindings: previous ? [{ key: 'candidate-1', matterId: previous.matterId, latestEventIds: [previous.id], sourceFloorId: previous.sourceFloorId, sourceAssistantSeq: n - 1 }] : [],
+      packet: { qianshi: { events: [{ key: 'event-1', title: `仓库租赁进展${n}`, description: `核对租赁步骤${n}`, status: 'inProgress', matter: true, following: true, ...(previous ? { links: [{ candidateKey: 'candidate-1', kind: 'progress' }] } : {}) }], order: [] } } });
+    previous = d.events[0]; memories.push(memory(id(100 + n), f, d));
+  }
+  const other = floor(id(8), 8); floors.push(other);
+  const unrelated = await compileQianshiDelta({ floor: other, now: NOW, packet: { qianshi: { events: [{ key: 'event-1', title: '仓库租赁进展7', description: '同名但另一份独立事项', status: 'planned', matter: true, following: false }], order: [] } } });
+  memories.push(memory(id(108), other, unrelated));
+  const reviewFloor = floor(id(9), 9); floors.push(reviewFloor);
+  const review = { ...previous, id: await deterministicUuid(['qianshi-followup-v1', reviewFloor.id, previous.matterId, previous.id, 'inProgress', true]),
+    sourceFloorId: reviewFloor.id, continuesFromEventIds: [previous.id], following: true, description: '跟进复核(截至第 9 个 AI 楼):仅复核跟进。' };
+  memories.push(memory(id(109), reviewFloor, { ...memories[6].qianshiDelta, events: [review], relations: [{ id: id(999), type: 'progress', fromEventId: previous.id, toEventId: review.id, certainty: 'explicit' }] }));
+  const graph = await qianshiDomain.annotateQianshiFollowingReviews({ root: { chatId: CHAT }, floors, floorMemories: memories, entities: [] });
+  const pending = prepareQianshiRecallCandidates(graph, { queryContext: { text: '仓库租赁' } }).candidates.find(row => row.kind === 'pending');
+  assert.deepEqual(pending.sourceFloorIds, floors.slice(0, 7).map(row => row.id));
+  assert.deepEqual(pending.eventIds, [], '来源桥接不能改变pending的最终时间线语义');
+  const prefix = prepareQianshiRecallCandidates({ ...graph, floors: floors.slice(0, 3), floorMemories: memories.slice(0, 3) }).candidates.find(row => row.kind === 'pending');
+  assert.deepEqual(prefix.sourceFloorIds, floors.slice(0, 3).map(row => row.id));
+});

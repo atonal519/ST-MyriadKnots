@@ -15492,7 +15492,9 @@ test('地点候选算法异常局限地点，正常召回首轮保摘要且筛�
   const { readFile } = await import('node:fs/promises');
   const sourceUrl = new URL('../src/v3/recall-selector.js', import.meta.url);
   let source = await readFile(sourceUrl, 'utf8');
-  source = source.replace('function placeFeatureCandidates(source, queryContext, entityById, queries, memories) {', "function placeFeatureCandidates(source, queryContext, entityById, queries, memories) { throw Object.assign(new Error('place candidate unavailable'), { code: 'QQJ_PLACE_ALGORITHM_FAILURE' });");
+  const placeFeatureDeclaration = /^function placeFeatureCandidates\([^\n]*\) \{/mu;
+  assert.match(source, placeFeatureDeclaration, '故障注入须命中地点候选函数');
+  source = source.replace(placeFeatureDeclaration, "$& throw Object.assign(new Error('place candidate unavailable'), { code: 'QQJ_PLACE_ALGORITHM_FAILURE' });");
   source = source.replace(/from '([^']+)'/gu, (all, name) => name.startsWith('.') ? `from '${new URL(name, sourceUrl).href}'` : all);
   source += '\n//# sourceURL=qqj-place-selection-fault.mjs\n';
   const injected = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);

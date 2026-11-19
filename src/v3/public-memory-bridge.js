@@ -270,6 +270,56 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
     if (state?.status !== 'ready' || !state.identity) return frozen({ status: 'not-ready', message: '千千结尚未准备好当前聊天身份。' });
     return frozen({ status: 'ready', identity: publicIdentity(state.identity) });
   };
+  const readinessListeners = new Set();
+  let readinessMemory = null, stopReadiness = null;
+  function projectReadiness(value, { afterMessageIndex = -1 } = {}) {
+    const local = localStatus();
+    if (local.status !== 'ready') return local;
+    const waiting = (status = 'not-ready') => frozen({ status, identity: local.identity, readyThroughMessageIndex: null });
+    if (!value || value.chatId !== local.identity.qqjChatId) return waiting();
+    if (value.memorySnapshotStatus !== 'ready') return waiting(value.memorySnapshotStatus === 'error' ? 'error' : 'not-ready');
+    if (hostAdapter.snapshot()?.chatId !== local.identity.hostChatId || !Array.isArray(value.floors)) return waiting();
+    const after = Number.isSafeInteger(afterMessageIndex) && afterMessageIndex >= -1 ? afterMessageIndex : -1;
+    const byIndex = new Map();
+    for (const floor of value.floors) {
+      const indexes = Array.isArray(floor.sourceMessageIndexes) && floor.sourceMessageIndexes.length
+        ? floor.sourceMessageIndexes : [floor.messageIndex];
+      if (indexes.some(index => !Number.isSafeInteger(index) || index < 0)) return waiting();
+      const excluded = floor.memoryExcluded === true;
+      const savedCse = ['ready', 'noChange'].includes(floor.cse?.status) && typeof floor.cse?.deltaId === 'string' && floor.cse.deltaId.length > 0;
+      const archivedCse = floor.frozen === true && floor.cse?.status === 'archived';
+      const ready = excluded || floor.sourceUnavailable !== true && floor.memory?.recordStatus === 'active' && (savedCse || archivedCse);
+      for (const index of indexes) if (index > after) byIndex.set(index, (byIndex.get(index) ?? true) && ready);
+    }
+    let readyThroughMessageIndex = null, pendingMessageIndex = null;
+    for (const [index, ready] of [...byIndex].sort(([a], [b]) => a - b)) {
+      if (!ready) { pendingMessageIndex = index; break; }
+      readyThroughMessageIndex = index;
+    }
+    return frozen({ status: 'ready', identity: local.identity, readyThroughMessageIndex, pendingMessageIndex });
+  }
+  function getReadiness(options) {
+    try { return projectReadiness(stopReadiness ? readinessMemory : memoryRuntime?.getState?.(), options); }
+    catch { return frozen({ status: 'error', readyThroughMessageIndex: null }); }
+  }
+  function subscribeReadiness(listener) {
+    if (typeof listener !== 'function') throw new TypeError('就绪监听器须为函数');
+    readinessListeners.add(listener);
+    if (!stopReadiness && typeof memoryRuntime?.subscribe === 'function') {
+      try { readinessMemory = memoryRuntime.getState(); } catch { readinessMemory = null; }
+      stopReadiness = memoryRuntime.subscribe(value => {
+        // Reuse the runtime notification: never reread or clone people, CSE or memory text.
+        readinessMemory = value;
+        let progress;
+        try { progress = projectReadiness(value); } catch { progress = frozen({ status: 'error', readyThroughMessageIndex: null }); }
+        for (const notify of readinessListeners) { try { notify(progress); } catch { /* Consumer isolation. */ } }
+      }) ?? (() => {});
+    }
+    return () => {
+      readinessListeners.delete(listener);
+      if (!readinessListeners.size) { stopReadiness?.(); stopReadiness = null; readinessMemory = null; }
+    };
+  }
   async function readMemory() {
     const status = localStatus();
     if (status.status !== 'ready') return status;
@@ -441,7 +491,7 @@ export function createPublicMemoryBridge({ session, store, hostAdapter, foundati
       return frozen({ status: 'error', message: publicErrorMessage(error, { fallback: '千千结人物记忆读取失败。' }), identity: status.identity, anchor: null, routerText: '', actors: [], coverage: { partial: false, selectedCharacters: 0, maxCharacters: 0 } });
     }
   }
-  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, readMemory, getPromptSnapshot, getSnapshot, getPeopleSnapshot, getPeopleAvatars, readWorldInfo, readContext });
+  return frozen({ schemaVersion: 1, kind: 'qqj-public-memory-bridge', getStatus: localStatus, getReadiness, subscribeReadiness, readMemory, getPromptSnapshot, getSnapshot, getPeopleSnapshot, getPeopleAvatars, readWorldInfo, readContext });
 }
 
 export function installPublicMemoryBridge({ globalRef = globalThis, ...options } = {}) {

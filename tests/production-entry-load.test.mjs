@@ -365,12 +365,13 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, numericCse = null, recallInterrupt = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, numericCse = null, recallInterrupt = false, recallExcludedEdit = false, emptyCoreUser = null, verifyRecallAttributePrompt = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const seededSettings = wrapperSeed ? structuredClone(wrapperSeed) : { qianqianjie: {}, 'schedule-planner': {} };
   if (numericCse) Object.assign(seededSettings.qianqianjie, { apiUrl: 'https://numeric-fixture.invalid/v1', apiKey: 'synthetic-only', apiModel: 'mock', ...(recallInterrupt ? { apiStream: true, apiQianqianjieRetryCount: 4 } : {}) });
   const eventRegistrations = new Map();
+  const eventHandlers = new Map();
   const startupWarnings = [];
   const fetchRequests = [];
   const testConsole = { ...console, warn(...args) { startupWarnings.push(args); } };
@@ -444,8 +445,8 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     uuidv4: () => '11111111-1111-4111-8111-111111111111',
     async saveMetadata() { saveMetadataCalls += 1; },
     ...(locationReferenceChat ? { async saveChat() { chatSaveCalls += 1; if (numericCse) hostFile = { header: { chat_metadata: structuredClone(host.chatMetadata) }, chat: structuredClone(host.chat) }; return true; } } : {}),
-    getRequestHeaders: () => ({}), eventTypes: { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona' },
-    eventSource: { once(name, callback) { assert.equal(name, 'app-ready'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); assert.equal(callback(), undefined, '已就绪宿主回放不等待QQJ准备'); }, on(name) { if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
+    getRequestHeaders: () => ({}), eventTypes: { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona', MESSAGE_EDITED: 'edited' },
+    eventSource: { once(name, callback) { assert.equal(name, 'app-ready'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); assert.equal(callback(), undefined, '已就绪宿主回放不等待QQJ准备'); }, on(name, callback) { const handlers = eventHandlers.get(name) ?? []; handlers.push(callback); eventHandlers.set(name, handlers); if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
   if (firstIdentityChat) host.chatMetadata = { otherPlugin: { header: '保留' } };
   let branchSource = null;
@@ -555,6 +556,18 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
         assert.equal(options.method, 'POST'); const request = JSON.parse(options.body);
         assert.match(request.reverse_proxy, /^https:\/\/numeric-fixture\.invalid\//u);
         assert.match(JSON.stringify(request.messages), /state_exclude_keys/u);
+        if (verifyRecallAttributePrompt) {
+          const system = request.messages.find(message => message.role === 'system').content;
+          assert.match(system, /Q的跟进提醒不代替R.*金额.*执行条件/u);
+          assert.match(system, /history_omit_spans/u);
+          const payload = JSON.parse(request.messages.find(message => message.role === 'user').content);
+          assert.ok(Array.isArray(payload.sourceEvidence), '实际API请求应携带同次选材来源证据');
+          assert.ok(payload.candidates.filter(row => row.summarySource !== undefined).every(row => ['ai', 'user', null].includes(row.summarySource)));
+        }
+        if (recallExcludedEdit) {
+          hostChat[0].mes += '<bbi_image>' + 'synthetic image prompt '.repeat(300) + '</bbi_image>';
+          for (const handler of eventHandlers.get('edited') ?? []) await handler(0);
+        }
         if (recallInterrupt) {
           assert.equal(request.stream, true);
           const reader = { async read() {
@@ -682,9 +695,10 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     assert.equal(snapshot?.identity?.qqjChatId, host.chatMetadata.qianqianjie.chatId);
     if (!nativeBranch) assert.equal(snapshot.memory.syncStatus, 'idle', JSON.stringify({ snapshot, startupWarnings: startupWarnings.map(args => args.map(value => value?.code ?? String(value))) }));
   }
+  if (recallExcludedEdit) hostChat[0].is_hidden = false;
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
   let locationReferenceResult = null;
-  if (invokeLocationReference) {
+  if (invokeLocationReference && emptyCoreUser !== 'missing') {
     // 数值场景的旧AI正文在本次宿主窗口外，由正式摘要召回承接。
     const generationWindow = numericCse ? hostChat.filter(message => message.is_user) : hostChat;
     const cleanedCore = generationWindow.map(message => ({ ...message, mes: message.mes.replace(/<location>[\s\S]*?<\/location>/giu, '').trim() }));
@@ -692,6 +706,19 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     // 宿主等待拦截器，以abort(true)标记阻止后续正文派发。
     locationReferenceResult = await context[manifest.generate_interceptor](cleanedCore, 8192, value => { abortCalls += 1; if (value === true) aborted = true; }, 'normal');
     if (recallInterrupt && !aborted) await context.fetch('/fixture/main-generation', { method: 'POST' });
+    await new Promise(resolvePromise => setImmediate(resolvePromise));
+  }
+  let emptyCoreUserResult = null;
+  if (emptyCoreUser) {
+    hostChat[1] = structuredClone(hostChat[1]);
+    if (emptyCoreUser === 'corrupt') hostChat[1].extra.qqj_v3_recall_receipt.injectionText += 'broken signature';
+    hostChat.push({ is_user: false, is_system: false, mes: '上一段合成AI已经结束。' });
+    const core = hostChat.map((message, index) => ({ ...message,
+      mes: message.is_user && hostChat.length - index - 1 >= 1 ? '' : message.mes }));
+    assert.ok(hostChat[1].mes); assert.equal(core[1].mes, '', 'minDepth=1只清非尾USER');
+    let aborted = false;
+    emptyCoreUserResult = await context[manifest.generate_interceptor](core, 8192, value => { abortCalls++; if (value === true) aborted = true; }, 'normal');
+    if (!aborted) await context.fetch('/fixture/main-generation', { method: 'POST' });
     await new Promise(resolvePromise => setImmediate(resolvePromise));
   }
   let legacyReceiptPrequelBudgetResult = null;
@@ -728,7 +755,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, mainDispatches, streamReads, numericRecallCalls, seedCseCalls: readyRecords?.numericCseCalls ?? 0, ttRootChecks, ttMaxWritesInFlight, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, legacyReceiptPrequelBudgetResult, abortCalls };
+  return { status: entry.status, mainDispatches, streamReads, numericRecallCalls, seedCseCalls: readyRecords?.numericCseCalls ?? 0, ttRootChecks, ttMaxWritesInFlight, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, emptyCoreUserResult, legacyReceiptPrequelBudgetResult, abortCalls };
 }
 
 for (const host of ['SillyTavern', 'Luker']) {
@@ -867,6 +894,51 @@ test('可选量化：真实CSE一次保存后最终bundle冷读重放并注入�
   assert.equal(new Set(counts).size, 1, '同图数字有无不增加首次读取请求');
 });
 
+test('最终bundle原一次selector请求携带R关键属性、来源证据与自动摘要削句协议', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, numericCse: 'valid', verifyRecallAttributePrompt: true,
+    coreCacheEnabled: false, fileOwnedIdentity: true, locationReferenceChat: true, invokeLocationReference: true });
+  assert.equal(result.numericRecallCalls, 1);
+  assert.equal(result.locationReferenceResult.recallStatus, 'ready');
+  assert.equal(result.abortCalls, 0);
+});
+
+test('最终bundle深度正则清空旧USER后复用有效回执，无合法票时停止正文', async t => {
+  for (const emptyCoreUser of ['saved', 'missing', 'corrupt']) await t.test(emptyCoreUser, async () => {
+    const result = await isolateBundle('SillyTavern', { enabled: true, numericCse: 'valid', emptyCoreUser,
+      coreCacheEnabled: false, fileOwnedIdentity: true, locationReferenceChat: true, invokeLocationReference: true });
+    assert.equal(result.numericRecallCalls, emptyCoreUser === 'missing' ? 0 : 1);
+    assert.equal(result.fetchRequests.filter(request => request.url === '/api/backends/chat-completions/generate').length, result.numericRecallCalls);
+    if (emptyCoreUser === 'saved') {
+      assert.equal(result.emptyCoreUserResult.lastRecall.reusedReceipt, true);
+      assert.equal(result.emptyCoreUserResult.recallStatus, 'ready');
+      assert.equal(result.mainDispatches, 1); assert.equal(result.abortCalls, 0);
+      const prompt = result.promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context').at(-1)?.[1] ?? '';
+      assert.match(prompt, /高兴于平安，仍不满冒险/u);
+      assert.equal(result.hostChat[1].extra.qqj_v3_recall_receipt.injectionText, prompt);
+    } else {
+      assert.equal(result.emptyCoreUserResult.recallStatus, 'error');
+      assert.equal(result.emptyCoreUserResult.lastRecallError.code, 'V3_RECALL_QUERY_EMPTY');
+      assert.equal(result.emptyCoreUserResult.lastRecall.attemptDiagnostics.length, 1);
+      assert.equal(result.mainDispatches, 0); assert.equal(result.abortCalls, 1);
+      for (const slot of ['qqj_v3_recalled_context', 'qqj_v3_prequel_context']) assert.equal(result.promptCalls.filter(call => call[0] === slot).at(-1)?.[1] ?? '', '');
+    }
+  });
+});
+
+test('最终bundle选材期间排除图块编辑继续原召回且只发一次选材请求', async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, numericCse: 'valid', recallExcludedEdit: true,
+    wrapperSeed: { qianqianjie: {}, 'schedule-planner': { bodyWrappers: { keepTags: 'content', extraTags: 'bbi_image' } } },
+    coreCacheEnabled: false, fileOwnedIdentity: true, locationReferenceChat: true, invokeLocationReference: true });
+  assert.equal(result.numericRecallCalls, 1);
+  assert.equal(result.fetchRequests.filter(request => /generate|completion|embedding/iu.test(request.url)).length, 1);
+  assert.equal(result.abortCalls, 0);
+  assert.equal(result.locationReferenceResult.recallStatus, 'ready', JSON.stringify(result.locationReferenceResult));
+  const prompt = result.promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context').at(-1)?.[1] ?? '';
+  assert.match(prompt, /高兴于平安，仍不满冒险/u);
+  assert.equal(result.hostChat[1].extra.qqj_v3_recall_receipt.injectionText, prompt);
+  assert.ok(result.hostChat[0].mes.includes('<bbi_image>'));
+});
+
 test('最终TT bundle召回SSE中断通过宿主abort阻止正文派发', async () => {
   const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true, numericCse: 'valid', recallInterrupt: true,
     coreCacheEnabled: false, fileOwnedIdentity: true, locationReferenceChat: true, invokeLocationReference: true });
@@ -1000,7 +1072,7 @@ test('manifest 唯一登记主入口，生产分包依赖完整、内容哈希�
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.3.0');
+  assert.equal(manifest.version, '1.3.1');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));
@@ -2173,7 +2245,7 @@ test('分包原构建重复执行保素材属性，仅提示词变化只写核�
   const repeated = await buildPlugin({ outDir: directory });
   assert.deepEqual(repeated.written, [], '相同输入的正常npm build底层必须不改文件');
   const changed = await buildPlugin({ outDir: directory, plugins: [{ name: 'offline-prompt-change', transform(code, id) {
-    if (id.endsWith('/src/v3/cse-engine.js')) return code.replace('qqj-v3-cse-prompt-55', 'qqj-v3-cse-prompt-55-offline-cache-probe');
+    if (id.endsWith('/src/v3/cse-engine.js')) return code.replace('qqj-v3-cse-prompt-56', 'qqj-v3-cse-prompt-56-offline-cache-probe');
   } }] });
   assert.deepEqual(changed.written, ['qqj-app.js']);
   const after = await stat(resolve(directory, basename(materialPath)));
