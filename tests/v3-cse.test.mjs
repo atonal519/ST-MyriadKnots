@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createHostAdapter } from '../src/v3/host-adapter.js';
@@ -141,7 +142,7 @@ test('可选量化：复合情绪与数字单独更新保存重放，不编造�
     currentState, trackedSubjects: [entities[1]], entities });
   const response = (emotions, expression) => ({ subjects: [{ subject: '甲', situational: [{ text: '喜欢与乙相处，仍反感乙冒险。', toward: '乙', visibility: 'expressed', reason: '本楼明确表达', quantification: { emotions, expression } }] }] });
   let calls = 0;
-  const first = await runCseRequest({ generateAnalysisTask: async () => { calls++; return { jsonData: response({ 亲近: 65, 反感: 45 }, 0) }; },
+  const first = await runCseRequest({ generateAnalysisTask: async options => { calls++; return { jsonData: response({ 亲近: 65, 反感: 45 }, 0) }; },
     envelope: make(null), previousCurrentState: null, now: NOW, deltaId: '99999999-1111-4111-8111-111111111111' });
   const original = first.delta.subjectSnapshots[0].situational[0];
   assert.deepEqual(original.quantification, { emotions: { 亲近: 65, 反感: 45 }, expression: 0 });
@@ -165,7 +166,7 @@ test('可选量化：复合情绪与数字单独更新保存重放，不编造�
   const replay = await replayCurrentState({ chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id,
     floors: [floor(FLOOR1, '甲说喜欢相处，也反感冒险。')], floorMemories: [memory(MEMORY1)], stateDeltas: [third.delta], now: NOW });
   assert.deepEqual(replay.subjects[0].situational[0].quantification, expressionOnly.quantification);
-  const bad = await runCseRequest({ generateAnalysisTask: async () => { calls++; return { jsonData: response({ 亲近: '60', 反感: 101 }) }; },
+  const bad = await runCseRequest({ generateAnalysisTask: async options => { calls++; return { jsonData: response({ 亲近: '60', 反感: 101 }) }; },
     envelope: make(null), previousCurrentState: null, now: NOW, deltaId: '99999996-1111-4111-8111-111111111111' });
   assert.equal(bad.delta.subjectSnapshots[0].situational[0].text, original.text);
   assert.equal(bad.delta.subjectSnapshots[0].situational[0].quantification, undefined);
@@ -284,7 +285,7 @@ test('正常结束别名：CSE共用解析在end_turn后保留台词原文且仅
     const raw = packet.replace(JSON.stringify(text), '"' + text + '"').replace(JSON.stringify(quote), '"' + quote + '"');
     const response = fenced ? '```json\n' + raw + '\n```' : raw;
     let calls = 0;
-    const result = await runCseRequest({ generateAnalysisTask: async () => { calls++; return { textData: response, taskMetadata: { finishReason: 'end_turn' } }; },
+    const result = await runCseRequest({ generateAnalysisTask: async options => { calls++; return { textData: response, taskMetadata: { finishReason: 'end_turn' } }; },
       envelope, previousCurrentState: null, now: NOW, deltaId: '99999999-1111-4111-8111-111111111111' });
     assert.equal(result.delta.subjectSnapshots[0].situational[0].text, text);
     assert.equal(validateStateDeltaRecord(result.delta).subjectSnapshots[0].situational[0].text, text);
@@ -354,7 +355,7 @@ test('人物状态分析只要求人物身份工作区，地点故障不进入�
   const runtime = createCseRuntime({store:h.store,hostAdapter:h.hostAdapter,
     identityProjectionProvider: async (_identity, options) => {
       reads++; if (options?.includePlaces !== false) throw new Error('地点库失败'); return {};
-    },generateAnalysisTask:async()=>{requests++;return{jsonData:{noMaterialChange:true}};},
+    },generateAnalysisTask:async options=>{requests++;return{jsonData:reviewedCsePacket(options)};},
     now:()=>new Date(NOW),newUuid:uuidFactory(),logger:{warn(){}}});
   await runtime.load(graph); await runtime.analyzeFloor(graph.floors[0].id,{replaceExisting:true});
   assert.equal(reads,2, '请求前与提交前分别读取人物身份，均不要求地点库'); assert.equal(requests,1); assert.equal(runtime.getState().lastCseError,null);
@@ -377,7 +378,7 @@ test('用户权威：旧明确user双ID在CSE加载与人工纠正中保留状�
   const fixture = { ...graph, entities: [...graph.entities, { ...duplicate, displayName: original.displayName, aliases: original.aliases }],
     stateDeltas: [compiled.delta], currentStates: [] };
   const cse = createCseRuntime({ store: { ...h.store, readReachable: async () => fixture }, hostAdapter: h.hostAdapter,
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }), now: () => new Date(NOW), logger: { warn() {} } });
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }), now: () => new Date(NOW), logger: { warn() {} } });
   const state = await cse.load(fixture);
   const users = state.cseSubjects.filter(subject => subject.displayName === original.displayName);
   assert.equal(users.length, 1, '旧明确user不能形成两个人物状态主体');
@@ -583,7 +584,7 @@ test('CSE 失败诊断经真实请求和现有失败提示保留，重载后仍�
   const failureStorage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
   for (const host of ['official', 'luker']) {
     values.clear();
-    const h = runtimeHarness({ host, failureStorage, cse: () => ({ jsonData: { subjects: [{ subject: '范围外人物', situational: ['候选正文禁止进入诊断'] }] } }) });
+    const h = runtimeHarness({ host, failureStorage, cse: options => ({ jsonData: { subjects: [{ subject: '范围外人物', situational: ['候选正文禁止进入诊断'] }] } }) });
     let state = await h.runtime.start().then(() => h.runtime.extractNext());
     const original = state.lastCseError?.diagnostics?.subjectResolution;
     assert.equal(original?.status, 'recorded');
@@ -656,7 +657,7 @@ test('空用户 Adaptive 只用现有归一请求材料附加独立核验任务'
   assert.ok(payloadDeltaCharacters > task.task.length, '增加量仅为该可选字段及其 JSON 键值包装');
   const routeCalls = [];
   for (const promptGuidance of ['', '自定义状态说明']) {
-    await runCseRequest({ generateAnalysisTask: async options => { routeCalls.push(options); return { jsonData: { subjects: [] } }; },
+    await runCseRequest({ generateAnalysisTask: async options => { routeCalls.push(options); return { jsonData: reviewedCsePacket(options) }; },
       envelope: eligible, previousCurrentState: null, now: NOW, deltaId: `38383838-1111-4111-8111-${String(routeCalls.length + 1).padStart(12, '0')}`, promptGuidance });
   }
   assert.equal(routeCalls.length, 2, '默认与自定义提示各仅使用现有一次 CSE 路由');
@@ -676,7 +677,7 @@ test('空用户 Adaptive 只用现有归一请求材料附加独立核验任务'
     ] } };
     assert.equal(request.payload.userCoreExtraction, undefined, '已有 Core 不触发 Core 提取任务');
     assert.deepEqual(request.payload.previousState.find(subject => subject.subject === '林岚')?.ownState.core.map(item => item.text), ['重视核实事实']);
-    return { jsonData: { subjects: [] } };
+    return { jsonData: reviewedCsePacket(options) };
   } });
   h.context.powerUserSettings.persona_description = '林岚一贯重视核实事实。';
   await h.runtime.start();
@@ -684,10 +685,10 @@ test('空用户 Adaptive 只用现有归一请求材料附加独立核验任务'
   state = await h.runtime.extractNext();
   assert.equal(runtimeCalls, 2, '两楼各运行原有一次 CSE 请求，无独立追加 API');
   const userState = state.cseSubjects.find(subject => subject.displayName === '林岚');
-  assert.deepEqual(userState.core.map(item => item.text), ['重视核实事实'], '空 subjects[] 响应保留既有 Core');
+  assert.deepEqual(userState.core.map(item => item.text), ['重视核实事实'], '复核当前情境时保留既有 Core');
   assert.deepEqual(userState.adaptive, [], '没有充分依据时不强填自身或 toward Adaptive');
   assert.deepEqual(state.cseSubjects.find(subject => subject.displayName === '裴晚生').situational.map(item => item.text), ['仍在整理资料'], '用户独立检查不阻断其他 tracked 人物的常规分析');
-  assert.equal(state.cseReady, true, '合法 subjects[] CSE 结果仍正常保存');
+  assert.equal(state.cseReady, true, '明确复核后的 CSE 结果仍正常保存');
   assert.equal(h.commitResults.at(-1).status, 'saved');
 });
 
@@ -804,7 +805,7 @@ test('本楼CSE首次提及NPC可检查状态并独立保存有来源依据的�
         const request = JSON.parse(options.taskMessages[0].content);
         const target = request.payload.identityBriefTargets?.find(item => item.name === '阿青');
         const hasCurrentIdentityEvidence = request.payload.canonicalContent !== oldFloorText;
-        return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [], ...(target && hasCurrentIdentityEvidence ? { identityBriefUpdates: [{ targetKey: target.key,
+        return { jsonData: { userCoreExtraction: { status: 'insufficient' }, ...reviewedCsePacket(options), ...(target && hasCurrentIdentityEvidence ? { identityBriefUpdates: [{ targetKey: target.key,
           identityBrief: '北城图书馆管理员。', evidence: [{ source: 'worldbook:1', quote: worldbookQuote }] }] } : {}) } };
       },
     });
@@ -858,7 +859,7 @@ test('有据简介实际runtime：提交后直接公开快照，冷读同源且�
       extractor: () => ({ jsonData: { summary: '沈禾递来一本书。', people: [{ name: '沈禾', presence: 'mentioned' }] } }),
       cse: options => {
         const target = JSON.parse(options.taskMessages[0].content).payload.identityBriefTargets.find(item => item.name === '沈禾');
-        return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [], identityBriefUpdates: [{ targetKey: target.key,
+        return { jsonData: { userCoreExtraction: { status: 'insufficient' }, ...reviewedCsePacket(options), identityBriefUpdates: [{ targetKey: target.key,
           identityFacts: [{ kind: 'occupation', text: '北城图书馆管理员。', evidence: [{ source: 'worldbook:1', quote }] }] }] } };
       } });
     await h.runtime.start();
@@ -913,7 +914,7 @@ test('有据简介旧楼补提：真实提交与公开上下文按剧情顺序�
       return { jsonData: { summary: payload.canonicalContent, people: [{ name: '沈禾', ...(target ? { sameAsEntityKey: target.entityKey } : {}),
         identityFacts: [{ kind: 'occupation', text: payload.canonicalContent === early ? '图书馆学徒。' : '图书馆管理员。', evidence: [{
           quoteSegments: [payload.canonicalContent], supports: '正文明确职业', evidenceMode: 'explicit', sourceMentionKey: null }] }] }] } };
-    }, cse: () => ({ jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [] } }) });
+    }, cse: options => ({ jsonData: { userCoreExtraction: { status: 'insufficient' }, ...reviewedCsePacket(options) } }) });
   await h.runtime.start(); await h.runtime.extractNext(); offset += 1000; await h.runtime.extractNext();
   let saved = await h.store.readReachable({ mode: 'runtime' });
   const first = saved.floors[0].id, second = saved.floors[1].id;
@@ -947,7 +948,7 @@ test('CSE mixed tracked 首次预算优先缺记录人物，并能用合并旧�
       requests.push(request);
       if (requests.length === 1) return { jsonData: { subjects: [{ subject: '主角', situational: [{ text: '正在观察远处来客', visibility: 'private', reason: '本楼' }] }] } };
       if (requests.length === 2) return { jsonData: { subjects: [{ subject: '目标乙', situational: [{ text: '正在履行北境承诺', visibility: 'observable', reason: '本楼' }] }] } };
-      return { jsonData: { noMaterialChange: true } };
+      return { jsonData: reviewedCsePacket(options) };
     },
   });
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
@@ -995,7 +996,7 @@ test('真实 runtime 让合并身份的模型前态与编译前态一致，接�
     cse: options => {
       const request = JSON.parse(options.taskMessages[0].content);
       if (request.payload.canonicalContent.includes('旧称甲承诺')) return { jsonData: { subjects: [{ subject: '旧称甲', core: [{ text: '重视承诺', visibility: 'authorial', reason: '明确承诺' }], adaptive: [{ text: '会守住北境入口', visibility: 'observable', reason: '本楼承诺' }] }] } };
-      if (!request.payload.canonicalContent.includes('目标乙确认')) { laterRequests.push(request); return { jsonData: { noMaterialChange: true } }; }
+      if (!request.payload.canonicalContent.includes('目标乙确认')) { laterRequests.push(request); return { jsonData: reviewedCsePacket(options) }; }
       mergedRequest = request;
       return { jsonData: { subjects: [{ subject: '目标乙', review: { adaptive: [{ previousText: '会守住北境入口', action: 'refine', text: '核实暗号后继续守门', evidence: [{ source: 'canonicalContent', quote: '确认旧称甲留下的暗号后' }] }] }, situational: [{ text: '正在继续守门', visibility: 'observable', reason: '本楼结尾' }] }] } };
     },
@@ -1063,7 +1064,7 @@ test('真实 runtime 对明确人工 Core 的连续修改在后续分析均不�
   const h = runtimeHarness({
     chat: [user('开始'), assistant('林岚确认会逐条核对手稿。'), assistant('用于确认第一楼稳定。')],
     extractor: () => ({ jsonData: { summary: '林岚确认会逐条核对手稿。', people: [{ name: '你', presence: 'present' }] } }),
-    cse: () => { cseCalls += 1; return { jsonData: { userCoreExtraction: { status: 'traits' }, subjects: [
+    cse: options => { cseCalls += 1; return { jsonData: { userCoreExtraction: { status: 'traits' }, subjects: [
       { subject: '林岚', additions: { core: [{ text: '认真核对手稿', evidence: [{ source: 'userPersona', quote: '林岚认真核对手稿。' }] }] } },
     ] } }; },
   });
@@ -1120,7 +1121,7 @@ test('身份投影残留旧成员但当前图已无该实体时，首楼只写�
   const h = runtimeHarness({
     chat: [user('开始'), assistant('目标乙承诺守住入口。'), assistant('用于确认首楼稳定。')],
     extractor: () => ({ jsonData: { summary: '目标乙承诺守住入口。', people: [{ name: '目标乙', presence: 'present' }], commitments: [{ issuer: '目标乙', recipient: '林岚', content: '守住入口' }] } }),
-    cse: () => ({ jsonData: { subjects: [{ subject: '目标乙', situational: [{ text: '正在守住入口', visibility: 'observable', reason: '本楼承诺' }] }] } }),
+    cse: options => ({ jsonData: { subjects: [{ subject: '目标乙', situational: [{ text: '正在守住入口', visibility: 'observable', reason: '本楼承诺' }] }] } }),
   });
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
   const reachable = await h.store.readReachable({ mode: 'runtime' });
@@ -1186,7 +1187,7 @@ test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core�
   const h = runtimeHarness({
     cse: options => {
       const request = JSON.parse(options.taskMessages[0].content);
-      if (request.payload.canonicalContent.includes('后续楼')) return { jsonData: { noMaterialChange: true } };
+      if (request.payload.canonicalContent.includes('后续楼')) return { jsonData: reviewedCsePacket(options) };
       return { jsonData: { userCoreExtraction: { status: 'traits' }, subjects: [
         { subject: '林岚', additions: { core: [{ text: '谨慎', evidence: [{ source: 'userPersona', quote: '谨慎' }] }] }, situational: [{ text: '记得带伞', visibility: 'private', reason: '收到提醒' }] },
         { subject: '裴晚生', situational: [{ text: '等待回应', visibility: 'observable', reason: '已经提醒' }] },
@@ -1279,7 +1280,7 @@ test('人工纠正以末 delta 为锚不可变替换，支持增删清空 core�
 
 test('旧 CSE load 的重放迟到时不得覆盖已经成功提交的人工长期倾向', async () => {
   const h = runtimeHarness({
-    cse: () => ({ jsonData: { subjects: [{ subject: '林岚', adaptive: [{ text: '旧长期倾向', visibility: 'private', reason: '既有表现' }] }] } }),
+    cse: options => ({ jsonData: { subjects: [{ subject: '林岚', adaptive: [{ text: '旧长期倾向', visibility: 'private', reason: '既有表现' }] }] } }),
   });
   await h.runtime.start().then(() => h.runtime.extractNext());
   const oldGraph = await h.store.readReachable({ mode: 'runtime' });
@@ -1287,7 +1288,7 @@ test('旧 CSE load 的重放迟到时不得覆盖已经成功提交的人工长�
   const cseRuntime = createCseRuntime({
     store: h.store,
     hostAdapter,
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
     now: () => new Date(NOW),
     newUuid: uuidFactory(),
     logger: { warn() {} },
@@ -1339,7 +1340,7 @@ test('旧 CSE load 的重放迟到时不得覆盖已经成功提交的人工长�
 
 test('CSE root耐久后重放期间失效，不向外层回传旧epoch图', async () => {
   const h = runtimeHarness({ chat: [user('开始'), assistant('第一楼。'), user('确认一'), assistant('第二楼。'), user('确认二')],
-    cse: () => ({ jsonData: { noMaterialChange: true } }) });
+    cse: options => ({ jsonData: reviewedCsePacket(options) }) });
   await h.runtime.start();
   await h.runtime.extractNext();
   const [, second] = h.runtime.getState().floors;
@@ -1360,7 +1361,7 @@ test('CSE root耐久后重放期间失效，不向外层回传旧epoch图', asyn
   };
   const hostAdapter = createHostAdapter({ globalRef: { SillyTavern: { getContext: () => h.context } } });
   const runtime = createCseRuntime({ store: wrappedStore, hostAdapter,
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
     onGraphCommitted: () => { callbacks += 1; }, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   await runtime.load(graph);
 
@@ -1414,11 +1415,11 @@ test('原目标CSE在当前视图切换后仍向失败记录回调原图成功�
       storeForIdentity: identity => h.store.forIdentity(identity),
       captureBusinessIdentity: () => visibleIdentity,
       hostAdapter: h.hostAdapter,
-      generateAnalysisTask: async () => {
+      generateAnalysisTask: async options => {
         taskStartedResolve();
         await taskGate;
         if (outcome === 'failure') throw Object.assign(new Error('离线用例故意失败'), { code: 'TEST_CSE_FAILURE' });
-        return { jsonData: { noMaterialChange: true } };
+        return { jsonData: reviewedCsePacket(options) };
       },
       onFailureHint: (value, floorId, failure) => callbacks.push({ chatId: value.root.chatId, floorId, failure }),
       now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} },
@@ -1497,12 +1498,12 @@ test('NPC身份简介相同项去重、冲突只隔离简介而保留本轮结�
     identityBriefTargets: [{ entityId: B, name: '乙', labels: ['乙', 'B'], identityBrief: null }] });
   const targetKey = envelope.scope.identityBriefBindings[0].key;
   const update = { targetKey, identityBrief: '作者事实中的稳定身份。', evidence: [{ source: 'worldbook:1', quote: '作者事实' }] };
-  const duplicate = await compileCseResponse({ response: { noMaterialChange: true, identityBriefUpdates: [update, structuredClone(update)] },
+  const duplicate = await compileCseResponse({ response: { ...reviewedCsePacket(envelope), identityBriefUpdates: [update, structuredClone(update)] },
     envelope, previousCurrentState: null, now: NOW, deltaId: '18181818-1111-4111-8111-181818181818' });
   assert.equal(duplicate.delta.noMaterialChange, true);
   assert.deepEqual(duplicate.identityBriefUpdates.map(({ entityId, identityBrief }) => ({ entityId, identityBrief })), [{ entityId: B, identityBrief: '作者事实中的稳定身份。' }], '同目标同简介只生成一项更新');
 
-  const conflict = await compileCseResponse({ response: { noMaterialChange: true, identityBriefUpdates: [update,
+  const conflict = await compileCseResponse({ response: { ...reviewedCsePacket(envelope), identityBriefUpdates: [update,
     { ...update, identityBrief: '相冲突的另一简介。' }, { targetKey: 'unknown-target', identityBrief: '不应写入。' },
     { ...update, identityBrief: '引文无效的简介。', evidence: [{ source: 'worldbook:1', quote: '不存在于来源中的话' }] }] }, envelope, previousCurrentState: null, now: NOW,
   deltaId: '19191919-1111-4111-8111-191919191919' });
@@ -1602,7 +1603,7 @@ test('合并身份人工纠正只替换目标组并保留其他人物，legacy �
     identityMemberEntityIdsBySubject: { [B]: [B, A] },
   });
   const secondAnchor = await compileCseResponse({
-    response: { subjects: [{ subject: '乙' }] }, envelope: legacyEnvelope, previousCurrentState: projected,
+    response: reviewedCsePacket(legacyEnvelope), envelope: legacyEnvelope, previousCurrentState: projected,
     now: NOW, deltaId: '20202020-1414-4141-8141-202020202020',
   });
   const legacyAnchor = structuredClone(secondAnchor.delta);
@@ -1655,7 +1656,7 @@ test('重算早期楼的候选计数只看截至目标楼，目标前与本楼�
     cse: options => {
       const request = JSON.parse(options.taskMessages[0].content);
       requests.push({ content: request.payload.canonicalContent, names: request.payload.trackedSubjects.map(item => item.name) });
-      return { jsonData: { noMaterialChange: true } };
+      return { jsonData: reviewedCsePacket(options) };
     },
   });
   await h.runtime.start();
@@ -1836,7 +1837,7 @@ test('用户核心特质提取同次 CSE 验证结果并在漏答时不额外请
   assert.equal(dynamicTraits.delta.source.userCoreExtraction.status, 'traits');
   assert.deepEqual(dynamicTraits.delta.subjectSnapshots[0].core.map(item => item.text), ['重视查明事实']);
 
-  const dynamicInsufficient = await runDynamic({ userCoreExtraction: { status: 'insufficient' }, subjects: [] });
+  const dynamicInsufficient = await runDynamic({ userCoreExtraction: { status: 'insufficient' }, ...reviewedCsePacket(envelope) });
   assert.equal(dynamicInsufficient.delta.source.userCoreExtraction.status, 'insufficient');
   assert.deepEqual(dynamicInsufficient.delta.subjectSnapshots[0].core, []);
 
@@ -1901,7 +1902,7 @@ test('用户核心特质提取同次 CSE 验证结果并在漏答时不额外请
 
 test('人工只改其他分类且 Core 原本为空时，不标记为人工清空 Core', async () => {
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '林岚正在观察。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: entities, entities });
-  const anchor = await compileCseResponse({ response: { subjects: [{ subject: '林岚' }] }, envelope, previousCurrentState: null, now: NOW, deltaId: '89898989-1111-4111-8111-898989898989' });
+  const anchor = await compileCseResponse({ response: reviewedCsePacket(envelope), envelope, previousCurrentState: null, now: NOW, deltaId: '89898989-1111-4111-8111-898989898989' });
   const current = await replayCurrentState({ chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id, floors: [floor(FLOOR1, '林岚正在观察。')], floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }], stateDeltas: [anchor.delta], now: NOW });
   const user = current.subjects.find(subject => subject.subjectEntityId === USER);
   const correction = await createManualCseCorrection({
@@ -2048,7 +2049,7 @@ test('完整 CSE 重构重新检查空 Core 一次，并复用本轮前楼结论
     requests.push({ content: request.payload.canonicalContent, extraction: request.payload.userCoreExtraction ?? null });
     return { jsonData: {
       ...(request.payload.userCoreExtraction ? { userCoreExtraction: { status: 'insufficient' } } : {}),
-      subjects: [],
+      ...reviewedCsePacket(options),
     } };
   } });
   h.context.powerUserSettings.persona_description = '林岚做事细致，遇到重要决定会先复核事实。';
@@ -2074,7 +2075,7 @@ test('任务捕获后Persona展示变化不撤销原任务已完成的提取', a
     const request = JSON.parse(options.taskMessages[0].content);
     assert.ok(request.payload.userCoreExtraction);
     h.context.personaId = 'other-persona';
-    return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [{ subject: '林岚' }] } };
+    return { jsonData: { userCoreExtraction: { status: 'insufficient' }, ...reviewedCsePacket(options) } };
   } });
   h.context.powerUserSettings.persona_description = '调查员林岚，重视查明事实。';
   const state = await h.runtime.start().then(() => h.runtime.extractNext());
@@ -2089,7 +2090,7 @@ test('固定CSE任务提交不再读取全局Persona，结果保留捕获的目�
     analysisCalls++;
     assert.ok(JSON.parse(options.taskMessages[0].content).payload.userCoreExtraction);
     livePersona = 'later-live-persona';
-    return { jsonData: { userCoreExtraction: { status: 'insufficient' }, subjects: [] } };
+    return { jsonData: { userCoreExtraction: { status: 'insufficient' }, ...reviewedCsePacket(options) } };
   } });
   await h.runtime.start();
   await h.runtime.extractNext();
@@ -2229,13 +2230,13 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.equal(compiled.delta.subjectSnapshots[0].situational[0].reason, '正文明确写出甲亲耳听见并记住');
   assert.equal(compiled.delta.source.promptVersion, CSE_PROMPT_VERSION);
   assert.equal(compiled.delta.source.compilerVersion, CSE_COMPILER_VERSION);
-  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-56');
-  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-24');
-  assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词须形成有持续人物塑造意义的情感或关系结果，才进入 Situational/);
+  assert.equal(CSE_PROMPT_VERSION, 'qqj-v3-cse-prompt-58');
+  assert.equal(CSE_COMPILER_VERSION, 'qqj-v3-cse-prompt-2/calibration-compiler-25');
+  assert.match(CSE_SYSTEM_PROMPT, /单次事件中的明确情绪、看法或态度，本楼结束时仍存在即可进入 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /人物被提及不等于本人在场/);
   assert.match(CSE_SYSTEM_PROMPT, /旧裸identityBrief只作身份对照，不是证据/);
   assert.match(CSE_SYSTEM_PROMPT, /活动过程、单次服务.*摘要、时间及千事/);
-  assert.match(CSE_SYSTEM_PROMPT, /这条具体记录了哪种有依据的心理、情感、关系或应对特征或结果/);
+  assert.match(CSE_SYSTEM_PROMPT, /这条具体记录了哪种有依据的认识、感受、态度、关系或应对特征或结果/);
   assert.match(CSE_SYSTEM_PROMPT, /另一人只是背景、原因或事件参与者，还是这项态度或相处反应的明确对象/);
   assert.match(CSE_SYSTEM_PROMPT, /两条独立且分别有正文依据的信息，需要拆开表达，还是同一信息的重复描述/);
   assert.match(CSE_SYSTEM_PROMPT, /不能只因一个行为有受事者就自动判为关系态度，也不能把行为一律排除出关系反应/);
@@ -2266,24 +2267,24 @@ test('稀疏 FloorMemory 不削弱正文，明确正文状态可编译且提示�
   assert.match(CSE_SYSTEM_PROMPT, /situational 使用自身与关系两个完整分区/);
   assert.match(CSE_SYSTEM_PROMPT, /空数组只表示没有相应操作，不清空旧项/);
   assert.match(CSE_SYSTEM_PROMPT, /同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据/);
-  assert.match(CSE_SYSTEM_PROMPT, /单次事件造成的即时情绪、动作或台词.*才进入 Situational.*不得把它改写成“当 X 时总会\/会……”之类长期条件模式/s);
+  assert.match(CSE_SYSTEM_PROMPT, /单次事件中的明确情绪、看法或态度.*即可进入 Situational.*不得把它改写成“当 X 时总会\/会……”之类长期条件模式/s);
   assert.match(CSE_SYSTEM_PROMPT, /新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式/);
   assert.doesNotMatch(CSE_SYSTEM_PROMPT, /"action":"keep"/);
   assert.doesNotMatch(CSE_SYSTEM_PROMPT, /"additions":\{"core":\[\],"adaptive":\[\]\}/);
   assert.match(CSE_SYSTEM_PROMPT, /不得拿 previousState、旧状态的 reason.*补足独立证据/s);
   assert.match(CSE_SYSTEM_PROMPT, /身体症状、衣着、位置、物品收放、待办、约定及行动流水由摘要、时间和千事承接/);
-  assert.match(CSE_SYSTEM_PROMPT, /经历沉淀后仍影响人物塑造的情感变化、关系反应、心理边界和成长结果/);
+  assert.match(CSE_SYSTEM_PROMPT, /本楼结束时仍存在的短期情绪和看法，不必先证明长期成长或持续关系影响/);
   assert.match(CSE_SYSTEM_PROMPT, /每次输出 situational 使用完整分区对象/);
-  assert.match(CSE_SYSTEM_PROMPT, /旧自动 Situational.*失去人物塑造意义.*退出当前列表/);
+  assert.match(CSE_SYSTEM_PROMPT, /旧自动 Situational.*在本楼结束时已不再成立.*退出当前列表/);
   assert.match(CSE_SYSTEM_PROMPT, /逐项复核 previousState 的旧自动 Situational/);
   assert.match(CSE_SYSTEM_PROMPT, /两区都明确为 \[\] 才清空整类/);
   assert.match(CSE_SYSTEM_PROMPT, /结构不完整或省略分类沿用旧值/);
   assert.match(CSE_SYSTEM_PROMPT, /不能改放进 self/);
   assert.match(CSE_SYSTEM_PROMPT, /历史事实继续保在原剧情资料中/);
-  assert.match(CSE_SYSTEM_PROMPT, /没有足够依据更新时省略/);
+  assert.match(CSE_SYSTEM_PROMPT, /仍有效的旧情境应照原义回传/);
   assert.match(CSE_SYSTEM_PROMPT, /合并身份后同一个人的有效状态.*不要把合并前的旧名称或旧身份另算作另一人/s);
   assert.match(CSE_SYSTEM_PROMPT, /review 以 previousText（Adaptive 同名时再用 toward）精确指向旧项/);
-  assert.match(CSE_SYSTEM_PROMPT, /确无需要输出的状态变化时，返回 \{"subjects":\[\]\}/);
+  assert.match(CSE_SYSTEM_PROMPT, /有正常分析人物时必须提交复核后的当前状态，即使真实未变/);
   assert.match(CSE_SYSTEM_PROMPT, /变化说明由程序按实际前后状态生成，无需填写 changeSummary/);
   assert.doesNotMatch(CSE_SYSTEM_PROMPT, /"changeSummary":/);
   assert.match(CSE_SYSTEM_PROMPT, /evidence\.source 必须逐字使用 evidenceSourceCatalog.*worldbook:1/s);
@@ -2337,7 +2338,69 @@ test('CSE五类定义经默认与自定义runCseRequest保留并适用于所有�
   }
 });
 
-test('CSE 只接受可识别业务根，保留合法空结果、别名容器、顶层数组与逐条隔离', async () => {
+test('CSE 默认与自定义实际请求接纳本楼当前态度，不以持续成长作情境门槛', async () => {
+  const body = '甲明确表示认可共同承担负担的方案，同时担心最终效果，需验证后再确认。';
+  const envelope = createCseEnvelope({ floor: floor(FLOOR1, body), floorMemory: memory(MEMORY1), baseline,
+    currentState: null, trackedSubjects: [entities[1]], entities });
+  for (const promptGuidance of ['', '只分析有据的人物当前态度。']) {
+    let calls = 0;
+    const result = await runCseRequest({ envelope, previousCurrentState: null, now: NOW, deltaId: MEMORY2, promptGuidance,
+      generateAnalysisTask: async options => {
+        calls += 1;
+        assert.match(options.systemPrompt, /职业、协作、谈判.*明确态度.*当前情境/u);
+        assert.match(options.systemPrompt, /这条具体记录了哪种有依据的认识、感受、态度、关系或应对特征或结果/u);
+        assert.match(options.systemPrompt, /只有正文明确支持相应人物的认识、感受、态度或关系结果时/u);
+        assert.match(options.systemPrompt, /参与事件或存在 toward 不足以证明状态变化/u);
+        assert.match(options.systemPrompt, /本楼结束时仍存在的短期情绪和看法.*不必.*长期成长.*持续关系影响/u);
+        assert.match(options.systemPrompt, /先.*本楼.*认识、误解、感受、认可、疑虑.*再.*前态/u);
+        assert.match(options.systemPrompt, /方案、机构.*self.*不.*人物.*toward/u);
+        assert.doesNotMatch(options.systemPrompt, /即时情绪须有持续的人物或关系意义才进入|须形成有持续人物塑造意义.*才进入 Situational|当次反应只有持续意义才写 Situational|经历若沉淀为情感或关系变化/u);
+        return { jsonData: { subjects: [{ subject: '甲', situational: { self: [{ text: '认可共同承担负担的方案，仍对验证结果保留顾虑',
+          reason: body, visibility: 'expressed' }], relations: [] } }] } };
+      } });
+    assert.equal(calls, 1);
+    assert.equal(result.delta.subjectSnapshots[0].situational[0].towardEntityId, null);
+    assert.equal(result.delta.subjectSnapshots[0].situational[0].visibility, 'expressed');
+  }
+});
+
+test('CSE 新响应不能以整楼空交、姓名空壳或离场复核替代正常人物状态', async t => {
+  const previous = { id: MEMORY1, subjects: [{ subjectEntityId: B, core: [], adaptive: [], situational: [{
+    id: MEMORY2, text: '对甲仍有顾虑', visibility: 'private', reason: '旧依据', origin: 'floor',
+    towardEntityId: A, sourceFloorId: FLOOR1, sourceDeltaId: MEMORY1,
+  }] }] };
+  const envelope = createCseEnvelope({ floor: floor(FLOOR2, '甲整理资料。'), floorMemory: memory(MEMORY2), baseline,
+    currentState: previous, trackedSubjects: [entities[1]], entities });
+  assert.equal(envelope.scope.trackedBindings.find(binding => binding.entityId === B).reviewOnly, true);
+  for (const [name, response] of [
+    ['空 subjects', { subjects: [] }],
+    ['仅无变化标志', { noMaterialChange: true }],
+    ['姓名空壳', { subjects: [{ subject: '甲' }] }],
+    ['字符串姓名', { subjects: ['甲'] }],
+    ['未知字段', { subjects: [{ subject: '甲', stateReviewed: true }] }],
+    ['空值分类', { subjects: [{ subject: '甲', core: null, adaptive: null, situational: null }] }],
+    ['空值校准', { subjects: [{ subject: '甲', review: { core: null }, additions: { adaptive: null } }] }],
+    ['空校准列表', { subjects: [{ subject: '甲', review: { core: [] }, additions: { adaptive: [] } }] }],
+    ['仅空长期分类', { subjects: [{ subject: '甲', core: [], adaptive: [] }] }],
+    ['错误类型分类', { subjects: [{ subject: '甲', situational: 42 }] }],
+    ['仅离场复核', { subjects: [{ subject: '乙', situational: { self: [], relations: [] } }] }],
+  ]) await t.test(name, async () => {
+    await assert.rejects(compileCseResponse({ response, envelope, previousCurrentState: previous, now: NOW, deltaId: MEMORY2 }),
+      error => ['V3_CSE_FORMAT_INVALID', 'V3_CSE_ALL_CANDIDATES_ISOLATED'].includes(error.code));
+  });
+
+  const reviewedEmpty = await compileCseResponse({ response: { subjects: [{ subject: 'A', situational: { self: [], relations: [] } }] },
+    envelope, previousCurrentState: previous, now: NOW, deltaId: MEMORY2 });
+  assert.deepEqual(reviewedEmpty.delta.subjectSnapshots.map(subject => [subject.subjectEntityId, subject.situational]), [[A, []]],
+    '首次无有据心理可明确交空分类，不抄旧态或编造状态');
+  const noSubjects = createCseEnvelope({ floor: floor(FLOOR2, '雨下了。'), floorMemory: memory(MEMORY2), baseline,
+    currentState: null, trackedSubjects: [], entities });
+  const emptyScene = await compileCseResponse({ response: { subjects: [] }, envelope: noSubjects, previousCurrentState: null, now: NOW, deltaId: MEMORY2 });
+  assert.equal(emptyScene.delta.noMaterialChange, true);
+  assert.deepEqual(emptyScene.delta.subjectSnapshots, []);
+});
+
+test('CSE 只接受可识别业务根，保留别名容器、顶层数组与逐条隔离', async () => {
   const envelope = createCseEnvelope({ floor: floor(FLOOR1, '甲抬头确认门已锁好。'), floorMemory: memory(MEMORY1), baseline, currentState: null, trackedSubjects: [entities[1]], entities });
   const options = { envelope, previousCurrentState: null, now: NOW, deltaId: '28252525-2525-4252-8252-252525252525' };
   const rejects = [
@@ -2365,8 +2428,7 @@ test('CSE 只接受可识别业务根，保留合法空结果、别名容器、�
     { 角色: [] },
     { 状态: [] },
   ]) {
-    const compiled = await compileCseResponse({ response, ...options });
-    assert.equal(compiled.delta.noMaterialChange, true);
+    await assert.rejects(compileCseResponse({ response, ...options }), error => error.code === 'V3_CSE_FORMAT_INVALID');
   }
 
   const topLevelArray = await compileCseResponse({
@@ -2430,7 +2492,7 @@ test('CSE 全候选隔离会重试并失败，合法 no-op 夹坏项仍能保存
   }), error => error.code === 'V3_CSE_ALL_CANDIDATES_ISOLATED');
 
   const emptyTemplate = await compileCseResponse({
-    response: { subjects: [{ subject: '林岚', review: { core: [], adaptive: [] }, additions: { core: [], adaptive: [] } }] },
+    response: { subjects: [{ subject: '林岚', review: { core: [], adaptive: [] }, additions: { core: [], adaptive: [] }, situational: { self: [], relations: [] } }] },
     envelope, previousCurrentState: previous, now: NOW, deltaId: '77777777-1111-4111-8111-777777777777',
   });
   assert.equal(emptyTemplate.delta.noMaterialChange, true);
@@ -2444,7 +2506,7 @@ test('CSE 全候选隔离会重试并失败，合法 no-op 夹坏项仍能保存
   assert.ok(keptWithBadItem.isolated.some(item => item.code === 'V3_CSE_OPTIONAL_ITEM_INVALID'));
 
   let calls = 0;
-  const runtime = runtimeHarness({ cse: () => { calls += 1; return { jsonData: { subjects: [{ subject: '林岚', adaptive: [{ text: '', toward: '不存在的人' }] }] } }; } });
+  const runtime = runtimeHarness({ cse: options => { calls += 1; return { jsonData: { subjects: [{ subject: '林岚', adaptive: [{ text: '', toward: '不存在的人' }] }] } }; } });
   const state = await runtime.runtime.start().then(() => runtime.runtime.extractNext());
   assert.equal(calls, 3);
   assert.equal(state.cseFloors[0].status, 'failed');
@@ -2484,11 +2546,11 @@ test('生产 CSE 请求 seam 固定样例允许自身空区与明确关系对象
     generateAnalysisTask: async options => {
       customCalls += 1;
       sentSystemPrompt = options.systemPrompt;
-      const heading = '推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：';
+      const heading = '推荐结构（展示一名正常人物复核后的完整情境列表；Core/Adaptive 沿原合同）：';
       const start = options.systemPrompt.indexOf(heading);
       assert.notEqual(start, -1, '实际发送的 systemPrompt 必须包含推荐 JSON');
       const jsonStart = options.systemPrompt.indexOf('\n', start) + 1;
-      const end = options.systemPrompt.indexOf('\n不确定的可选人物或分类宁可省略。', jsonStart);
+      const end = options.systemPrompt.indexOf('\nreviewOnly 人物沿仅复核旧自动情境的合同；', jsonStart);
       assert.ok(end > jsonStart, '推荐 JSON 必须能从实际发送内容中完整截取');
       const recommendation = JSON.parse(options.systemPrompt.slice(jsonStart, end).trim());
       return { jsonData: { subjects: recommendation.subjects.map(subject => ({ subject: subject.subject, situational: subject.situational })) } };
@@ -2500,10 +2562,10 @@ test('生产 CSE 请求 seam 固定样例允许自身空区与明确关系对象
     promptGuidance: '自定义人物状态分析要求',
   });
   assert.equal(customCalls, 1, '自定义路径仍仅使用原有一次任务调用');
-  const heading = '推荐结构（仅展示有变化项；未列出的旧项和分类由程序按原合同保留）：';
+  const heading = '推荐结构（展示一名正常人物复核后的完整情境列表；Core/Adaptive 沿原合同）：';
   const recommendationStart = sentSystemPrompt.indexOf(heading);
   const recommendationJsonStart = sentSystemPrompt.indexOf('\n', recommendationStart) + 1;
-  const recommendationEnd = sentSystemPrompt.indexOf('\n不确定的可选人物或分类宁可省略。', recommendationJsonStart);
+  const recommendationEnd = sentSystemPrompt.indexOf('\nreviewOnly 人物沿仅复核旧自动情境的合同；', recommendationJsonStart);
   const recommendation = JSON.parse(sentSystemPrompt.slice(recommendationJsonStart, recommendationEnd).trim());
   const sampleSituation = recommendation.subjects[0].situational;
   assert.equal(recommendation.subjects[0].subject, '主体甲');
@@ -2516,9 +2578,9 @@ test('生产 CSE 请求 seam 固定样例允许自身空区与明确关系对象
   assert.match(sentSystemPrompt, /自定义人物状态分析要求/);
   assert.doesNotMatch(sentSystemPrompt, /你是“千千结”的人物状态理解器/);
   assert.match(sentSystemPrompt, /【Adaptive 更新步骤】/);
-  assert.match(sentSystemPrompt, /【稀疏输出】/);
+  assert.match(sentSystemPrompt, /【每楼当前状态复核】/);
   assert.match(sentSystemPrompt, /【双丝网职责】.*【固定事实与隐私边界】.*【补充分析指引】.*自定义人物状态分析要求/s);
-  assert.match(sentSystemPrompt, /这条具体记录了哪种有依据的心理、情感、关系或应对特征或结果/);
+  assert.match(sentSystemPrompt, /这条具体记录了哪种有依据的认识、感受、态度、关系或应对特征或结果/);
   assert.match(sentSystemPrompt, /关系反应可以通过明确指向对方的言语和行为表现/);
   assert.match(sentSystemPrompt, /同一楼、同一连续事件链中的多个动作、台词或多个 quote 始终只算一次事件证据/);
   assert.match(sentSystemPrompt, /新增 Adaptive 只能由明确作者设定、明确作者纠正，或正文明确回顾并证实多个彼此独立的既往事件形成重复模式/);
@@ -2536,7 +2598,7 @@ test('生产 CSE 请求 seam 固定样例允许自身空区与明确关系对象
     generateAnalysisTask: async options => {
       defaultCalls += 1;
       defaultSystemPrompt = options.systemPrompt;
-      return { jsonData: { subjects: [] } };
+      return { jsonData: reviewedCsePacket(options) };
     },
     envelope,
     previousCurrentState: null,
@@ -2546,12 +2608,12 @@ test('生产 CSE 请求 seam 固定样例允许自身空区与明确关系对象
   assert.equal(defaultCalls, 1, '默认路径仍仅使用原有一次任务调用');
   const defaultRecommendationStart = defaultSystemPrompt.indexOf(heading);
   const defaultRecommendationJsonStart = defaultSystemPrompt.indexOf('\n', defaultRecommendationStart) + 1;
-  const defaultRecommendationEnd = defaultSystemPrompt.indexOf('\n不确定的可选人物或分类宁可省略。', defaultRecommendationJsonStart);
+  const defaultRecommendationEnd = defaultSystemPrompt.indexOf('\nreviewOnly 人物沿仅复核旧自动情境的合同；', defaultRecommendationJsonStart);
   const defaultRecommendation = JSON.parse(defaultSystemPrompt.slice(defaultRecommendationJsonStart, defaultRecommendationEnd).trim());
   assert.deepEqual(defaultRecommendation.subjects[0].situational, sampleSituation, '默认与自定义 guidance 共用固定推荐结构');
   assert.match(defaultSystemPrompt, /Adaptive.*可复用的当前长期模式/);
   assert.match(defaultSystemPrompt, /【Adaptive 更新步骤】/);
-  assert.match(defaultSystemPrompt, /【稀疏输出】/);
+  assert.match(defaultSystemPrompt, /【每楼当前状态复核】/);
   assert.doesNotMatch(defaultSystemPrompt, /自定义人物状态分析要求/);
 });
 
@@ -2610,7 +2672,7 @@ test('CSE 真实 compact 路由在503与无业务 JSON 间共享总预算，第�
     fetches += 1;
     if (fetches === 1) return compactResponse('', 503);
     if (fetches === 2) return compactResponse('{}');
-    return compactResponse('{"subjects":[]}');
+    return compactResponse(JSON.stringify(reviewedCsePacket(envelope)));
   });
   const result = await runCseRequest({ generateAnalysisTask: router.generateAnalysisTask, envelope, previousCurrentState: null, now: NOW, deltaId: '26252525-2525-4252-8252-252525252525' });
   assert.equal(fetches, 3);
@@ -2653,11 +2715,11 @@ test('CSE Phase A 并发写入保留记录，完成后仍按 run → checkpoint 
   const barriers = [];
   let h;
   h = runtimeHarness({
-    cse: () => {
+    cse: options => {
       measuring = true;
       readMarker = h.readModes.length;
       backendReadMarker = h.backend.getCalls.length;
-      return { jsonData: { noMaterialChange: true } };
+      return { jsonData: reviewedCsePacket(options) };
     },
     backendOptions: {
       beforePut: async ({ data }) => {
@@ -2699,8 +2761,8 @@ test('CSE 等待模型期间只追加后楼及后楼摘要时按原前缀提交�
   let markStarted;
   const cseStarted = new Promise(resolve => { markStarted = resolve; });
   const h = runtimeHarness({
-    cse: () => new Promise(resolve => {
-      releaseCse = () => resolve({ jsonData: { noMaterialChange: true } });
+    cse: options => new Promise(resolve => {
+      releaseCse = () => resolve({ jsonData: reviewedCsePacket(options) });
       markStarted();
     }),
   });
@@ -2740,8 +2802,8 @@ test('CSE 模型在途时固定本次来源，后续重算才读取更新的人�
     cse: options => {
       requests.push(JSON.parse(options.taskMessages[0].content));
       callCount += 1;
-      if (callCount === 1) return new Promise(resolve => { releaseFirst = () => resolve({ jsonData: { noMaterialChange: true } }); markStarted(); });
-      return { jsonData: { noMaterialChange: true } };
+      if (callCount === 1) return new Promise(resolve => { releaseFirst = () => resolve({ jsonData: reviewedCsePacket(options) }); markStarted(); });
+      return { jsonData: reviewedCsePacket(options) };
     },
   });
   const pending = h.runtime.start().then(() => h.runtime.extractNext());
@@ -2795,9 +2857,9 @@ test('CSE retryable 失败提示按真实失败累计，成功提交只清本楼
   let fail = true;
   const h = runtimeHarness({
     failureStorage,
-    cse: () => {
+    cse: options => {
       if (fail) throw Object.assign(new Error('受控 CSE 失败'), { code: 'TEST_CSE_FAILED' });
-      return { jsonData: { noMaterialChange: true } };
+      return { jsonData: reviewedCsePacket(options) };
     },
   });
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
@@ -2822,8 +2884,8 @@ test('CSE 等待模型期间目标活动摘要被替换时保持 stale，旧结�
   const failureValues = new Map();
   const h = runtimeHarness({
     failureStorage: { getItem: key => failureValues.get(key) ?? null, setItem: (key, value) => failureValues.set(key, value), removeItem: key => failureValues.delete(key) },
-    cse: () => new Promise(resolve => {
-      releaseCse = () => resolve({ jsonData: { noMaterialChange: true } });
+    cse: options => new Promise(resolve => {
+      releaseCse = () => resolve({ jsonData: reviewedCsePacket(options) });
       markStarted();
     }),
   });
@@ -2972,7 +3034,7 @@ test('CSE Phase A 首个 conflict 后停止领取新记录并等待在途写入�
   const firstWave = new Promise(resolve => { firstWaveResolve = resolve; });
   const barriers = [];
   const h = runtimeHarness({
-    cse: () => { measuring = true; return { jsonData: { noMaterialChange: true } }; },
+    cse: options => { measuring = true; return { jsonData: reviewedCsePacket(options) }; },
     backendOptions: {
       beforePut: async ({ data }) => {
         if (!measuring) return;
@@ -3026,7 +3088,7 @@ test('CSE Phase A 全批保留记录在途时失效会等待收拢且不发布�
   const firstWave = new Promise(resolve => { firstWaveResolve = resolve; });
   const barriers = [];
   const h = runtimeHarness({
-    cse: () => { measuring = true; return { jsonData: { noMaterialChange: true } }; },
+    cse: options => { measuring = true; return { jsonData: reviewedCsePacket(options) }; },
     backendOptions: {
       beforePut: async ({ data }) => {
         if (!measuring) return;
@@ -3158,7 +3220,7 @@ test('CSE 真实请求链只在 finish_reason=stop 且唯一缺人物右花括�
   const continuationMemory = { ...memory(MEMORY2), floorId: FLOOR2, recordStatus: 'active' };
   const continuationEnvelope = createCseEnvelope({ floor: continuationFloor, floorMemory: continuationMemory, baseline, currentState: priorState, trackedSubjects: trackedEntities, entities: trackedEntities });
   const singletonRecovered = await compileCseResponse({
-    response: `{"subjects":{"subject":"${trackedEntities[0].displayName}"}`,
+    response: `{"subjects":{"subject":"${trackedEntities[0].displayName}","situational":{"self":[],"relations":[]}}`,
     finishReason: 'stop',
     envelope: continuationEnvelope,
     previousCurrentState: priorState,
@@ -3211,7 +3273,7 @@ test('CSE 中段缺失人物右花括号时只归一同人物情境并保留已�
   const malformed = `${complete.slice(0, boundary)}${complete.slice(boundary + 1)}`;
   let calls = 0;
   const result = await runCseRequest({
-    generateAnalysisTask: async () => { calls += 1; return { textData: malformed, taskMetadata: { finishReason: 'stop' } }; },
+    generateAnalysisTask: async options => { calls += 1; return { textData: malformed, taskMetadata: { finishReason: 'stop' } }; },
     envelope,
     previousCurrentState: previous,
     now: NOW,
@@ -3248,7 +3310,7 @@ test('CSE 中段缺失人物右花括号时只归一同人物情境并保留已�
   assert.ok(shortMalformed.length < 256, '短回放不依赖填充字段');
   let shortCalls = 0;
   const shortResult = await runCseRequest({
-    generateAnalysisTask: async () => { shortCalls += 1; return { textData: shortMalformed, taskMetadata: { finishReason: 'stop' } }; },
+    generateAnalysisTask: async options => { shortCalls += 1; return { textData: shortMalformed, taskMetadata: { finishReason: 'stop' } }; },
     envelope: seedEnvelope,
     previousCurrentState: null,
     now: NOW,
@@ -3362,7 +3424,7 @@ test('首次NPC双方关系通过同一次真实CSE装配保存，无user剧情�
 
 test('CSE 失败不回滚 FloorMemory，并保留单独重试入口', async () => {
   let fail = true;
-  const h = runtimeHarness({ cse: () => { if (fail) throw Object.assign(new Error('模拟 CSE 失败'), { code: 'CSE_TEST_FAIL' }); return { jsonData: { noMaterialChange: true } }; } });
+  const h = runtimeHarness({ cse: options => { if (fail) throw Object.assign(new Error('模拟 CSE 失败'), { code: 'CSE_TEST_FAIL' }); return { jsonData: reviewedCsePacket(options) }; } });
   let state = await h.runtime.start().then(() => h.runtime.extractNext());
   assert.equal(state.rememberedCount, 1);
   assert.equal(state.cseFloors[0].status, 'failed');
@@ -3377,7 +3439,7 @@ test('CSE 失败不回滚 FloorMemory，并保留单独重试入口', async () =
 test('CHAT_CHANGED 后迟到 CSE 仍保存到开始时的原目标', async () => {
   let release, started;
   const waiting = new Promise(resolve => { started = resolve; });
-  const h = runtimeHarness({ cse: () => new Promise(resolve => { release = () => resolve({ jsonData: { subjects: [{ subject: '你', situational: ['迟到状态'] }] } }); started(); }) });
+  const h = runtimeHarness({ cse: options => new Promise(resolve => { release = () => resolve({ jsonData: { subjects: [{ subject: '你', situational: ['迟到状态'] }] } }); started(); }) });
   await h.runtime.start();
   const pending = h.runtime.extractNext();
   await waiting;
@@ -3865,17 +3927,16 @@ test('合并身份编译以 canonical 并集判断变化，并用旧成员空快
   assert.deepEqual(removed.delta.subjectSnapshots.find(subject => subject.subjectEntityId === B).adaptive, []);
   assert.deepEqual(removed.delta.fixedChanges.map(subject => subject.subjectEntityId), [B]);
 
-  const equivalent = await compileCseResponse({ response: { subjects: [{ subject: '乙' }] }, envelope: targetEnvelope, previousCurrentState: projectedBefore, now: NOW, deltaId: '70707070-1111-4111-8111-707070707070' });
+  const equivalent = await compileCseResponse({ response: reviewedCsePacket(targetEnvelope), envelope: targetEnvelope, previousCurrentState: projectedBefore, now: NOW, deltaId: '70707070-1111-4111-8111-707070707070' });
   assert.equal(equivalent.delta.noMaterialChange, true, '逻辑等价输出只做物理身份接管，不冒充状态变化');
   assert.deepEqual(equivalent.delta.subjectSnapshots.map(subject => subject.subjectEntityId), [A, B]);
   assert.deepEqual(equivalent.delta.fixedChanges, []);
-  const omitted = await compileCseResponse({ response: { subjects: [] }, envelope: targetEnvelope, previousCurrentState: projectedBefore, now: NOW, deltaId: '71707070-1111-4111-8111-717070707070' });
-  assert.deepEqual(omitted.delta.subjectSnapshots, [], '模型省略 canonical 时不得凭 tracked 身份清空旧成员');
+  await assert.rejects(compileCseResponse({ response: { subjects: [] }, envelope: targetEnvelope, previousCurrentState: projectedBefore, now: NOW, deltaId: '71707070-1111-4111-8111-717070707070' }), error => error.code === 'V3_CSE_FORMAT_INVALID');
 
   const chainProjection = { identityRedirectsByEntityId: { [A]: B, [B]: USER }, deletedEntityIds: [] };
   const chainBefore = projectCseStateIdentityReferences(rawBefore, chainProjection);
   const chainEnvelope = createCseEnvelope({ floor: floor(FLOOR2, '林岚接管旧身份。'), floorMemory: memory(MEMORY2), baseline, currentState: chainBefore, trackedSubjects: [entities[0]], entities, identityMemberEntityIdsBySubject: { [USER]: [USER, A, B] } });
-  const chainTakeover = await compileCseResponse({ response: { subjects: [{ subject: '林岚' }] }, envelope: chainEnvelope, previousCurrentState: chainBefore, now: NOW, deltaId: '72707070-1111-4111-8111-727070707070' });
+  const chainTakeover = await compileCseResponse({ response: reviewedCsePacket(chainEnvelope), envelope: chainEnvelope, previousCurrentState: chainBefore, now: NOW, deltaId: '72707070-1111-4111-8111-727070707070' });
   assert.equal(chainTakeover.delta.noMaterialChange, true);
   assert.deepEqual(chainTakeover.delta.subjectSnapshots.map(subject => subject.subjectEntityId), [A, B, USER]);
   assert.deepEqual(chainTakeover.delta.subjectSnapshots.slice(0, 2).map(subject => [subject.core, subject.adaptive, subject.situational]), [[[], [], []], [[], [], []]]);
@@ -3934,7 +3995,7 @@ test('作者态上下文按 entityId 排除 previousState 已提供人物，并�
   assert.deepEqual(empty.request.payload.previousState, []);
   assert.deepEqual(empty.request.payload.authorialOtherStateContext, []);
 
-  const compiled = await compileCseResponse({ response: { noMaterialChange: true }, envelope, previousCurrentState: null, now: NOW, deltaId: 'cccccccc-1111-4111-8111-111111111111' });
+  const compiled = await compileCseResponse({ response: { subjects: [{ subject: '林岚', situational: { self: [], relations: [] } }, { subject: '甲', situational: { self: [], relations: [] } }] }, envelope, previousCurrentState: null, now: NOW, deltaId: 'cccccccc-1111-4111-8111-111111111111' });
   assert.equal(compiled.delta.noMaterialChange, true);
   const replay = await replayCurrentState({ chatId: CHAT, narrativeGeneration: GEN, baselineId: baseline.id, floors: [floor(FLOOR1, '正文')], floorMemories: [{ ...memory(MEMORY1), floorId: FLOOR1, recordStatus: 'active' }], stateDeltas: [compiled.delta], now: NOW });
   assert.deepEqual(replay.appliedDeltaIds, [compiled.delta.id]);
@@ -4329,7 +4390,7 @@ test('人工状态编辑按分类分别说明空内容、超长内容和无效�
 });
 
 test('真实 runtime 投影保留情境对象名称且只暴露有效变化与安全隔离摘要', async () => {
-  const h = runtimeHarness({ cse: () => ({ jsonData: { changeSummary: '根级成功说明', subjects: [{ subject: '主角', adaptive: [{ text: '' }], situational: {
+  const h = runtimeHarness({ cse: options => ({ jsonData: { changeSummary: '根级成功说明', subjects: [{ subject: '主角', adaptive: [{ text: '' }], situational: {
     self: [{ text: '记得带伞', visibility: 'private', reason: '收到提醒' }],
     relations: [{ text: '此刻仍想先等裴晚生回应', toward: '裴晚生', visibility: 'expressed', reason: '仍在等待' }],
   }, changeSummary: ['核心人格已经改变'] }] } }) });
@@ -4360,7 +4421,7 @@ test('runtime 的 CSE 只读 FloorMemory 冻结 USER；宿主改动不影响在�
   let releaseCse;
   let markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
-  const h = runtimeHarness({ chat: [user('原始作者输入'), assistant('第一楼。'), assistant('确认第一楼。')], cse: () => new Promise(resolve => { releaseCse = () => resolve({ jsonData: { noMaterialChange: true } }); markStarted(); }) });
+  const h = runtimeHarness({ chat: [user('原始作者输入'), assistant('第一楼。'), assistant('确认第一楼。')], cse: options => new Promise(resolve => { releaseCse = () => resolve({ jsonData: reviewedCsePacket(options) }); markStarted(); }) });
   const pending = h.runtime.start().then(() => h.runtime.extractNext());
   await started;
   const request = JSON.parse(h.calls.find(call => call.systemPrompt === CSE_SYSTEM_PROMPT).taskMessages[0].content);
@@ -4424,7 +4485,7 @@ test('CSE dependency snapshot 每次只克隆一次缺省 provenance，保存前
       chat.push(user(`用户发言 ${index + 1}`), assistant(`角色回应 ${index + 1}`));
     }
     chat.push(user('下一段对话'));
-    const h = runtimeHarness({ chat, cse: () => ({ jsonData: { noMaterialChange: true } }) });
+    const h = runtimeHarness({ chat, cse: options => ({ jsonData: reviewedCsePacket(options) }) });
     await h.runtime.start();
     for (let index = 0; index < frozenCount + 1; index += 1) await h.runtime.extractNext();
     const savedBefore = await h.store.readReachable({ mode: 'runtime' });
@@ -4479,11 +4540,11 @@ test('CSE dependency snapshot 每次只克隆一次缺省 provenance，保存前
     };
     const cseRuntime = createCseRuntime({
       store: cseStore, hostAdapter: h.hostAdapter,
-      generateAnalysisTask: async () => {
+      generateAnalysisTask: async options => {
         requestCount += 1;
         snapshotPhase = 'saveRecheck';
         if (changeSourceBeforeSave) provenance[savedBefore.floors[0].id].storyClockSignature = 'latest-source-before-save';
-        return { jsonData: { noMaterialChange: true } };
+        return { jsonData: reviewedCsePacket(options) };
       },
       now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} },
     });
@@ -4532,7 +4593,7 @@ test('有效别名：实际CSE请求复用人工或已审AI目录而不回到原
   const requests = [];
   const h = runtimeHarness({
     extractor: () => ({ jsonData: { summary: '阿青抵达。', people: [{ name: '阿青', aliases: ['旧称', '旧号'], presence: 'present' }] } }),
-    cse: options => { requests.push(JSON.parse(options.taskMessages[0].content)); return { jsonData: { noMaterialChange: true } }; },
+    cse: options => { requests.push(JSON.parse(options.taskMessages[0].content)); return { jsonData: reviewedCsePacket(options) }; },
   });
   const state = await h.runtime.start().then(() => h.runtime.extractNext());
   const reachable = await h.store.readReachable({ mode: 'runtime' });
@@ -4656,7 +4717,7 @@ test('关系历史：正式别名中藏入新来源也整条隔离',async()=>{
   }
 });
 
-test('关系历史：仅坏新kind也保旧no-op且原一次请求，不借其它空分类过关',async()=>{
+test('关系历史：仅坏新kind不能整楼交卷，有完整情境时保旧且原一次请求',async()=>{
   const first=await relationEnvelope();
   const seeded=await compileCseResponse({envelope:first.envelope,previousCurrentState:null,now:NOW,deltaId:'85858585-2222-4222-8222-787878787878',response:{subjects:[{subject:'甲',additions:{adaptive:[{text:'合作时会先核对',toward:'乙',evidence:[first.historyRef,first.currentRef]}]}}]}});
   const previous={id:'86868686-2222-4222-8222-787878787878',subjects:seeded.delta.subjectSnapshots};
@@ -4665,7 +4726,8 @@ test('关系历史：仅坏新kind也保旧no-op且原一次请求，不借其�
     const refs=[currentRef,{source:'relationHistory:unknown',quote:'坏历史'}], item={text:'不应覆盖的模式',toward:'乙',evidence:refs};
     const subject=mode==='add'?{subject:'甲',additions:{adaptive:[item]}}:mode==='direct'?{subject:'甲',adaptive:[item]}:{subject:'甲',review:{adaptive:[{...item,previousText:'合作时会先核对',action:mode}]}};
     let calls=0;
-    const result=await runCseRequest({envelope,previousCurrentState:previous,now:NOW,deltaId:'87878787-2222-4222-8222-787878787878',generateAnalysisTask:async()=>{calls++;return{jsonData:{subjects:[subject]}};}});
+    await assert.rejects(compileCseResponse({envelope,previousCurrentState:previous,now:NOW,deltaId:'87878787-2222-4222-8222-787878787878',response:{subjects:[subject]}}), error => error.code === 'V3_CSE_FORMAT_INVALID');
+    const result=await runCseRequest({envelope,previousCurrentState:previous,now:NOW,deltaId:'87878787-2222-4222-8222-787878787878',generateAnalysisTask:async()=>{calls++;return{jsonData:{subjects:[{...subject,situational:{self:[],relations:[]}}]}};}});
     assert.equal(calls,1,mode);assert.equal(result.delta.subjectSnapshots[0].adaptive[0].text,'合作时会先核对');assert.ok(result.delta.source.isolationSummary);
   }
 });
@@ -4726,7 +4788,7 @@ test('CSE业务格式重做沿连接零次及四次重试，共享真实HTTP预�
   for (const retryCount of [0, 1, 4]) {
     let calls = 0;
     const route = { kind: 'independent', config: { url: 'https://fixture.invalid', key: 'fixture', model: 'fixture', qqjRetryCount: retryCount } };
-    const router = createTaskRouter({ resolver: { resolve: () => route }, compactClient: createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return compactResponse(calls <= retryCount ? '{}' : '{"subjects":[]}'); } }) });
+    const router = createTaskRouter({ resolver: { resolve: () => route }, compactClient: createCompactApiClient({ retryWait: async () => {}, fetchImpl: async () => { calls++; return compactResponse(calls <= retryCount ? '{}' : JSON.stringify(reviewedCsePacket(envelope))); } }) });
     const result = await runCseRequest({ generateAnalysisTask: router.generateAnalysisTask, envelope, previousCurrentState: null, now: NOW, deltaId: '26252525-2525-4252-8252-252525252525' });
     assert.equal(calls, retryCount + 1); assert.equal(result.transportAttempts, calls); assert.equal(result.delta.noMaterialChange, true);
   }
@@ -4759,7 +4821,7 @@ test('资料依赖解耦：CSE提交重读固定目标目录承接自动别名�
   for (const change of ['自动别名', '人工改名']) {
     const text = '阿青留在大厅。';
     const h = runtimeHarness({ chat: [assistant(text), user('确认')],
-      cse: () => ({ jsonData: { noMaterialChange: true } }), extractor: () => ({ jsonData: { summary: text, people: [{ name: '阿青', presence: 'present' }] } }) });
+      cse: options => ({ jsonData: reviewedCsePacket(options) }), extractor: () => ({ jsonData: { summary: text, people: [{ name: '阿青', presence: 'present' }] } }) });
     await h.runtime.start();
     await h.runtime.extractNext();
     const floorId = h.runtime.getState().floors[0].floorId;
@@ -4815,7 +4877,7 @@ test('CSE冻结助手来源沿统一正文选择，异常swipes刷新后可继�
     if (shape === 'selectedValid') { message.swipes = ['明确选择的有效回复']; message.swipe_id = 0; }
     const requests = [];
     const h = runtimeHarness({ chat: [user('开始'), message, assistant('后楼确认稳定。')], cse: options => {
-      requests.push(JSON.parse(options.taskMessages[0].content)); return { jsonData: { noMaterialChange: true } };
+      requests.push(JSON.parse(options.taskMessages[0].content)); return { jsonData: reviewedCsePacket(options) };
     } });
     await h.foundationRuntime.reconcile('cse-source-probe'); await h.runtime.start();
     const floorId = h.runtime.getState().floors[0].floorId;
@@ -4841,7 +4903,7 @@ test('USER异常swipes统一冻结摘要快照与CSE关键词，明确空串不�
     if (shape === 'selectedBlank') { message.swipes = ['']; message.swipe_id = 0; }
     if (shape === 'selectedValid') { message.swipes = ['明确所选激活词']; message.swipe_id = 0; }
     const h = runtimeHarness({ chat: [message, assistant('正常回应。'), assistant('确认稳定。')],
-      cse: () => ({ jsonData: { noMaterialChange: true } }) });
+      cse: options => ({ jsonData: reviewedCsePacket(options) }) });
     h.context.characters[0].data.extensions = {};
     h.context.characters[0].data.character_book = { name: '内置书', entries: [{ id: 1, keys: ['激活词'], enabled: true, content: '关键词作者资料' }] };
     await h.runtime.start(); await h.runtime.extractNext();
@@ -4864,7 +4926,7 @@ const cseManualDraft = (state, subject, edits) => ({ expectedChatId: state.chatI
   original: Object.fromEntries(['core', 'adaptive', 'situational'].map(field => [field, cseEditItems(subject[field])])), ...edits });
 
 test('CSE人工合并：无关摘要和其他人物更新不阻保存，原时点仅改显式条目', async () => {
-  const h = runtimeHarness({ cse: () => ({ jsonData: { subjects: [
+  const h = runtimeHarness({ cse: options => ({ jsonData: { subjects: [
     { subject: '林岚', situational: [{ text: '原用户状态', visibility: 'private', reason: '原依据' }] },
     { subject: '裴晚生', situational: [{ text: '原角色状态', visibility: 'observable', reason: '原依据' }] },
   ] } }) });
@@ -4895,7 +4957,7 @@ test('CSE人工合并：同条目人工竞争和删除不复活旧稿，无改�
 
 test('CSE人工重放：来源变化只留明确操作和清空，隔离同人未改分类与他人自动快照', async () => {
   const { projectRecallSource } = await import('../src/v3/recall-source.js');
-  const h = runtimeHarness({ cse: () => ({ jsonData: { subjects: [
+  const h = runtimeHarness({ cse: options => ({ jsonData: { subjects: [
     { subject: '林岚', situational: [{ text: '用户自动状态', visibility: 'private', reason: '依据' }] },
     { subject: '裴晚生', core: [{ text: '自动核心', visibility: 'authorial', reason: '依据' }], situational: [{ text: '角色自动状态', visibility: 'observable', reason: '依据' }] },
   ] } }) });
@@ -4932,7 +4994,7 @@ test('CSE人工合并：人工更新竞争拒旧修改和删除，不同类别�
 
 test('CSE人工合并：模型新增同类B时只改A，原人工内容经同楼重新分析保留', async () => {
   let content = ['状态A'];
-  const h = runtimeHarness({ cse: () => ({ jsonData: { subjects: [{ subject: '裴晚生', situational: content.map(text => ({ text, visibility: 'observable', reason: '依据' })) }] } }) });
+  const h = runtimeHarness({ cse: options => ({ jsonData: { subjects: [{ subject: '裴晚生', situational: content.map(text => ({ text, visibility: 'observable', reason: '依据' })) }] } }) });
   await h.runtime.start(); await h.runtime.extractNext();
   const state = h.runtime.getState(), subject = state.cseSubjects.find(item => item.situational.some(value => value.text === '状态A'));
   const draft = cseManualDraft(state, subject, { situational: [{ ...cseEditItems(subject.situational)[0], text: '人工A' }] });
@@ -5020,11 +5082,11 @@ test('CSE时效离场旧自动情境在原请求复核，保人工及其它分�
   assert.equal(Object.hasOwn(reviewState, 'adaptive'), false);
   assert.equal(reviewState.situational.some(item => item.origin === 'manual'), false);
   assert.equal(envelope.request.payload.userAdaptiveReview, undefined);
-  const compiled = await compileCseResponse({ response: { subjects: [{ subject: '甲', adaptive: [], situational: { self: [{ text: '离场后凭空新增的情绪', visibility: 'private' }], relations: [] } }] }, envelope, previousCurrentState: previous, now: NOW, deltaId: '04040404-1414-4141-8141-141414141414' });
+  const compiled = await compileCseResponse({ response: { subjects: [{ subject: '乙', situational: { self: [], relations: [] } }, { subject: '甲', adaptive: [], situational: { self: [{ text: '离场后凭空新增的情绪', visibility: 'private' }], relations: [] } }] }, envelope, previousCurrentState: previous, now: NOW, deltaId: '04040404-1414-4141-8141-141414141414' });
   const subject = compiled.delta.subjectSnapshots.find(subject => subject.subjectEntityId === A);
   assert.deepEqual(subject.adaptive, [original]);
   assert.deepEqual(subject.situational, [manual]);
-  const sparse = await compileCseResponse({ response: { subjects: [] }, envelope, previousCurrentState: previous, now: NOW, deltaId: '05050505-1414-4141-8141-141414141414' });
+  const sparse = await compileCseResponse({ response: reviewedCsePacket(envelope), envelope, previousCurrentState: previous, now: NOW, deltaId: '05050505-1414-4141-8141-141414141414' });
   assert.equal(sparse.delta.subjectSnapshots.some(subject => subject.subjectEntityId === A), false);
   assert.match(CSE_SYSTEM_PROMPT, /经历.*成长/u);
   assert.match(CSE_SYSTEM_PROMPT, /身体.*位置.*约定/u);
@@ -5036,7 +5098,7 @@ test('CSE时效真实逐楼入口离场复核只走原一次分析并冷读保�
     extractor: options => ({ jsonData: { summary: '本楼经过', people: [{ name: JSON.parse(options.taskMessages[0].content).payload.canonicalContent.includes('乙') ? '乙' : '裴晚生' }] } }),
     cse: options => {
       const packet = JSON.parse(options.taskMessages[0].content); packets.push(packet);
-      return { jsonData: { subjects: [{ subject: '裴晚生', situational: { self: packets.length === 1 ? [{ text: '暂未化解的顾虑', visibility: 'private', reason: '误会影响' }] : [], relations: [] } }] } };
+      return { jsonData: { subjects: [...(packets.length > 1 ? reviewedCsePacket(options).subjects : []), { subject: '裴晚生', situational: { self: packets.length === 1 ? [{ text: '暂未化解的顾虑', visibility: 'private', reason: '误会影响' }] : [], relations: [] } }] } };
     } });
   await h.runtime.start(); await h.runtime.extractNext(); await h.runtime.extractNext();
   assert.equal(h.calls.filter(call => call.testRoute === 'analysis').length, 2);
@@ -5078,7 +5140,7 @@ test('双丝网职责收紧：通用自定义指引和旧自动事件经原一�
       const prompt = options.systemPrompt;
       assert.ok(prompt.indexOf('【双丝网职责】') >= 0 && prompt.indexOf('【双丝网职责】') < prompt.indexOf(guidance), '实际任务职责先于原样自定义补充指导');
       assert.ok(prompt.includes(guidance), '自定义指导原文保留');
-      assert.match(prompt, /Core、Adaptive、Situational.*有依据的人物心理.*情感.*关系/u);
+      assert.match(prompt, /Core、Adaptive、Situational.*有依据的人物认识.*感受.*态度.*关系/u);
       assert.match(prompt, /旧自动 Situational.*已结束、被替代.*事件.*退出.*无需.*事件.*结束/u);
       assert.match(prompt, /旧 Core\/Adaptive.*review.*evidence/u);
       assert.match(prompt, /证据不足时.*省略.*编造.*心理/u);
@@ -5086,7 +5148,7 @@ test('双丝网职责收紧：通用自定义指引和旧自动事件经原一�
       assert.doesNotMatch(prompt, /可以记录说话者作出该声称/u);
       assert.doesNotMatch(prompt, /仍想自己拿行李|暂不愿让对方接手行李/u);
       assert.equal(JSON.parse(options.taskMessages[0].content).payload.canonicalContent, body);
-      return { jsonData: { subjects: [{ subject: '甲', situational: { self: [result, ...(reviewOnly ? [] : [manual])], relations: [] } }] } };
+      return { jsonData: { subjects: [...(reviewOnly ? reviewedCsePacket(options).subjects : []), { subject: '甲', situational: { self: [result, ...(reviewOnly ? [] : [manual])], relations: [] } }] } };
     }, envelope, previousCurrentState: previous, now: NOW, deltaId: reviewOnly ? '04040404-1616-4161-8161-161616161616' : '05050505-1616-4161-8161-161616161616', promptGuidance: guidance });
     assert.equal(calls, 1);
     const after = compiled.delta.subjectSnapshots.find(subject => subject.subjectEntityId === A).situational;
@@ -5248,14 +5310,29 @@ test('原一次CSE发送完整前态与归拢合同，有据Core合并和情境�
   assert.equal(recalled.states.find(value => value.text === hidden.text).visibility, 'private');
 });
 
-test('CSE56冷读旧55保存结果，不把提示升级当作整档分析缺口', async () => {
-  const h = runtimeHarness(); await h.runtime.start(); await h.runtime.extractNext();
+test('CSE57冷读旧55与56已存整楼空结果，不把提示升级当作整档分析缺口', async t => {
+ for (const promptVersion of ['qqj-v3-cse-prompt-55', 'qqj-v3-cse-prompt-56']) await t.test(promptVersion, async () => {
+  const h = runtimeHarness({ cse: options => ({ jsonData: reviewedCsePacket(options) }) }); await h.runtime.start(); await h.runtime.extractNext();
   const deltas = [...h.backend.records.values()].filter(value => value.data?.recordType === 'stateDelta');
   assert.ok(deltas.length);
-  for (const value of deltas) value.data.source.promptVersion = 'qqj-v3-cse-prompt-55';
-  const cold = runtimeHarness({ sharedBackend: h.backend, chat: structuredClone(h.context.chat), cse: () => assert.fail('旧55不得因升级自动重算') });
+  for (const { data } of deltas) {
+    data.source.promptVersion = promptVersion;
+    data.source.compilerVersion = 'qqj-v3-cse-prompt-2/calibration-compiler-24';
+    data.subjectSnapshots = [];
+    data.fixedChanges = [];
+    data.noMaterialChange = true;
+    data.fingerprint = `sha256:${createHash('sha256').update(JSON.stringify([data.floorId, data.floorMemoryId, [], true, { fixedChanges: [] }])).digest('hex')}`;
+  }
+  for (const { data } of h.backend.records.values()) if (data?.recordType === 'currentState') {
+    data.subjects = [];
+    data.fingerprint = await stateFingerprint([], data.appliedDeltaIds, data.headFloorId);
+  }
+  const cold = runtimeHarness({ sharedBackend: h.backend, chat: structuredClone(h.context.chat), cse: () => assert.fail('旧已存空结果不得因升级自动重算') });
   await cold.runtime.start();
   assert.equal(cold.calls.filter(call => call.testRoute === 'analysis').length, 0);
   assert.equal(cold.runtime.getState().csePendingCount, 0);
-  assert.equal(cold.runtime.getState().csePromptVersion, 'qqj-v3-cse-prompt-56');
+  assert.equal(cold.runtime.getState().csePromptVersion, 'qqj-v3-cse-prompt-58');
+  assert.equal(cold.runtime.getState().cseFloors[0].status, 'noChange');
+  assert.deepEqual(cold.runtime.getState().cseSubjects, []);
+ });
 });

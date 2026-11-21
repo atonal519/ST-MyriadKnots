@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { validateTransferGraph } from '../src/memory-transfer-graph.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
@@ -40,10 +41,10 @@ async function fixture({ body = '钥匙放在木盒里。', places = false } = {
   await foundation.start();
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: host,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
     generateUtilityTask: async options => {
       const p=JSON.parse(options.taskMessages[0].content).payload,ev={source:'canonicalContent',sourceFloorKey:p.sourceFloorKey,exactQuote:p.canonicalContent};
-      return {jsonData:options.systemPrompt===EXTRACTOR_SYSTEM_PROMPT?(places?{summary:body,spatialFacts:{places:[{key:'place-mention-1',name:'档案室',identity:'new',...ev},{key:'place-mention-2',name:'主楼',identity:'new',...ev}],containments:[{placeKey:'place-mention-1',parentPlaceKey:'place-mention-2',...ev}],positions:[]}}:{summary:'钥匙在木盒。'}):{noMaterialChange:true}};
+      return {jsonData:options.systemPrompt===EXTRACTOR_SYSTEM_PROMPT?(places?{summary:body,spatialFacts:{places:[{key:'place-mention-1',name:'档案室',identity:'new',...ev},{key:'place-mention-2',name:'主楼',identity:'new',...ev}],containments:[{placeKey:'place-mention-1',parentPlaceKey:'place-mention-2',...ev}],positions:[]}}:{summary:'钥匙在木盒。'}):reviewedCsePacket(options)};
     } });
   await memory.start(); await memory.extractFloor(memory.getState().floors[0].floorId, { analyzeState: false }); await memory.analyzeNextState();
   const graph = await store.readReachable({ mode: 'full' });

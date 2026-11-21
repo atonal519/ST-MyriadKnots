@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { createChatMemoryManagement, CHAT_RECALL_RECEIPT_KEY } from '../src/chat-memory-management.js';
 import { createChatSession } from '../src/chat-session.js';
@@ -765,7 +766,7 @@ test('独立历史重构owner等待真实compact请求时忙，成功失败暂�
       if (requestTasks.length === 1) { networkSignal = options.signal; requestStarted(); await gate; }
       if (outcome === 'error') return { ok: false, status: 400, json: async () => ({ error: { code: 'fixture_request_error' } }) };
       return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify(task === 'extractFloorSemantics'
-        ? { summary: '固定目标历史摘要' } : { noMaterialChange: true }) }, finish_reason: 'stop' }] }) };
+        ? { summary: '固定目标历史摘要' } : reviewedCsePacket(JSON.parse(body.messages.at(-1).content))) }, finish_reason: 'stop' }] }) };
     } });
     const generate = options => compact.generateTask({ ...options, config: { url: 'https://offline.test', key: 'fixture', model: 'fixture' } });
     const manager = createChatMemoryManagement({ client, session, hostAdapter: f.hostAdapter,
@@ -879,7 +880,7 @@ test('真实历史重构完整完成与暂停续跑均接回A身份、消息锚�
     }
     return options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
       ? { jsonData: { summary: '旧回复摘要' }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } }
-      : { jsonData: { noMaterialChange: true }, taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
+      : { jsonData: reviewedCsePacket(options), taskMetadata: { source: 'test', sourceLabel: '测试', model: 'mock' } };
   };
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter, generateAnalysisTask: utility, generateUtilityTask: utility, now: () => new Date('2026-09-14T00:00:00.000Z'), logger: { warn() {} } });
   const autoHideController = createAutoHideController({ hostAdapter, memoryRuntime: memory, settings: { get: () => ({ pluginEnabled: true, autoHideEnabled: false, autoHideKeepAiCount: 3 }) }, logger: { warn() {} } });
@@ -1026,7 +1027,7 @@ test('重构固定材料与QQJ保存读回分开：宿主新正文可读回，�
       }
       return { ok: true, json: async () => [structuredClone(file.header), ...structuredClone(file.chat)] };
     };
-    const generate = async options => { modelCalls++; if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) modelMaterials.push(JSON.parse(options.taskMessages[0].content).payload.canonicalContent); return { jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { summary: '固定材料摘要' } : { noMaterialChange: true } }; };
+    const generate = async options => { modelCalls++; if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) modelMaterials.push(JSON.parse(options.taskMessages[0].content).payload.canonicalContent); return { jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? { summary: '固定材料摘要' } : reviewedCsePacket(options) }; };
     try {
       result = await runHistoricalRebuildTask({ identity: { hostChatId: target.hostChatId, chatId: CHAT_ID, characterLocator: 'char.png', personaLocator: 'persona.png' }, target,
         cleanedChat: cleaned, sourceContext: { name1: '用户', name2: '角色', characterId: 0, characters: [{ name: '角色', avatar: 'char.png' }], userAvatar: 'persona.png' },

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { captureTargetChatDescriptor, createHostAdapter } from '../src/v3/host-adapter.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
@@ -370,7 +371,7 @@ test('原生分支按同源楼标记继承三楼旧摘要，正文及选中回�
     const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: sourceAdapter,
       automationSettings: () => ({ enabled: false, batchSize: 1 }),
       generateUtilityTask: async () => { modelCalls++; return { jsonData: { summary: `旧摘要${modelCalls}` } }; },
-      generateAnalysisTask: async () => { modelCalls++; return { jsonData: { noMaterialChange: true } }; },
+      generateAnalysisTask: async options => { modelCalls++; return { jsonData: reviewedCsePacket(options) }; },
       now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
     assert.equal((await foundation.start()).status, 'ready');
     await memory.start();
@@ -503,10 +504,10 @@ test('一键搬家为B独立复制完整冻结图，保留A字节并让B正常fo
   await sourceFoundation.start();
   const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter,
     automationSettings: () => ({ enabled: false, batchSize: 1 }),
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
     generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
       ? { jsonData: { summary: '裴晚生把蓝铜钥匙放进东馆的旧木盒。' } }
-      : { jsonData: { noMaterialChange: true } },
+      : { jsonData: reviewedCsePacket(options) },
     now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   await sourceMemory.start();
   const sourceFloorIdForSummary = sourceMemory.getState().floors[0].floorId;
@@ -616,12 +617,12 @@ test('一键搬家为B独立复制完整冻结图，保留A字节并让B正常fo
   let rebuilding = false, rebuildCalls = 0, rebuildCseCalls = 0;
   const targetMemory = createV3MemoryRuntime({ foundationRuntime: targetFoundation, store: targetStore, hostAdapter: targetHost,
     automationSettings: () => ({ enabled: false, batchSize: 1 }),
-    generateAnalysisTask: async () => { if (rebuilding) rebuildCseCalls += 1; return { jsonData: { noMaterialChange: true } }; },
+    generateAnalysisTask: async options => { if (rebuilding) rebuildCseCalls += 1; return { jsonData: reviewedCsePacket(options) }; },
     generateUtilityTask: async options => {
       if (rebuilding) rebuildCalls += 1;
       return options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
         ? { jsonData: { summary: rebuilding ? 'B活动摘要-重构后' : 'B活动摘要-第一次' } }
-        : { jsonData: { noMaterialChange: true } };
+        : { jsonData: reviewedCsePacket(options) };
     }, now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   await targetMemory.start();
   const aliasUiState = targetMemory.getState();
@@ -912,9 +913,9 @@ test('普通分支 prepare经native/Luker正式入口保存后继承前缀向量
     assert.equal((await sourceFoundation.start()).status, 'ready');
     const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter: sourceAdapter,
       automationSettings: () => ({ enabled: false, batchSize: 1 }),
-      generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+      generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
       generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
-        ? { jsonData: { summary: '前缀楼记载苹果饼配方。' } } : { jsonData: { noMaterialChange: true } },
+        ? { jsonData: { summary: '前缀楼记载苹果饼配方。' } } : { jsonData: reviewedCsePacket(options) },
       now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
     await sourceMemory.start();
     const sourceMemoryFloors = sourceMemory.getState().floors;
@@ -1022,7 +1023,7 @@ test('native/Luker普通分支从冻结历史接续，只继承实际C前缀并�
       automationSettings: () => ({ enabled: false, batchSize: 1 }),
       generateAnalysisTask: async options => ({ jsonData: { subjects: JSON.parse(options.taskMessages[0].content).payload.trackedSubjects.map(({ name }) => ({ subject: name, situational: [{ text: '归档时仍有顾虑', visibility: 'private', reason: '归档合成证据', quantification: { emotions: { 担忧: 20 } } }] })) } }),
       generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
-        ? { jsonData: { summary: '归档日志记录。', people: [{ name: '裴晚生', presence: 'present' }] } } : { jsonData: { noMaterialChange: true } },
+        ? { jsonData: { summary: '归档日志记录。', people: [{ name: '裴晚生', presence: 'present' }] } } : { jsonData: reviewedCsePacket(options) },
       now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
     await archiveMemory.start();
     for (const floor of archiveMemory.getState().floors) await archiveMemory.extractFloor(floor.floorId, { analyzeState: false });
@@ -1071,9 +1072,9 @@ test('native/Luker普通分支从冻结历史接续，只继承实际C前缀并�
     assert.equal((await sourceFoundation.start()).status, 'ready');
     const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter: sourceAdapter,
       automationSettings: () => ({ enabled: false, batchSize: 1 }),
-      generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+      generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
       generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
-        ? { jsonData: { summary: 'C楼摘要。' } } : { jsonData: { noMaterialChange: true } },
+        ? { jsonData: { summary: 'C楼摘要。' } } : { jsonData: reviewedCsePacket(options) },
       now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
     await sourceMemory.start();
     for (const floor of sourceMemory.getState().floors.filter(value => !value.frozen)) await sourceMemory.extractFloor(floor.floorId, { analyzeState: false });
@@ -1456,10 +1457,10 @@ test('已保存摘要但CSE未齐的携带AI成为B真实活动楼并复用摘�
     now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   await sourceFoundation.start();
   const sourceMemory = createV3MemoryRuntime({ foundationRuntime: sourceFoundation, store: sourceStore, hostAdapter,
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
     generateUtilityTask: async options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
       ? { jsonData: { summary: '已经保存的旧楼摘要。' } }
-      : { jsonData: { noMaterialChange: true } },
+      : { jsonData: reviewedCsePacket(options) },
     now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   await sourceMemory.start();
   const sourceFloorId = sourceMemory.getState().floors[0].floorId;
@@ -1503,8 +1504,8 @@ test('已保存摘要但CSE未齐的携带AI成为B真实活动楼并复用摘�
     now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   let cseCalls = 0, extractorCalls = 0;
   const targetMemory = createV3MemoryRuntime({ foundationRuntime: targetFoundation, store: targetStore, hostAdapter: targetHost,
-    generateAnalysisTask: async () => { cseCalls += 1; return { jsonData: { noMaterialChange: true } }; },
-    generateUtilityTask: async options => { if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) extractorCalls += 1; return { jsonData: { noMaterialChange: true } }; },
+    generateAnalysisTask: async options => { cseCalls += 1; return { jsonData: reviewedCsePacket(options) }; },
+    generateUtilityTask: async options => { if (options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT) extractorCalls += 1; return { jsonData: reviewedCsePacket(options) }; },
     now: () => new Date(NOW), newUuid: uuidFactory(), logger: { warn() {} } });
   await targetMemory.start();
   assert.equal(targetMemory.getState().floors.find(floor => floor.floorId === liveFloor.id)?.inherited, true,

@@ -3367,9 +3367,10 @@ test('CSE 旧记录直接展示本楼快照且不伪造成新增或重复变更�
   assert.doesNotMatch(resultCopy, /本楼新增与调整|新增核心特质|新增长期倾向|新增当前情境/);
 });
 
-test('CSE 新固定空变化仍显示无变化与可折叠本楼快照', () => {
+test('CSE 沿用前态楼及重分析在途都直接显示已保存状态', () => {
+ for (const status of ['noChange', 'running']) {
   const memory = { summaryEvidenceRefs: [] };
-  const floor = { floorId: 'fixed-empty', messageIndex: 8, memoryId: 'memory', status: 'ready', summary: '摘要', memory, cse: { status: 'noChange', deltaId: 'delta', record: {
+  const floor = { floorId: 'fixed-empty', messageIndex: 8, memoryId: 'memory', status: 'ready', summary: '摘要', memory, cse: { status, deltaId: 'delta', record: {
     fixedChangesAvailable: true,
     noMaterialChange: true,
     isolationSummary: null,
@@ -3382,11 +3383,35 @@ test('CSE 新固定空变化仍显示无变化与可折叠本楼快照', () => {
   flatten(container).find(node => node.textContent === '分析记录').click();
   const rowNode = flatten(container).find(node => node.className === 'qqj-cse-history-row'); rowNode.open = true; rowNode.fire('toggle');
   const copy = flatten(rowNode).map(node => node.textContent).join('|');
-  assert.match(copy, /本楼新增与调整.*本楼没有新增或调整的人物状态.*变更详情 · 0 项.*本楼无实质人物状态变化/);
-  assert.match(copy, /查看本楼已保存状态.*裴晚生.*核心特质.*保持警惕/);
-  assert.ok(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-changes'));
-  assert.ok(flatten(rowNode).find(node => node.className === 'qqj-cse-floor-state'));
+  assert.match(copy, status === 'noChange' ? /沿用前态.*本楼已保存状态.*裴晚生.*核心特质.*保持警惕/
+    : /正在处理.*本楼已保存状态.*裴晚生.*核心特质.*保持警惕/);
+  const result = flatten(rowNode).find(node => node.className === 'qqj-cse-floor-result');
+  assert.match(flatten(result).map(node => node.textContent).join('|'), /本楼已保存状态.*保持警惕/);
+  assert.equal(flatten(rowNode).some(node => node.className === 'qqj-cse-floor-state'), false, '已保存状态直接呈现，不增加第二层展开');
+  assert.doesNotMatch(copy, /无实质变化|无实质人物状态变化|本楼新增与调整/);
   assert.doesNotMatch(copy, /旧记录未保存|旧记录没有固定/);
+ }
+});
+
+test('正文未识别保留源楼警告，已存摘要同一行可读且诊断变化触发刷新', () => {
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, stableCount: 1, rememberedCount: 1,
+    contentIssues: [{ messageIndex: 0, reason: 'emptyAfterSanitizing' }, { messageIndex: 2, reason: 'emptyAfterSanitizing' }],
+    floors: [{ floorId: 'saved', assistantSeq: 1, messageIndex: 2, memoryId: 'm', status: 'ready', summary: '已保存的健康摘要', memory: { summaryEvidenceRefs: [] } }],
+    unregisteredCandidates: [{ messageIndex: 0, reason: 'waitingEarlierFloor' }] };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef }); view.mount(container); view.setPage('memories');
+  let rows = flatten(container).filter(node => String(node.className).split(' ').includes('qqj-memory-card'));
+  assert.equal(rows.length, 2, '已登记楼和未登记楼各一行，不重复等待行');
+  for (const row of rows) { row.open = true; row.fire('toggle'); }
+  const copy = flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy, /第 2 楼.*正文未识别.*已保存的健康摘要/);
+  assert.match(copy, /第 0 楼.*正文未识别/);
+  assert.match(copy, /保留包裹符.*清洗包裹符/);
+  state = { ...state, activeExtraction: { floorId: 'saved', phase: 'extracting' } }; view.render(state);
+  const savedRow = flatten(container).find(node => node.attributes?.['data-qqj-floor-id'] === 'saved');
+  assert.match(flatten(savedRow.children[0]).map(node => node.textContent).join('|'), /正文未识别/, '仅更新工作状态也保留源楼警告');
+  state = { ...state, contentIssues: [] }; view.render(state);
+  assert.doesNotMatch(flatten(container).map(node => node.textContent).join('|'), /正文未识别/);
 });
 
 test('摘要搜索遍历全部已存楼，清空恢复列表且切聊天不保留查询', () => {
@@ -3633,8 +3658,10 @@ test('CSE 完整隔离不伪造成功，旧楼缺诊断字段不冒充零隔离'
   flatten(container).find(node => node.textContent === '分析记录').click();
   for (const row of flatten(container).filter(node => node.className === 'qqj-cse-history-row')) { row.open = true; row.fire('toggle'); }
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /有内容未通过校验；本楼未产生人物状态变化（1 项校验记录）/);
+  assert.match(copy, /有内容未通过校验；本楼沿用前态（1 项校验记录）/);
   assert.equal((copy.match(/校验记录/g) ?? []).length, 1, '旧楼缺诊断字段应保持未知，不显示为零');
+  assert.equal((copy.match(/本楼没有已保存的人物状态快照/g) ?? []).length, 2, '旧空记录如实显示缺少快照');
+  assert.doesNotMatch(copy, /完整复核|逐人复核|无实质变化/);
 });
 
 test('摘要编辑时后台通知不替换独立弹窗草稿；取消后阅读区显示最新内容', () => {

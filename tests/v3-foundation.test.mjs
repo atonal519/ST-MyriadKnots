@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createBackendClient } from '../src/backend-client.js';
@@ -371,6 +372,44 @@ test('HostAdapter 优先 official-only SillyTavern，且增强能力只由真实
   const lukerAdapter = createHostAdapter({ globalRef: { Luker: { getContext: () => fallback } } });
   assert.equal(lukerAdapter.snapshot().source, 'Luker');
   assert.equal(lukerAdapter.snapshot().mode, 'standard');
+});
+
+test('正文清洗为空通过旁路反馈源楼，不改变候选编号且排除空占位与旁白', async () => {
+  const chat = [assistant('<story>不得输出的原文</story>'), user('确认'), assistant('<content>健康正文</content>'), user('确认健康'),
+    assistant('   '), { ...assistant('<story>旁白</story>'), extra: { type: 'narrator' } },
+    assistant('<story>排除</story>', { qianqianjie_memory_excluded: true }), system('<story>工具</story>', 'tool'),
+    hiddenAssistant('<story>自动隐藏的真人正文</story>')];
+  const issues = [];
+  const expected = await scanAssistantCandidates(chat, { chatId: CHAT });
+  const candidates = await scanAssistantCandidates(chat, { chatId: CHAT, onContentIssue: issue => issues.push(issue) });
+  assert.deepEqual(candidates, expected, '默认扫描返回及编号不受诊断回调影响');
+  assert.deepEqual(candidates.map(item => [item.assistantSeq, item.hostLocator.messageIndex]), [[1, 2]]);
+  assert.deepEqual(issues.map(issue => [issue.messageIndex, issue.reason]), [[0, 'emptyAfterSanitizing'], [8, 'emptyAfterSanitizing']]);
+  assert.ok(issues.every(issue => /^sha256:[a-f0-9]{64}$/.test(issue.rawFingerprint) && /^sha256:[a-f0-9]{64}$/.test(issue.sanitizerFingerprint)));
+  assert.doesNotMatch(JSON.stringify(issues), /不得输出|自动隐藏的真人正文/);
+  const h = harness(chat, { modernAnchors: true });
+  const state = await h.runtime.start();
+  assert.deepEqual(state.contentIssues.map(issue => issue.messageIndex), [0, 8]);
+  assert.equal(state.contentIssuesChatId, CHAT);
+  assert.deepEqual(h.runtime.getReachable().floors.map(item => [item.assistantSeq, item.hostLocator.messageIndex]), [[1, 2]]);
+});
+
+test('正文未识别只读无root及身份未就绪fallback不串旧投影或创建身份', async () => {
+  const h = harness([assistant('<story>开局坏正文</story>')], { modernAnchors: true });
+  let state = await h.runtime.inspect('readOnly');
+  assert.equal(state.chatId, null);
+  assert.equal(state.contentIssuesChatId, CHAT);
+  assert.deepEqual(state.contentIssues.map(issue => issue.messageIndex), [0]);
+  const before = h.backend.records.size;
+  delete h.context.chatMetadata.qianqianjie;
+  state = await h.runtime.inspect('identityMissing');
+  assert.equal(state.contentIssuesChatId, null);
+  assert.deepEqual(state.contentIssues.map(issue => issue.messageIndex), [0]);
+  h.context.chatId = 'another-host-without-identity'; h.context.chat = [assistant('健康正文')];
+  state = await h.runtime.inspect('anotherUnpreparedChat');
+  assert.deepEqual(state.contentIssues, []);
+  assert.equal(h.context.chatMetadata.qianqianjie, undefined);
+  assert.equal(h.backend.records.size, before, '识别反馈只读，不创建身份或记录');
 });
 
 test('纯扫描只枚举有效 AI 楼；无 user 锚时确认入口也不能越过 pending', async () => {
@@ -1268,7 +1307,7 @@ test('CSE settled 批读传输失败仍保留已保存摘要与核心记忆', as
   assert.ok(floor, '夹具先建立可用稳定楼');
   const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
     ? { jsonData: { summary: '本地夹具保存的核心摘要' } }
-    : { jsonData: { noMaterialChange: true } };
+    : { jsonData: reviewedCsePacket(options) };
   const memoryRuntime = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
     generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'),
     newUuid: uuidFactory(40000), logger: { warn() {} } });
@@ -1335,7 +1374,7 @@ test('旧索引图的首次实际 CSE 提交重建 floorOrder，后续提交复�
   await h.runtime.start();
   const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
     ? { jsonData: { summary: '旧图 CSE 回归摘要' } }
-    : { jsonData: { noMaterialChange: true } };
+    : { jsonData: reviewedCsePacket(options) };
   const memoryRuntime = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
     generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'),
     newUuid: uuidFactory(12000), logger: { warn() {} } });
@@ -2548,7 +2587,7 @@ test('memory 实际打开路径只清完整247楼前缀后的首个孤儿锚并�
   const originalFloorIds = h.runtime.getReachable().floors.map(floor => floor.id);
   const task = async options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
     ? { jsonData: { summary: '必须保留的既有摘要' } }
-    : { jsonData: { noMaterialChange: true } };
+    : { jsonData: reviewedCsePacket(options) };
   const seededMemory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
     generateAnalysisTask: task, generateUtilityTask: task, now: () => new Date('2026-09-02T00:00:00.000Z'), newUuid: uuidFactory(30000), logger: { warn() {} } });
   await seededMemory.start();
@@ -2809,7 +2848,7 @@ test('尾孤儿保存后提交前重新读取原档；正文、标记或消息�
     api.persistLive();
     const rootBefore = structuredClone(h.backend.records.get(`chat-${CHAT}/v3-root`));
     const memory = createV3MemoryRuntime({ foundationRuntime: h.runtime, store: h.store, hostAdapter: h.hostAdapter,
-      generateAnalysisTask: async () => { throw new Error('目标源变化不得调用模型'); },
+      generateAnalysisTask: async options => { throw new Error('目标源变化不得调用模型'); },
       generateUtilityTask: async () => { throw new Error('目标源变化不得调用模型'); }, logger: { warn() {} } });
     await memory.refreshStatus({ preferCached: false, recoverTailDeletion: true, reconcileFoundation: true });
     assert.equal(changed, true, `${change}: mutation must occur at actual-target precommit read`);
@@ -3358,7 +3397,7 @@ test('部分缓存的TT图读取仅对miss批量回源，保留命中、深校�
   await source.runtime.start();
   const memory = createV3MemoryRuntime({ foundationRuntime: source.runtime, store: source.store, hostAdapter: source.hostAdapter,
     generateUtilityTask: async () => ({ jsonData: { summary: '保留的摘要' } }),
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }), logger: { warn() {} } });
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }), logger: { warn() {} } });
   await memory.start();
   await memory.extractFloor(memory.getState().floors[0].floorId, { analyzeState: false });
   await memory.analyzeNextState();
@@ -3516,7 +3555,7 @@ test('HTML正文空源手动零请求保旧摘要CSE，正常extractNext跳过�
   const ids = h.runtime.getReachable().floors.map(floor=>floor.id);
   for (const [index,id] of ids.entries()) chat[index*2].extra.qianqianjie_floor = { schemaVersion: 1, chatId: CHAT, floorId: id };
   const requests=[];
-  const task=async options=>{const request=JSON.parse(options.taskMessages[0].content);requests.push(request);return {jsonData: request.task==='extractFloorSemantics'?{summary:'原有有效摘要'}:{noMaterialChange:true}};};
+  const task=async options=>{const request=JSON.parse(options.taskMessages[0].content);requests.push(request);return {jsonData: request.task==='extractFloorSemantics'?{summary:'原有有效摘要'}:reviewedCsePacket(options)};};
   const memory=createV3MemoryRuntime({foundationRuntime:h.runtime,store:h.store,hostAdapter:h.hostAdapter,generateUtilityTask:task,generateAnalysisTask:task,now:()=>new Date('2026-09-02T00:00:00.000Z'),newUuid:uuidFactory(50000),logger:{warn(){}}});
   await memory.start();if(saved)await memory.extractFloor(ids[0]);
   const before=await h.store.readReachable({mode:'runtime'}),old=JSON.stringify({memories:before.floorMemories,deltas:before.stateDeltas});

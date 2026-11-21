@@ -9,6 +9,7 @@ import { buildEntityIdentityDirectory, normalizeIdentityProjection } from './ent
 import { rankRecallDocuments, tokenizeRecallText } from './recall-ranking.js';
 import { QIANSHI_SCHEMA_VERSION, validateQianshiDelta } from './qianshi-schema.js';
 import { migrationPartition } from './migration-prefix.js';
+import { isMemoryExcludedFloor } from './memory-exclusion.js';
 
 export const QIANSHI_CANDIDATE_CHARACTER_BUDGET = 24000;
 export const QIANSHI_PROGRESS_CHARACTER_BUDGET = 3200;
@@ -644,6 +645,9 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
   const currentProgress = frozen({ text: progressLines.length ? ['[当前剧情进度]', ...progressLines].join('\n') : '', characterCount: progressLines.join('\n').length,
     eventIds: frozen([...new Set(progressEventIds)]), matterIds: frozen(progressMatterIds) });
   const migration = partition ?? migrationPartition(reachable);
+  const coverageFloors = floors.filter(floor => !isMemoryExcludedFloor(floor, null, reachable?.checkpoint, { frozen: migration.isFrozenFloor(floor.id) }));
+  const coverageFloorIds = new Set(coverageFloors.map(floor => floor.id));
+  const coverageRows = memoryRows.filter(row => coverageFloorIds.has(row.floor.id));
   const statusRows = rows => rows.map(({ floor, memory, effective }) => {
     return { floorId: floor.id, status: memory.qianshiDelta?.status ?? 'unprocessed', hasEvents: effective.events.length > 0,
       unfinished: hasUnfinishedQianshiHistory(memory),
@@ -661,11 +665,11 @@ export function projectQianshiGraph(reachable, { identityProjection = null, prog
       degradedFloors: new Set(eligibleStatuses.filter(value => degradedFloorIds.has(value.floorId)).map(value => value.floorId)).size,
       unavailableFloors: floorCount - rows.length };
   };
-  const globalCoverage = { ...coverageFor(memoryRows, floors.length), degradedFloors: degradedFloorIds.size };
+  const globalCoverage = coverageFor(coverageRows, coverageFloors.length);
   let processableCoverage;
   if (migration.frozenFloors.length) {
-    const liveFloorIds = new Set(migration.liveFloors.map(floor => floor.id));
-    processableCoverage = { ...coverageFor(memoryRows.filter(row => liveFloorIds.has(row.floor.id)), migration.liveFloors.length),
+    const liveFloorIds = new Set(migration.liveFloors.filter(floor => coverageFloorIds.has(floor.id)).map(floor => floor.id));
+    processableCoverage = { ...coverageFor(coverageRows.filter(row => liveFloorIds.has(row.floor.id)), liveFloorIds.size),
       frozenFloors: migration.frozenFloors.length };
   } else processableCoverage = { ...globalCoverage, frozenFloors: 0 };
   const coverage = frozen({ ...globalCoverage, processable: frozen(processableCoverage) });

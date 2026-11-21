@@ -48,7 +48,7 @@ function statusCopy(value) {
     uninitialized: '尚未开始记录', ready: '可用', running: '正在处理', empty: '完成 · 无需注入',
     skipped: '本轮已跳过', idle: '尚无生成记录', conflict: '并发冲突，未覆盖新数据', error: '处理失败，可重试',
     disabled: '插件已关闭', stale: '正在等待最新结果', needsReview: '需要核对当前聊天记忆', unprocessed: '未处理',
-    failed: '失败可重试', partial: '部分完成，可继续补齐', pending: '待分析', noChange: '无实质变化', notApplicable: '尚无摘要',
+    failed: '失败可重试', partial: '部分完成，可继续补齐', pending: '待分析', noChange: '沿用前态', notApplicable: '尚无摘要',
   })[value] ?? text(value, '尚未初始化');
 }
 
@@ -120,12 +120,14 @@ const waitingFloorCopy = value => ({
   waitingEarlierFloor: '等待前面楼层处理',
   consecutiveAssistant: '连续 AI，尚待确认',
   registrationNeedsReview: '消息对应关系待核对',
+  emptyAfterSanitizing: '正文未识别',
 })[value] ?? '尚待确认';
 const waitingFloorExplanation = value => ({
   waitingNextUser: '尚未摘要，发送下一条用户消息后检查。',
   waitingEarlierFloor: '尚未摘要，先确认前面的 AI 楼。',
   consecutiveAssistant: '尚未摘要，请到「千结」页顶部，点击「确认连续 AI 并分别记录」。',
   registrationNeedsReview: '尚未摘要，需核对楼层与记忆的对应关系。',
+  emptyAfterSanitizing: '原文经包裹符清洗后没有可提取正文。请检查原文包裹符及「设置 → 提示词与包裹符 → 包裹符」中的“保留包裹符”和“清洗包裹符”。',
 })[value] ?? '这一楼尚未摘要，正在等待确认。';
 const reviewReasonCopy = value => {
   if (!value?.code) return '无';
@@ -527,7 +529,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     stableCount: state?.stableCount ?? null, rememberedCount: state?.rememberedCount ?? null,
     unprocessedCount: state?.unprocessedCount ?? null, failedCount: state?.failedCount ?? null,
     pendingAssistantSeq: state?.pending?.assistantSeq ?? null, pendingMessageIndex: state?.pending?.messageIndex ?? null,
-    unregisteredCandidates: state?.unregisteredCandidates, consecutiveAssistantConfirmation: state?.consecutiveAssistantConfirmation, bindingIssues: state?.bindingIssues,
+    unregisteredCandidates: state?.unregisteredCandidates, contentIssues: state?.contentIssues, contentIssuesChatId: state?.contentIssuesChatId, consecutiveAssistantConfirmation: state?.consecutiveAssistantConfirmation, bindingIssues: state?.bindingIssues,
     lastExtractorError: state?.lastExtractorError,
     lastCseError: state?.lastCseError ? `${state.lastCseError.floorId ?? ''}|${state.lastCseError.code ?? ''}|${state.lastCseError.message ?? ''}|${state.lastCseError.lastFailedAt ?? ''}` : '',
     lastError: state?.lastError, lastAutoMemory: state?.lastAutoMemory });
@@ -551,8 +553,8 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const floor = (state?.floors ?? []).find(item => item.floorId === floorId);
     if (!floor) return;
     const userEdited = floor.summarySource === 'user' && floor.status === 'ready';
-    view.card.className = `qqj-memory-card status-${floor.status}`;
-    view.statusNode.textContent = running ? workPhaseCopy(state) : floor.sourceUnavailable ? '来源待核' : userEdited ? '人工修订' : statusCopy(floor.status);
+    view.card.className = `qqj-memory-card status-${view.hasContentIssue ? 'error' : floor.status}`;
+    view.statusNode.textContent = view.hasContentIssue ? '正文未识别' : running ? workPhaseCopy(state) : floor.sourceUnavailable ? '来源待核' : userEdited ? '人工修订' : statusCopy(floor.status);
     view.statusNode.className = `v3-memory-status${userEdited ? ' is-user' : ''}`;
   };
   const updateMemoryFloorStatuses = state => {
@@ -1186,28 +1188,29 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     return labelsByFloor;
   }
 
-  function renderMemoryFloor(floor, state, locationLabelsByFloor) {
+  function renderMemoryFloor(floor, state, locationLabelsByFloor, contentIssues = []) {
     const key = `${state.chatId ?? 'no-chat'}:${floor.floorId}`;
     const title = memoryFloorTitle(state, floor);
-    const card = setDetailsState(element('details', `qqj-memory-card status-${floor.status}`), `memory:${key}`, false);
+    const card = setDetailsState(element('details', `qqj-memory-card status-${contentIssues.length ? 'error' : floor.status}`), `memory:${key}`, false);
     card.setAttribute('data-qqj-floor-id', floor.floorId);
     const head = element('summary', `qqj-memory-card-head${floor.frozen ? ' is-archived' : ''}`);
     const memory = floor.memory;
     const times = floorTimeDisplay(memory, floor) || '时间未明确';
     const timeNode = element('span', 'qqj-floor-time', times); timeNode.setAttribute('title', times);
-    const floorStatus = floor.frozen ? '来源归档 · 只读' : floor.sourceUnavailable ? '来源待核' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
+    const floorStatus = contentIssues.length ? '正文未识别' : floor.frozen ? '来源归档 · 只读' : floor.sourceUnavailable ? '来源待核' : floor.summarySource === 'user' && floor.status === 'ready' ? '人工修订' : statusCopy(floor.status);
     const statusNode = element('span', `v3-memory-status${floor.summarySource === 'user' && floor.status === 'ready' ? ' is-user' : ''}`, floorStatus);
     const chevron = element('span', 'qqj-memory-chevron'); chevron.setAttribute('aria-hidden', 'true');
     const numberNode = element('strong', 'qqj-floor-number', title);
     if (floor.frozen && floor.sourceOrigin?.sourceHostChatId) numberNode.setAttribute('title', floor.sourceOrigin.sourceHostChatId);
     head.append(numberNode, timeNode, statusNode, chevron);
     card.append(head);
-    memoryCardStatusViews.set(floor.floorId, { card, statusNode, frozen: floor.frozen === true });
+    memoryCardStatusViews.set(floor.floorId, { card, statusNode, frozen: floor.frozen === true, hasContentIssue: contentIssues.length > 0 });
     let body = null;
     const buildBody = () => {
       if (body) return;
       const currentState = syncingDisplayState(foundationState ?? state);
       body = element('div', 'qqj-memory-card-body');
+      if (contentIssues.length) body.append(element('p', 'v3-foundation-feedback error', `${contentIssues.map(issue => `第 ${issue.messageIndex} 楼`).join('、')}的正文未识别。${waitingFloorExplanation('emptyAfterSanitizing')}${floor.memoryId ? '已保存摘要可继续查看。' : ''}`));
       if (floor.frozen) {
         const sourceName = typeof floor.sourceOrigin?.sourceHostChatId === 'string' ? floor.sourceOrigin.sourceHostChatId : '';
         body.append(element('p', 'settings-hint qqj-memory-source', `来源：${sourceName || '未记录'}；来源聊天的已保存资料在此只读展示。`));
@@ -1288,7 +1291,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   }
   function renderWaitingMemoryFloor(candidate, state) {
     const key = `${state.chatId ?? 'no-chat'}:waiting:${candidate.messageIndex}`;
-    const card = setDetailsState(element('details', 'qqj-memory-card status-pending'), `memory:${key}`, false);
+    const card = setDetailsState(element('details', `qqj-memory-card status-${candidate.reason === 'emptyAfterSanitizing' ? 'error' : 'pending'}`), `memory:${key}`, false);
     const head = element('summary', 'qqj-memory-card-head');
     const statusNode = element('span', 'v3-memory-status', waitingFloorCopy(candidate.reason));
     const chevron = element('span', 'qqj-memory-chevron'); chevron.setAttribute('aria-hidden', 'true');
@@ -1635,7 +1638,16 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const floors = [...(state.floors ?? [])];
     const locationLabelsByFloor = memoryLocationLabelsByFloor(state, floors);
     const registeredMessageIndexes = new Set(floors.filter(floor => floor.frozen !== true).map(floor => floor.messageIndex).filter(validMessageIndex));
-    const waiting = (state.unregisteredCandidates ?? []).filter(candidate => validMessageIndex(candidate?.messageIndex) && !registeredMessageIndexes.has(candidate.messageIndex));
+    const issuesByIndex = new Map((state.contentIssues ?? []).filter(issue => validMessageIndex(issue?.messageIndex)).map(issue => [issue.messageIndex, issue]));
+    const issuesByFloor = new Map(floors.map(floor => {
+      const indexes = floor.frozen ? [] : floor.sourceMessageIndexes ?? [floor.messageIndex];
+      indexes.filter(validMessageIndex).forEach(index => registeredMessageIndexes.add(index));
+      return [floor.floorId, indexes.map(index => issuesByIndex.get(index)).filter(Boolean)];
+    }));
+    const waiting = [
+      ...(state.unregisteredCandidates ?? []).filter(candidate => validMessageIndex(candidate?.messageIndex) && !registeredMessageIndexes.has(candidate.messageIndex) && !issuesByIndex.has(candidate.messageIndex)),
+      ...[...issuesByIndex.values()].filter(issue => !registeredMessageIndexes.has(issue.messageIndex)),
+    ];
     const consecutive = waiting.filter(candidate => candidate.reason === 'consecutiveAssistant');
     const hasWaitingTail = waiting.some(candidate => candidate.reason === 'waitingNextUser');
     const confirmationScope = state.consecutiveAssistantConfirmation;
@@ -1714,7 +1726,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         return;
       }
       appendPagination(rows.length, '摘要页码');
-      for (const item of rows.slice(memoryListPage * pageSize, (memoryListPage + 1) * pageSize)) list.append(item.kind === 'registered' ? renderMemoryFloor(item.value, state, locationLabelsByFloor) : renderWaitingMemoryFloor(item.value, state));
+      for (const item of rows.slice(memoryListPage * pageSize, (memoryListPage + 1) * pageSize)) list.append(item.kind === 'registered' ? renderMemoryFloor(item.value, state, locationLabelsByFloor, issuesByFloor.get(item.value.floorId)) : renderWaitingMemoryFloor(item.value, state));
       if (!rows.length) list.append(element('div', 'qqj-inline-empty', '这里还没有已保存摘要。最新 AI 楼将在下一条用户消息发出后开始摘要。'));
     };
     const memorySearch = searchControl({ value: memorySearchQuery, placeholder: '搜索全部摘要', ariaLabel: '搜索当前聊天的全部摘要', onInput: value => { if (value !== memorySearchQuery) memoryListPage = 0; memorySearchQuery = value; fillList(); }, onClear: () => { memorySearchQuery = ''; memoryListPage = 0; fillList(); } });
@@ -1882,7 +1894,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       const { body } = info, floor = info.floor, record = floor.cse?.record;
       body.replaceChildren();
       if (record) {
-        if (record.fixedChangesAvailable === false) {
+        if (record.fixedChangesAvailable === false || record.noMaterialChange === true) {
           const resultNode = element('section', 'qqj-cse-floor-result'); resultNode.append(element('strong', 'qqj-cse-floor-result-title', '本楼已保存状态'));
           const resultBody = element('div', 'qqj-cse-floor-state-body'), subjects = record.endStateSubjects ?? [];
           for (const subject of subjects) {
@@ -1890,9 +1902,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
             appendSubjectGroups(subjectNode, subject, currentState); resultBody.append(subjectNode);
           }
           if (!subjects.length) resultBody.append(element('p', 'settings-hint', '本楼没有已保存的人物状态快照。'));
-          resultBody.append(element('p', 'settings-hint', '旧记录未保存可核对的逐项变化；以上为本楼已保存状态快照。'));
+          if (record.fixedChangesAvailable === false) resultBody.append(element('p', 'settings-hint', '旧记录未保存可核对的逐项变化；以上为本楼已保存状态快照。'));
           if (record.isolationSummary) resultBody.append(element('p', 'qqj-cse-isolation-hint', record.noMaterialChange
-            ? `有内容未通过校验；本楼未产生人物状态变化（${record.isolationSummary.count} 项校验记录）。`
+            ? `有内容未通过校验；本楼沿用前态（${record.isolationSummary.count} 项校验记录）。`
             : `部分内容未通过校验，已保留有效结果（${record.isolationSummary.count} 项校验记录）。`));
           resultNode.append(resultBody); body.append(resultNode);
         } else {
@@ -1926,9 +1938,9 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
             } else subjectNode.append(element('p', 'settings-hint', '这个人物本楼没有记录到变化。'));
             changesBody.append(subjectNode);
           }
-          if (!changes.length) changesBody.append(element('p', 'settings-hint', '本楼无实质人物状态变化。'));
+          if (!changes.length) changesBody.append(element('p', 'settings-hint', '本楼没有记录到逐项变化。'));
           if (record.isolationSummary) changesBody.append(element('p', 'qqj-cse-isolation-hint', record.noMaterialChange
-            ? `有内容未通过校验；本楼未产生人物状态变化（${record.isolationSummary.count} 项校验记录）。`
+            ? `有内容未通过校验；本楼沿用前态（${record.isolationSummary.count} 项校验记录）。`
             : `部分内容未通过校验，已保留有效结果（${record.isolationSummary.count} 项校验记录）。`));
           changesNode.append(changesBody); body.append(changesNode);
           if (record.endStateSubjects) {

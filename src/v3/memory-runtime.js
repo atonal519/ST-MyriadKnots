@@ -535,6 +535,8 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   let lastAutomaticInputKey = null;
   let lastNoticeKey = null;
   let lastConsecutiveAssistantNoticeKey = null;
+  let lastContentIssueNoticeKey = null;
+  let contentIssueTimer = null;
   let identityProjection = normalizeIdentityProjection();
   let identityProjectionChatId = null;
   const memoryPlaceEntitiesCache = new WeakMap();
@@ -665,10 +667,10 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
   }
   function getPlaceEditContext(entityId) {
     const snapshot = getQianchuangSnapshot(), place = snapshot.places.find(value => value.entityId === entityId);
-    if (entityId && !place || !reachable?.root) throw errorWith('QQJ_PLACE_UNAVAILABLE', '这个地点已不可用。');
+    if (entityId && !place || !reachable?.root || snapshot.chatId !== reachable.root.chatId
+      || snapshot.narrativeGeneration !== reachable.root.narrativeGeneration) throw errorWith('QQJ_PLACE_UNAVAILABLE', '这个地点已不可用。');
     const coveredFloorIds = reachable.floors.filter(floor => floor.assistantSeq <= snapshot.summarizedThroughAssistantSeq).map(floor => floor.id);
-    const knownThroughFloorId = coveredFloorIds.at(-1);
-    if (!knownThroughFloorId) throw errorWith('QQJ_PLACE_UNAVAILABLE', '当前尚无可编辑的地点记录。');
+    const knownThroughFloorId = coveredFloorIds.at(-1) ?? null;
     return { chatId: snapshot.chatId, narrativeGeneration: snapshot.narrativeGeneration, allowedPlaceIds: snapshot.places.map(place => place.entityId), parents: snapshot.places.map(place => [place.entityId, place.parentEntityId]), expectedRevision: snapshot.placeWorkspaceRevision, scope: { knownThroughFloorId, coveredFloorIds, coveredItemIds: [...(place?.features ?? []), ...(place?.relations ?? [])].map(item => item.itemId).filter(Boolean) } };
   }
   function getPlaceOrganizationContext() {
@@ -1284,6 +1286,56 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     } catch { /* notification must not affect memory work */ }
     return true;
   };
+  const visibleContentIssues = foundationState => {
+    const issues = foundationState?.contentIssues ?? [];
+    if (!issues.length) return issues;
+    if (String(foundationState?.contentIssuesChatId ?? '') !== currentHostChatId()) return [];
+    if (!mainGenerationActive()) return issues;
+    const lifecycle = generationLifecycle;
+    const start = lifecycle?.startChatLength ?? observedHostChatLength;
+    return issues.filter(issue => issue.messageIndex < (lifecycle ? start : Math.max(0, start - 1))
+      && !(lifecycle && issue.messageIndex === lifecycle.targetMessageIndex
+        && (lifecycle.type !== 'normal' || !lifecycle.startRawContent.trim())));
+  };
+  const notifyContentIssues = foundationState => {
+    const issues = foundationState?.contentIssues ?? [];
+    if (!issues.length) { lastContentIssueNoticeKey = null; return false; }
+    if (!enabled() || mainGenerationActive() || foundationRuntime.getActivityState?.().busy || !['ready', 'uninitialized', 'needsReview'].includes(foundationState?.status)
+      || String(foundationState?.contentIssuesChatId ?? '') !== currentHostChatId()) return false;
+    const key = JSON.stringify([foundationState.contentIssuesChatId, issues.map(issue => [issue.messageIndex, issue.rawFingerprint, issue.sanitizerFingerprint])]);
+    if (key === lastContentIssueNoticeKey) return false;
+    lastContentIssueNoticeKey = key;
+    const indexes = issues.slice(0, 6).map(issue => issue.messageIndex).join('、');
+    const label = issues.length > 6 ? `第 ${indexes} 等 ${issues.length} 楼` : `第 ${indexes} 楼`;
+    try { notifyUser?.({ kind: 'warning', action: 'openMemory', text: `千千结检测到${label}正文未识别，原文经包裹符清洗后为空。请检查原文包裹符及「设置 → 提示词与包裹符 → 包裹符」。点击提醒打开千结查看对应楼。` }); }
+    catch { /* notification must not affect healthy memory work */ }
+    return true;
+  };
+  const cancelContentIssueSettlement = () => {
+    if (contentIssueTimer !== null) clearTimeout(contentIssueTimer);
+    contentIssueTimer = null;
+  };
+  const settleContentIssuesAfterGeneration = () => {
+    cancelContentIssueSettlement();
+    if (!generationLifecycle && !foundationRuntime.getState().contentIssues?.length) return;
+    const noticeEpoch = epoch, noticeGeneration = generationSequence;
+    let identity = generationLifecycle;
+    try { identity ??= generationIdentity(hostAdapter.snapshot()); } catch { return; }
+    const consume = () => {
+      contentIssueTimer = null;
+      if (noticeEpoch !== epoch || noticeGeneration !== generationSequence || !enabled()) return;
+      const foundation = foundationRuntime.getState();
+      if (!foundation.contentIssues?.length) return;
+      try { if (!sameHostChatIdentity(identity, hostAdapter.snapshot())) return; } catch { return; }
+      // Only wait to display the latest scanned metadata; no source scan or model work.
+      if (mainGenerationActive() || foundationRuntime.getActivityState?.().busy) {
+        contentIssueTimer = setTimeout(consume, 25); contentIssueTimer?.unref?.();
+        return;
+      }
+      notifyContentIssues(foundation); notify();
+    };
+    contentIssueTimer = setTimeout(consume, 0); contentIssueTimer?.unref?.();
+  };
   const cancelAutomation = (reason = 'automationCancelled') => {
     autoEpoch += 1;
     autoTriggerReason = null;
@@ -1297,7 +1349,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     }
   };
   const cancelEarlyStabilization = reason => { try { foundationRuntime.cancelEarlyStabilization?.(reason); } catch { /* foundation cancellation is best-effort */ } };
-  const invalidate = ({ deletedChatId = null } = {}) => { lastExtractorRequest = null; if (deletedChatId) clearChatFailures(deletedChatId); placeWorkspaceStore?.invalidate?.(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '', request: null }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun?.controller?.abort('memoryInvalidated'); workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
+  const invalidate = ({ deletedChatId = null } = {}) => { cancelContentIssueSettlement(); lastContentIssueNoticeKey = null; lastExtractorRequest = null; if (deletedChatId) clearChatFailures(deletedChatId); placeWorkspaceStore?.invalidate?.(deletedChatId); releaseUnstartedQianshiPlans(); cancelEarlyStabilization('memoryInvalidated'); cancelAutomation('memoryInvalidated'); qianshiHistoryRun?.controller.abort('memoryInvalidated'); qianshiHistoryRun = null; qianshiHistoryPlan = null; qianshiRejudgePlan = null; qianshiHistoryState = Object.freeze({ status: 'idle', jobId: null, processedFloors: 0, totalFloors: 0, calls: 0, message: '', request: null }); qianshiCandidateIndex?.invalidate(); epoch += 1; active?.controller.abort('memoryInvalidated'); active = null; workRun?.controller?.abort('memoryInvalidated'); workRun = null; cseRebuildPlan = null; reachable = null; memorySnapshotStatus = 'unavailable'; memorySyncStatus = 'idle'; memorySyncError = null; backgroundSync = null; backgroundSyncKey = null; timeFallbackByFloor = new Map(); failureScope = null; coverage = unknownCoverage(0); emptyRealtimeOrigin = null; pendingExplicitInitializations.clear(); formalGenerationActive = false; generationArm = null; generationLifecycle = null; stoppedGenerationFinal = null; observedHostChatLength = 0; establishedMemoryChatId = null; grantedEventKeys.clear(); suffixGenerationContext = null; lastFailure = null; lastAutoRun = null; lastAutomaticInputKey = null; lastNoticeKey = null; awaitingFoundation = false; historicalAggregate = false; sessionCandidates.clear(); pendingResults.clear(); cseRuntime.invalidate(); notify(); };
   cseRuntime.subscribe(state => notify(state));
   function runManualWork(reason, task) {
     if (workRun) return ['revising', 'revisingCse'].includes(reason)
@@ -1490,7 +1542,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const savedAutomation = failureScopeMatches(reachable?.root) ? failureScope.automationFailure : null;
     const lastAutomationError = savedAutomation ? Object.freeze({ code: savedAutomation.code, name: savedAutomation.name, message: savedFailureMessage(savedAutomation), phase: savedAutomation.phase, prepareStep: savedAutomation.prepareStep, detail: savedAutomation.detail, location: savedAutomation.location, count: savedAutomation.count, lastFailedAt: savedAutomation.lastFailedAt }) : null;
     const activity = projectActivityState(foundation, cse, stableCount);
-    return Object.freeze({ ...foundation, ...cse, ...activity, ...(migrationAliases ? { migrationAliases } : {}), rootRevision: reachable?.rootRevision ?? null, narrativeGeneration: reachable?.root?.narrativeGeneration ?? null, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount, floors: combinedFloors, memoryEntities, memoryPlaceEntities, memoryGroupEntities, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.completedFloorIds?.length ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
+    return Object.freeze({ ...foundation, ...cse, ...activity, contentIssues: visibleContentIssues(foundation), ...(migrationAliases ? { migrationAliases } : {}), rootRevision: reachable?.rootRevision ?? null, narrativeGeneration: reachable?.root?.narrativeGeneration ?? null, rememberedCount, summaryCoverageStatus: coverage.summaryStatus, summaryCompletedCount, summaryNextAssistantSeq: coverage.summaryNextAssistantSeq, unprocessedCount: Math.max(0, stableCount - rememberedCount), failedCount, floors: combinedFloors, memoryEntities, memoryPlaceEntities, memoryGroupEntities, lastExtractorError: lastFailure, lastAutomationError, autoMemoryEnabled: auto.enabled, autoMemoryBatchSize: auto.batchSize, rebuildStatus, rebuildCompletedCount, rebuildTotalCount: stableCount, rebuildNextAssistantSeq, rebuildHasActionableWork, highFloorHistoricalActive: workRun?.aggregateHistorical === true, cseRebuildStatus: cseRebuildPlan?.status ?? 'idle', cseRebuildCompletedCount: cseRebuildPlan?.completedFloorIds?.length ?? 0, cseRebuildTotalCount: cseRebuildPlan?.targets.length ?? rememberedCount, cseRebuildNextAssistantSeq: cseRebuildPlan?.targets[cseRebuildPlan.nextIndex]?.assistantSeq ?? null, cseRebuildError: cseRebuildPlan?.error ?? null, lastAutoMemory: lastAutoRun, promptVersion: EXTRACTOR_PROMPT_VERSION, extractorVersion: EXTRACTOR_VERSION });
   }
 
   const projectActivityState = (foundation, cse, stableCount) => {
@@ -4049,8 +4101,13 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       }).finally(() => { foundationReload = null; });
       return foundationReload;
     };
+    let observedContentProjection = null;
+    foundationRuntime.subscribeActivity?.(state => { if (!state.busy) notifyContentIssues(foundationRuntime.getState()); });
     if (typeof foundationRuntime.subscribe === 'function') foundationRuntime.subscribe(state => {
-      if (!awaitingFoundation) return;
+      const contentChanged = observedContentProjection?.issues !== state?.contentIssues || observedContentProjection?.chatId !== state?.contentIssuesChatId;
+      observedContentProjection = { issues: state?.contentIssues, chatId: state?.contentIssuesChatId };
+      notifyContentIssues(state);
+      if (!awaitingFoundation) { if (contentChanged && ['ready', 'uninitialized', 'needsReview'].includes(state?.status)) notify(); return; }
       if (['ready', 'uninitialized', 'needsReview'].includes(state?.status)) { void drainFoundationReload(); return; }
       if (!['running', 'idle'].includes(state?.status)) {
         awaitingFoundation = false;
@@ -4066,6 +4123,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     if (generationStartedEvent && generationStoppedEvent && generationEndedEvent) {
       eventSource.on(generationStartedEvent, (type, _options, dryRun) => {
         if (dryRun === true) return;
+        cancelContentIssueSettlement();
         stoppedGenerationFinal = null;
         if (suffixGenerationContext && ((suffixGenerationContext.kind === 'swipe' && type !== 'swipe')
           || (suffixGenerationContext.kind === 'normal' && ![undefined, null, '', 'normal', 'continue'].includes(type))
@@ -4099,6 +4157,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       });
       eventSource.on(generationEndedEvent, () => {
         formalGenerationActive = false;
+        settleContentIssuesAfterGeneration();
         if (!generationArm?.proven) generationArm = null;
         if (completeGeneration('generationCompleted')) {
           void Promise.resolve(foundationRuntime.reconcile?.('GENERATION_ENDED'))
@@ -4119,6 +4178,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       const eventName = eventTypes[name]; if (!eventName) continue;
       eventSource.on(eventName, (...args) => {
         const finalType = args[1];
+        if (name === 'CHAT_CHANGED') { cancelContentIssueSettlement(); lastContentIssueNoticeKey = null; }
         let eventSnapshot = null;
         if (name === 'MESSAGE_SENT') {
           try { eventSnapshot = hostAdapter.snapshot(); } catch { return; }
@@ -4339,6 +4399,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const state = getState();
     notifyConfirmedSummaryBlock(state);
     notifyConsecutiveAssistantBlock(foundationRuntime.getState());
+    notifyContentIssues(foundationRuntime.getState());
     return state;
   }
   async function setEnabled(value) {

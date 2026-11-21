@@ -3,6 +3,7 @@ import { captureQianchuangCharacterSources } from '../src/place-worldbook-materi
 import { createWorldInfoSourceCandidates } from '../src/world-info-scanner.js';
 import { filterSourcesByPermission } from '../src/source-permission.js';
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { readFile, access, mkdtemp, mkdir, writeFile, stat, utimes, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -103,9 +104,9 @@ async function readyFoundationRecords(hostGlobalName, host, manualAliases = fals
       sanitizerOptions: () => ({ keepTags: 'content' }),
       generateUtilityTask: async () => { summaryCalls++; return { jsonData: numericCse ? { summary: '角色平安归来后继续交谈。', people: [{ name: '角色', presence: 'present' }, { name: '你', role: 'user', presence: 'present' }] } : summaries ? { summary: `源旧摘要${summaryCalls}` }
         : { summary: '合成人物到场。', people: [{ name: '合成人物', aliases: ['旧称'], presence: 'present' }] } }; },
-      generateAnalysisTask: async () => {
+      generateAnalysisTask: async options => {
         if (summaries) assert.fail('离线fixture不应请求CSE');
-        if (!numericCse) return { jsonData: { noMaterialChange: true } };
+        if (!numericCse) return { jsonData: reviewedCsePacket(options) };
         numericCseCalls++;
         const quant = numericCse === 'valid' ? { emotions: { 满足: 65, 不满: 45 }, expression: 20 } : numericCse === 'expression' ? { emotions: { 满足: '坏值' }, expression: 0 } : numericCse === 'bad' ? { emotions: { 满足: '65', 不满: 101 }, expression: '20' } : undefined;
         const strength = ['valid', 'expression'].includes(numericCse) ? { strength: 70 } : numericCse === 'bad' ? { strength: '70' } : undefined;
@@ -1072,7 +1073,7 @@ test('manifest 唯一登记主入口，生产分包依赖完整、内容哈希�
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.3.1');
+  assert.equal(manifest.version, '1.3.2');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));
@@ -2245,7 +2246,7 @@ test('分包原构建重复执行保素材属性，仅提示词变化只写核�
   const repeated = await buildPlugin({ outDir: directory });
   assert.deepEqual(repeated.written, [], '相同输入的正常npm build底层必须不改文件');
   const changed = await buildPlugin({ outDir: directory, plugins: [{ name: 'offline-prompt-change', transform(code, id) {
-    if (id.endsWith('/src/v3/cse-engine.js')) return code.replace('qqj-v3-cse-prompt-56', 'qqj-v3-cse-prompt-56-offline-cache-probe');
+    if (id.endsWith('/src/v3/cse-engine.js')) return code.replace('qqj-v3-cse-prompt-58', 'qqj-v3-cse-prompt-58-offline-cache-probe');
   } }] });
   assert.deepEqual(changed.written, ['qqj-app.js']);
   const after = await stat(resolve(directory, basename(materialPath)));

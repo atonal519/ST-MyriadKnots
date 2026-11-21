@@ -5,6 +5,20 @@ import * as place from '../src/v3/place-workspace.js';
 const chat='11111111-1111-4111-8111-111111111111',room='22222222-2222-4222-8222-222222222222',parent='33333333-3333-4333-8333-333333333333';
 const floor='44444444-4444-4444-8444-444444444444',next='55555555-5555-4555-8555-555555555555';
 const workspace=()=>({schemaVersion:1,kind:'qqj-v3-place-workspace',chatId:chat,placesByEntityId:{[room]:{scopes:Object.fromEntries(['name','description','relations','parentEntityId'].map(key=>[key,{knownThroughFloorId:floor,coveredFloorIds:[floor],coveredItemIds:['old']}])),name:'校准房间',description:'独立卫浴',relations:'走廊末端',parentEntityId:parent}},deletionsByEntityId:{}});
+
+test('无楼层人工资料和删除属于独立地图库，历史前缀保留且旧楼层边界照常截取', () => {
+ const data=workspace(),row=data.placesByEntityId[room];
+ row.scopes.name={knownThroughFloorId:null,coveredFloorIds:[],coveredItemIds:[]};
+ data.deletionsByEntityId[parent]={knownThroughFloorId:null,coveredFloorIds:[],coveredItemIds:[]};
+ assert.doesNotThrow(()=>place.validatePlaceWorkspace(data,chat));
+ const prior=place.placeWorkspaceForPrefix(data,new Set());
+ assert.equal(prior.placesByEntityId[room].name,'校准房间');
+ assert.equal(Object.hasOwn(prior.placesByEntityId[room],'description'),false);
+ assert.deepEqual(prior.deletionsByEntityId[parent],data.deletionsByEntityId[parent]);
+ const missing=structuredClone(data);delete missing.placesByEntityId[room].scopes.name.knownThroughFloorId;
+ assert.throws(()=>place.validatePlaceWorkspace(missing,chat),{code:'QQJ_PLACE_WORKSPACE_INVALID'});
+ assert.throws(()=>place.validatePlaceWorkspace(data,parent),{code:'QQJ_PLACE_WORKSPACE_INVALID'});
+});
 test('自动方位覆盖沿共享材料过滤，有限历史仍读旧方位且独立新项保留',()=>{
  const memory={floorId:floor,spatialFacts:{relations:[{itemId:'old-relation',placeEntityId:room,kind:'relative',text:'旧方位',evidenceRefs:[{floorId:floor}]},{itemId:'independent-relation',placeEntityId:room,kind:'relative',text:'另一个出口',evidenceRefs:[{floorId:floor}]}]}};
  const data={...workspace(),placesByEntityId:{},foundation:{schemaVersion:1,entities:[],facts:[{itemId:parent,kind:'relation',placeEntityId:room,text:'走廊末端',knownFromFloorId:next,replacesItemIds:['old-relation'],source:{kind:'body',floorId:next,quote:'走廊末端'}}]}};

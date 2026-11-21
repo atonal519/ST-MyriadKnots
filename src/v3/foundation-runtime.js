@@ -268,6 +268,8 @@ export function createFoundationRuntime({
   let cache = null;
   let pending = null;
   let unregisteredCandidates = Object.freeze([]);
+  let contentIssues = Object.freeze([]);
+  let contentIssuesChatId = null;
   let consecutiveAssistantConfirmation = null;
   let projectedChatId = null;
   let activeOperation = null;
@@ -290,10 +292,13 @@ export function createFoundationRuntime({
   let inspectedStableCount = 0;
   const subscribers = new Set();
   const migrationInputWitnesses = new WeakMap();
+  const candidateContentIssues = new WeakMap();
 
   async function scanGraphCandidates(chat, chatId, options = {}) {
-    const scanned = await scanCandidates(chat, { sanitizerOptions: sanitizerOptions(), chatId, ...options });
+    const issues = [];
+    const scanned = await scanCandidates(chat, { sanitizerOptions: sanitizerOptions(), chatId, ...options, onContentIssue: issue => issues.push(issue) });
     const prepared = partitionScannedCandidates(cache, chat, chatId, scanned);
+    candidateContentIssues.set(prepared.all, Object.freeze(issues));
     if (prepared.all !== scanned) migrationInputWitnesses.set(prepared.all, Object.freeze({
       descriptorId: prepared.descriptorId ?? cache?.migrationDescriptor?.id ?? null,
       aliasWitnesses: prepared.aliasWitnesses,
@@ -329,6 +334,8 @@ export function createFoundationRuntime({
     stableBoundary: cache?.root?.stableBoundary ?? { assistantSeq: 0, floorId: null, canonicalFingerprint: null },
     pending: candidateSummary(pending),
     unregisteredCandidates,
+    contentIssues,
+    contentIssuesChatId,
     consecutiveAssistantConfirmation,
     headCheckpointId: cache?.root?.headCheckpointId ?? null,
     activeRun: activeOperation ? { id: activeOperation.id, phase: activeOperation.phase, reason: activeOperation.reason } : null,
@@ -406,6 +413,8 @@ export function createFoundationRuntime({
     cache = null;
     pending = null;
     unregisteredCandidates = Object.freeze([]);
+    contentIssues = Object.freeze([]);
+    contentIssuesChatId = null;
     consecutiveAssistantConfirmation = null;
     projectedChatId = null;
     inspectedStableCount = 0;
@@ -607,6 +616,13 @@ export function createFoundationRuntime({
   const graphMatchesCandidates = (value, candidates) => graphReviewReason(value, candidates) === null;
 
   function updateCandidateProjection(candidates, floors, pendingIndex) {
+    // Scan diagnostics follow only the accepted projection, never an incidental pinned scan.
+    const nextIssues = candidateContentIssues.get(candidates) ?? [];
+    if (contentIssuesChatId !== projectedChatId || contentIssues.length !== nextIssues.length
+      || contentIssues.some((issue, index) => ['messageIndex', 'reason', 'rawFingerprint', 'sanitizerFingerprint'].some(key => issue[key] !== nextIssues[index]?.[key]))) {
+      contentIssues = Object.freeze(nextIssues);
+    }
+    contentIssuesChatId = projectedChatId;
     pending = candidates[pendingIndex] ?? null;
     const bindings = matchFloorCandidates(floors ?? [], candidates);
     bindingIssues = bindings.issues;
@@ -705,7 +721,8 @@ export function createFoundationRuntime({
       // read-only path must never call prepareSession or create a memory graph.
       try {
         const host = hostAdapter.snapshot();
-        const candidates = await scanCandidates(host.chat, { sanitizerOptions: sanitizerOptions() });
+        projectedChatId = null;
+        const candidates = await scanGraphCandidates(host.chat, '');
         if (inspectEpoch !== sessionEpoch) return publicState;
         if (cache?.root) return publicState;
         inspectedStableCount = stableCountFor(candidates, []);
@@ -1044,6 +1061,8 @@ export function createFoundationRuntime({
         inspectedStableCount = targetState.inspectedStableCount ?? inspectedStableCount;
         pending = fixedRuntime.getPendingCandidate?.() ?? null;
         unregisteredCandidates = targetState.unregisteredCandidates;
+        contentIssues = targetState.contentIssues;
+        contentIssuesChatId = targetState.contentIssuesChatId;
         consecutiveAssistantConfirmation = targetState.consecutiveAssistantConfirmation;
         reviewReason = targetState.reviewReason ?? null;
         lastError = targetState.lastError ?? null;

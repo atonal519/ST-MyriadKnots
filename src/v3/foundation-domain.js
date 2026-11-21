@@ -120,6 +120,7 @@ export async function scanAssistantCandidates(chat, {
   yieldEvery = 50,
   yieldControl = () => new Promise(resolve => setTimeout(resolve, 0)),
   metrics,
+  onContentIssue,
 } = {}) {
   const source = Array.isArray(chat) ? chat : [];
   const candidates = [];
@@ -132,10 +133,16 @@ export async function scanAssistantCandidates(chat, {
     if (!selected) continue;
     const canonicalContent = sanitizeMemoryContent(selected.rawContent, sanitizerOptions);
     const messageAnchor = inspectMessageFloorAnchor(source[messageIndex], chatId);
+    let issueRawFingerprint = null;
+    if (!canonicalContent && selected.rawContent.trim() && !isMemoryExcludedMessage(source[messageIndex])
+      && typeof onContentIssue === 'function') {
+      issueRawFingerprint = await prefixedHash(selected.rawContent);
+      onContentIssue(Object.freeze({ messageIndex, reason: 'emptyAfterSanitizing', rawFingerprint: issueRawFingerprint, sanitizerFingerprint: sanitizerHash }));
+    }
     if (!canonicalContent && (!chatId || messageAnchor.status === 'none')) continue;
     assistantSeq += 1;
     const [rawFingerprint, canonicalFingerprint] = await Promise.all([
-      prefixedHash(selected.rawContent),
+      issueRawFingerprint ?? prefixedHash(selected.rawContent),
       prefixedHash(canonicalContent),
     ]);
     const anchor = selectUserStabilityAnchor(source[messageIndex + 1]);

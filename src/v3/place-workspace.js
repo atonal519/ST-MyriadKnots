@@ -70,7 +70,7 @@ export function validatePlaceWorkspace(value, chatId) {
       || fields.filter(key => own(row, key)).some(key => {
         const scope = row.scopes[key];
         return (key === 'parentEntityId' ? row[key] !== null && !isUuid(row[key]) : key==='mapLevel'?row[key]!==null&&!['city','country','scope'].includes(row[key]):key==='mapRole'?row[key]!==null&&!['area','site','interior'].includes(row[key]):typeof row[key] !== 'string')
-          || !scope || !isUuid(scope.knownThroughFloorId) || !Array.isArray(scope.coveredFloorIds) || scope.coveredFloorIds.some(id => !isUuid(id))
+          || !scope || (scope.knownThroughFloorId !== null && !isUuid(scope.knownThroughFloorId)) || !Array.isArray(scope.coveredFloorIds) || scope.coveredFloorIds.some(id => !isUuid(id))
           || !Array.isArray(scope.coveredItemIds) || scope.coveredItemIds.some(id => typeof id !== 'string' || !id);
       })) throw fail('地点人工修订格式无效。');
   }
@@ -202,16 +202,16 @@ export function createPlaceWorkspaceStore({ client } = {}) {
   return Object.freeze({ read, put, copy:copyFrom, invalidate(chatId) { if (chatId) cache.delete(chatId); else cache.clear(); } });
 }
 
-// The boundary records which knowledge the user edited, not a story evidence source.
+// The boundary records which knowledge the user edited; null belongs to the library before story floors.
 export function placeWorkspaceForPrefix(workspace, floorIds = null) {
   if (!workspace || !floorIds) return workspace;
   const deletionsByEntityId = Object.fromEntries(Object.entries(workspace.deletionsByEntityId ?? {})
-    .filter(([, scope]) => scope.knownThroughFloorId ? floorIds.has(scope.knownThroughFloorId) : scope.coveredFloorIds.some(id => floorIds.has(id)))
+    .filter(([, scope]) => scope.knownThroughFloorId === null || (scope.knownThroughFloorId ? floorIds.has(scope.knownThroughFloorId) : scope.coveredFloorIds.some(id => floorIds.has(id))))
     .map(([id, scope]) => [id, { ...scope, coveredFloorIds: scope.coveredFloorIds.filter(id => floorIds.has(id)) }]));
   const scoped = { ...workspace, deletionsByEntityId,
     placesByEntityId: Object.fromEntries(Object.entries(workspace.placesByEntityId ?? {}).map(([id, row]) => {
       const scoped = { scopes: {}, ...(row.createdEntity ? { createdEntity: row.createdEntity } : {}) };
-      for (const key of fields) if (own(row, key) && floorIds.has(row.scopes[key].knownThroughFloorId)) {
+      for (const key of fields) if (own(row, key) && (row.scopes[key].knownThroughFloorId === null || floorIds.has(row.scopes[key].knownThroughFloorId))) {
         scoped[key] = row[key]; scoped.scopes[key] = row.scopes[key];
       }
       if (row.createdEntity && !Object.keys(scoped.scopes).length && !deletionsByEntityId[id]) delete scoped.createdEntity;

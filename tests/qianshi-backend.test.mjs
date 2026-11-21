@@ -12,6 +12,40 @@ const NOW = '2026-09-16T00:00:00.000Z';
 const floor = (id, assistantSeq) => ({ id, chatId: CHAT, narrativeGeneration: GENERATION, assistantSeq, hostLocator: { messageIndex: assistantSeq * 2 }, content: { canonicalContent: `第${assistantSeq}楼` } });
 const memory = (id, source, qianshiDelta) => ({ id, floorId: source.id, recordStatus: 'active', chronology: [], qianshiDelta });
 
+test('千事公开覆盖跳过已排除开场楼，真正缺摘要的稳定楼仍未完成', () => {
+  const opening = floor('11111111-1111-4111-8111-111111111111', 1);
+  const next = floor('22222222-2222-4222-8222-222222222222', 2);
+  const source = { root: { chatId: CHAT, narrativeGeneration: GENERATION }, floors: [opening], floorMemories: [], entities: [],
+    checkpoint: { inputFingerprints: [{ floorId: opening.id, memoryExcluded: true }] } };
+  const first = publicQianshiSnapshot(source);
+  assert.equal(first.coverage.eligibleFloors, 0);
+  assert.equal(first.coverage.pendingFloors, 0);
+  assert.equal(first.coverage.unavailableFloors, 0);
+  assert.equal(first.coverage.processable.unavailableFloors, 0);
+  const missing = publicQianshiSnapshot({ ...source, floors: [opening, next] });
+  assert.equal(missing.coverage.unavailableFloors, 1);
+  assert.equal(missing.coverage.processable.unavailableFloors, 1);
+  const staleWitness = publicQianshiSnapshot({ ...source, checkpoint: { inputFingerprints: [{ floorId: next.id, memoryExcluded: true }] } });
+  assert.equal(staleWitness.coverage.unavailableFloors, 1, '另一楼的排除见证不能跳过开场楼');
+});
+
+test('千事排除统计覆盖冻结和实时楼，既存事件继续可读', async () => {
+  const floors = [1, 2, 3, 4].map(value => floor(`${String(value).repeat(8)}-${String(value).repeat(4)}-4${String(value).repeat(3)}-8${String(value).repeat(3)}-${String(value).repeat(12)}`, value));
+  const delta = await compileQianshiDelta({ floor: floors[0], now: NOW, packet: { qianshi: { events: [
+    { key: 'old', title: '旧事件', description: '已保存的事件', status: 'occurred', matter: false },
+  ], order: [] } } });
+  const result = publicQianshiSnapshot({ root: { chatId: CHAT, narrativeGeneration: GENERATION }, floors,
+    floorMemories: [memory('55555555-5555-4555-8555-555555555555', floors[0], delta)], entities: [],
+    checkpoint: { inputFingerprints: floors.map(source => ({ floorId: source.id, memoryExcluded: source.assistantSeq !== 4 })) },
+    migrationDescriptor: { frozenFloorIds: floors.slice(0, 2).map(source => source.id), floorOrigins: [], carriedAliases: [] } });
+  assert.equal(result.coverage.eligibleFloors, 0);
+  assert.equal(result.coverage.unavailableFloors, 1);
+  assert.equal(result.coverage.processable.unavailableFloors, 1);
+  assert.equal(result.coverage.processable.frozenFloors, 2);
+  assert.equal(result.events[0].title, '旧事件');
+  assert.equal(result.events[0].frozen, true);
+});
+
 test('同一稳定人物在单个事件只建一条参与边，跨事件仍分别建边', async () => {
   const source = floor('11111111-1111-4111-8111-111111111111', 1);
   const personId = '22222222-2222-4222-8222-222222222222';

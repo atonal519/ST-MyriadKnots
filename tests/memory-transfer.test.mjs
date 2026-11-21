@@ -3,6 +3,7 @@ import { replayTimeBatches } from '../src/v3/time-engine.js';
 import { createPeopleWorkspaceRuntime } from '../src/v3/people-workspace.js';
 import { PEOPLE_PROFILE_FIELDS } from '../src/v3/people-profile-fields.js';
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { createMemoryTransfer, parseMemoryPackage, transferWitness } from '../src/memory-transfer.js';
 import { createFoundationStore } from '../src/v3/foundation-store.js';
@@ -89,8 +90,8 @@ async function fixture({ excluded = false, body = '她把钥匙放进木盒。',
   await foundation.start();
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: host, sanitizerOptions,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
-    generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? (typeof extractorResponse === 'function' ? extractorResponse(JSON.parse(options.taskMessages[0].content).payload) : extractorResponse ?? { summary: '钥匙在木盒里。' }) : { noMaterialChange: true } }) });
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
+    generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT ? (typeof extractorResponse === 'function' ? extractorResponse(JSON.parse(options.taskMessages[0].content).payload) : extractorResponse ?? { summary: '钥匙在木盒里。' }) : reviewedCsePacket(options) }) });
   await memory.start();
   await memory.extractFloor(memory.getState().floors[extractIndex].floorId, { analyzeState: false });
   await memory.analyzeNextState();
@@ -512,7 +513,7 @@ test('real memory and CSE round trip onto an updated card, without analysis call
   assert.equal(restored.stateDeltas.length, f.graph.stateDeltas.length);
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
-    generateAnalysisTask: async () => assert.fail('must not reanalyze'), generateUtilityTask: async () => assert.fail('must not resummarize') });
+    generateAnalysisTask: async options => assert.fail('must not reanalyze'), generateUtilityTask: async () => assert.fail('must not resummarize') });
   await memory.start();
   assert.equal(memory.getState().rememberedCount, 1);
   await f.runtime.undo();
@@ -1028,7 +1029,7 @@ test('import finishes without rereading a populated collection and keeps returne
   assert.equal((await foundation.start()).status, 'ready');
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
-    generateAnalysisTask: async () => assert.fail('cold import must not reanalyze'),
+    generateAnalysisTask: async options => assert.fail('cold import must not reanalyze'),
     generateUtilityTask: async () => assert.fail('cold import must not resummarize') });
   await memory.start();
   assert.equal(memory.getState().rememberedCount, 1);
@@ -1405,7 +1406,7 @@ test('cross-host timestamp, visibility, absent/default swipe index and unselecte
   assert.deepEqual(target.chat[1].swipe_info[1].extra, { variables: { retained: true } });
   const memory = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
-    generateAnalysisTask: async () => assert.fail('must not reanalyze'), generateUtilityTask: async () => assert.fail('must not resummarize') });
+    generateAnalysisTask: async options => assert.fail('must not reanalyze'), generateUtilityTask: async () => assert.fail('must not resummarize') });
   await memory.start(); assert.equal(memory.getState().rememberedCount, 1);
 });
 
@@ -1792,7 +1793,7 @@ test('only repeated manual summary edits at message six survive cold import and 
   const foundation = createFoundationRuntime({ hostAdapter: f.host, store, contextProvider: () => target, newUuid: uuidFactory(), logger: { warn() {} } });
   const cold = createV3MemoryRuntime({ foundationRuntime: foundation, store, hostAdapter: f.host,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
-    generateAnalysisTask: async () => assert.fail('loading imported state does not analyze again'),
+    generateAnalysisTask: async options => assert.fail('loading imported state does not analyze again'),
     generateUtilityTask: async () => assert.fail('loading imported summaries does not call a model') });
   await cold.start();
   assert.equal(cold.getState().floors.find(item => item.floorId === floor.id).summary, expected.summary.userText);
@@ -1853,7 +1854,7 @@ test('aggregate source snapshots remain historical when anchored member bodies c
   const f = await fixture({ chat });
   const memory = createV3MemoryRuntime({ foundationRuntime: f.foundation, store: f.store, hostAdapter: f.host,
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: uuidFactory(), logger: { warn() {} },
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }),
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }),
     generateUtilityTask: async () => ({ jsonData: { summary: '历史多楼合并摘要。' } }) });
   await memory.start();
   await memory.startHistoricalRebuild({ aggregate: true });

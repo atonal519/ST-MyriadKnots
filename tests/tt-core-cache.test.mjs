@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { reviewedCsePacket } from './helpers/reviewed-cse-packet.mjs';
 import assert from 'node:assert/strict';
 import { createTauriBackendFetch } from '../src/tauri-backend.js';
 import { createBackendClient } from '../src/backend-client.js';
@@ -67,8 +68,8 @@ async function fixture() {
     automationSettings: () => ({ enabled: false, batchSize: 1 }), newUuid: () => crypto.randomUUID(),
     now: () => new Date(NOW), logger: { warn() {} },
     generateUtilityTask: async options => ({ jsonData: options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
-      ? { summary: '钥匙在木盒里。' } : { noMaterialChange: true } }),
-    generateAnalysisTask: async () => ({ jsonData: { noMaterialChange: true } }) });
+      ? { summary: '钥匙在木盒里。' } : reviewedCsePacket(options) }),
+    generateAnalysisTask: async options => ({ jsonData: reviewedCsePacket(options) }) });
   await memory.start();
   await memory.extractFloor(memory.getState().floors[0].floorId, { analyzeState: false });
   await memory.analyzeNextState();
