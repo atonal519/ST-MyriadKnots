@@ -285,7 +285,7 @@ export function projectCseStateIdentityReferences(state, projection = {}) {
     core: Object.freeze(subject.core), adaptive: Object.freeze(subject.adaptive), situational: Object.freeze(subject.situational) }))) });
 }
 
-export function buildEntityIdentityDirectory({ entities = [], floorIds = null, floorOrder = null, identityProjection = null, identityRedirectsByEntityId = null, deletedEntityIds = null } = {}) {
+export function buildEntityIdentityDirectory({ entities = [], floorIds = null, floorOrder = null, identityProjection = null, identityRedirectsByEntityId = null, deletedEntityIds = null, includeMemberEntityIds = false } = {}) {
   entities = withCreatedPlaces(entities, identityProjection?.placeWorkspace);
   const supplied = identityProjection ?? { identityRedirectsByEntityId, deletedEntityIds };
   const projection = Object.hasOwn(supplied, 'userEntityId') ? normalizeIdentityProjection(supplied)
@@ -308,12 +308,14 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, f
     && resolveIdentityEntityId(entity.id, combinedProjection) === entity.id && !isIdentityDeleted(entity.id, combinedProjection));
   const canonicalById = new Map(canonical.map(entity => [entity.id, entity]));
   const learned = new Map(canonical.map(entity => [entity.id, []]));
+  const members = includeMemberEntityIds ? new Map(canonical.map(entity => [entity.id, [entity.id]])) : null;
   const identityBriefRecords = new Map(canonical.filter(entity => typeof entity.identityBrief === 'string').map(entity => [entity.id, entity]));
   for (const aliasEntity of scoped) {
     if (!isActive(aliasEntity) || aliasEntity.status === 'invalidated') continue;
     const target = canonicalById.get(resolveIdentityEntityId(aliasEntity.id, combinedProjection));
     if (!target || target.id === aliasEntity.id || target.entityType !== aliasEntity.entityType
       || target.chatId !== aliasEntity.chatId || target.narrativeGeneration !== aliasEntity.narrativeGeneration) continue;
+    members?.get(target.id).push(aliasEntity.id);
     learned.get(target.id).push(...aliasNames(aliasEntity), ...(typeof projection.placeWorkspace?.placesByEntityId?.[aliasEntity.id]?.name === 'string' ? [projection.placeWorkspace.placesByEntityId[aliasEntity.id].name] : []));
     if (typeof aliasEntity.identityBrief === 'string' && aliasEntity.identityBrief.trim()) {
       const prior = identityBriefRecords.get(target.id);
@@ -347,6 +349,7 @@ export function buildEntityIdentityDirectory({ entities = [], floorIds = null, f
     return Object.freeze({
       entity: displayName !== entity.displayName || specialRole !== entity.specialRole ? Object.freeze({ ...entity, displayName, specialRole }) : entity,
       entityId: entity.id,
+      ...(members ? { memberEntityIds: Object.freeze(members.get(entity.id).sort()) } : {}),
       entityType: entity.entityType,
       specialRole,
       displayName,

@@ -366,11 +366,12 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, numericCse = null, recallInterrupt = false, recallExcludedEdit = false, emptyCoreUser = null, verifyRecallAttributePrompt = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, numericCse = null, recallInterrupt = false, recallOverlap = null, recallExcludedEdit = false, emptyCoreUser = null, verifyRecallAttributePrompt = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const seededSettings = wrapperSeed ? structuredClone(wrapperSeed) : { qianqianjie: {}, 'schedule-planner': {} };
   if (numericCse) Object.assign(seededSettings.qianqianjie, { apiUrl: 'https://numeric-fixture.invalid/v1', apiKey: 'synthetic-only', apiModel: 'mock', ...(recallInterrupt ? { apiStream: true, apiQianqianjieRetryCount: 4 } : {}) });
+  const selectionGates = [], selectionWaiters = new Map(), overlapNotices = [];
   const eventRegistrations = new Map();
   const eventHandlers = new Map();
   const startupWarnings = [];
@@ -446,7 +447,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     uuidv4: () => '11111111-1111-4111-8111-111111111111',
     async saveMetadata() { saveMetadataCalls += 1; },
     ...(locationReferenceChat ? { async saveChat() { chatSaveCalls += 1; if (numericCse) hostFile = { header: { chat_metadata: structuredClone(host.chatMetadata) }, chat: structuredClone(host.chat) }; return true; } } : {}),
-    getRequestHeaders: () => ({}), eventTypes: { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona', MESSAGE_EDITED: 'edited' },
+    getRequestHeaders: () => ({}), eventTypes: { APP_READY: 'app-ready', CHAT_CHANGED: 'chat', PERSONA_CHANGED: 'persona', MESSAGE_EDITED: 'edited', ...(recallOverlap ? { GENERATION_STARTED: 'started', GENERATION_AFTER_COMMANDS: 'after-commands', GENERATION_ENDED: 'ended', GENERATION_STOPPED: 'stopped' } : {}) },
     eventSource: { once(name, callback) { assert.equal(name, 'app-ready'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); assert.equal(callback(), undefined, '已就绪宿主回放不等待QQJ准备'); }, on(name, callback) { const handlers = eventHandlers.get(name) ?? []; handlers.push(callback); eventHandlers.set(name, handlers); if (startupBindFailure && name === 'chat') throw new TypeError('PRIVATE startup binding detail'); eventRegistrations.set(name, (eventRegistrations.get(name) ?? 0) + 1); } },
   };
   if (firstIdentityChat) host.chatMetadata = { otherPlugin: { header: '保留' } };
@@ -547,6 +548,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const context = createContext({
     ...(tauri ? { __TAURITAVERN__: { ready: Promise.resolve(), api: { extension: { store: ttStore } } },
       location: { origin: 'tauri://localhost' }, indexedDB: ttIdb.indexedDB, IDBKeyRange: ttIdb.keyRange } : {}),
+    ...(recallOverlap ? { toastr: { warning(text) { overlapNotices.push(text); if (recallOverlap.notifyThrows) throw new Error('synthetic notification failure'); } } } : {}),
     console: testConsole, crypto: initializeWithoutSubtle ? {} : globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, DOMException, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval,
     ...(privateDiagnostics ? { location: { origin: 'https://tavern.invalid' }, addEventListener(name, callback) { if (name === 'beforeunload') unloads.push(callback); } } : {}),
     fetch: async (url, options = {}) => {
@@ -577,7 +579,9 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
           }, cancel() {}, releaseLock() {} };
           return { ok: true, status: 200, headers: { get: () => 'text/event-stream' }, body: { getReader: () => reader } };
         }
-        return { ok: true, status: 200, async json() { return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ history_exclude_keys: [], state_exclude_keys: [] }) } }] }; } };
+        let release; const gate = recallOverlap ? new Promise(resolve => { release = resolve; }) : null;
+        if (recallOverlap) { selectionGates.push({ release, signal: options.signal, released: false }); selectionWaiters.get(selectionGates.length)?.(); }
+        return { ok: true, status: 200, async json() { if (gate) await gate; return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ history_exclude_keys: [], state_exclude_keys: [] }) } }] }; } };
       }
       if (isPublicMapCatalogUrl(url)) {
         assert.equal(options.method ?? 'GET', 'GET'); assert.equal(options.credentials, 'omit');
@@ -698,6 +702,58 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   }
   if (recallExcludedEdit) hostChat[0].is_hidden = false;
   for (const type of invokeTypes) await context.qqj_v3_recall_interceptor([], 8192, () => { abortCalls += 1; }, type);
+  let overlapResult = null;
+  if (recallOverlap) {
+    const emit = async (name, ...args) => { for (const handler of eventHandlers.get(name) ?? []) await handler(...args); };
+    const waitSelection = async count => {
+      if (selectionGates.length < count) await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('真实选材请求未进入冻结的响应体等待')), 3000);
+        selectionWaiters.set(count, () => { clearTimeout(timer); resolve(); });
+      });
+      assert.equal(selectionGates.length, count);
+    };
+    const stopped = [], dispatched = [], returned = [];
+    const runHost = (type, owner, end) => {
+      let aborted = false;
+      return context[manifest.generate_interceptor](hostChat.filter(message => message.is_user), 8192, immediate => {
+        assert.equal(immediate, true);
+        stopped.push({ owner, pending: !selectionGates[0].released }); aborted = true;
+      }, type).then(async result => {
+        returned.push(owner);
+        if (!aborted) { dispatched.push(owner); await context.fetch('/fixture/main-generation', { method: 'POST' }); }
+        if (end) await emit('ended', hostChat.length);
+        return result;
+      });
+    };
+    try {
+      if (!recallOverlap.entryOnly) { await emit('started', 'normal', {}, false); await emit('after-commands', 'normal', {}, false); }
+      const oldTurn = runHost('normal', 'old', !recallOverlap.entryOnly);
+      await waitSelection(1);
+      if (!recallOverlap.entryOnly) {
+        await emit('started', recallOverlap.type, {}, true);
+        await emit('after-commands', recallOverlap.type, {}, true);
+        await emit('started', recallOverlap.type, {}, false);
+        await emit('after-commands', recallOverlap.type, {}, false);
+        assert.equal(selectionGates[0].signal.aborted, false, 'START/AFTER_COMMANDS本身不新增取消');
+        assert.deepEqual(stopped, []);
+      }
+      const newTurn = runHost(recallOverlap.type, 'new', false);
+      await oldTurn;
+      if (recallOverlap.type !== 'quiet') {
+        await waitSelection(2);
+        selectionGates[1].released = true; selectionGates[1].release();
+      }
+      await newTurn;
+      const receipt = nativeJson(hostChat[1]?.extra?.qqj_v3_recall_receipt ?? null);
+      const slot = promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context').at(-1)?.[1] ?? '';
+      selectionGates[0].released = true; selectionGates[0].release();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(nativeJson(hostChat[1]?.extra?.qqj_v3_recall_receipt ?? null), receipt, '旧请求迟到不覆盖新回执');
+      assert.equal(promptCalls.filter(call => call[0] === 'qqj_v3_recalled_context').at(-1)?.[1] ?? '', slot, '旧END和迟到结果不清新槽');
+      overlapResult = { stopped, dispatched, returned, notices: overlapNotices, receipt, slot, requestCount: selectionGates.length };
+      if (!recallOverlap.entryOnly) await emit('ended', hostChat.length);
+    } finally { for (const gate of selectionGates) gate.release(); }
+  }
   let locationReferenceResult = null;
   if (invokeLocationReference && emptyCoreUser !== 'missing') {
     // 数值场景的旧AI正文在本次宿主窗口外，由正式摘要召回承接。
@@ -756,7 +812,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   const publicBridgeSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getSnapshot?.()?.status;
   const publicBridgePromptSnapshotType = typeof context.qqj_v3_public_bridge_v1?.getPromptSnapshot;
   const publicBridgePromptSnapshotStatus = enabled ? null : context.qqj_v3_public_bridge_v1?.getPromptSnapshot?.()?.status;
-  return { status: entry.status, mainDispatches, streamReads, numericRecallCalls, seedCseCalls: readyRecords?.numericCseCalls ?? 0, ttRootChecks, ttMaxWritesInFlight, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, emptyCoreUserResult, legacyReceiptPrequelBudgetResult, abortCalls };
+  return { status: entry.status, overlapResult, mainDispatches, streamReads, numericRecallCalls, seedCseCalls: readyRecords?.numericCseCalls ?? 0, ttRootChecks, ttMaxWritesInFlight, fetchRequests, branchSource, hostFile: nativeJson(hostFile), effectivePeople: nativeJson(effectivePeople), wrapperSettings: nativeJson(seededSettings['schedule-planner'].bodyWrappers), get backendCalls() { return backendCalls; }, backendHealthCalls, backendDataCalls, backendDataRequestPaths, chatReadCalls, backendTrashGcPostCalls, backendWriteCalls, saveMetadataCalls, chatSaveCalls, finalQqjMetadata: host.chatMetadata.qianqianjie ? { ...host.chatMetadata.qianqianjie } : null, hostChat, documentRef, receiptDocument, initialHistoricalReceiptSchemaVersion, historicalReceiptCheck, localForageCreateCalls, backendRecords, ttRecords, ttReadKeys, privateRecords, hostShaCalls, hostShaInputs, ai0BodyReadCount: ai0BodyReads - initialAi0BodyReads, eventRegistrations, startupWarnings, mesAppendCalls, message, styleAppendCalls, observerInstances, interceptorType: typeof context.qqj_v3_recall_interceptor, publicBridgeType: typeof context.qqj_v3_public_bridge_v1, getPublicSnapshot: () => context.qqj_v3_public_bridge_v1?.getSnapshot?.() ?? null, publicBridgeReadStatus, publicBridgeSnapshotType, publicBridgeSnapshotStatus, publicBridgePromptSnapshotType, publicBridgePromptSnapshotStatus, promptCalls, locationReferenceResult, emptyCoreUserResult, legacyReceiptPrequelBudgetResult, abortCalls };
 }
 
 for (const host of ['SillyTavern', 'Luker']) {
@@ -940,6 +996,23 @@ test('最终bundle选材期间排除图块编辑继续原召回且只发一次�
   assert.ok(result.hostChat[0].mes.includes('<bbi_image>'));
 });
 
+
+for (const type of ['quiet', 'normal', 'continue']) for (const entryOnly of [false, true]) test(`最终bundle重叠选材停止受害正文且保后继 ${type}/${entryOnly ? 'intercept' : 'lifecycle'}`, async () => {
+  const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true, numericCse: 'valid', coreCacheEnabled: false,
+    fileOwnedIdentity: true, locationReferenceChat: true, recallOverlap: { type, entryOnly, notifyThrows: entryOnly } });
+  assert.deepEqual(result.overlapResult.stopped, [{ owner: 'old', pending: true }], '仍在等待选材时同步且仅停止旧宿主一次');
+  assert.deepEqual(result.overlapResult.dispatched, ['new']);
+  assert.equal(result.mainDispatches, 1);
+  assert.deepEqual(result.overlapResult.notices, ['本轮召回被另一笔生成打断，请重试']);
+  assert.equal(result.overlapResult.requestCount, type !== 'quiet' ? 2 : 1);
+  assert.equal(Boolean(result.overlapResult.receipt), type !== 'quiet');
+  if (type !== 'quiet') {
+    assert.deepEqual(result.overlapResult.returned, ['old', 'new']);
+    assert.equal(result.overlapResult.receipt.generationType, type);
+  }
+  assert.equal(Boolean(result.overlapResult.slot), type !== 'quiet');
+});
+
 test('最终TT bundle召回SSE中断通过宿主abort阻止正文派发', async () => {
   const result = await isolateBundle('SillyTavern', { enabled: true, tauri: true, numericCse: 'valid', recallInterrupt: true,
     coreCacheEnabled: false, fileOwnedIdentity: true, locationReferenceChat: true, invokeLocationReference: true });
@@ -1073,7 +1146,7 @@ test('manifest 唯一登记主入口，生产分包依赖完整、内容哈希�
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.3.2');
+  assert.equal(manifest.version, '1.3.3');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));

@@ -2,7 +2,7 @@
 
 `ST-MyriadKnots` 是 SillyTavern 的长期记忆扩展，界面中文名为“千千结”。项目仓库：[github.com/atonal519/ST-MyriadKnots](https://github.com/atonal519/ST-MyriadKnots)。
 
-当前版本 **1.3.2**，完整改动见[更新说明](CHANGELOG.md)。
+当前版本 **1.3.3**，完整改动见[更新说明](CHANGELOG.md)。
 
 ## 文档导航
 

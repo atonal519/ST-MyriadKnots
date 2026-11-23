@@ -19031,3 +19031,122 @@ test('坏地点标签局部隔离后健康摘要、CSE与召回继续沿原入�
  const saved=await h.store.readReachable({mode:'runtime'});assert.equal(saved.floorMemories[0].summary.aiText,body);assert.equal(saved.stateDeltas.length,1);assert.equal(h.calls.length,2);assert.equal(h.runtime.getState().lastExtractorError,null);assert.ok(h.runtime.getQianchuangSnapshot().places.some(p=>p.displayName==='书房'));assert.equal(h.runtime.getQianchuangSnapshot().places.some(p=>p.displayName==='错误客栈'),false);assert.ok(h.runtime.getState().cseSubjects.some(p=>p.displayName==='裴晚生'&&p.situational.some(x=>x.text==='提醒林岚带伞。')));
  const recall=await readRecallSource({store:h.store,now:()=>new Date(NOW)});assert.equal(recall.status,'ready');assert.equal(recall.floorMemories[0].summary,body);assert.equal(recall.coverage.cseCurrent,true);
 });
+
+test('摘要参与者：旧楼群体无空间记录仍可展示、编辑并原样保存', async () => {
+  const h = harness({ text: '值班员和守夜组巡视。', utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+    ? { jsonData: { summary: '值班员和守夜组巡视。', people: [
+      { name: '值班员', entityKind: 'individual', presence: 'present', exactQuote: '值班员和守夜组巡视。' },
+      { name: '守夜组', entityKind: 'group', presence: 'mentioned', exactQuote: '值班员和守夜组巡视。' },
+    ] } } : { jsonData: reviewedCsePacket(options) } });
+  await h.runtime.start(); await h.runtime.extractNext({ analyzeState: false });
+  let state = h.runtime.getState(); const floorId = state.floors[0].floorId;
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const group = before.entities.find(entity => entity.entityType === 'group');
+  assert.ok(group); assert.equal(state.floors[0].memory.spatialFacts, undefined);
+  assert.ok(before.floorMemories[0].participants.find(item => item.entityId === group.id).evidenceRefs.length > 0, '前置：群体有正式原文证据');
+  assert.ok(state.memoryGroupEntities.some(entity => entity.entityId === group.id), '群体目录不依赖空间事实');
+  const calls = h.calls.length;
+  const ui = viewHarness(h.runtime); await ui.view.activate();
+  let card = ui.flatten(ui.container).find(node => node.attributes['data-qqj-floor-id'] === floorId);
+  card.open = true; card.fire('toggle');
+  assert.ok(ui.flatten(card).some(node => node.textContent === '值班员、守夜组'));
+  const inline = projectInlineMemoryFloor(state, state.floors[0].messageIndex);
+  assert.equal(inline.people, '值班员、守夜组');
+  ui.flatten(card).find(node => node.textContent === '编辑').fire('click');
+  let fields = ui.flatten(ui.editorContent());
+  const peopleInput = fields.find(node => node.placeholder === '张三、李四、路人甲');
+  assert.equal(peopleInput.value, '值班员、守夜组');
+  const summaryInput = fields.find(node => node.placeholder === '输入用户修订摘要');
+  summaryInput.value = '只修改本楼正文。'; summaryInput.fire('input');
+  await ui.submitEditor();
+  let saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(saved.floorMemories[0].participants, before.floorMemories[0].participants, '正文修改保留原群体引用和证据');
+  await h.runtime.editMemory(floorId, { participantNames: ['值班员', '守夜组', '新路人'] });
+  saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(saved.floorMemories[0].participants.slice(0, 2), before.floorMemories[0].participants, '改名单保留原群体presence/证据');
+  assert.equal(saved.entities.filter(entity => entity.displayName === '守夜组').length, 1, '不能新建同名个人');
+  state = h.runtime.getState();
+  assert.equal(projectInlineMemoryFloor(state, state.floors[0].messageIndex).people, '值班员、守夜组、新路人');
+  const cold = harness({ sharedBackend: h.backend, sharedContext: h.context }); await cold.runtime.start();
+  assert.equal(projectInlineMemoryFloor(cold.runtime.getState(), state.floors[0].messageIndex).people, '值班员、守夜组、新路人');
+  assert.equal(h.calls.length, calls, '编辑和读旧楼均不重新提取');
+  ui.view.deactivate();
+});
+
+test('摘要参与者：个人与群体同名时编辑名单保留两个稳定身份', async () => {
+  const h = harness({ utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+    ? { jsonData: { summary: '猎隼与猎隼小队在场。', people: [
+      { name: '猎隼', entityKind: 'group', presence: 'present' },
+      { name: '猎隼', entityKind: 'individual', presence: 'mentioned' },
+    ] } } : { jsonData: reviewedCsePacket(options) } });
+  await h.runtime.start(); await h.runtime.extractNext({ analyzeState: false });
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  assert.equal(before.floorMemories[0].participants.length, 2);
+  const state = h.runtime.getState();
+  const ui = viewHarness(h.runtime); await ui.view.activate();
+  const card = ui.flatten(ui.container).find(node => node.attributes['data-qqj-floor-id'] === state.floors[0].floorId);
+  card.open = true; card.fire('toggle');
+  ui.flatten(card).find(node => node.textContent === '编辑').fire('click');
+  const peopleInput = ui.flatten(ui.editorContent()).find(node => node.placeholder === '张三、李四、路人甲');
+  assert.equal(peopleInput.value, '猎隼、猎隼');
+  peopleInput.value += '、新路人'; peopleInput.fire('input'); await ui.submitEditor();
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(saved.floorMemories[0].participants.slice(0, 2), before.floorMemories[0].participants);
+  assert.equal(saved.floorMemories[0].participants.length, 3);
+  ui.view.deactivate();
+});
+
+test('摘要参与者：合并旧成员显示当前名，删除后不显示未知人物', () => {
+  const person = { id: 'person', entityType: 'person', displayName: '原名', specialRole: 'none', recordStatus: 'active', status: 'established' };
+  const merged = { ...person, id: 'old', displayName: '旧人', status: 'merged', mergedIntoEntityId: 'person' };
+  const people = projectMemoryPersonEntities([person, merged], { currentNamesByEntityId: { person: '当前名' } });
+  assert.deepEqual(people[0].memberEntityIds, ['old', 'person']);
+  const state = { floors: [{ floorId: 'floor', messageIndex: 1, status: 'ready', memory: { participants: [{ entityId: 'old' }, { entityId: 'deleted' }] } }], memoryEntities: people };
+  assert.equal(projectInlineMemoryFloor(state, 1).people, '当前名');
+});
+
+test('摘要参与者：删除个人后群体正式名优先于个人同名别名', async () => {
+  const h = harness({ utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+    ? { jsonData: { summary: '队长和守夜组巡视。', people: [
+      { name: '队长', aliases: ['守夜组'], entityKind: 'individual', presence: 'present' },
+      { name: '守夜组', entityKind: 'group', presence: 'mentioned' },
+    ] } } : { jsonData: reviewedCsePacket(options) } });
+  await h.runtime.start(); await h.runtime.extractNext({ analyzeState: false });
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const group = before.entities.find(entity => entity.entityType === 'group');
+  const original = before.floorMemories[0].participants.find(item => item.entityId === group.id);
+  await h.runtime.editMemory(h.runtime.getState().floors[0].floorId, { participantNames: ['守夜组'] });
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(saved.floorMemories[0].participants, [original], '群体正式名称不能被本楼个人的别名抢走');
+});
+
+test('摘要参与者：编辑追加姓名保留含顿号的原群体完整名称', async () => {
+  const h = harness({ utility: options => options.systemPrompt === EXTRACTOR_SYSTEM_PROMPT
+    ? { jsonData: { summary: '值班员与甲、乙两组巡视。', people: [
+      { name: '值班员', entityKind: 'individual' }, { name: '甲、乙两组', entityKind: 'group' },
+    ] } } : { jsonData: reviewedCsePacket(options) } });
+  await h.runtime.start(); await h.runtime.extractNext({ analyzeState: false });
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  const state = h.runtime.getState(), ui = viewHarness(h.runtime); await ui.view.activate();
+  const card = ui.flatten(ui.container).find(node => node.attributes['data-qqj-floor-id'] === state.floors[0].floorId);
+  card.open = true; card.fire('toggle'); ui.flatten(card).find(node => node.textContent === '编辑').fire('click');
+  const peopleInput = ui.flatten(ui.editorContent()).find(node => node.placeholder === '张三、李四、路人甲');
+  assert.equal(peopleInput.value, '值班员、甲、乙两组');
+  peopleInput.value += '、新路人'; peopleInput.fire('input'); await ui.submitEditor();
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(saved.floorMemories[0].participants.slice(0, 2), before.floorMemories[0].participants);
+  assert.deepEqual(saved.entities.filter(entity => ['甲', '乙两组'].includes(entity.displayName)), [], '群体名称不能被拆成新人物');
+  ui.view.deactivate();
+});
+
+test('摘要参与者：明确空名单清除已删除引用，省略名单仍保原记录', async () => {
+  const h = harness(); await h.runtime.start(); await h.runtime.extractNext({ analyzeState: false });
+  const state = h.runtime.getState(), floor = state.floors[0];
+  h.runtime.setIdentityProjection({ deletedEntityIds: state.memoryEntities.map(item => item.entityId) });
+  await h.runtime.editMemory(floor.floorId, { summary: '仅修正文' });
+  const before = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(before.floorMemories[0].participants, floor.memory.participants);
+  await h.runtime.editMemory(floor.floorId, { participantNames: [] });
+  const saved = await h.store.readReachable({ mode: 'runtime' });
+  assert.deepEqual(saved.floorMemories[0].participants, []);
+});

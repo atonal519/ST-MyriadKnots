@@ -1,3 +1,4 @@
+import { buildMemoryParticipantDirectory } from './memory-participants.js';
 import { identityBriefFields } from './identity-brief.js';
 import { capturePrecedingUserInputFromSnapshot } from './user-input-source.js';
 import { selectPlaceWorldbookSources, mergePlaceFoundation, filterPlaceFoundationSources, expandPlacePaths, effectiveFoundationFacts, placeCurrentFactBindings, placeParentFactBindings, coveredPlaceItemIds, PLACE_CURRENT_GUIDANCE, PLACE_LOCATION_GUIDANCE } from './place-foundation.js';
@@ -274,30 +275,21 @@ function previousFloorContext(source, floorIndex, memoryMap, placeIdentity = nul
       placeParentFactBindings:placeIdentity.placeParentFactBindings,placeRelations: placeIdentity.placeRelations, manualPlaces: placeIdentity.manualPlaces, placeFeatures: placeIdentity.placeFeatures, featurePlaceEntityIds: placeIdentity.featurePlaceEntityIds, priorityPlaceEntityIds: placeIdentity.priorityPlaceEntityIds, parentEntityIdsByPlaceId: placeIdentity.parentEntityIdsByPlaceId, placeSourceLocationReferencesById: placeIdentity.placeSourceLocationReferencesById })
     : null;
 }
-export function projectMemoryPersonEntities(entities = [], identityProjection = null) {
-  const groups = new Map(), people = [];
-  for (const entity of entities) {
-    if (entity?.entityType === 'person') people.push(entity);
-    if (entity?.entityType !== 'person' || entity.recordStatus !== 'active' || entity.status === 'invalidated') continue;
-    const entityId = resolveIdentityEntityId(entity.id, identityProjection);
-    if (!entityId || identityProjection?.deletedEntityIds?.includes(entityId)) continue;
-    const group = groups.get(entityId) ?? [];
-    group.push(entity); groups.set(entityId, group);
-  }
-  return Object.freeze(buildEntityIdentityDirectory({ entities: people, identityProjection }).flatMap(entry => {
-    const members = groups.get(entry.entityId);
-    if (entry.entity.recordStatus !== 'active' || !members?.length) return [];
-    return [Object.freeze({ entityId: entry.entityId, memberEntityIds: Object.freeze(members.map(entity => entity.id).sort()), displayName: entry.displayName, aliases: entry.aliases, specialRole: entry.specialRole })];
-  }));
-}
-function projectMemorySpatialEntities(entities = [], identityProjection = null) {
-  const directory = buildEntityIdentityDirectory({ entities, identityProjection });
-  const project = types => Object.freeze(directory.filter(entry => types.includes(entry.entityType))
+function projectMemoryEntities(entities = [], identityProjection = null) {
+  const directory = buildEntityIdentityDirectory({ entities, identityProjection, includeMemberEntityIds: true });
+  const people = Object.freeze(directory.filter(entry => entry.entityType === 'person' && entry.entity.recordStatus === 'active')
+    .map(entry => Object.freeze({ entityId: entry.entityId, memberEntityIds: entry.memberEntityIds, displayName: entry.displayName, aliases: entry.aliases, specialRole: entry.specialRole })));
+  const places = Object.freeze(directory.filter(entry => entry.entityType === 'place')
     .map(entry => Object.freeze({ entityId: entry.entityId, displayName: entry.displayName, aliases: entry.aliases })));
-  return Object.freeze({ places: project(['place']), groups: project(['group']) });
+  const groups = Object.freeze(directory.filter(entry => entry.entityType === 'group' && entry.entity.recordStatus === 'active')
+    .map(entry => Object.freeze({ entityId: entry.entityId, memberEntityIds: entry.memberEntityIds, displayName: entry.displayName, aliases: entry.aliases })));
+  return Object.freeze({ people, places, groups });
+}
+export function projectMemoryPersonEntities(entities = [], identityProjection = null) {
+  return projectMemoryEntities(entities, identityProjection).people;
 }
 export function projectMemoryPlaceEntities(entities = [], identityProjection = null) {
-  return projectMemorySpatialEntities(entities, identityProjection).places;
+  return projectMemoryEntities(entities, identityProjection).places;
 }
 const safeApi = value => sanitizeTaskMetadata(value);
 const safeErrorMessage = value => {
@@ -1492,15 +1484,15 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     const cse = Object.freeze({ cseFloors: Object.freeze(cseFloors), csePendingCount: cseFloors.filter(item => item.status === 'pending').length, cseFailedCount: cseFloors.filter(item => item.status === 'failed').length, lastCseError: cseError });
     const cseByFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const combinedFloors = floors.map(item => Object.freeze({ ...item, cse: cseByFloor.get(item.floorId) ?? null }));
-    const memoryEntities = projectMemoryPersonEntities(reachable?.entities ?? [], identityProjection);
     const hasSpatialFacts = (reachable?.floorMemories ?? []).some(memory => memory.recordStatus === 'active' && memory.spatialFacts);
-    let memoryPlaceEntities = Object.freeze([]), memoryGroupEntities = Object.freeze([]);
-    if (hasSpatialFacts && Array.isArray(reachable?.entities)) {
+    let memoryEntities = Object.freeze([]), memoryPlaceEntities = Object.freeze([]), memoryGroupEntities = Object.freeze([]);
+    if (Array.isArray(reachable?.entities)) {
       let byProjection = memoryPlaceEntitiesCache.get(reachable.entities);
       if (!byProjection) { byProjection = new WeakMap(); memoryPlaceEntitiesCache.set(reachable.entities, byProjection); }
       let spatialEntities = byProjection.get(identityProjection);
-      if (!spatialEntities) { spatialEntities = projectMemorySpatialEntities(reachable.entities, identityProjection); byProjection.set(identityProjection, spatialEntities); }
-      memoryPlaceEntities = spatialEntities.places; memoryGroupEntities = spatialEntities.groups;
+      if (!spatialEntities) { spatialEntities = projectMemoryEntities(reachable.entities, identityProjection); byProjection.set(identityProjection, spatialEntities); }
+      memoryEntities = spatialEntities.people; memoryGroupEntities = spatialEntities.groups;
+      if (hasSpatialFacts) memoryPlaceEntities = spatialEntities.places;
     }
     const cseByMemoryFloor = new Map(cseFloors.map(item => [item.floorId, item]));
     const rebuildCompletedCount = liveFloors.filter(floor => {
@@ -3242,26 +3234,37 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
           evidenceRefs: prior?.evidenceRefs ?? [],
         });
       }
-      const activePeople = buildEntityIdentityDirectory({ entities: source.entities, identityProjection }).filter(entry => entry.entityType === 'person')
-        .map(entry => ({ ...entry.entity, aliases: entry.aliases.map(name => ({ name })) }));
-      const projectedParticipants = projectFloorMemoryIdentityReferences({ participants: old.participants }, identityProjection).participants;
-      const existingParticipants = new Map(projectedParticipants.map(item => [item.entityId, item]));
-      const floorPeople = activePeople.filter(entity => existingParticipants.has(entity.id));
-      const match = name => [...floorPeople, ...activePeople].find(entity => [entity.displayName, ...(entity.aliases ?? []).map(alias => alias.name)].some(label => normalizedName(label) === normalizedName(name)));
-      const names = Array.isArray(metadata?.participantNames) ? [...new Set(metadata.participantNames.map(name => String(name ?? '').trim().slice(0, 500)).filter(Boolean))].slice(0, 80) : null;
+      const activeParticipants = [...buildMemoryParticipantDirectory({ entities: source.entities, identityProjection })];
+      const byMemberId = new Map(activeParticipants.flatMap(entry => entry.memberEntityIds.map(id => [id, entry])));
+      const existingParticipants = new Map();
+      for (const item of old.participants) {
+        const entry = byMemberId.get(item.entityId);
+        if (entry && !existingParticipants.has(entry.entityId)) existingParticipants.set(entry.entityId, { ...item, entityId: entry.entityId });
+      }
+      const projectedParticipants = [...existingParticipants.values()];
+      const byId = new Map(activeParticipants.map(entry => [entry.entityId, entry]));
+      const floorParticipants = projectedParticipants.map(item => byId.get(item.entityId));
+      const names = Array.isArray(metadata?.participantNames) ? metadata.participantNames.map(name => String(name ?? '').trim().slice(0, 500)).filter(Boolean).slice(0, 80) : null;
       const selected = [];
       for (const name of names ?? []) {
-        let entity = match(name);
-        if (!entity) {
+        const exact = entry => normalizedName(entry.displayName) === normalizedName(name);
+        const matches = entry => exact(entry) || entry.aliases.some(label => normalizedName(label) === normalizedName(name));
+        const available = entry => !selected.some(item => item.entityId === entry.entityId);
+        let entry = floorParticipants.find(entry => available(entry) && exact(entry))
+          ?? floorParticipants.find(entry => available(entry) && matches(entry))
+          ?? activeParticipants.find(entry => available(entry) && exact(entry))
+          ?? activeParticipants.find(entry => available(entry) && matches(entry));
+        if (!entry) {
+          if (selected.some(matches)) continue;
           const id = await deterministicUuid(['v3-user-person', revisionRunId, normalizedName(name)]);
-          entity = validateEntityRecord({ schemaVersion: 3, recordType: 'entity', id, chatId: old.chatId, narrativeGeneration: old.narrativeGeneration, entityType: 'person', displayName: name, aliases: [{ name, normalized: normalizedName(name), kind: 'canonical', evidenceRefs: [], baselineClaimIds: [] }], specialRole: 'none', firstSeenFloorId: floor.id, lastSeenFloorId: floor.id, status: 'provisional', mergedIntoEntityId: null, mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: old.chatId });
-          newEntities.push(entity); activePeople.push(entity);
+          const entity = validateEntityRecord({ schemaVersion: 3, recordType: 'entity', id, chatId: old.chatId, narrativeGeneration: old.narrativeGeneration, entityType: 'person', displayName: name, aliases: [{ name, normalized: normalizedName(name), kind: 'canonical', evidenceRefs: [], baselineClaimIds: [] }], specialRole: 'none', firstSeenFloorId: floor.id, lastSeenFloorId: floor.id, status: 'provisional', mergedIntoEntityId: null, mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: nowValue, updatedAt: nowValue, recordStatus: 'active', supersedes: null }, { expectedChatId: old.chatId });
+          newEntities.push(entity); entry = { entityId: id, displayName: name, aliases: [] }; activeParticipants.push(entry);
         }
-        if (!selected.some(item => item.id === entity.id)) selected.push(entity);
+        selected.push(entry);
       }
       if (names) {
-        const unchanged = selected.length === projectedParticipants.length && selected.every((entity, index) => entity.id === projectedParticipants[index].entityId);
-        if (!unchanged) participants = selected.map(entity => existingParticipants.get(entity.id) ?? { entityId: entity.id, presence: 'mentioned', evidenceRefs: [] });
+        const unchanged = selected.length === projectedParticipants.length && selected.every((entry, index) => entry.entityId === projectedParticipants[index].entityId);
+        if (!unchanged || names.length === 0 && old.participants.length > 0) participants = selected.map(entry => existingParticipants.get(entry.entityId) ?? { entityId: entry.entityId, presence: 'mentioned', evidenceRefs: [] });
       }
       locationsEdited = JSON.stringify(locations) !== JSON.stringify(old.locations);
       participantsEdited = JSON.stringify(participants) !== JSON.stringify(old.participants);

@@ -1,3 +1,4 @@
+import { memoryParticipantsForDisplay } from '../v3/memory-participants.js';
 import { readManualArtifactBlocks, RECALL_KNOWLEDGE_GUIDANCE, RECALL_COMPACT_KNOWLEDGE_GUIDANCE } from '../v3/recall-text.js';
 import { CSE_QUANTIFICATION_GUIDANCE } from '../v3/cse-quantification.js';
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
@@ -518,8 +519,7 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
   const fallbackTime = String(floor.timeFallback ?? '').trim();
   const time = times && fallbackTime && hasInternalTimeFields(times) ? fallbackTime : times || fallbackTime || '时间未明确';
   const locations = uniqueText((memory?.locations ?? []).map(item => item?.name)).join('、') || '未提取';
-  const names = new Map((state?.memoryEntities ?? []).map(entity => [entity?.entityId, entity?.displayName]));
-  const people = uniqueText((memory?.participants ?? []).map(item => names.get(item?.entityId) || '未知人物')).join('、') || '未提取';
+  const people = memoryParticipantsForDisplay(state, memory, floor).map(entry => entry.displayName).join('、') || '未提取';
   const busy = Boolean(state?.memoryWorkBusy || state?.activeAutoMemory || state?.activeExtraction || state?.activeCse);
   const statusText = floor.status === 'running' ? '正在提取'
     : floor.status === 'ready' ? (floor.summarySource === 'user' ? '人工修订' : '摘要已保存')

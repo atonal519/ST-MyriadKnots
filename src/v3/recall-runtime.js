@@ -2298,12 +2298,25 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
 
   async function intercept(coreChat, contextSize, abort, rawType) {
     const token = ++epoch;
-    if (active) { retainTerminated(active, 'superseded', 'interceptorSuperseded'); active.controller.abort('superseded'); }
-    clearSlot();
     const type = SUPPORTED_TYPES.has(rawType) ? rawType : rawType === undefined ? 'normal' : String(rawType ?? 'normal');
     const lifecycle = generationQueue.find(value => value.token === null && value.type === type);
+    if (active) {
+      const previous = active;
+      retainTerminated(previous, 'superseded', 'interceptorSuperseded');
+      if (previous.phase === 'selecting' && SUPPORTED_TYPES.has(previous.type)
+        && !previous.controller.signal.aborted && !previous.hostGenerationStopped) {
+        previous.hostGenerationStopped = true;
+        const previousLifecycle = generationQueue.find(value => value.token === previous.token);
+        // 旧正文退出会发 ENDED；接管选材的 continue 必须保留自己的结束归属。
+        if (lifecycle && previousLifecycle?.chainId === lifecycle.chainId) lifecycle.chainId = ++generationSerial;
+        try { previous.hostAbort?.(true); } catch { /* 宿主停止回调失败不阻断后继生成。 */ }
+        try { notifyUser?.({ kind: 'warning', text: '本轮召回被另一笔生成打断，请重试' }); } catch { /* notification must not affect recall */ }
+      }
+      previous.controller.abort('superseded');
+    }
+    clearSlot();
     if (lifecycle) lifecycle.token = token;
-    const operation = { token, type, phase: 'input', step: 'input', lastCompletedStep: null, stepStarted: Date.now(), controller: new AbortController(), started: Date.now(), diagnostics: [],
+    const operation = { token, type, hostAbort: typeof abort === 'function' ? abort : null, phase: 'input', step: 'input', lastCompletedStep: null, stepStarted: Date.now(), controller: new AbortController(), started: Date.now(), diagnostics: [],
       requestDiagnosticId: enabled() && SUPPORTED_TYPES.has(type) ? lifecycle?.requestDiagnosticId ?? requestDiagnostic.start() : null,
       transportBudget: { remaining: 3, used: 0 } };
     lastRecall = null; lastPrequel = null; lastRecallBinding = null; lastRecallReceiptOwner = null;

@@ -1,3 +1,4 @@
+import { memoryParticipantsForDisplay, parseMemoryParticipantNames } from '../v3/memory-participants.js';
 import { sanitizeSensitiveText } from '../v3/safe-metadata.js';
 import { preparationContextDiagnostic } from '../v3/preparation-diagnostic.js';
 import { projectCseSubjectDiagnostic } from '../v3/cse-failure-diagnostic.js';
@@ -262,7 +263,6 @@ function automationErrorDiagnostic(value, sourceKnown = true) {
   };
 }
 const diagnosticVersion = value => typeof value === 'string' && /^[0-9A-Za-z][0-9A-Za-z.-]{0,39}$/.test(value) ? value : 'unknown';
-const splitPeople = value => [...new Set(String(value ?? '').split(/[、,，\n]/u).map(item => item.trim()).filter(Boolean))];
 const timeDisplay = chronology => [...new Set((chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description).map(item => String(item ?? '').trim()).filter(Boolean))].join('；');
 const floorTimeDisplay = (memory, floor) => {
   const chronology = memory?.chronology ?? [], saved = floor?.manualTime ? timeDisplay(chronology)
@@ -1093,7 +1093,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     let saved = false;
     void Promise.resolve(customImpl({ title: `编辑摘要 · ${floorCopy(state, floor)}`, content: editor, confirmText: '保存', cancelText: '取消', submit: async () => {
       const payload = { summary: draft.summary, timeText: draft.timeText, originalTimeText: draft.originalTimeText, timeChanged: String(draft.timeText ?? '').trim() !== String(draft.originalTimeText ?? '').trim(), locations: draft.locations,
-        ...(draft.peopleText !== draft.originalParticipantNames.join('、') ? { participantNames: splitPeople(draft.peopleText) } : {}),
+        ...(draft.peopleText !== draft.originalParticipantNames.join('、') ? { participantNames: parseMemoryParticipantNames(draft.peopleText, draft.originalParticipantNames) } : {}),
         exactAnchors: draft.exactAnchors, revisionNote: draft.note };
       if (unchangedDraft(draft, payload)) { saved = true; drafts.delete(key); return true; }
       const changes = {
@@ -1221,7 +1221,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         const names = new Map((currentState.memoryEntities ?? []).flatMap(entity => [entity.entityId, ...(entity.memberEntityIds ?? [])].map(id => [id, entity.displayName])));
         const canonicalEntityByMemberId = new Map((currentState.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity])));
         for (const [entityId, displayName] of Object.entries(floor.memoryEntityNames ?? {})) names.set(entityId, displayName);
-        const people = [...new Set((memory.participants ?? []).map(item => canonicalEntityByMemberId.get(item.entityId)?.entityId ?? item.entityId))].map(id => names.get(id) ?? '未知人物').join('、') || '未提取';
+        const people = memoryParticipantsForDisplay(currentState, memory, floor).map(entry => entry.displayName).join('、') || '未提取';
         body.append(element('p', 'qqj-memory-main', floor.summary || '暂无摘要。'));
         const meta = element('div', 'qqj-memory-meta');
         const metaItem = (label, value) => { const item = element('span', 'qqj-memory-meta-item'); item.append(element('strong', '', label), element('span', '', value)); return item; };
@@ -1261,7 +1261,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
       } else if (floor.memoryId) {
         const edit = element('button', 'qqj-memory-menu-action', '编辑'); edit.type = 'button'; edit.disabled = workBusy(currentState);
         trackMemoryRowWorkControl({ node: edit, disabled: current => workBusy(current) });
-        edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const names = new Map((latest.memoryEntities ?? []).flatMap(entity => [entity.entityId, ...(entity.memberEntityIds ?? [])].map(id => [id, entity.displayName]))); const canonicalByMember = new Map((latest.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity.entityId]))); const normalizeKnownIds = values => [...new Set((values ?? []).map(id => canonicalByMember.get(id) ?? id))].sort(); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = [...new Set((memory?.participants ?? []).map(item => canonicalByMember.get(item.entityId) ?? item.entityId))].map(id => names.get(id)).filter(Boolean); const exactAnchors = (memory?.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, carrier: item.carrier ?? '', exactText: item.exactText, knownEntityIds: normalizeKnownIds(item.knownEntityIds) })); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, exactAnchors, originalExactAnchors: structuredClone(exactAnchors), note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
+        edit.addEventListener('click', () => { const latest = foundationState ?? currentState; const canonicalByMember = new Map((latest.memoryEntities ?? []).flatMap(entity => (entity.memberEntityIds ?? [entity.entityId]).map(id => [id, entity.entityId]))); const normalizeKnownIds = values => [...new Set((values ?? []).map(id => canonicalByMember.get(id) ?? id))].sort(); const originalTimeText = floorTimeDisplay(memory, floor); const locations = (memory?.locations ?? []).map(item => ({ itemId: item.itemId, name: item.name ?? '' })); const participantNames = memoryParticipantsForDisplay(latest, memory, floor).map(entry => entry.displayName); const exactAnchors = (memory?.exactAnchors ?? []).map(item => ({ anchorId: item.anchorId, carrier: item.carrier ?? '', exactText: item.exactText, knownEntityIds: normalizeKnownIds(item.knownEntityIds) })); const draft = { floorId: floor.floorId, canonicalFingerprint: floor.canonicalFingerprint, rawFingerprint: floor.rawFingerprint, summary: floor.summary, originalSummary: floor.summary, timeText: originalTimeText, originalTimeText, locations, originalLocations: locations.map(item => ({ ...item })), peopleText: participantNames.join('、'), originalParticipantNames: participantNames, exactAnchors, originalExactAnchors: structuredClone(exactAnchors), note: '', saving: false, saveError: '' }; void openMemoryEditor(floor, latest, key, draft); });
         const extract = element('button', 'qqj-memory-menu-action', '重新提取'); extract.type = 'button'; extract.disabled = workBusy(currentState) || typeof runtime.extractFloor !== 'function';
         trackMemoryRowWorkControl({ node: extract, disabled: current => workBusy(current) || typeof runtime.extractFloor !== 'function' });
         extract.addEventListener('click', async () => { const latest = foundationState ?? currentState; const ranged = (floor.sourceFloorIds?.length ?? 0) > 1;
