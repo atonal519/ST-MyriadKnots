@@ -27,6 +27,13 @@ function incompleteQianshiGuidance(runtimeState) {
 }
 
 function coverageProjection(snapshot, runtimeState) {
+  if (snapshot?.status === 'not-ready') {
+    if (runtimeState?.memorySnapshotStatus === 'error' || runtimeState?.memorySyncStatus === 'error' || runtimeState?.foundationStatus === 'error') return { tone: 'error', copy: publicErrorMessage(runtimeState.memorySyncError ?? runtimeState.lastError ?? runtimeState.lastExtractorError, { fallback: '千事记录读取失败，请刷新状态后重试。' }) };
+    if (runtimeState?.memorySnapshotStatus === 'syncing' || runtimeState?.memorySyncStatus === 'syncing') return { tone: 'checking', copy: '正在读取千事记录。' };
+    if (runtimeState?.foundationStatus === 'uninitialized' || runtimeState?.status === 'uninitialized') return { tone: 'checking', copy: '尚未开始记录千事。' };
+    return { tone: 'checking', copy: '千事记录尚未就绪，请刷新状态。' };
+  }
+  if (snapshot?.status === 'uninitialized' || snapshot?.status === 'empty') return { tone: 'checking', copy: '尚未开始记录千事。' };
   if (snapshot?.status !== 'ready') return { tone: 'error', copy: publicErrorMessage(snapshot, { fallback: '当前聊天还没有可用的千事快照。' }) };
   const coverage = snapshot.coverage ?? {};
   const processable = coverage.processable ?? coverage;
@@ -65,6 +72,22 @@ function rejudgeFailureCopy(history) {
   const diagnostic = ['本次未记录到具体原因。', '整理发生程序异常。'].includes(reason)
     ? '请到设置→记忆管理→详细诊断，复制状态诊断。' : '';
   return `${stageCopy}${reason}本次未提交，原记录保留。${diagnostic}点“整理”重新预览本次范围并确认。`;
+}
+
+function historyResultCopy(history) {
+  const outcomes = history.outcomes ?? [];
+  const count = status => outcomes.filter(item => item.status === status).length;
+  const complete = history.savedCompleteFloors ?? count('saved-complete');
+  const partial = history.savedPartialFloors ?? count('saved-partial');
+  const unknown = count('commit-unknown');
+  const budget = outcomes.filter(item => item.reasonCode === 'QIANSHI_HISTORY_INPUT_BUDGET').length;
+  const aggregate = Number.isSafeInteger(history.aggregateSkippedCount) ? history.aggregateSkippedCount : 0;
+  const failed = Math.max(0, (history.failedFloors ?? count('failed')) - outcomes.filter(item => item.status === 'failed' && item.reasonCode === 'QIANSHI_HISTORY_INPUT_BUDGET').length);
+  const skipped = Math.max(0, (history.skippedFloors ?? count('skipped')) - outcomes.filter(item => item.status === 'skipped' && item.reasonCode === 'QIANSHI_HISTORY_INPUT_BUDGET').length);
+  const parts = [complete ? `已完整保存 ${complete} 楼。` : '', partial ? `部分保存 ${partial} 楼，有效记录保留。` : '',
+    unknown ? `${unknown} 楼保存状态待核对，请先刷新千事页确认。` : '', budget ? `超预算 ${budget} 楼未补齐。` : '',
+    aggregate ? `聚合记忆 ${aggregate} 楼未替换。` : '', failed ? `${failed} 楼未完成，可继续补齐。` : '', skipped ? `${skipped} 楼未处理。` : ''].filter(Boolean);
+  return parts.join('') || '本次事项任务未完成，已有记录保留。';
 }
 
 export function createQianshiTimelineView({ runtime, dialog = null, documentRef = globalThis.document } = {}) {
@@ -198,7 +221,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
   const statusSaveNote = eventId => {
     const saving = statusSaves.get(eventId);
     if (!saving) return null;
-    const note = element('p', `qqj-qianshi-save-note${saving.error ? ' error' : ''}`, saving.pending ? '正在保存…' : `保存失败：${saving.error}`);
+    const note = element('p', `qqj-qianshi-save-note${saving.error ? ' error' : ''}`, saving.pending ? '正在保存…' : saving.uncertain ? saving.error : `保存失败：${saving.error}`);
     note.setAttribute('role', saving.error ? 'alert' : 'status');
     return note;
   };
@@ -417,6 +440,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
           if (statusSaves.get(event.id) === saving) statusSaves.delete(event.id);
         } catch (error) {
           saving.pending = false;
+          saving.uncertain = error?.code === 'QIANSHI_TEXT_EDIT_COMMIT_AMBIGUOUS';
           saving.error = publicErrorMessage(error, { fallback: '请稍后重试。' });
         } finally {
           if (runtime.getQianshiSnapshot()?.identity?.qqjChatId === operationChatId && chatId === operationChatId) {
@@ -436,7 +460,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const operationEpoch = epoch, operationChatId = chatId;
     try {
       const confirmed = await dialog.confirm({ title: '删除这条千事', body: `删除“${event.title}”？`,
-        note: '只移除这条事件，其他进展仍保留；删空后整条事项线消失。正文、摘要和双丝网保留，不调用模型。', confirmText: '删除', cancelText: '取消' });
+        note: '只移除这条事件，其他进展仍保留；删空后整条事项线消失，关联期限提醒停止，期限记录保留。正文、摘要和双丝网保留，不调用模型。', confirmText: '删除', cancelText: '取消' });
       if (!active || epoch !== operationEpoch || chatId !== operationChatId
         || runtime.getQianshiSnapshot()?.identity?.qqjChatId !== operationChatId || !confirmed) return;
       runtimeState = runtime.getState();
@@ -713,7 +737,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         row.addEventListener('click', () => navigateToTodo(entry));
         list.append(row);
       }
-      if (!matches.length) list.append(element('p', 'qqj-qianshi-todo-empty', '没有待办事项。'));
+      if (!matches.length) list.append(element('p', 'qqj-qianshi-todo-empty', needle ? '没有匹配的待办事项。' : '没有待办事项。'));
       pager.replaceChildren();
       if (matches.length > 50) {
         const previous = element('button', 'secondary-action', '上一页'); previous.type = 'button'; previous.disabled = page === 0;
@@ -785,8 +809,8 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
 
   async function stopHistory() {
     if (!historyBusy()) return;
-    const operationEpoch = ++epoch; feedback = '正在停止历史补齐…'; render();
-    try { await runtime.stopQianshiHistory(); }
+    const operationEpoch = ++epoch, stoppingCopy = snapshot?.history?.mode === 'rejudge' ? '正在停止整理…' : '正在停止历史补齐…'; feedback = stoppingCopy; render();
+    try { await runtime.stopQianshiHistory(); if (active && operationEpoch === epoch && feedback === stoppingCopy) feedback = ''; }
     catch (error) { if (active && operationEpoch === epoch) feedback = `停止失败：${publicErrorMessage(error, { fallback: '请稍后重试。' })}`; }
     if (active && operationEpoch === epoch) render();
   }
@@ -799,7 +823,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     try {
       const latestMessageIndex = (snapshot?.events ?? []).reduce((latest, event) => Number.isSafeInteger(event.sourceMessageIndex)
         ? Math.max(latest, event.sourceMessageIndex) : latest, -1);
-      const input = await dialog.prompt({ title: '重新整理已存千事', body: `${incompleteCount ? `留空继续 ${incompleteCount} 个未完成楼` : '当前无未完成楼，留空仅复核跟进'}；填 0 整理全部；也可填 12~30 指定范围（按酒馆显示的楼号）。${incompleteCount ? '历史仍有缺口时先保存，全部历史完成后才复核当前跟进。' : ''}${latestMessageIndex >= 0 ? `当前最新为第 ${latestMessageIndex} 楼。` : ''}`,
+      const input = await dialog.prompt({ title: '重新整理已存千事', body: `${incompleteCount ? `留空继续 ${incompleteCount} 个已有千事记录的未完成楼` : '当前已存千事记录无待续楼，留空仅复核跟进'}；填 0 整理全部；也可填 12~30 指定范围（按酒馆显示的楼号）。${incompleteCount ? '历史仍有缺口时先保存，全部历史完成后才复核当前跟进。' : ''}${latestMessageIndex >= 0 ? `已收录千事的最新来源为第 ${latestMessageIndex} 楼。` : ''}`,
         placeholder: incompleteCount ? `留空继续 ${incompleteCount} 个未完成楼，或填 0 / 12~30` : '留空仅复核跟进；0 整理全部；12~30 范围', maxLength: 32, confirmText: '预览范围' });
       if (!active || operationEpoch !== epoch || input === null) return;
       // 一次输入同时选择两端；省略终点保留开放边界，由实际存档解析，不能转成第 0 楼。
@@ -810,7 +834,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         ...(onlyIncomplete ? { onlyIncomplete: true } : { fromMessageIndex: Number(range[1]), toMessageIndex: range[2] ? Number(range[2]) : null }) });
       if (!active || operationEpoch !== epoch) return;
       if (plan.status !== 'ready') {
-        feedback = plan.message || (onlyIncomplete ? plan.unavailableFloors?.length ? '剩余未完成楼暂时无法重判，请检查对应存档。' : '未完成楼已全部整理完成，当前没有需要复核的自动待办。'
+        feedback = plan.message || (onlyIncomplete ? plan.unavailableFloors?.length ? '剩余未完成楼暂时无法重判，请检查对应存档。' : '已存千事记录暂无待续楼，当前没有需要复核的自动待办。'
           : '所选范围没有可重判的单楼千事存档。');
         render(); return;
       }
@@ -825,7 +849,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
           : `历史 ${plan.historyApiCalls} 次＋${plan.followup.status === 'conditional' ? '全部历史完成后，' : ''}跟进预计 ${plan.followup.apiCalls} 次（当前 ${plan.followup.totalMatters} 项），合计预计 API ${plan.apiCalls} 次`;
       const confirmed = await dialog.confirm({ title: '确认整理千事',
         body: `${onlyIncomplete ? '仅继续未完成楼；' : ''}${rangeCopy}，${plan.totalFloors} 个 AI 楼、${recordCount} 条旧记录，分 ${plan.batchCount ?? plan.apiCalls} 批。${followupCopy}${Number.isFinite(plan.estimatedInputTokens) ? `，输入约 ${plan.estimatedInputTokens} token` : ''}。${plan.followup?.status === 'unavailable' ? `跟进复核暂不可用，${plan.followup.message}` : ''}`,
-        note: '全部历史楼完成后才做末尾复核，结合全部有效摘要与对应 USER 材料。跟进按重判后事项量计算实际次数。仍有缺口时先保存历史；无旧记录的楼用“补齐旧楼”，已有记录的楼在“整理”中留空继续。保留原事实和人工修订。统一保存，末尾失败仍保存有效历史。取消或原档变化则本轮不提交。',
+        note: '全部历史楼完成后才做末尾复核，结合全部有效摘要与对应 USER 材料。跟进按重判后事项量计算实际次数。仍有缺口时先保存历史；无旧记录的楼用“补齐旧楼”，已有记录的楼在“整理”中留空继续。保留原事实和人工修订。统一保存，末尾失败仍保存有效历史。取消时本轮不提交；个别楼原档变化时保留该楼，其他有效结果仍可保存。',
         confirmText: '开始整理', cancelText: '取消' });
       if (!active || operationEpoch !== epoch) return;
       if (!confirmed) { feedback = '已取消；没有调用模型或写入。'; render(); return; }
@@ -894,7 +918,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     const search=element('input','settings-input');search.type='search';search.placeholder='搜索人物';search.setAttribute('aria-label','搜索待办人物');const searchField=element('label','settings-field');searchField.append(element('span','','搜索人物'),search);peopleGroup.append(searchField);
     const choices=element('div','qqj-qianshi-people-choices'),rows=[],selected=new Map();
     for(const person of runtime.getQianshiEditPeople?.()??[]){const row=element('label','qqj-qianshi-person-choice'),input=element('input');input.type='checkbox';input.setAttribute('aria-label',person.name);input.addEventListener('change',()=>{if(input.checked)selected.set(person.entityId,{entityId:person.entityId,name:person.name});else selected.delete(person.entityId);});row.append(input,element('span','',person.name));choices.append(row);rows.push({row,text:[person.name,...(person.aliases??[])].join(' ').toLocaleLowerCase()});}
-    const empty=element('p','settings-hint','没有匹配的人物。');empty.hidden=rows.length>0;choices.append(empty);search.addEventListener('input',()=>{const query=search.value.trim().toLocaleLowerCase();let visible=0;for(const item of rows){item.row.hidden=!item.text.includes(query);if(!item.row.hidden)visible++;}empty.hidden=visible>0;});peopleGroup.append(choices);form.append(peopleGroup);
+    const empty=element('p','settings-hint','暂无可选人物。');empty.hidden=rows.length>0;choices.append(empty);search.addEventListener('input',()=>{const query=search.value.trim().toLocaleLowerCase();empty.textContent=query?'没有匹配的人物。':'暂无可选人物。';let visible=0;for(const item of rows){item.row.hidden=!item.text.includes(query);if(!item.row.hidden)visible++;}empty.hidden=visible>0;});peopleGroup.append(choices);form.append(peopleGroup);
     const timing=element('details','qqj-editor-group');timing.append(element('summary','qqj-editor-group-summary','时间信息'));field('storyTime','发生时间（可空）',timing);field('scheduledTime','约定 / 预计时间（可空）',timing);form.append(timing,element('p','settings-hint','保存为人工待办，时间未知可留空；不调用模型。'));
     const ownedDialog={content:form};todoDialog=ownedDialog;
     let saving=false;
@@ -919,7 +943,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
         if (!history.followup && (history.failedFloors > 0 || coverage.tone === 'checking')) health.textContent += incompleteQianshiGuidance(runtimeState);
       } else if (history.mode === 'rejudge') {
         health.textContent = rejudgeFailureCopy(history);
-      } else health.textContent = '上次事项任务未完成，可重试。';
+      } else health.textContent = historyResultCopy(history);
       health.className = history.mode === 'rejudge' && history.commitStatus === 'saved'
         ? `qqj-page-health ${history.failedFloors > 0 ? 'checking' : coverage.tone}` : 'qqj-page-health error';
     }
@@ -1071,7 +1095,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
     if (feedback) { feedbackNode = element('p', 'qqj-qianshi-feedback', feedback); feedbackNode.setAttribute('role', 'status'); page.append(feedbackNode); }
     const visible = visibleEvents(), renderedTimeline = snapshot?.status === 'ready' ? timelineContent(visible) : null;
     const toolbar = element('div', 'qqj-qianshi-toolbar');
-    toolbar.append(element('span', '', renderedTimeline && query ? `匹配 ${visible.length} 件事件 · 显示 ${renderedTimeline.visibleEventCount} 条` : '沿着时间，回看故事'));
+    toolbar.append(element('span', '', renderedTimeline && query ? `匹配 ${visible.length} 条事件` : '沿着时间，回看故事'));
     toolbarActionsNode = renderToolbarActions(); toolbar.append(toolbarActionsNode);
     page.append(toolbar);
     if (renderedTimeline) page.append(renderedTimeline.node);
@@ -1104,6 +1128,7 @@ export function createQianshiTimelineView({ runtime, dialog = null, documentRef 
       runtimeState = next; snapshot = nextSnapshot; runtimeRenderKey = nextKey;
       // 启动提示只覆盖任务尚未接管进度的间隙；运行或最终状态到达后移除，避免保存成功仍显示“将暂存”。
       const history = snapshot?.history;
+      if (history?.status && history.status !== 'running' && ['正在停止历史补齐…', '正在停止整理…'].includes(feedback)) feedback = '';
       if (history?.status && history.status !== 'idle'
         && (feedback === REJUDGE_START_PENDING_FEEDBACK && history.mode === 'rejudge'
           || feedback === HISTORY_START_PENDING_FEEDBACK && history.mode !== 'rejudge')) feedback = '';

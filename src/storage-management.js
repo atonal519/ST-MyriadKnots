@@ -426,7 +426,7 @@ export function createStorageManagement({
     await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, () => worker()));
     if (deletedCount === 0 && convergedCount === candidates.length) {
       convergedCount = 0;
-      firstError = errorWith('QQJ_STORAGE_PERMANENT_DELETE_UNAVAILABLE', '存储管理永久清理需要更新白鳥后端；本次没有删除任何文件。');
+      firstError = errorWith('QQJ_STORAGE_PERMANENT_DELETE_UNAVAILABLE', '本次未确认永久删除；记录可能已被其他操作移除，或当前后端不支持永久清理。请刷新统计核对。');
     }
     return { deletedCount, convergedCount, error: firstError };
   }
@@ -513,7 +513,7 @@ export function createStorageManagement({
       } catch (error) {
         if (error?.status === 404) {
           trashGcCapability = false;
-          const unsupported = errorWith('QQJ_TRASH_GC_UNSUPPORTED', '回收站尚未清理；请更新白鳥数据后端并重启酒馆。');
+          const unsupported = errorWith('QQJ_TRASH_GC_UNSUPPORTED', '当前存储后端尚不支持回收站清理，请更新后端后重试。');
           trashGcState = { ...trashGcState, status: 'unsupported', error: unsupported, automatic: true };
           notify();
           return false;
@@ -547,7 +547,7 @@ export function createStorageManagement({
     current.promise = (async () => {
       const capability = await readTrashGcCapability({ retry: !automatic || (trashGcCapability === 'error' && Date.now() >= trashGcRetryAfter) });
       if (capability === false) {
-        const error = errorWith('QQJ_TRASH_GC_UNSUPPORTED', '回收站尚未清理；请更新白鳥数据后端并重启酒馆。');
+        const error = errorWith('QQJ_TRASH_GC_UNSUPPORTED', '当前存储后端尚不支持回收站清理，请更新后端后重试。');
         trashGcProgress = null;
         trashGcRetryAfter = Date.now() + TRASH_GC_INTERVAL_MS;
         trashGcState = { ...trashGcState, status: 'unsupported', error, automatic };

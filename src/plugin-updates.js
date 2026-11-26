@@ -61,7 +61,7 @@ export function createPluginUpdates({ moduleUrl = import.meta.url, extensionType
     pending = (async () => {
       try { const result = await post('/api/extensions/update', '更新千千结');
         if (typeof result.isUpToDate !== 'boolean' || typeof result.shortCommitHash !== 'string' || !/^[a-f0-9]{7,40}$/i.test(result.shortCommitHash)) throw new Error('更新结果无法确认，请到酒馆扩展页检查后再刷新。');
-        return publish({ status: 'stable', versionInfo: { ...previous.versionInfo, isUpToDate: true }, error: '' }); }
+        return publish({ status: 'stable', versionInfo: { ...previous.versionInfo, isUpToDate: true }, updateApplied: result.isUpToDate === false, error: '' }); }
       catch (error) { publish({ ...previous, error: error.message }); throw error; }
       finally { pending = null; }
     })();

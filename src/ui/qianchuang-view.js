@@ -388,10 +388,10 @@ export function createQianchuangView({ runtime, settings, sessionStateProvider =
         if(organizationController){if(organizationMode===mode)organizationController.abort();return;}
         const label=mode==='initialize'?'初始化':'整理',controller=new AbortController();organizationController=controller;organizationMode=mode;syncActions();
         try{
-          const body=mode==='initialize'?'通读当前允许读取的世界书，补入尚未登记的地点与明确层级。调用一次摘要模型，保留已有剧情变化、人工修订和删除。可重复使用。':'根据已有地点及其已保存来源，合并同一地点的别名和重复资料，校对归属、简介、设施与底图。可补明确缺失上级。调用一次摘要模型，保留人工修订。';
+          const body=mode==='initialize'?'通读当前允许读取的世界书，补入尚未登记的地点与明确层级。有可处理材料时调用摘要模型，保留已有剧情变化、人工修订和删除。可重复使用。':'根据已有地点及其已保存来源，合并同一地点的别名和重复资料，校对归属、简介、设施与底图。可补明确缺失上级。有可处理材料时调用摘要模型，保留人工修订。';
           if(!await dialog.confirm({title:`${label}地点`,body,confirmText:label,cancelText:'取消'})||controller.signal.aborted)return;
           const result=await runtime.organizePlaces({mode,signal:controller.signal});
-          if(result?.status==='skipped'&&['no-worldbook','no-places'].includes(result.reason))await dialog.info?.({title:`${label}地点`,body:result.reason==='no-worldbook'?'当前没有允许读取的世界书。':'当前没有可整理的地点。可先初始化或继续对话记录。'});
+          if(result?.status==='skipped')await dialog.info?.({title:`${label}地点`,body:result.reason==='no-worldbook'?'当前允许读取的世界书没有可用条目。':result.reason==='no-places'?'当前没有可整理的地点。可先初始化或继续对话记录。':'地点资料已变化，本次结果未保存，请重新操作。'});
         }catch(error){if(error?.name!=='AbortError')await dialog.info?.({title:`${label}失败`,body:publicErrorMessage(error,{fallback:`地点${label}失败，原资料已保留。`})});}
         finally{if(organizationController===controller){organizationController=null;organizationMode=null;}syncActions();}
       };

@@ -7,7 +7,7 @@ export function createPluginUpdatesView({ updates, dialog, documentRef = globalT
   const noticeRow = element('div', 'settings-document-row'); const noticeButton = element('button', 'secondary-action', '查看公告'); noticeButton.type = 'button';
   noticeRow.append(element('span', '', '更新公告'), noticeButton);
   const sync = state => {
-    status.textContent = ({ unchecked: '检查更新', checking: '检查中', available: '可更新', stable: '稳定版本', updating: '更新中', error: '检查失败' })[state.status];
+    status.textContent = ({ unchecked: '检查更新', checking: '检查中', available: '可更新', stable: '未发现更新', updating: '更新中', error: '检查失败' })[state.status];
     status.dataset.state = state.status; const busy = ['checking', 'updating'].includes(state.status); status.disabled = busy;
     feedback.textContent = state.error ?? ''; feedback.hidden = !state.error;
   };
@@ -20,7 +20,7 @@ export function createPluginUpdatesView({ updates, dialog, documentRef = globalT
       else content.textContent = notice.ok ? notice.markdown : notice.message;
     });
     if (await choice && available) {
-      try { await updates.update(); notifyUser({ kind: 'success', text: '千千结已更新，请刷新酒馆后使用' }); }
+      try { const result = await updates.update(); notifyUser({ kind: 'success', text: result?.updateApplied === true ? '千千结已更新，请刷新酒馆后使用' : result?.updateApplied === false ? '当前已是最新版本，无需更新。' : '酒馆已处理更新请求，请刷新酒馆加载当前版本' }); }
       catch (error) { notifyUser({ kind: 'error', text: error.message }); }
     }
   };

@@ -2304,3 +2304,26 @@ test('当前状态开闭数量取可见去重条目，两条状态保持完整�
  const h=createHarness({chat:[{is_user:true,mes:'继续'}],memoryState:{floors:[],memoryEntities:[]},recallState:{lastRecall:receipt,lastRecallBinding:{chatId:'chat-a',userMessageIndex:0}}});h.chatRoot.append(messageElement(0,{user:true}));h.renderer.start();await h.flushMicrotasks();
  const ui=h.chatRoot.querySelector('[data-qqj-inline-host="true"]').__qqjInlineCard.recallUi,entry=ui.personEntries[0];assert.match(descendantText(entry.trigger),/当前状态 2 条/u);entry.trigger.click();assert.match(descendantText(entry.detail),/当前状态 2 条/u);assert.deepEqual(entry.detail.querySelectorAll('.current-copy').map(x=>x.textContent),states.map(x=>x.text));h.renderer.destroy();
 });
+
+
+test('楼内摘要状态对齐清洗为空与来源待核，保留可查看的摘要', () => {
+  const state = { memorySnapshotStatus: 'ready', floors: [], contentIssues: [{ messageIndex: 2, reason: 'emptyAfterSanitizing' }] };
+  const waiting = projectInlineMemoryFloor(state, 2);
+  assert.equal(waiting.statusText, '正文未识别');
+  assert.match(waiting.summary, /包裹符.*保留包裹符.*清洗包裹符/u);
+  state.floors = [{ floorId: HISTORY_FLOOR, messageIndex: 2, status: 'ready', summary: '已存摘要仍可查看' }];
+  const stored = projectInlineMemoryFloor(state, 2);
+  assert.equal(stored.statusText, '正文未识别');
+  assert.equal(stored.summary, '已存摘要仍可查看');
+  state.contentIssues = [];
+  state.floors[0].sourceUnavailable = true;
+  assert.equal(projectInlineMemoryFloor(state, 2).statusText, '来源待核');
+});
+
+
+test('无可用记忆快照时不冒称正在读取或当前楼没有保存记录', () => {
+  const projection = projectInlineMemoryFloor({ memorySnapshotStatus: 'unavailable', floors: [] }, 2);
+  assert.equal(projection.statusText, '当前记忆暂不可用');
+  assert.doesNotMatch(projection.summary, /正在读取|没有这楼/u);
+  assert.equal(projection.busy, true, '状态不可用时保留原编辑锁定');
+});

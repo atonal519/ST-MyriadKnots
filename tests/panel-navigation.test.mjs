@@ -182,7 +182,7 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   const timeRuntime = { getState: () => timeState, async refreshStatus() { timeReads += 1; publishTime(); return timeState; }, async organize() { timeOrganizes += 1; publishTime(); return timeState; }, subscribe(listener) { timeListeners.add(listener); return () => timeListeners.delete(listener); } };
   const memoryRuntime = { subscribe(listener) { memoryListeners.add(listener); return () => memoryListeners.delete(listener); } };
   const autoHideApplies = [];
-  let autoHideApplyStatus = null;
+  let autoHideApplyStatus = 'applied';
   let calendarChatId = foundationState.chatId, savedCalendar = null; const calendarChanges = [];
   const calendarContextProvider = () => ({ chatId: calendarChatId, calendar: savedCalendar });
   panel = entry.namespace.createPanel({ pluginUpdates, calendarContextProvider, onCalendarChange: async value => { calendarChanges.push(value); savedCalendar = value.calendar; }, settings, v3FoundationView, timeRuntime, memoryRuntime, peopleProfilesView, qianshiTimelineView, qianchuangView: { mount(target) { calls.push(['window-mount',target]); }, activate() { calls.push(['window-activate']); return Promise.resolve({status:'ready'}); }, deactivate() { calls.push(['window-deactivate']); } }, storageManagementView, memoryTransferViewFactory, documentRef, isSevenDaysLedgerInjectionEnabled: () => ledgerInjectionEnabled, onPluginEnabledChange: async value => { if (rejectPluginDisable && value === false) throw pluginDisableError; }, onPluginEnableFailure: (error, phase) => pluginFailures.push({ error, phase, settingsEnabled: settings.isEnabled() }), onTimeEvolutionChange: () => { timeChanges += 1; }, navigatorRef: { clipboard: { async writeText(value) { clipboardWrites.push(value); if (clipboardFail) throw new Error('clipboard denied'); } } }, dialog: { setAppearance(value) { dialogAppearances.push(value); }, confirm(options) { timeConfirms.push(options); dialogActive = true; return new Promise(resolve => { resolveTimeConfirm = result => { dialogActive = false; resolve(result); }; }); }, custom(options) { helpDialog = options; dialogActive = true; return Promise.resolve(true); }, closeAll() { resolveTimeConfirm?.(false); dialogActive = false; }, hasActive: () => dialogActive, cancelTop() { dialogCancels += 1; dialogActive = false; } }, onFabShowChange: value => { fabVisible = value; }, onAutoHideChange: async value => { autoHideApplies.push(value); return autoHideApplyStatus ? { status: autoHideApplyStatus } : undefined; } });
@@ -402,7 +402,7 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   assert.ok(placeGuide);
   const placeGuideCopy = flatten(placeGuide).map(node => node.textContent).join('|');
   assert.match(placeGuideCopy, /添加子地点.*未归属地点.*24张通用图/u);
-  assert.match(placeGuideCopy, /每次调用一次摘要 API.*不需要先补完逐楼摘要/u);
+  assert.match(placeGuideCopy, /有可处理材料时调用一次摘要 API.*不需要先补完逐楼摘要/u);
   assert.equal(helpSections.at(-1).children[0].textContent, '排障手册');
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /保留包裹符.*清洗包裹符.*人物状态重构/);
   assert.match(flatten(helpDialog.content).map(node => node.textContent).join('|'), /近期事项.*关键词只概括事项类型与宽泛主题，推测状态另列/u);
@@ -519,6 +519,13 @@ test('真实面板入口按千人/千结/千事/千窗/双丝网/设置映射视
   assert.equal(autoHideApplies.at(-1).enabled, true); assert.equal(autoHideApplies.at(-1).keepAiCount, 6);
   autoHideApplyStatus = 'disabled'; values.pluginEnabled = false; keepInput.value = '7'; keepInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
   assert.match(memoryControls.find(node => node.className?.split?.(' ').includes('settings-result') && /重新启用千千结后生效/u.test(node.textContent))?.textContent ?? '', /重新启用千千结后生效/);
+  values.pluginEnabled = true;
+  for (const status of ['stale', 'unavailable', 'busy', 'stopped']) {
+    autoHideApplyStatus = status; autoHideInput.checked = false; autoHideInput.fire('change'); await new Promise(resolve => setImmediate(resolve));
+    const result = memoryControls.find(node => node.className?.split?.(' ').includes('settings-result') && /自动隐藏|恢复/u.test(node.textContent));
+    assert.ok(result); assert.doesNotMatch(result.textContent, /消息已恢复|设置已保存/u);
+    assert.doesNotMatch(result.className, /success/u);
+  }
   autoHideApplyStatus = null; values.pluginEnabled = true;
   assert.equal(managementMount?.children[0]?.className, 'qqj-page qqj-management-page', '真实管理视图应挂载在设置页内部');
   body.scrollTop = 18; peopleTab.fire('click');

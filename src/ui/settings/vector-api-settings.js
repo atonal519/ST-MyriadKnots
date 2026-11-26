@@ -41,7 +41,7 @@ export function createVectorApiSettings({ settings, vectorApi, vectorIndex, docu
     settings.update({ vectorEnabled: enabled.checked }); vectorIndex?.abortAll(); sync();
   });
   const save = button('保存', 'secondary-action', () => {
-    saveConfig(); result.textContent = '向量设置已保存'; result.className = 'settings-result success';
+    saveConfig(); result.textContent = '向量设置已应用，酒馆正在后台保存。'; result.className = 'settings-result success';
   });
   const test = button('测试', 'secondary-action', async () => {
     if (test.disabled) return;

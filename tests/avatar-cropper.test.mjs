@@ -15,6 +15,7 @@ test('头像源文件拒绝危险类型与超限文件，切页取消挂起解�
   const urlApi = { createObjectURL() { created += 1; return 'blob:test'; }, revokeObjectURL(value) { assert.equal(value, 'blob:test'); revoked += 1; } };
   await assert.rejects(loadAvatarSource({ type: 'image/svg+xml', size: 100 }, { urlApi }), /PNG、JPEG 或 WebP/);
   await assert.rejects(loadAvatarSource({ type: 'image/png', size: AVATAR_SOURCE_MAX_BYTES + 1 }, { urlApi }), /10 MiB/);
+  await assert.rejects(loadAvatarSource({ type: 'image/png', size: 0 }, { urlApi }), /图片为空|文件大小无效/u);
   const controller = new AbortController();
   const pending = loadAvatarSource({ type: 'image/png', size: 100 }, { urlApi, signal: controller.signal, imageFactory: () => (image = { naturalWidth: 0, naturalHeight: 0, onload: null, onerror: null, src: '' }) });
   controller.abort();

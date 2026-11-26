@@ -1107,7 +1107,7 @@ test('历史补齐界面区分已保存完整楼和部分楼并展示编译原�
   const h = harness({ initialSnapshot: snapshot });
   const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
   assert.equal(health.className, 'qqj-page-health error');
-  assert.match(health.textContent, /上次事项任务未完成，可重试。/u);
+  assert.match(health.textContent, /已完整保存 1 楼.*部分保存 1 楼/u);
   assert.doesNotMatch(copy(h.container), /第 4 楼|事件对应的整件事/u);
 });
 
@@ -1157,7 +1157,7 @@ test('同日同事项分别显示原事件，搜索显示命中记录且日期�
 
   const input = flatten(h.container).find(node => node.className.split(/\s+/u).includes('qqj-history-search-input'));
   input.fire('input', { target: { value: '沈棠', selectionStart: 2 } });
-  assert.match(copy(h.container), /匹配 1 件事件 · 显示 1 条.*取得旧信/u);
+  assert.match(copy(h.container), /匹配 1 条事件.*取得旧信/u);
   assert.deepEqual(flatten(h.container).filter(node => node.className === 'qqj-qianshi-event').map(node => node.dataset.eventId), ['event-1'], '命中事件本身直接显示，不借同事项末条代表');
   assert.equal(flatten(h.container).some(node => node.dataset.eventId === 'event-3'), false);
   byText(h.eventCard('event-1').parent, '编辑详情').fire('click');
@@ -1799,7 +1799,7 @@ test('搜索与后台通知保留展开状态，打开和浏览不会规划或�
   const h = harness();
   const input = flatten(h.container).find(node => node.tag === 'input'); input.value = '沈棠'; input.fire('input', { target: { value: '沈棠', selectionStart: 2 } });
   assert.equal(flatten(h.container).find(node => node.tag === 'input').focused, true, '搜索重绘结果后保持输入焦点');
-  assert.match(copy(h.container), /匹配 1 件事件 · 显示 1 条.*取得旧信/u);
+  assert.match(copy(h.container), /匹配 1 条事件.*取得旧信/u);
   assert.equal(flatten(h.container).filter(node => node.dataset.eventId).length, 1, '搜索只保留命中的顶层事件，事项经过仍可完整查看');
   const matched = h.eventCard('event-1'); matched.open = true; matched.fire('toggle');
   byText(h.container, '清除').fire('click');
@@ -1881,7 +1881,7 @@ test('数百楼重判预览只显示首尾和计数，提示长度不随楼数�
   const preview = h.confirms.find(value => value.title === '确认整理千事');
   assert.match(preview.body, /第 0–598 楼.*300 个 AI 楼、600 条旧记录.*分 12 批.*API 12 次.*输入约 500000 token/u);
   assert.ok(preview.body.length < 120, '范围再长也不逐楼列举');
-  assert.match(preview.note, /人工修订.*末尾失败仍保存有效历史.*取消或原档变化则本轮不提交/u);
+  assert.match(preview.note, /人工修订.*末尾失败仍保存有效历史.*取消时本轮不提交.*个别楼原档变化.*其他有效结果仍可保存/u);
   assert.equal(h.rejudgeCalls().startCalls, 0);
 });
 
@@ -1891,7 +1891,7 @@ test('千事重判单次输入支持继续、全部、范围和取消，错误�
     byText(h.container, '整理').fire('click');
     await tick(); await tick(); await tick(); await tick();
     assert.deepEqual(h.rejudgeCalls(), { prepareCalls: 1, startCalls: 0, range: input.trim() ? { fromMessageIndex: 0, toMessageIndex: null } : { onlyIncomplete: true } });
-    assert.match(h.confirms.find(value => value.title === '重新整理已存千事').body, /当前最新为第 30 楼/u);
+    assert.match(h.confirms.find(value => value.title === '重新整理已存千事').body, /已收录千事的最新来源为第 30 楼/u);
   }
   const zero = harness({ promptValues: ['0~0'] });
   byText(zero.container, '整理').fire('click');
@@ -1952,7 +1952,7 @@ test('聚合楼从模型计划中跳过并说明原因，空计划与执行失�
   const confirmed = harness({ confirm: true, plan, startResult: { status: 'partial', message: '其中 1 楼未补齐。' } });
   byText(confirmed.container, '补齐旧楼').fire('click'); await tick(); await tick();
   assert.match(confirmed.confirms[0].body, /1 楼进入模型补齐.*跳过聚合记忆 1 楼/u);
-  assert.match(copy(confirmed.container), /上次事项任务未完成，可重试。/u, '执行失败时 UI 指向可复制诊断');
+  assert.match(copy(confirmed.container), /本次事项任务未完成，已有记录保留。/u, '执行失败时 UI 指向可复制诊断');
 
   const emptySnapshot = fixture();
   const empty = harness({ initialSnapshot: emptySnapshot, plan: { status: 'empty', totalFloors: 0, batchCount: 0,
@@ -1978,7 +1978,7 @@ test('千事页面只呈现简短失败状态，逐楼信息留给设置状态�
   const h = harness({ initialSnapshot: snapshot });
   const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
   assert.equal(health.className, 'qqj-page-health error');
-  assert.match(health.textContent, /上次事项任务未完成，可重试。/u);
+  assert.match(health.textContent, /1 楼未完成，可继续补齐/u);
   assert.doesNotMatch(copy(h.container), /PRIVATE NARRATIVE|PRIVATE EVENT|74|QIANSHI_/u);
   assert.equal(flatten(h.container).some(node => node.className.includes('qqj-qianshi-diagnostics')), false);
 });
@@ -2000,7 +2000,7 @@ test('失败状态不把逐楼错误正文或内部错误码展示在千事页',
     outcomes: [{ assistantSeq: 144, status: 'failed', reasonCode: 'QIANSHI_HISTORY_INPUT_BUDGET',
       message: 'PRIVATE DETAILS WITH TOKENS' }] };
   const h = harness({ initialSnapshot: snapshot });
-  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /上次事项任务未完成，可重试。/u);
+  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /超预算 1 楼未补齐/u);
   assert.doesNotMatch(copy(h.container), /PRIVATE DETAILS|144|QIANSHI_|tokens/u);
 });
 test('恢复的历史错误不会把逐楼正文带入页面状态', () => {
@@ -2008,7 +2008,7 @@ test('恢复的历史错误不会把逐楼正文带入页面状态', () => {
   snapshot.history = { status: 'partial', message: '', outcomes: [{ floorId: 'private-floor', status: 'failed', reasonCode: 'QIANSHI_HISTORY_FLOOR_MISSING',
     message: 'PRIVATE NARRATIVE' }] };
   const h = harness({ initialSnapshot: snapshot });
-  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /上次事项任务未完成，可重试。/u);
+  assert.match(flatten(h.container).find(node => node.className.startsWith('qqj-page-health')).textContent, /1 楼未完成，可继续补齐/u);
   assert.doesNotMatch(copy(h.container), /PRIVATE NARRATIVE|private-floor|QIANSHI_/u);
 });
 test('千事快照 memo 在历史通知时复用全图，reachable 或身份投影变化才失效', () => {
@@ -2334,7 +2334,7 @@ test('partial继续入口显式0或范围仍走原范围，无剩余楼不升级
     assert.deepEqual(h.rejudgeCalls().range, input === '0' ? { fromMessageIndex: 0, toMessageIndex: null }
       : input ? { fromMessageIndex: 12, toMessageIndex: 30 } : { onlyIncomplete: true });
     if (!input) {
-      assert.match(copy(h.container), /未完成楼已全部整理完成/u);
+      assert.match(copy(h.container), /已存千事记录暂无待续楼/u);
       assert.equal(h.confirms.length, 1, '空计划没有调用全档确认');
     }
     assert.equal(h.rejudgeCalls().startCalls, 0);
@@ -2350,9 +2350,9 @@ test('补完后再次留空仍只检查未完成楼，0个未完成不默默切�
     assert.deepEqual(h.rejudgeCalls().range, { onlyIncomplete: true });
     assert.equal(h.rejudgeCalls().prepareCalls, count);
     assert.equal(h.rejudgeCalls().startCalls, 0);
-    assert.match(copy(h.container), /未完成楼已全部整理完成/u);
+    assert.match(copy(h.container), /已存千事记录暂无待续楼/u);
   }
-  assert.match(h.confirms[0].body, /当前无未完成楼，留空仅复核跟进/u);
+  assert.match(h.confirms[0].body, /当前已存千事记录无待续楼，留空仅复核跟进/u);
   assert.match(h.confirms[0].body, /填 0 整理全部/u);
   assert.equal(h.confirms.some(value => value.title === '确认整理千事'), false);
 });
@@ -2637,4 +2637,52 @@ test('328未完成楼按有无旧事件指向补齐旧楼或整理，质量保�
  const runtime={status:'ready',floors:[{assistantSeq:1,messageIndex:1,memory:{recordStatus:'active',qianshiDelta:{status:'pending',events:[],relations:[]}}},{assistantSeq:2,messageIndex:3,memory:{recordStatus:'active',qianshiDelta:{status:'pending',events:[{id:'old'}],relations:[]}}},{assistantSeq:3,messageIndex:5,memory:{recordStatus:'active',qianshiDelta:{status:'partial',events:[{id:'retained'}],relations:[],reason:'已保留原判断'}}}]};h.emit(snapshot,runtime);
  const details=flatten(h.container).find(x=>x.tag==='details'&&copy(x).includes('查看未完成楼'));assert.ok(details);assert.match(copy(details),/无旧记录.*补齐旧楼/);assert.match(copy(details),/已有记录.*整理/);assert.ok(byText(h.container,'补齐旧楼'));assert.ok(byText(h.container,'整理'));assert.ok(byText(h.container,'查看未完成楼（2）'));
  snapshot.history={mode:'rejudge',status:'partial',commitStatus:'saved',savedFloors:1,followup:{status:'deferred',message:'本轮未复核。'}};h.emit(snapshot,runtime);const health=flatten(h.container).find(x=>x.className.startsWith('qqj-page-health'));assert.match(health.textContent,/无旧记录.*补齐旧楼/);assert.doesNotMatch(health.textContent,/点“整理”留空先继续历史缺口/);
+});
+
+
+test('千事待办搜索空结果保留已有待办事实，停止整理后清除进行中提示', async () => {
+  const h = harness();
+  flatten(h.container).find(node => node.dataset.focusKey === 'qianshi-todos-action').fire('click');
+  const search = flatten(h.dialogContent()).find(node => node.className.includes('qqj-qianshi-todo-search'));
+  search.value = '完全无匹配'; search.fire('input', { target: search });
+  assert.match(copy(h.dialogContent()), /没有匹配的待办事项/u);
+  assert.equal(byText(h.dialogContent(), '没有待办事项。'), undefined);
+  const running = { ...fixture(), history: { status: 'running', mode: 'rejudge', processedFloors: 1, totalFloors: 3 } };
+  h.emit(running, { status: 'ready', qianshiHistoryActive: true });
+  h.runtime.stopQianshiHistory = async () => { h.emit({ ...running, history: { ...running.history, status: 'stopped' } }, { status: 'ready' }); return { status: 'stopped' }; };
+  await byText(h.container, '停止').fire('click');
+  assert.doesNotMatch(copy(h.container), /正在停止历史补齐|正在停止整理/u);
+});
+
+test('历史保存待核对和预算跳过分别说明结果，不引导立即重试未知保存', () => {
+  const snapshot = fixture();
+  snapshot.history = { status: 'partial', outcomes: [{ status: 'saved-complete' }, { status: 'commit-unknown' }, { status: 'skipped', reasonCode: 'QIANSHI_HISTORY_INPUT_BUDGET' }] };
+  const h = harness({ initialSnapshot: snapshot });
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /已完整保存 1 楼/u);
+  assert.match(health.textContent, /保存状态待核对.*刷新/u);
+  assert.match(health.textContent, /超预算 1 楼/u);
+  assert.doesNotMatch(health.textContent, /可重试/u);
+});
+
+
+test('生产not-ready千事快照区分新档、读取中和读取失败', () => {
+  const snapshot = { status: 'not-ready', message: '尚未开始记录，继续对话后可开始记录。', events: [], matters: [], timeline: {}, history: { status: 'idle' } };
+  const h = harness({ initialSnapshot: snapshot });
+  const health = () => flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  h.emit(snapshot, { status: 'ready', foundationStatus: 'uninitialized', memorySnapshotStatus: 'ready' });
+  assert.match(health().textContent, /尚未开始记录/u); assert.doesNotMatch(health().className, /error/u);
+  h.emit(snapshot, { status: 'ready', foundationStatus: 'uninitialized', memorySnapshotStatus: 'syncing' });
+  assert.match(health().textContent, /正在读取/u);
+  h.emit(snapshot, { status: 'error', foundationStatus: 'error', memorySnapshotStatus: 'error', lastError: { code: 'BACKEND_NETWORK' } });
+  assert.match(health().textContent, /读取失败|连接失败/u); assert.match(health().className, /error/u);
+});
+
+test('历史一楼完整保存与一楼聚合略过同时按生产计数字段显示', () => {
+  const snapshot = fixture();
+  snapshot.history = { status: 'partial', savedCompleteFloors: 1, aggregateSkippedCount: 1,
+    outcomes: [{ status: 'saved-complete' }] };
+  const h = harness({ initialSnapshot: snapshot });
+  const health = flatten(h.container).find(node => node.className.startsWith('qqj-page-health'));
+  assert.match(health.textContent, /已完整保存 1 楼.*聚合记忆 1 楼未替换/u);
 });

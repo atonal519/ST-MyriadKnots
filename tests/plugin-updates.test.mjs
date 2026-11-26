@@ -79,7 +79,7 @@ test('每次点击可更新弹公告；取消不更新，成功仅toast并稳定
   const busyStates = []; const unsubscribe = updates.subscribe(state => { if (['checking', 'updating'].includes(state.status)) busyStates.push([state.status, statusButton.disabled]); });
   await statusButton.click(); await statusButton.click(); assert.equal(dialogs.length, 2); assert.equal(requests.filter(r => r.url.endsWith('/update')).length, 0);
   assert.equal(dialogs[0].cancelText, '暂不更新'); assert.equal(dialogs[0].confirmText, '更新');
-  confirmed = true; await statusButton.click(); assert.equal(updates.getState().status, 'stable'); assert.equal(statusButton.textContent, '稳定版本');
+  confirmed = true; await statusButton.click(); assert.equal(updates.getState().status, 'stable'); assert.equal(statusButton.textContent, '未发现更新');
   assert.deepEqual(toasts, [{ kind: 'success', text: '千千结已更新，请刷新酒馆后使用' }]);
   assert.ok(!flatten(view.controls).some(n => /待刷新|已刷新/.test(n.textContent)));
   assert.equal(statusButton.disabled, false);
@@ -102,4 +102,15 @@ test('HTTP200空对象或无有效提交信息不冒充更新成功', async () =
     const { updates } = fixture(url => response(url.endsWith('/version') ? info : result));
     await updates.check(); await assert.rejects(updates.update(), /无法确认/); assert.equal(updates.getState().status, 'available');
   }
+});
+
+
+test('更新请求返回无需更新时按宿主结果提示，不冒称刚安装更新', async () => {
+  const { updates } = fixture(url => response(url.endsWith('/version') ? info : { isUpToDate: true, shortCommitHash: 'abc1234' }));
+  await updates.check(); const toasts = [];
+  const view = createPluginUpdatesView({ updates, documentRef, dialog: { custom: async () => true }, notifyUser: value => toasts.push(value) });
+  await view.controls.children[0].click();
+  assert.match(toasts[0].text, /无需更新/u);
+  assert.doesNotMatch(toasts[0].text, /已更新|检查已完成/u);
+  view.dispose();
 });

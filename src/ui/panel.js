@@ -287,7 +287,7 @@ export function createPanel({
         if (applied.stale) return;
         enabled = applied.enabled;
         setEnabled(desired);
-        enabledResult.textContent = desired ? '千千结已开启；酒馆正在后台保存设置。' : '千千结已关闭，后台读取、AI 与召回注入均已停止；已有档案保留，酒馆正在后台保存设置。';
+        enabledResult.textContent = desired ? '千千结已开启；酒馆正在后台保存设置。' : '千千结已关闭，已发出停止后台任务的请求；已有档案保留，酒馆正在后台保存设置。';
         enabledResult.className = 'settings-result success';
       } catch (error) {
         onPluginEnableFailure?.(error, failurePhase);
@@ -295,7 +295,7 @@ export function createPanel({
         enabledInput.checked = previous;
         setEnabled(previous);
         const fallback = failurePhase === 'settingsSave' ? '设置保存失败，请重试。' : `${desired ? '启用' : '关闭'}千千结失败，请复制状态诊断。`;
-        enabledResult.textContent = `${desired ? '启用' : '关闭'}失败，已恢复原状态：${publicErrorMessage(error, { fallback })}`;
+        enabledResult.textContent = `${desired ? '启用' : '关闭'}失败，开关已退回原值：${publicErrorMessage(error, { fallback })}`;
         enabledResult.className = 'settings-result error';
       } finally {
         enabledInput.disabled = false;
@@ -398,20 +398,26 @@ export function createPanel({
     const autoHideResult = element('p', 'settings-result');
     const applyAutoHide = async patch => {
       autoHideInput.disabled = true; keepInput.disabled = true; autoHideResult.className = 'settings-result'; autoHideResult.textContent = '正在保存并整理当前聊天…';
+      let settingsApplied = false;
       try {
-        settings.update(patch);
+        settings.update(patch); settingsApplied = true;
         const current = settings.get();
         autoHideInput.checked = current.autoHideEnabled === true; keepInput.value = String(current.autoHideKeepAiCount);
         const applied = await onAutoHideChange?.({ enabled: current.autoHideEnabled, keepAiCount: current.autoHideKeepAiCount });
         if (applied?.status === 'disabled') {
-          autoHideResult.textContent = '设置已保存；重新启用千千结后生效。';
+          autoHideResult.textContent = '设置已应用；重新启用千千结后生效。';
           autoHideResult.className = 'settings-result success';
+          return;
+        }
+        if (!['applied', 'unchanged'].includes(applied?.status)) {
+          const reason = ({ stale: '当前聊天已变化', busy: '当前记忆任务仍在运行', syncing: '记忆仍在读取', unavailable: '当前记忆暂不可用', stopped: '整理已停止', disposed: '自动隐藏任务已结束' })[applied?.status] ?? '本次整理尚未完成';
+          autoHideResult.textContent = `设置已应用；${reason}，${current.autoHideEnabled ? '本次自动隐藏尚未完成' : '本次尚未确认消息已全部恢复'}。`;
           return;
         }
         autoHideResult.textContent = current.autoHideEnabled ? `已开启；后续保留最近 ${current.autoHideKeepAiCount} 个 AI 楼，并另留当前回复供重生成；已隐藏楼保持隐藏。` : '已关闭；由千千结隐藏的消息已恢复。';
         autoHideResult.className = 'settings-result success';
       } catch (error) {
-        autoHideResult.textContent = `设置已保存，自动隐藏未完成：${publicErrorMessage(error, { fallback: '操作失败。' })}`;
+        autoHideResult.textContent = `${settingsApplied ? '设置已应用，' : '设置更新未完成，'}自动隐藏未完成：${publicErrorMessage(error, { fallback: '操作失败。' })}`;
         autoHideResult.className = 'settings-result error';
       } finally { autoHideInput.disabled = false; keepInput.disabled = false; }
     };

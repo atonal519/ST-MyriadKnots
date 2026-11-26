@@ -6289,8 +6289,10 @@ test('fresh准备后的补充root读取失败不能提交已选材料，也不�
 test('fresh来源明确stale时保留来源版本、root核验阶段与sourceStale终止原因', async () => {
   const initial = await singleFloorReachable({ revision: 1, head: 'head-before' });
   let prepareCalls = 0, selectorCalls = 0;
+  const notifications = [];
   const harness = createRuntimeHarness({
     prequel: '已导入的过去经历，继续验证既有旧档召回管线。',
+    notifyUser: value => notifications.push(value),
     prepareMemory: async () => ++prepareCalls === 1 ? { status: 'ready', reachable: structuredClone(initial) } : { status: 'stale' },
     rootReader: async () => ({ status: 'ready', revision: 2, data: { ...structuredClone(initial.root), headCheckpointId: 'head-after' } }),
     selector: input => { selectorCalls += 1; return selectRecall(input); },
@@ -6305,6 +6307,8 @@ test('fresh来源明确stale时保留来源版本、root核验阶段与sourceSta
   assert.equal(result.lastRecall.finalVerification.failure.step, 'sourcePreparation');
   assert.equal(result.lastRecall.finalVerification.failure.reason, 'sourceStale');
   assert.ok(harness.prompts.every(call => call[1] === ''));
+  assert.match(notifications[0].text, /本次读取的记忆来源已失效/u);
+  assert.doesNotMatch(notifications[0].text, /正在更新/u);
 });
 
 test('root 变化后的 fresh 准备失败会丢弃旧注入但正文继续', async () => {
@@ -10054,7 +10058,7 @@ test('千事时效旧冻结票四生成入口和冷读按原选ID补剧情时间
       assert.equal(result.lastRecall.reusedReceipt, true);
       assert.match(result.lastRecall.injectionText, /最近剧情记录：2024-03-18 07:45（AI #1）/u);
       assert.match(result.lastRecall.injectionText, /记录状态：待办/u);
-      assert.match(result.lastRecall.injectionText, /约定：2024-04-01/u);
+      assert.match(result.lastRecall.injectionText, /计划时间：2024-04-01/u);
       assert.equal(result.lastRecall.stages.estimatedTokenCount, estimateRecallTokens(result.lastRecall.injectionText));
     }
     await flushReceiptSave(); h.runtime.invalidate('temporal-current-receipt-cold');

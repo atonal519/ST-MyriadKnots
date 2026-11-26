@@ -449,7 +449,7 @@ test('人物菜单删除继续复用现有确认弹窗并说明历史不会删�
   createPeopleProfilesView({ runtime: h.runtime, dialog: dialogs.dialog, documentRef }).mount(container);
   flatten(container).find(node => node.textContent === '删除人物').click(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
   assert.equal(dialogs.confirms.length, 1); assert.equal(dialogs.confirms[0].title, '删除人物 · 甲'); assert.equal(dialogs.confirms[0].confirmText, '删除人物');
-  assert.match(dialogs.confirms[0].body, /删除人物档案、头像和重要人物选择/); assert.match(dialogs.confirms[0].note, /正文、摘要和双丝网保留/);
+  assert.match(dialogs.confirms[0].body, /移除人物档案、头像绑定和重要人物选择/); assert.match(dialogs.confirms[0].note, /正文、摘要与历史人物状态保留/);
   assert.deepEqual(h.calls.delete, [A]);
 });
 
@@ -601,12 +601,12 @@ test('基础资料按紧凑行分组且空值与纯人类隐藏；头像完整�
   dialogs.dialog.cancelTop(); assert.equal(revoked, 1); assert.equal(h.calls.avatar.length, 0);
   file = flatten(container).find(node => node.className === 'qqj-avatar-file'); const originalFile={type:'image/webp',size:2048};file.fire('change', { target: { files: [originalFile], value: 'chosen' } }); await new Promise(resolve => setImmediate(resolve));
   const content=dialogs.active.content, image=flatten(content).find(node=>node.className==='qqj-avatar-preview-image');
-  const download=flatten(content).find(node=>node.tag==='a'&&node.textContent==='保存原图');assert.equal(download.href,'blob:2');assert.equal(download.download,'头像原图.webp');assert.equal(originals[1],originalFile,'下载地址对应输入原文件，未经canvas重编码');
+  const download=flatten(content).find(node=>node.tag==='a'&&node.textContent==='下载原图');assert.equal(download.href,'blob:2');assert.equal(download.download,'头像原图.webp');assert.equal(originals[1],originalFile,'下载地址对应输入原文件，未经canvas重编码');
   assert.equal(canvasDraws.length,0,'预览和原图下载不经过canvas');download.click();assert.equal(canvasDraws.length,0);
   const toggle=flatten(content).find(node=>node.tag==='button'&&node.textContent==='裁剪');toggle.click();assert.ok(flatten(content).some(node=>node.className==='qqj-avatar-crop-frame'));
   const zoom=flatten(content).find(node=>node.type==='range');zoom.value='2';zoom.fire('input');toggle.click();assert.ok(flatten(content).some(node=>node.className==='qqj-avatar-preview-frame'));assert.equal(image.src,'blob:2');
   await dialogs.submit(); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(canvasDraws[0].slice(1),[0,0,512,384],'回完整图后保存原图比例，不沿用裁剪参数');
+  assert.deepEqual(canvasDraws[0].slice(1),[0,0,512,384],'回完整图后下载原图比例，不沿用裁剪参数');
   file = flatten(container).find(node => node.className === 'qqj-avatar-file'); file.fire('change',{target:{files:[{type:'image/png',size:100}],value:'chosen'}}); await new Promise(resolve=>setImmediate(resolve));
   flatten(dialogs.active.content).find(node=>node.tag==='button'&&node.textContent==='裁剪').click();await dialogs.submit();assert.ok(Math.abs(canvasDraws[1][1]+85.33333333333333)<1e-9);assert.equal(canvasDraws[1][2],0);assert.ok(Math.abs(canvasDraws[1][3]-682.6666666666666)<1e-9);assert.equal(canvasDraws[1][4],512);
   assert.equal(avatarOptions[0].generated,false);assert.deepEqual(h.calls.avatar[0], [A, 'data:image/webp;base64,AAAA']); assert.equal(canvasDraws.length, 2); assert.equal(revoked, 3);
@@ -631,11 +631,11 @@ test('人物整理沿用 runtime 总批次进度并随批次推进更新', () =>
   assert.doesNotMatch(visible(container), /第 3\/11 批/);
 });
 
-test('人物整理报告准确显示未更新数量与实际送入世界书条目数，包括零条', async () => {
+test('人物整理报告准确显示未更新数量与实际参考世界书条目条目数，包括零条', async () => {
   const h = runtimeHarness({ profile: { name: '旧档' }, generationReport: { saved: 1, requested: 1, skipped: 1, worldInfoMatched: 2 } }), container = new Node('main');
   createPeopleProfilesView({ runtime: h.runtime, documentRef }).mount(container);
   flatten(container).find(node => node.textContent === '重新整理资料').click();
-  await waitFor(() => visible(container).includes('送入世界书 2 项'));
+  await waitFor(() => visible(container).includes('参考世界书条目 2 项'));
   assert.match(visible(container), /未更新 1 位/u);
   assert.doesNotMatch(visible(container), /并发跳过/u);
   assert.doesNotMatch(visible(container), /命中世界书|未命中相关世界书/u);
@@ -643,7 +643,7 @@ test('人物整理报告准确显示未更新数量与实际送入世界书条�
   const empty = runtimeHarness({ profile: { name: '旧档' }, generationReport: { saved: 1, requested: 1, worldInfoMatched: 0 } }), other = new Node('main');
   createPeopleProfilesView({ runtime: empty.runtime, documentRef }).mount(other);
   flatten(other).find(node => node.textContent === '重新整理资料').click();
-  await waitFor(() => visible(other).includes('送入世界书 0 项'));
+  await waitFor(() => visible(other).includes('参考世界书条目 0 项'));
 });
 
 test('真实 runtime 与 view 完成修改保存、新建档、no-op 与失败就地反馈', async () => {

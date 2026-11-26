@@ -25,7 +25,8 @@ export async function loadAvatarSource(file, { imageFactory = () => new Image(),
     file = new Blob([Uint8Array.from(binary, char => char.charCodeAt(0))], { type: match[1] });
   }
   if (!file || !ALLOWED_TYPES.has(file.type)) throw new Error('请选择 PNG、JPEG 或 WebP 静态图片。');
-  if (!Number.isFinite(file.size) || file.size < 1 || file.size > AVATAR_SOURCE_MAX_BYTES) throw new Error('原图不能超过 10 MiB。');
+  if (!Number.isFinite(file.size) || file.size < 1) throw new Error('图片为空或文件大小无效，请换一张重试。');
+  if (file.size > AVATAR_SOURCE_MAX_BYTES) throw new Error('原图不能超过 10 MiB。');
   const objectUrl = urlApi.createObjectURL(file);
   let image = null;
   try {

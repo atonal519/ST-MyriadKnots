@@ -11789,9 +11789,9 @@ test('显式重查空结果仍跳过聚合来源楼', async () => {
     initialChat: Array.from({ length: 10 }, (_, index) => [assistant(`聚合来源楼 ${index + 1}`),
       { ...user(`确认聚合来源楼 ${index + 1}`), send_date: `empty-aggregate-${index + 1}` }]).flat(),
     automation: { enabled: false, batchSize: 1 },
-    utility: options => JSON.parse(options.taskMessages[0].content).task === 'extractFloorSemantics'
-      ? { jsonData: { summary: '十楼聚合摘要。', qianshi: { events: [], order: [] } } }
-      : { jsonData: reviewedCsePacket(options) } });
+    utility: options => { const request = JSON.parse(options.taskMessages[0].content);
+      if (request.task === 'extractQianshiHistoryV1') return { jsonData: { floors: request.floors.map(floor => ({ floorKey: floor.floorKey, qianshi: { events: [], order: [] } })) } };
+      return request.task === 'extractFloorSemantics' ? { jsonData: { summary: '十楼聚合摘要。', qianshi: { events: [], order: [] } } } : { jsonData: reviewedCsePacket(options) }; } });
   await h.runtime.start();
   await h.runtime.startHistoricalRebuild({ aggregate: true });
   await waitFor(() => registeredGraphCaughtUp(h.runtime.getState()) && !h.runtime.getState().activeAutoMemory,
@@ -11807,6 +11807,15 @@ test('显式重查空结果仍跳过聚合来源楼', async () => {
   assert.equal(plan.apiCalls, 0);
   assert.equal(plan.aggregateSkippedFloors.length, 1, '锚点能识别到聚合空记录，但不会纳入重查');
   assert.equal(h.calls.length, callsBefore, '聚合保护只影响只读计划，不触发模型请求');
+  h.context.chat.push(assistant('独立新增楼'), { ...user('确认独立新增楼'), send_date: 'separate-history-floor' });
+  await h.runtime.refreshStatus();
+  const added = h.runtime.getState().floors.find(floor => floor.assistantSeq === 11);
+  assert.ok(added); await h.runtime.extractFloor(added.floorId, { analyzeState: false });
+  const mixedPlan = await h.runtime.prepareQianshiHistory({ includeEmptyFloors: true });
+  assert.equal(mixedPlan.aggregateSkippedFloors.length, 1); assert.equal(mixedPlan.modelFloors, 1);
+  const result = await h.runtime.startQianshiHistory(mixedPlan.planId);
+  assert.equal(result.savedCompleteFloors, 1); assert.equal(result.aggregateSkippedCount, 1);
+  assert.equal(result.outcomes.length, 1, '聚合楼没有被伪造成逐楼结果');
 });
 
 test('千事历史计划跳过已经 ready 的楼', async () => {
@@ -13297,7 +13306,7 @@ test('前文核对失败自动通知使用短提示并保留内部错误', async
   assert.match(failure.message, /目标楼或其依赖前文/);
   const notice = notices.find(value => value.text.includes('摘要提取失败'));
   assert.ok(notice, JSON.stringify(notices));
-  assert.match(notice.text, /摘要未保存，请重试该楼。/);
+  assert.match(notice.text, /资料依据已变化，本次操作未完成，请刷新状态后重试。/);
   assert.doesNotMatch(notice.text, /目标楼或其依赖前文|复制状态诊断/);
 });
 
@@ -13314,11 +13323,11 @@ test('前文核对准备阶段拒发请求的外层通知也给短提示且不�
   assert.equal(h.calls.length, 0, '准备阶段拒发，未调用模型');
   const state = h.runtime.getState();
   assert.equal(state.lastAutomationError.code, 'V3_MEMORY_PREFIX_CHANGED');
-  assert.equal(state.lastAutomationError.message, '摘要未保存，请重试该楼。');
-  assert.match(state.lastAutoMemory.message, /摘要未保存，请重试该楼。/);
+  assert.equal(state.lastAutomationError.message, '资料依据已变化，本次操作未完成，请刷新状态后重试。');
+  assert.match(state.lastAutoMemory.message, /资料依据已变化，本次操作未完成，请刷新状态后重试。/);
   const notice = notices.find(value => value.text.includes('千千结自动记忆未完成'));
   assert.ok(notice, JSON.stringify(notices));
-  assert.match(notice.text, /摘要未保存，请重试该楼。/);
+  assert.match(notice.text, /资料依据已变化，本次操作未完成，请刷新状态后重试。/);
   assert.doesNotMatch(notice.text, /复制状态诊断|目标楼或其依赖前文/);
   assert.doesNotMatch(notice.text, /点击继续/);
   const page = ui.flatten(ui.container).map(node => node.textContent).join('|');

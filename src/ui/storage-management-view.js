@@ -12,7 +12,7 @@ export function createStorageManagementView({
     throw new TypeError('存储管理视图 manager 无效');
   }
   if (!documentRef?.createElement) throw new TypeError('存储管理视图 documentRef 无效');
-  let container = null, active = false, epoch = 0, unsubscribe = null, feedback = '';
+  let container = null, active = false, epoch = 0, unsubscribe = null, feedback = '', feedbackTone = '';
   const element = (tag, className = '', value = '') => {
     const node = documentRef.createElement(tag);
     if (className) node.className = className;
@@ -65,17 +65,17 @@ export function createStorageManagementView({
     input.addEventListener('change', () => {
       try {
         manager.setAutoEnabled(input.checked);
-        feedback = input.checked ? '自动清理已开启。' : '自动清理已关闭。';
+        feedback = input.checked ? '自动清理已开启。' : '自动清理已关闭。'; feedbackTone = 'success';
       } catch (error) {
         input.checked = !input.checked;
-        feedback = publicErrorMessage(error, { fallback: '自动清理设置未能保存。' });
+        feedback = publicErrorMessage(error, { fallback: '自动清理设置未能保存。' }); feedbackTone = 'error';
       }
       render(manager.getState());
     });
     page.append(toggle, element('p', 'settings-hint', '全局默认开启；每新增 10 个稳定 AI 楼检查一次。无引用旧文件达到 100 条或约 8 MiB 才清理，忙碌时延后。'));
     if (state.autoPending) page.append(element('p', 'settings-result', '已到检查节点；当前有千千结任务在运行，自动检查会在空闲后继续。'));
     const trashGc = state.trashGc ?? {};
-    const trashCopy = trashGc.status === 'unsupported' ? '尚未清理回收站；请更新白鳥数据后端并重启酒馆。'
+    const trashCopy = trashGc.status === 'unsupported' ? '当前存储后端尚不支持回收站清理，请更新后端后重试。'
       : trashGc.status === 'checking' || trashGc.status === 'running' ? `正在检查回收站：已查 ${trashGc.scanned ?? 0} 项，清理 ${trashGc.deleted ?? 0} 项。`
         : trashGc.status === 'pending' ? `回收站检查已暂停，等千千结空闲后继续：已查 ${trashGc.scanned ?? 0} 项，清理 ${trashGc.deleted ?? 0} 项。`
           : trashGc.status === 'partial' ? `回收站部分清理：已查 ${trashGc.scanned ?? 0} 项，清理 ${trashGc.deleted ?? 0} 项，${trashGc.failed ?? 0} 项未完成。`
@@ -90,9 +90,9 @@ export function createStorageManagementView({
     clean.disabled = ['scanning', 'cleaning'].includes(state.status) || state.busy || !state.stats || (state.stats.cleanup?.count ?? 0) === 0 || state.status !== 'ready';
     trashClean.disabled = ['scanning', 'cleaning', 'trashGc'].includes(state.status) || state.busy;
     refresh.addEventListener('click', async () => {
-      feedback = '';
+      feedback = ''; feedbackTone = '';
       try { await manager.scan(); }
-      catch (error) { feedback = publicErrorMessage(error, { fallback: '刷新统计失败，请稍后重试。' }); }
+      catch (error) { feedback = publicErrorMessage(error, { fallback: '刷新统计失败，请稍后重试。' }); feedbackTone = 'error'; }
       render(manager.getState());
     });
     clean.addEventListener('click', async () => {
@@ -103,16 +103,18 @@ export function createStorageManagementView({
         confirmText: '确认清理', cancelText: '取消',
       }));
       if (!active || mine !== epoch) return;
-      if (!confirmed) { feedback = '已取消清理。'; render(manager.getState()); return; }
-      feedback = '';
+      if (!confirmed) { feedbackTone = ''; feedback = '已取消清理。'; render(manager.getState()); return; }
+      feedback = ''; feedbackTone = '';
       try {
         const result = await manager.cleanup();
-        if (result.status === 'completed') feedback = result.deletedCount || result.convergedCount
+        feedbackTone = result.status === 'completed' ? 'success' : ['partial', 'error'].includes(result.status) ? 'error' : '';
+        if (result.status === 'uninitialized' || result.status === 'notReady') feedback = statusCopy(result);
+        else if (result.status === 'completed') feedback = result.deletedCount || result.convergedCount
           ? `清理完成：删除 ${result.deletedCount} 条${result.convergedCount ? `，另有 ${result.convergedCount} 条已由其他操作移除` : ''}。`
           : '当前已没有可清理的旧版本。';
         else if (result.status === 'stale') feedback = `已安全删除 ${result.deletedCount} 条，但当前版本在清理期间发生变化；请刷新后核对。`;
-        else feedback = `部分完成：已删除 ${result.deletedCount} 条，仍有 ${result.remainingCount} 条可清理。${result.error ? ` ${publicErrorMessage(result.error, { fallback: '部分记录删除失败。' })}` : ''}`;
-      } catch (error) { feedback = publicErrorMessage(error, { fallback: '清理未完成，请刷新后重试。' }); }
+        else feedback = `${result.deletedCount > 0 ? `部分完成：已删除 ${result.deletedCount} 条。` : '清理未完成。'}${result.remainingCount > 0 ? `仍有 ${result.remainingCount} 条可清理。` : ''}${result.error ? ` ${publicErrorMessage(result.error, { fallback: '部分记录删除失败。' })}` : '请刷新统计后重试。'}`;
+      } catch (error) { feedback = publicErrorMessage(error, { fallback: '清理未完成，请刷新后重试。' }); feedbackTone = 'error'; }
       render(manager.getState());
     });
     trashClean.addEventListener('click', async () => {
@@ -123,20 +125,21 @@ export function createStorageManagementView({
         confirmText: '清理到期记录', cancelText: '取消',
       }));
       if (!active || mine !== epoch) return;
-      if (!confirmed) { feedback = '已取消回收站清理。'; render(manager.getState()); return; }
-      feedback = '';
+      if (!confirmed) { feedbackTone = ''; feedback = '已取消回收站清理。'; render(manager.getState()); return; }
+      feedback = ''; feedbackTone = '';
       try {
         const result = await manager.collectExpiredTrash();
-        if (result.status === 'unsupported') feedback = '尚未清理回收站；请更新白鳥数据后端并重启酒馆。';
+        feedbackTone = result.status === 'completed' ? 'success' : ['partial', 'error', 'unsupported'].includes(result.status) ? 'error' : '';
+        if (result.status === 'unsupported') feedback = '当前存储后端尚不支持回收站清理，请更新后端后重试。';
         else if (result.status === 'completed') feedback = `回收站检查完成：已查 ${result.scanned} 项，清理 ${result.deleted} 项。`;
         else if (result.status === 'pending') feedback = '当前有千千结任务运行，回收站检查会在空闲后继续。';
         else if (result.status === 'partial') feedback = `回收站部分清理：已查 ${result.scanned} 项，清理 ${result.deleted} 项，${result.failed} 项未完成。`;
         else feedback = publicErrorMessage(result.error, { fallback: '回收站检查未完成，可手动重试。' });
-      } catch (error) { feedback = publicErrorMessage(error, { fallback: '回收站清理未完成，可稍后重试。' }); }
+      } catch (error) { feedback = publicErrorMessage(error, { fallback: '回收站清理未完成，可稍后重试。' }); feedbackTone = 'error'; }
       render(manager.getState());
     });
     actions.append(refresh, clean, trashClean); page.append(actions);
-    const result = element('p', `settings-result${state.error ? ' error' : feedback ? ' success' : ''}`, feedback);
+    const result = element('p', `settings-result${state.error ? ' error' : feedback && feedbackTone ? ` ${feedbackTone}` : ''}`, feedback);
     result.setAttribute?.('role', 'status'); page.append(result);
     container.replaceChildren(page);
   }

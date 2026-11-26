@@ -1688,7 +1688,7 @@ test('CSE 失败数、本楼错误与最近错误在 V3 面板可见，并保留
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state, extractFloor: async () => state, editSummary: async () => state, restoreAi: async () => state, markError: async () => state, analyzeNextState: async () => state, retryStateAnalysis: async () => { retries += 1; return state; } };
   const container = new Node('main'); const view = createV3FoundationView({ runtime, documentRef }); view.setPage('people'); view.mount(container); flatten(container).find(node => node.textContent === '分析记录').click(); openDetails(flatten(container).find(node => node.className === 'qqj-cse-history-row'));
   const copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /0 待分析 · 1 失败/);
+  assert.match(copy, /0 待分析 · 1 待重试/);
   assert.match(copy, /安全 CSE 错误/);
   assert.match(copy, /网络连接失败，请检查网络或 API 地址/);
   assert.doesNotMatch(copy, /Failed to fetch/);
@@ -2170,7 +2170,7 @@ test('activate 初始 stale 使用中性暂态文案，订阅 ready 后原地恢
   view.mount(container);
   await view.activate();
   let copy = flatten(container).map(node => node.textContent).join('|');
-  assert.match(copy, /正在等待最新结果/);
+  assert.match(copy, /状态待刷新/);
   assert.doesNotMatch(copy, /聊天已切换|聊天身份/);
 
   state = { ...base, status: 'ready', stableCount: 2, pending: { assistantSeq: 3, messageIndex: 3 }, headCheckpointId: 'checkpoint-2' };
@@ -2324,7 +2324,7 @@ test('召回常用摘要区分向量候选与实际原文段，诊断默认折�
   for (const listener of listeners) listener(state);
   assert.match(text(), /候选材料（本轮未注入）/u);
   assert.match(text(), /候选原文段 1/u, '未提交材料只标为候选');
-  assert.match(text(), /记忆来源正在更新，本轮已安全跳过召回注入/u);
+  assert.match(text(), /本次读取的记忆来源已失效，本轮已跳过普通记忆注入/u);
 
   record = { ...record, status: 'error', skipReasons: ['error'], error: null, selectorDiagnostic: { ...record.selectorDiagnostic, semantic: { status: 'VECTOR_TIMEOUT', candidateCount: 12 } } };
   state = { ...state, recallStatus: 'error', lastRecallError: { code: 'V3_RECALL_SOURCE_UNAVAILABLE' }, lastRecall: record };
@@ -2357,7 +2357,7 @@ test('召回常用摘要区分向量候选与实际原文段，诊断默认折�
   assert.match(text(), /候选材料（本轮未注入）/u);
   assert.match(text(), /终止时步骤 模型选材/u);
   assert.match(text(), /本轮未注入/u);
-  assert.doesNotMatch(text(), /正在等待最新结果/u);
+  assert.doesNotMatch(text(), /状态待刷新/u);
   await flatten(container).find(node => node.textContent === '复制回执').click();
   assert.match(copied.at(-1), /召回回执：生成已结束，召回未完成/u);
   assert.match(copied.at(-1), /实际注入：无/u);
@@ -2376,12 +2376,13 @@ test('召回区分无可靠命中与来源更新/不可用的安全跳过', () =
   const view = createV3FoundationView({ runtime, recallRuntime, documentRef });
   view.mount(container);
   assert.match(flatten(container).map(node => node.textContent).join('|'), /完成 · 无需注入.*本轮没有需要注入的记忆/);
-  for (const [reasons, copy] of [[['sourceStale'], '记忆来源正在更新'], [['sourceUnavailable'], '记忆来源暂不可用'], [['memoryRebuilding'], '历史记忆正在后台重建'], [['memoryNotReady', 'historicalRebuildRequired'], '当前存在历史记忆缺口']]) {
+  for (const [reasons, copy] of [[['sourceStale'], '本次读取的记忆来源已失效'], [['sourceUnavailable'], '记忆来源暂不可用'], [['memoryRebuilding'], '历史记忆正在后台重建'], [['memoryNotReady', 'historicalRebuildRequired'], '当前存在历史记忆缺口']]) {
     recall = { recallStatus: 'skipped', activeRecall: null, lastRecallError: null, lastRecall: { ...recall.lastRecall, status: 'skipped', skipReasons: reasons } };
     for (const listener of listeners) listener(recall);
     const text = flatten(container).map(node => node.textContent).join('|');
     assert.match(text, new RegExp(copy));
     assert.doesNotMatch(text, /聊天身份/);
+    assert.doesNotMatch(text, /正文生成已停止|sourceStale|sourceUnavailable|memoryRebuilding|historicalRebuildRequired/);
   }
   recall = { recallStatus: 'ready', activeRecall: null, lastRecallError: null,
     lastRecall: { ...recall.lastRecall, status: 'ready', skipReasons: ['partialAggregateBodyOverlap'] } };
@@ -2408,7 +2409,7 @@ test('真实uninitialized召回记录在设置页显示待记录且正文继续�
   const view = createV3FoundationView({ runtime, recallRuntime, documentRef });
   view.mount(container);
   const text = flatten(container).map(node => node.textContent).join('|');
-  assert.match(text, /尚未开始记录，本轮不注入记忆，正文继续生成/u);
+  assert.match(text, /尚未开始记录，本轮不注入普通记忆，正文继续生成/u);
   assert.doesNotMatch(text, /召回失败，正文生成已停止/u);
   view.deactivate();
 });
@@ -3733,7 +3734,7 @@ test('重要人物缺少 CSE 时显示常显空态，更多人物同行入口与
   const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
   const sharedPeople = peopleRuntime([{ entityId: 'character', displayName: '裴晚生', entityDisplayName: '裴晚生' }, { entityId: 'npc', displayName: '旁人', entityDisplayName: '旁人' }], ['character']);
   const container = new Node('main'); const view = createV3FoundationView({ runtime, peopleRuntime: sharedPeople, documentRef }); view.setPage('people'); view.mount(container);
-  assert.match(flatten(container).map(node => node.textContent).join('|'), /裴晚生.*还没有已保存的状态分析/);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /裴晚生.*暂无已保存状态/);
   const own = flatten(container).find(node => node.className === 'qqj-relation-note');
   assert.equal(own.tag, 'section'); assert.equal(flatten(own).some(node => node.tag === 'summary'), false, '选中人物自身状态常显且没有无用箭头');
   const switchRow = flatten(container).find(node => node.className === 'qqj-relation-switch-row');
@@ -4290,7 +4291,7 @@ test('前文核对失败只显示一次短提示，内部说明不泄露', () =>
   const view = createV3FoundationView({ runtime: { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state }, documentRef });
   view.mount(container);
   const text = flatten(container).map(node => node.textContent).join('|');
-  const short='摘要未保存，请重试该楼。';
+  const short='资料依据已变化，本次操作未完成，请刷新状态后重试。';
   const shown=node=>{for(let item=node;item;item=item.parentNode){if(item.hidden||item.parentNode?.tag==='details'&&!item.parentNode.open&&item.tag!=='summary')return false;}return true;};
   assert.equal(flatten(container).filter(node=>shown(node)&&String(node.textContent).includes(short)).length,1);
   assert.doesNotMatch(text,/如果刚修改|复制状态诊断.*反馈|如果没有改动/);
@@ -4852,4 +4853,57 @@ test('局部来源待核提示可继续健康楼，复制诊断包含各楼问�
   const issues = JSON.parse(copied).foundation.bindingIssues;
   assert.deepEqual(issues.map(issue => [issue.code, issue.messageIndex]), [['markerRejected', 1], ['duplicateMarker', 3]]);
   view.deactivate();
+});
+
+
+test('双丝网重试期间标明上次错误与处理中，结束后刷新为成功或本次失败', async () => {
+  const oldError = { floorId: 'retry-floor', code: 'V3_CSE_FAILED', message: '已尝试 3 次仍失败：无可用状态。' };
+  let state = { status: 'running', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    activeCse: { floorId: 'retry-floor', phase: 'analyzing' }, csePendingCount: 0, cseFailedCount: 0, rememberedCount: 1, stableCount: 1,
+    lastCseError: oldError, floors: [{ floorId: 'retry-floor', messageIndex: 2, memoryId: 'saved-summary', status: 'ready', cse: { status: 'running', error: oldError.message } }] };
+  const listeners = new Set(), runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.mount(container, { page: 'people' }); await view.activate();
+  flatten(container).find(node => node.textContent === '分析记录').click();
+  let row = flatten(container).find(node => node.className === 'qqj-cse-history-row'); row.open = true; row.fire('toggle');
+  const health = () => flatten(container).find(node => node.className.includes('qqj-page-health'));
+  assert.doesNotMatch(health().className, /error/u);
+  assert.match(flatten(container).map(node => node.textContent).join('|'), /1 处理中/u);
+  assert.match(flatten(row).map(node => node.textContent).join('|'), /本次正在分析.*上次分析/u);
+  const runningState = state;
+  state = { ...state, cseFailedCount: 1, floors: [...state.floors, { floorId: 'other-floor', messageIndex: 4, memoryId: 'other-summary', status: 'ready', cse: { status: 'failed', error: '其他楼状态分析失败。' } }] };
+  for (const listener of listeners) listener(state);
+  assert.match(health().textContent, /待重试 1 楼/u, '其他楼真实失败仍保留待重试计数');
+  const otherRow = flatten(container).find(node => node.className === 'qqj-cse-history-row' && flatten(node).some(child => child.textContent === '第 4 楼'));
+  otherRow.open = true; otherRow.fire('toggle');
+  assert.match(flatten(otherRow).map(node => node.textContent).join('|'), /其他楼状态分析失败/u);
+  state = runningState;
+  for (const listener of listeners) listener(state);
+  row = flatten(container).find(node => node.className === 'qqj-cse-history-row');
+  state = { ...state, status: 'ready', activeCse: null, cseReady: true, lastCseError: null,
+    floors: [{ ...state.floors[0], cse: { status: 'noChange', error: null, record: { fixedChangesAvailable: true, noMaterialChange: true, endStateSubjects: [] } } }] };
+  for (const listener of listeners) listener(state);
+  assert.doesNotMatch(flatten(row).map(node => node.textContent).join('|'), /上次分析|本次正在分析/u);
+  assert.doesNotMatch(health().className, /error/u);
+  state = { ...state, cseReady: false, cseFailedCount: 1, lastCseError: { ...oldError, message: '本次分析没有返回有效状态。' },
+    floors: [{ ...state.floors[0], cse: { status: 'failed', error: '本次分析没有返回有效状态。' } }] };
+  for (const listener of listeners) listener(state);
+  assert.match(health().className, /error/u);
+  assert.match(flatten(row).map(node => node.textContent).join('|'), /本次分析没有返回有效状态/u);
+  assert.doesNotMatch(flatten(row).map(node => node.textContent).join('|'), /上次分析|本次正在分析/u);
+  view.deactivate();
+});
+
+
+test('不计入记忆的楼在首次显示与刷新后均显示中文状态', async () => {
+  let state = { status: 'ready', pluginEnabled: true, chatId: CHAT, foundationStatus: 'ready', memorySnapshotStatus: 'ready', memorySyncStatus: 'idle',
+    floors: [{ floorId: 'excluded-floor', messageIndex: 2, status: 'excluded', memoryExcluded: true }], stableCount: 1, rememberedCount: 0 };
+  const runtime = { getState: () => state, refreshStatus: async () => state, confirmLatest: async () => state };
+  const container = new Node('main'), view = createV3FoundationView({ runtime, documentRef });
+  view.mount(container, { page: 'memories' }); await view.activate();
+  const copy = () => flatten(container).map(node => node.textContent).join('|');
+  assert.match(copy(), /不计入记忆/u); assert.doesNotMatch(copy(), /excluded/u);
+  state = { ...state, floors: state.floors.map(floor => ({ ...floor })) }; view.render(state);
+  assert.match(copy(), /不计入记忆/u); assert.doesNotMatch(copy(), /excluded/u); view.deactivate();
 });

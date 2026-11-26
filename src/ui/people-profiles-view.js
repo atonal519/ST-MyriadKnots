@@ -119,7 +119,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
         const report = generationReport ? result?.lastGenerationReport : null;
         const details = report ? [report.missing ? `未返回 ${report.missing} 位` : '', report.conflicts ? `回复重复 ${report.conflicts} 位` : '', report.invalid ? `格式无效 ${report.invalid} 位` : '', report.unknown ? `无法对应人物 ${report.unknown} 项` : '', report.skipped ? `未更新 ${report.skipped} 位` : '',
           report.aliasesNotUpdated ? `别名未更新 ${report.aliasesNotUpdated} 位` : '',
-          Number.isSafeInteger(report.worldInfoMatched) ? `送入世界书 ${report.worldInfoMatched} 项` : '',
+          Number.isSafeInteger(report.worldInfoMatched) ? `参考世界书条目 ${report.worldInfoMatched} 项` : '',
           ].filter(Boolean) : [];
         feedback = report ? `保存 ${report.saved}/${report.requested} 位${details.length ? `；${details.join('；')}` : ''}。` : `${label}完成。`;
         render(state);
@@ -208,8 +208,8 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   async function deletePerson(person) {
     if (!dialog?.confirm) { feedback = '当前环境无法打开删除确认窗口。'; render(state); return; }
     const operationChatId = chatId, name = person.displayName || person.entityDisplayName || '该人物';
-    const confirmed = await dialog.confirm({ title: `删除人物 · ${name}`, body: '删除人物档案、头像和重要人物选择，并从人物候选中隐藏。',
-      note: '正文、摘要和双丝网保留；剧情出现新的同名身份时，可能重新入列。', confirmText: '删除人物', cancelText: '取消' });
+    const confirmed = await dialog.confirm({ title: `删除人物 · ${name}`, body: '移除人物档案、头像绑定和重要人物选择，并从当前人物候选及双丝网中隐藏。',
+      note: '正文、摘要与历史人物状态保留，磁盘图片文件保留；剧情出现新的同名身份时，可能重新入列。', confirmText: '删除人物', cancelText: '取消' });
     if (!confirmed || chatId !== operationChatId || runtime.getState().chatId !== operationChatId) return;
     await run('删除人物', () => runtime.deletePerson(person.entityId), { after: () => {
       drafts.delete(person.entityId); if (currentEntityId === person.entityId) currentEntityId = null;
@@ -220,7 +220,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const nameOf = value => value?.displayName || value?.entityDisplayName || '未命名人物';
     const profileChoice = value => `保留「${nameOf(value)}」的资料与头像${value?.profiled ? '' : '（尚未建档）'}`;
     const panel = element('section', 'qqj-merge-dialog');
-    panel.append(element('p', 'qqj-merge-dialog-intro', '保留双方正文、摘要和双丝网，统一人物归属；选择保留哪一方的资料和头像。'));
+    panel.append(element('p', 'qqj-merge-dialog-intro', '保留双方正文、摘要和双丝网，统一人物归属，保留目标人物姓名；其他资料和头像选择一方保留。'));
 
     const targetField = element('div', 'qqj-merge-field');
     targetField.append(element('span', 'qqj-merge-field-title', '合并目标'));
@@ -387,7 +387,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const actions = element('div', 'qqj-editor-inline-actions');
     const toggle = element('button', 'secondary-action', '裁剪'); toggle.type = 'button';
     toggle.addEventListener('click', () => { if (draft.saving) return; pointer = null; draft.cropping = !draft.cropping; applyPreview(); });
-    const download = element('a', 'secondary-action', '保存原图'); download.href = draft.source.objectUrl;
+    const download = element('a', 'secondary-action', '下载原图'); download.href = draft.source.objectUrl;
     download.download = `头像原图.${draft.source.mimeType === 'image/jpeg' ? 'jpg' : draft.source.mimeType.split('/')[1]}`;
     actions.append(toggle, download); panel.append(actions);
     const zoomLabel = element('label', 'qqj-avatar-zoom'); zoomLabel.append(element('span', '', '缩放'));
@@ -429,7 +429,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     image.onload = () => { if (cropDraft === draft) { status.textContent = ''; status.hidden = true; } };
     image.onerror = () => { if (cropDraft === draft) status.textContent = '图片暂时无法读取，请关闭后重试。'; };
     image.src = path; frame.append(image); content.append(frame, status);
-    const download = element('a', 'secondary-action', person.avatarSource ? '保存原图' : '保存图片');
+    const download = element('a', 'secondary-action', person.avatarSource ? '下载原图' : '下载图片');
     download.href = path; download.download = `头像.${person.avatarSource?.mimeType === 'image/jpeg' ? 'jpg' : person.avatarSource?.mimeType?.split('/')[1] || 'webp'}`; content.append(download);
     void dialog.custom({ title: '头像大图', content, confirmText: '关闭', cancelText: '', submit: () => true,
       onClose: () => { draft.dialogOpen = false; releaseCrop(draft); } });

@@ -1299,7 +1299,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
     lastContentIssueNoticeKey = key;
     const indexes = issues.slice(0, 6).map(issue => issue.messageIndex).join('、');
     const label = issues.length > 6 ? `第 ${indexes} 等 ${issues.length} 楼` : `第 ${indexes} 楼`;
-    try { notifyUser?.({ kind: 'warning', action: 'openMemory', text: `千千结检测到${label}正文未识别，原文经包裹符清洗后为空。请检查原文包裹符及「设置 → 提示词与包裹符 → 包裹符」。点击提醒打开千结查看对应楼。` }); }
+    try { notifyUser?.({ kind: 'warning', action: 'openMemory', text: `千千结检测到${label}正文未识别，原文经包裹符清洗后为空。请检查原文包裹符及「设置 → 通用设置 → 提示词与包裹符 → 包裹符」。点击提醒打开千结查看对应楼。` }); }
     catch { /* notification must not affect healthy memory work */ }
     return true;
   };
@@ -1548,7 +1548,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       memorySyncError,
       stableCount,
       busy: Boolean(workRun || active || cse.activeCse || qianshiHistoryRun || preparingQianshi || memorySyncStatus === 'syncing'),
-      phase: workPhase ?? active?.phase ?? cse.activeCse?.phase ?? (qianshiHistoryRun ? 'extracting' : preparingQianshi ? 'preparing' : memorySyncStatus === 'syncing' ? 'syncing' : null),
+      phase: workPhase ?? active?.phase ?? cse.activeCse?.phase ?? (qianshiHistoryRun ? qianshiHistoryState.mode === 'rejudge' ? 'qianshiRejudge' : 'qianshiHistory' : preparingQianshi ? 'preparing' : memorySyncStatus === 'syncing' ? 'syncing' : null),
       mainGenerationActive: mainGenerationActive(),
       memoryWorkBusy: workRun !== null,
       activeMemoryWork: workRun ? Object.freeze({ kind: workRun.kind, reason: workRun.reason, phase: workPhase, floorIds: Object.freeze([...workRun.floorIds]) }) : null,
@@ -4983,7 +4983,7 @@ export function createV3MemoryRuntime({ foundationRuntime, store, hostAdapter, g
       message: item.budgetExceeded ? '完整请求超过输入预算；未调用模型。' : '等待处理。' }]));
     const historyState = (status, message = '') => {
       const rows = [...outcomes.values()].sort((left, right) => left.assistantSeq - right.assistantSeq);
-      return { status, jobId, processedFloors, totalFloors: plan.items.length, calls,
+      return { status, jobId, processedFloors, totalFloors: plan.items.length, calls, aggregateSkippedCount: plan.aggregateSkippedFloors.length,
         attemptedFloors: rows.filter(row => row.attempted).length,
         savedCompleteFloors: rows.filter(row => row.status === 'saved-complete').length,
         savedPartialFloors: rows.filter(row => row.status === 'saved-partial').length,

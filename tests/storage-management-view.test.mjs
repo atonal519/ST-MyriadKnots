@@ -99,16 +99,34 @@ test('确认弹窗等待期间停用视图，迟到确认不会执行清理或�
   assert.equal(f.calls.includes('cleanup'), false);
 });
 
-test('旧白鳥不支持永久删除时显示明确更新提示', async () => {
+test('未确认永久删除时保留真实不确定性并提示刷新', async () => {
   const f = fixture();
   f.manager.cleanup = async () => ({
     status: 'partial', deletedCount: 0, convergedCount: 0, remainingCount: 180,
-    error: Object.assign(new Error('存储管理永久清理需要更新白鳥后端；本次没有删除任何文件。'), { code: 'QQJ_STORAGE_PERMANENT_DELETE_UNAVAILABLE' }),
+    error: Object.assign(new Error('本次未确认永久删除；记录可能已被其他操作移除，或当前后端不支持永久清理。请刷新统计核对。'), { code: 'QQJ_STORAGE_PERMANENT_DELETE_UNAVAILABLE' }),
   });
   const container = new Node('div');
   const view = createStorageManagementView({ manager: f.manager, documentRef, confirmImpl: () => true });
   view.mount(container); await view.activate();
   const clean = flatten(container).find(node => node.tag === 'button' && node.textContent === '清理旧版本');
   await clean.fire('click');
-  assert.match(container.textContent, /永久清理需要更新白鳥后端/u);
+  assert.match(container.textContent, /未确认永久删除.*刷新统计/u);
+});
+
+
+test('清理前状态变化与部分失败按实际结果显示，不能伪报完成或成功颜色', async () => {
+  const f = fixture(), container = new Node('div');
+  const view = createStorageManagementView({ manager: f.manager, documentRef, confirmImpl: () => true });
+  view.mount(container); await view.activate();
+  for (const status of ['uninitialized', 'notReady', 'partial']) {
+    f.manager.cleanup = async () => ({ status, deletedCount: 0, remainingCount: 0 });
+    await flatten(container).find(node => node.textContent === '清理旧版本').fire('click');
+    const result = flatten(container).findLast(node => node.className.startsWith('settings-result'));
+    assert.doesNotMatch(result.className, /success/u);
+    assert.doesNotMatch(result.textContent, /仍有 0 条|部分完成.*0 条/u);
+    assert.match(result.textContent, status === 'uninitialized' ? /尚未建立/u : status === 'notReady' ? /暂不能核对/u : /清理未完成/u);
+  }
+  f.manager.collectExpiredTrash = async () => ({ status: 'partial', scanned: 2, deleted: 1, failed: 1 });
+  await flatten(container).find(node => node.textContent === '清理到期回收站').fire('click');
+  assert.doesNotMatch(flatten(container).findLast(node => node.className.startsWith('settings-result')).className, /success/u);
 });

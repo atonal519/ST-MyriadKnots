@@ -2327,7 +2327,8 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
     const stopForFinalSafety = reason => {
       if (!['chatChanged', 'userChanged', 'stopped', 'superseded', 'disabled'].includes(reason)) {
         if (operation.queryContext && !operation.queryContext.latestUserText) throw missingQueryError();
-        try { notifyUser?.({ kind: 'warning', text: '生成前记忆来源发生变化，本轮已放弃旧记忆注入，正文继续生成。' }); } catch { /* notification must not affect recall */ }
+        const reasonCopy = ({ sourceUnavailable: '生成前未能核实当前记忆版本', sourceStale: '本次读取的记忆来源已失效', narrativeChanged: '生成前正文已变化', selectedRefsChanged: '生成前已选材料已变化' })[reason] ?? '生成前召回条件已变化';
+        try { notifyUser?.({ kind: 'warning', text: `${reasonCopy}，本轮已放弃普通记忆注入，正文继续生成。` }); } catch { /* notification must not affect recall */ }
       }
       return finishStale(operation, timings, reason);
     };

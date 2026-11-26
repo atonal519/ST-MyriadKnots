@@ -32,6 +32,8 @@ test('mobile file selection is preview-only, confirm is scoped and settings can 
   assert.deepEqual(calls.map(call => call[0]), ['preview'], '收起再展开不重复读取记忆包');
   assert.ok(nodes().some(node => node.textContent.includes('<script>name</script>') && !node.innerHTML));
   button('确认导入').fire('click'); await tick(); assert.equal(calls.length, 1);
+  button('撤销上次导入').fire('click'); await tick();
+  assert.equal(nodes().find(node => node['aria-label'] === '导入与撤销结果').textContent, '已取消撤销导入。');
   accept = true; button('确认导入').fire('click'); await tick(); assert.deepEqual(calls[1], ['import', plan]);
   button('撤销上次导入').fire('click'); await tick(); assert.deepEqual(calls[2], ['undo']);
   view.dispose(); button('导出当前聊天记忆').fire('click'); await tick(); assert.equal(downloads.length, 1);
@@ -100,7 +102,7 @@ test('oversized file metadata is rejected before reading, previewing or importin
     input.files = [{ size, text: async () => { calls.text += 1; return '{}'; } }];
     input.fire('change'); await tick();
     assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });
-    assert.equal(nodes.find(node => node.className === 'settings-result' && node['aria-label'] === '导入与撤销结果').textContent, '普通记忆包不能超过 64 MB，请在旧设备使用“自动导出大记忆包”。');
+    assert.equal(nodes.find(node => node.className === 'settings-result' && node['aria-label'] === '导入与撤销结果').textContent, '普通记忆包不能超过 64 MiB，请在旧设备使用“自动导出大记忆包”。');
     for (const control of nodes.filter(node => !node.hidden && (node.tag === 'button' || node === input))) assert.equal(control.disabled, false);
     nodes.find(node => node.textContent === '确认导入').fire('click'); await tick();
     assert.deepEqual(calls, { text: 0, preview: 0, import: 0 });

@@ -659,7 +659,7 @@ test('旧后端对永久路径全量 404 时零删除并明确要求更新白鳥
   assert.equal(result.convergedCount, 0);
   assert.equal(result.remainingCount, 3);
   assert.equal(result.error.code, 'QQJ_STORAGE_PERMANENT_DELETE_UNAVAILABLE');
-  assert.match(result.error.message, /永久清理需要更新白鳥后端/u);
+  assert.match(result.error.message, /未确认永久删除.*刷新统计/u);
   assert.equal(legacy.removes.length, 3);
   assert.deepEqual(legacy.ordinaryRemoves, []);
 });

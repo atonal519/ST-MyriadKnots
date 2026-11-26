@@ -142,12 +142,12 @@ export function createMemoryTransferView({ runtime, documentRef = globalThis.doc
         result = await runtime.previewVolumes(files);
       } else {
         const [file] = files;
-        if (file.size > MEMORY_PACKAGE_LIMIT) throw new Error('普通记忆包不能超过 64 MB，请在旧设备使用“自动导出大记忆包”。');
+        if (file.size > MEMORY_PACKAGE_LIMIT) throw new Error('普通记忆包不能超过 64 MiB，请在旧设备使用“自动导出大记忆包”。');
         result = await runtime.preview(await file.text());
       }
       if (disposed || token !== epoch) return;
       plan = result;
-      preview.append(el('p', `来源：${result.character || '未命名角色'}；${result.messages} 条聊天，${result.summaries} 条摘要，${result.states} 条人物状态变化。`, 'settings-hint'),
+      preview.append(el('p', `来源：${result.character || '未命名角色'}；${result.messages} 条消息，${result.summaries} 条摘要，${result.states} 条人物状态变化。`, 'settings-hint'),
         el('p', '聊天内容已核对一致。角色卡更新不会自动改写这些历史记忆。', 'settings-hint'));
       status.textContent = result.replacesMemory ? '当前已有记忆。确认后切换到导入副本，原记忆保留，可撤销本次导入。' : '预览通过，点击“确认导入”恢复。';
     });
@@ -162,7 +162,7 @@ export function createMemoryTransferView({ runtime, documentRef = globalThis.doc
     if (!disposed) status.textContent = `已恢复 ${result.summaries} 条摘要。请重新打开聊天或刷新页面，让各面板显示导入后的状态。`;
   }), button('撤销上次导入', async () => {
     const confirmed = await confirmImpl({ title: '撤销上次导入', body: '恢复本次导入前的记忆。仅在导入后的记忆和聊天正文均未变化时执行；导入的记忆副本也会保留。', confirmText: '撤销导入', cancelText: '取消' });
-    if (!confirmed || disposed) return;
+    if (!confirmed || disposed) { if (!disposed) status.textContent = '已取消撤销导入。'; return; }
     await runtime.undo(); plan = null; preview.replaceChildren();
     if (!disposed) status.textContent = '已恢复导入前的记忆，请重新打开聊天或刷新页面。';
   }));

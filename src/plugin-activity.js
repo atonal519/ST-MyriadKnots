@@ -6,7 +6,7 @@ const COPIES = Object.freeze({
   selecting: '正在选取记忆', generating: '正在整理人物资料', generatingAvatar: '正在生成头像', building: '正在整理向量索引',
   committing: '正在保存记忆', sealing: '正在保存记忆', revising: '正在保存记忆', revisingCse: '正在保存人物状态',
   savingProfile: '正在保存人物资料', savingSelection: '正在保存人物选择', savingAvatar: '正在保存人物头像',
-  deleting: '正在删除记忆', cleaning: '正在清理存储', scanning: '正在读取存储',
+  deleting: '正在删除记忆', deletingPerson: '正在删除人物', qianshiHistory: '正在补齐千事', qianshiRejudge: '正在整理千事', organizingPlaces: '正在整理地点', cleaning: '正在清理存储', scanning: '正在读取存储',
   checking: '正在检查更新', updating: '正在更新插件', request: '正在请求资料',
 });
 

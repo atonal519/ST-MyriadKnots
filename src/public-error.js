@@ -25,7 +25,7 @@ const CODE_COPY = Object.freeze({
   V3_MEMORY_FOUNDATION_NOT_READY: '后端数据尚未就绪，请稍后重试。',
   V3_MEMORY_LOAD_FAILED: '记忆数据读取失败，请稍后重试。',
   V3_MEMORY_PERSIST_FAILED: '记忆保存失败，请稍后重试。',
-  V3_MEMORY_PREFIX_CHANGED: '摘要未保存，请重试该楼。',
+  V3_MEMORY_PREFIX_CHANGED: '资料依据已变化，本次操作未完成，请刷新状态后重试。',
   V3_MEMORY_COMMIT_FAILED: '记忆保存失败，请稍后重试。',
   V3_MEMORY_SUMMARY_TOO_LONG: '摘要超过 4000 字，请缩短后保存。',
   V3_MEMORY_EXACT_ANCHORS_LIMIT: '每楼关键原文最多保存 60 条，请删除多余条目后再保存。',

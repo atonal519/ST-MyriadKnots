@@ -480,7 +480,8 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
     alias.aliasId === migrationAliasId && alias.targetMessageIndex === messageIndex
       && floors.some(value => value?.frozen === true && value.floorId === alias.floorId));
   const floor = floors.find(value => value?.frozen !== true && value?.inherited !== true && value?.messageIndex === messageIndex) ?? null;
-  const waitingCandidate = (state?.unregisteredCandidates ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
+  const contentIssue = (state?.contentIssues ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
+  const waitingCandidate = contentIssue ?? (state?.unregisteredCandidates ?? []).find(value => value?.messageIndex === messageIndex) ?? null;
   const assistantSeq = Number.isSafeInteger(floor?.assistantSeq) && floor.assistantSeq > 0
     ? floor.assistantSeq
     : Number.isSafeInteger(fallbackAssistantSeq) && fallbackAssistantSeq > 0 ? fallbackAssistantSeq : null;
@@ -497,9 +498,11 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
   if (!floor) {
     const snapshotStatus = state?.memorySnapshotStatus;
     const failed = snapshotStatus === 'error';
-    const syncing = ['syncing', 'unavailable'].includes(snapshotStatus);
+    const syncing = snapshotStatus === 'syncing';
+    const unavailable = snapshotStatus === 'unavailable';
     const pending = waitingCandidate ?? (state?.pending?.messageIndex === messageIndex ? { reason: 'waitingNextUser' } : null);
     const waitingCopy = ({
+      emptyAfterSanitizing: ['正文未识别', '原文经包裹符清洗后没有可提取正文。请检查原文包裹符及「设置 → 通用设置 → 提示词与包裹符 → 包裹符」中的“保留包裹符”和“清洗包裹符”。'],
       waitingNextUser: ['等待下一条用户消息', '这一楼尚未摘要。发送下一条用户消息后会重新检查。'],
       waitingEarlierFloor: ['等待前面楼层处理', '这一楼尚未摘要。前面的 AI 楼尚未确认，当前不会进入摘要处理。'],
       consecutiveAssistant: ['连续 AI，尚待确认', '这一楼尚未摘要。请到「千结」页顶部，点击「确认连续 AI 并分别记录」。'],
@@ -507,21 +510,21 @@ export function projectInlineMemoryFloor(state, messageIndex, fallbackAssistantS
     })[pending?.reason] ?? ['尚待确认', '这一楼尚未摘要，正在等待确认。'];
     return Object.freeze({
       kind: 'assistant', floorId: null, assistantSeq, messageIndex, status: failed ? 'error' : syncing ? 'syncing' : pending ? 'pending' : 'unavailable',
-      statusText: failed ? '记忆读取失败' : syncing ? '正在读取本楼状态' : pending ? waitingCopy[0] : '尚未读取本楼状态',
+      statusText: failed ? '记忆读取失败' : syncing ? '正在读取本楼状态' : unavailable ? '当前记忆暂不可用' : pending ? waitingCopy[0] : '尚未读取本楼状态',
       time: '未提取', headerTime: '', locations: '未提取', people: '未提取',
-      summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : pending ? waitingCopy[1] : '当前记忆中没有这楼的已保存状态。',
+      summary: failed ? '暂时无法读取当前聊天的记忆状态。' : syncing ? '正在读取当前聊天的记忆状态。' : unavailable ? '当前聊天的记忆状态尚不可用，请刷新状态。' : pending ? waitingCopy[1] : '当前记忆中没有这楼的已保存状态。',
       error: failed ? publicErrorMessage(state?.lastExtractorError, { fallback: '记忆读取失败，请稍后重试。' }) : '',
-      busy: Boolean(state?.memoryWorkBusy || syncing), canExtract: false,
+      busy: Boolean(state?.memoryWorkBusy || syncing || unavailable), canExtract: false,
     });
   }
   const memory = floor.memory ?? null;
   const times = uniqueText((memory?.chronology ?? []).map(item => item?.time?.sourceText || item?.time?.normalized || item?.description)).join('；');
   const fallbackTime = String(floor.timeFallback ?? '').trim();
   const time = times && fallbackTime && hasInternalTimeFields(times) ? fallbackTime : times || fallbackTime || '时间未明确';
-  const locations = uniqueText((memory?.locations ?? []).map(item => item?.name)).join('、') || '未提取';
-  const people = memoryParticipantsForDisplay(state, memory, floor).map(entry => entry.displayName).join('、') || '未提取';
+  const locations = uniqueText((memory?.locations ?? []).map(item => item?.name)).join('、') || (memory || floor.status === 'ready' ? '未记录' : '未提取');
+  const people = memoryParticipantsForDisplay(state, memory, floor).map(entry => entry.displayName).join('、') || (memory || floor.status === 'ready' ? '未记录' : '未提取');
   const busy = Boolean(state?.memoryWorkBusy || state?.activeAutoMemory || state?.activeExtraction || state?.activeCse);
-  const statusText = floor.status === 'running' ? '正在提取'
+  const statusText = contentIssue ? '正文未识别' : floor.sourceUnavailable ? '来源待核' : floor.status === 'running' ? '正在提取'
     : floor.status === 'ready' ? (floor.summarySource === 'user' ? '人工修订' : '摘要已保存')
       : ['error', 'failed'].includes(floor.status) ? '提取失败'
         : floor.status === 'unprocessed' ? '尚未提取' : '等待下一条用户消息';
