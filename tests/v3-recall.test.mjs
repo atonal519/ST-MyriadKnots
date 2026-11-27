@@ -10551,3 +10551,120 @@ test('取材质量：历史原文、人工原文与近期P不接受摘要削句�
   assert.ok(result.injectionText.includes(literal));
   assert.ok(result.injectionText.includes(recent.summary));
 });
+
+test('人工人物变化经真实runtime注入、历史验签和冷热回执仍保留旧事目录', async t => {
+  for (const action of ['add', 'update', 'refine', 'remove']) await t.test(action, async () => {
+    const raw = cseLaggingReachable();
+    for (let assistantSeq = 4; assistantSeq <= 8; assistantSeq++) {
+      const floor = { id: `manual-history-${assistantSeq}`, assistantSeq };
+      raw.floors.push(floor);
+      raw.floorMemories.push({ ...structuredClone(raw.floorMemories[0]), id: `manual-memory-${assistantSeq}`, floorId: floor.id,
+        summary: { effectiveSource: 'ai', aiText: `钟楼赴约时归还钥匙，进展 ${assistantSeq}` } });
+    }
+    for (const delta of raw.stateDeltas) {
+      delta.source = { manualSubjectEntityIds: [PERSON] };
+      for (const subject of delta.subjectSnapshots) for (const state of subject.situational) state.origin = 'manual';
+      for (const subject of delta.fixedChanges) for (const change of subject.items) if (change.after) change.after.origin = 'manual';
+    }
+    const first = raw.stateDeltas[0].fixedChanges[0].items[0];
+    if (action !== 'add') first.before = structuredClone(first.after);
+    first.action = action;
+    if (action === 'remove') { first.after = null; raw.stateDeltas[0].subjectSnapshots[0].situational = []; }
+    const h = createRuntimeHarness({ sourceReader: ({ store, now }) => readRecallSource({ store, now }), reachableReader: async () => structuredClone(raw) });
+    const live = (await h.runtime.intercept(h.chat, 20000, null, 'normal')).lastRecall;
+    assert.ok(live.selectedCseChanges.some(change => change.origin === 'manual' && change.action === action));
+    assert.match(live.injectionText, /主体：裴晚生 \/ situational：人工/u);
+    assert.equal(h.prompts.filter(args => args[0] === RECALL_PROMPT_SLOT && args[1]).at(-1)[1], live.injectionText);
+    await flushReceiptSave();
+    const historical = await projectHistoricalRecallReceipt(h.userMessage, { chatId: CHAT, userMessageIndex: 1 });
+    const warm = (await h.runtime.intercept(h.chat, 20000, null, 'continue')).lastRecall;
+    h.runtime.invalidate('reload');
+    const cold = (await h.runtime.restorePersistedReceipt()).lastRecall;
+    for (const receipt of [live, historical, warm, cold]) {
+      const projection = projectInlineRecallReceipt(receipt);
+      assert.equal(projection.protocolRecognized, true);
+      assert.ok(projection.historyItems.length > 0, '人物变化不能吞掉同票已有旧事');
+      assert.equal(projection.injectionText, live.injectionText);
+    }
+    for (const transform of [
+      text => text.replace('：人工', '：未知人工'),
+      text => text.replace('主体：裴晚生 / situational：人工', '主体：陌生人 / situational：人工'),
+      text => text.replace('主体：裴晚生 / situational：人工', '主体：裴晚生 / core：人工'),
+    ]) {
+      const projected = projectInlineRecallReceipt({ ...live, injectionText: transform(live.injectionText) });
+      assert.equal(projected.protocolRecognized, false);
+      assert.equal(projected.historyItems.length, 0);
+    }
+    for (const mismatch of [
+      change => ({ ...change, origin: 'floor' }),
+      change => ({ ...change, action: 'unknown' }),
+      change => ({ ...change, assistantSeq: change.assistantSeq + 100 }),
+      change => ({ ...change, storylineId: 'unselected-line' }),
+    ]) {
+      const projected = projectInlineRecallReceipt({ ...live, selectedCseChanges: live.selectedCseChanges.map(mismatch) });
+      assert.equal(projected.protocolRecognized, false, '动作、来源楼、剧情线或人工归属不匹配不能吞过未知行');
+      assert.equal(projected.historyItems.length, 0);
+    }
+  });
+});
+
+test('冻结票按格式策略复用，发布号变化不重新选材', async t => {
+  for (const [producer, consumer] of [
+    ['1.3.3', '1.3.4'], ['1.3.4', '1.3.10'], ['1.3.10', '1.4.0'],
+    ['1.3.2', '1.3.4'], ['1.2.0', '1.3.4'], ['1.3.10', '1.3.4'], ['2.0.0', '1.3.4'],
+    ['1.3.4-beta.1', '1.3.4'], ['1.3.4', 'local-test'], ['local-test', 'local-test'],
+  ]) await t.test(`${producer} -> ${consumer}`, async () => {
+    const before = createRuntimeHarness({ pluginVersion: producer });
+    await before.runtime.intercept(before.chat, 12000, null, 'normal');
+    await flushReceiptSave();
+    const original = structuredClone(before.userMessage.extra[RECALL_RECEIPT_KEY]);
+    let selections = 0;
+    const after = createRuntimeHarness({ pluginVersion: consumer, selector: input => { selections++; return selectRecall(input); } });
+    after.userMessage.extra = { [RECALL_RECEIPT_KEY]: original };
+    const restored = (await after.runtime.restorePersistedReceipt()).lastRecall;
+    assert.equal(Boolean(restored.legacyReadOnly), false);
+    assert.equal(after.prompts.filter(args => args[1]).length, 0, '冷恢复只显示，不注入');
+    assert.equal(after.saves, 0);
+    for (const type of ['normal', 'regenerate', 'swipe', 'continue']) {
+      const result = (await after.runtime.intercept(after.chat, 12000, null, type)).lastRecall;
+      assert.equal(result.reusedReceipt, true);
+      assert.equal(result.injectionText, original.injectionText);
+      assert.equal(after.prompts.filter(args => args[0] === RECALL_PROMPT_SLOT && args[1]).at(-1)[1], original.injectionText);
+    }
+    assert.equal(selections, 0);
+    assert.equal(after.saves, 0, '换包不重复保存冻结票');
+    assert.equal(after.userMessage.extra[RECALL_RECEIPT_KEY].pluginVersion, producer);
+    assert.deepEqual(after.userMessage.extra[RECALL_RECEIPT_KEY], original, '兼容复用不改原票版本或重签');
+  });
+});
+
+test('跨发布冻结票仍拒绝不兼容策略格式、身份及签名，历史只读不进入注入', async t => {
+  const old = createRuntimeHarness({ pluginVersion: '1.3.3' });
+  await old.runtime.intercept(old.chat, 12000, null, 'normal');
+  await flushReceiptSave();
+  const original = structuredClone(old.userMessage.extra[RECALL_RECEIPT_KEY]);
+  for (const [name, mutate, resign, historical] of [
+    ['旧策略', receipt => { receipt.strategyVersion = 'continuity-v31'; }, true, true],
+    ['旧格式', receipt => { receipt.schemaVersion = 17; }, true, true],
+    ['聊天不符', receipt => { receipt.chatId = GEN; }, true, false],
+    ['USER位置不符', receipt => { receipt.userMessageIndex++; }, true, false],
+    ['USER正文不符', receipt => { receipt.userContentFingerprint = 'sha256:changed'; }, true, false],
+    ['伪造发布号', receipt => { receipt.pluginVersion = '1.3.4'; }, false, false],
+    ['伪造注入', receipt => { receipt.injectionText += '未签字内容'; }, false, false],
+  ]) await t.test(name, async () => {
+    let selections = 0;
+    const h = createRuntimeHarness({ pluginVersion: '1.3.4', selector: input => { selections++; return selectRecall(input); } });
+    const receipt = structuredClone(original); mutate(receipt);
+    if (resign) receipt.receiptFingerprint = await receiptFingerprint(receipt);
+    h.userMessage.extra = { [RECALL_RECEIPT_KEY]: receipt };
+    const restored = (await h.runtime.restorePersistedReceipt()).lastRecall;
+    assert.equal(Boolean(restored?.legacyReadOnly), historical);
+    if (!historical) assert.equal(restored, null);
+    assert.equal(h.saves, 0);
+    assert.equal(h.prompts.filter(args => args[1]).length, 0);
+    const result = (await h.runtime.intercept(h.chat, 12000, null, 'normal')).lastRecall;
+    assert.equal(result.reusedReceipt, false);
+    assert.equal(selections, 1);
+    assert.equal(h.userMessage.extra[RECALL_RECEIPT_KEY].pluginVersion, '1.3.4');
+  });
+});

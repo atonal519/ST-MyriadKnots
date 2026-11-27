@@ -3265,8 +3265,8 @@ test('Extractor 输入只含浅层语义提示，不暴露作用域、UUID 或�
   assertQianshiLifecycleGuidance(buildExtractorSystemPrompt('用户自定义偏好'));
   assert.doesNotMatch(buildHighFloorExtractorSystemPrompt(), /普通单楼 summary 通常以 200–300 字、3–5 句为目标/u);
   assert.match(call.systemPrompt, /summary、承诺与千事description保留原有知情范围/u);
-  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-68');
-  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-68/schema-3/semantic-compiler-37');
+  assert.equal(EXTRACTOR_PROMPT_VERSION, 'qqj-v3-extractor-prompt-69');
+  assert.equal(EXTRACTOR_VERSION, 'qqj-v3-extractor-prompt-69/schema-3/semantic-compiler-38');
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.aliases.maxItems, 20);
   assert.equal(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.maxLength, 400);
   assert.match(EXTRACTOR_RESPONSE_SCHEMA.properties.people.items.properties.identityBrief.description, /identityBriefEvidence.*identityFacts/u);
@@ -19158,4 +19158,52 @@ test('摘要参与者：明确空名单清除已删除引用，省略名单仍�
   await h.runtime.editMemory(floor.floorId, { participantNames: [] });
   const saved = await h.store.readReachable({ mode: 'runtime' });
   assert.deepEqual(saved.floorMemories[0].participants, []);
+});
+
+test('临时人物语义随原摘要保存，揭名沿原实体并保留原称呼检索', async () => {
+  const initial = await direct({ summary: '戴斗笠的人递来地图。', people: [{ name: '戴斗笠的人', nameKind: 'temporary' }], actions: [{ actor: '戴斗笠的人', action: '递来地图' }] }, { content: '戴斗笠的人递来地图。' });
+  const original = initial.newEntities[0];
+  assert.equal(original.nameKind, 'temporary');
+  const revealed = await direct({ summary: '戴斗笠的人说自己叫青禾。', people: [{ name: '青禾', nameKind: 'named', sameAsEntityKey: 'catalog-1' }], actions: [{ actor: '青禾', action: '报出姓名' }] }, { entities: [original], content: '戴斗笠的人说自己叫青禾。', batchId: '44444444-4444-4444-8444-444444444444' });
+  assert.equal(revealed.memory.actions[0].actorEntityId, original.id);
+  const directory = buildEntityIdentityDirectory({ entities: [original, ...revealed.newEntities] });
+  assert.equal(directory.length, 1); assert.equal(directory[0].entityId, original.id);
+  assert.equal(directory[0].displayName, '青禾'); assert.equal(directory[0].nameKind, 'named');
+  assert.ok(directory[0].labels.includes('戴斗笠的人'));
+  const similar = await direct({ summary: '另一个戴斗笠的人到了。', people: [{ name: '另一个戴斗笠的人', nameKind: 'temporary' }] }, { entities: [original], content: '另一个戴斗笠的人到了。' });
+  assert.notEqual(similar.memory.participants[0].entityId, original.id);
+  for (const nameKind of [undefined, 'bad']) {
+    const old = await direct({ summary: '青禾递来地图。', people: [{ name: '青禾', ...(nameKind ? { nameKind } : {}) }] }, { content: '青禾递来地图。' });
+    assert.equal(old.newEntities[0].nameKind, undefined, '旧输出或无效可选标记保持未知');
+  }
+});
+
+test('稳定称谓揭名与自动档案同步显示，人工姓名保留且相同升级不重复落记录', async () => {
+ const first=await direct({summary:'师父点头。',people:[{name:'师父',nameKind:'stable'}]},{content:'师父点头。'}),original=first.newEntities[0];
+ const second=await direct({summary:'师父自报姓名为青禾。',people:[{name:'青禾',nameKind:'named',sameAsEntityKey:'catalog-1'}]},{content:'师父自报姓名为青禾。',entities:[original],batchId:'44444444-4444-4444-8444-444444444444'});
+ const entities=[original,...second.newEntities];
+ for(const [name,manualFields,expected] of [['师父',[],'青禾'],['师父',['name'],'师父'],['自己取的资料名',[],'自己取的资料名']]){
+  const entry=buildEntityIdentityDirectory({entities,identityProjection:{profilesByEntityId:{[original.id]:{name,manualFields}}}})[0];
+  assert.equal(entry.displayName,expected);assert.ok(entry.labels.includes('师父'));
+ }
+ const repeat=await direct({summary:'青禾点头。',people:[{name:'青禾',nameKind:'named',sameAsEntityKey:'catalog-1'}]},{content:'青禾点头。',entities,batchId:'55555555-5555-4555-8555-555555555555'});
+ assert.equal(repeat.newEntities.length,0);
+});
+
+test('临时岗位纯同名不跨楼合并，明示同人指针正常承接', async () => {
+ const first=await direct({summary:'保安打开门。',people:[{name:'保安',nameKind:'temporary'}]},{content:'保安打开门。'}),original=first.newEntities[0];
+ const second=await direct({summary:'保安关上门。',people:[{name:'保安',nameKind:'temporary'}]},{content:'保安关上门。',entities:[original],batchId:'44444444-4444-4444-8444-444444444444'});
+ assert.notEqual(second.memory.participants[0].entityId,original.id);
+ const same=await direct({summary:'同一个保安关上门。',people:[{name:'保安',nameKind:'temporary',sameAsEntityKey:'catalog-1'}]},{content:'同一个保安关上门。',entities:[original],batchId:'44444444-4444-4444-8444-444444444444'});
+ assert.equal(same.memory.participants[0].entityId,original.id);assert.equal(same.newEntities.length,0);
+});
+
+test('目录外姓名未在本楼正文或USER出现时不提前揭名，本楼USER明确姓名可承接', async () => {
+ const first=await direct({summary:'戴帽子的人点头。',people:[{name:'戴帽子的人',nameKind:'temporary'}]},{content:'戴帽子的人点头。'}),original=first.newEntities[0];
+ const response={summary:'他点头。',people:[{name:'青禾',nameKind:'named',sameAsEntityKey:'catalog-1'}]};
+ const noName=await direct(response,{content:'他点头。',entities:[original]});
+ assert.equal(noName.newEntities.length,0);assert.equal(buildEntityIdentityDirectory({entities:[original,...noName.newEntities]})[0].displayName,'戴帽子的人');
+ const sourceUserInputSnapshot={messages:[{messageIndex:0,swipeId:null,selectedSwipeIndex:null,content:'戴帽子的人名叫青禾。'}]};
+ const source=await direct(response,{content:'他点头。',entities:[original],sourceUserInputSnapshot});
+ assert.equal(buildEntityIdentityDirectory({entities:[original,...source.newEntities]})[0].displayName,'青禾');
 });

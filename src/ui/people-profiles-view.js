@@ -1,3 +1,4 @@
+import { peoplePickerProjection } from './people-visibility.js';
 import { KNOT_ICON_SVG } from './brand.js';
 import { createOperationMenuController } from './operation-menu-controller.js';
 import { createInlineSelect } from './inline-select.js';
@@ -12,7 +13,7 @@ function fieldsFrom(person) {
   const profile = person?.profile;
   const result = emptyPeopleProfileFields();
   for (const field of PEOPLE_PROFILE_FIELDS) result[field] = profile?.[field] ?? '';
-  if (!profile) result.name = person?.entityDisplayName ?? '';
+  if (!profile) result.name = person?.displayName ?? person?.entityDisplayName ?? '';
   if (Array.isArray(person?.aliases)) result.aliases = person.aliases.join('、');
   return result;
 }
@@ -42,6 +43,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   if (!runtime || ['getState', 'refresh', 'setSelectedEntityIds', 'setPersonOrderEntityIds', 'saveProfile', 'saveAvatar', 'mergePeople', 'deletePerson', 'regenerateProfile'].some(name => typeof runtime[name] !== 'function')) throw new TypeError('千人人物资料 runtime 无效');
   if (!documentRef?.createElement) throw new TypeError('千人人物资料 documentRef 无效');
   let container = null, active = false, epoch = 0, unsubscribe = null, state = runtime.getState(), chatId = state.chatId ?? null, feedback = { source: 'read', text: '人物资料状态已显示。', error: state.lastError ?? null };
+  let showTemporaryPeople=false;
   let peopleQuery='',pickerSearchNode=null,pickerComposing=false,pickerRenderDeferred=false;
   let currentEntityId = null, showMore = false, cropDraft = null, cropLoadId = 0, cropLoadController = null;
   let switcherNode = null, switcherSignature = null, switcherScrollLeft = 0;
@@ -108,7 +110,7 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
   };
   function resetForChat(nextChatId) {
     if (chatId === nextChatId) return;
-    closeCrop(); chatId = nextChatId; peopleQuery='';pickerSearchNode=null;pickerComposing=false;pickerRenderDeferred=false;drafts.clear(); archivedHistory.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = readFeedback(state);
+    closeCrop(); chatId = nextChatId; showTemporaryPeople=false;peopleQuery='';pickerSearchNode=null;pickerComposing=false;pickerRenderDeferred=false;drafts.clear(); archivedHistory.clear(); currentEntityId = null; showMore = false; switcherNode = null; switcherSignature = null; switcherScrollLeft = 0; feedback = readFeedback(state);
   }
   async function run(label, task, { after = null, generationReport = false } = {}) {
     const mine = ++epoch, operationChatId = chatId; feedback = `${label}…`; render(state);
@@ -542,7 +544,9 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
     const search=element('input','settings-input qqj-profile-picker-search'),count=element('span','v3-memory-status qqj-profile-picker-count');
     search.type='search';search.placeholder='搜索人物';search.value=peopleQuery;search.setAttribute('aria-label','搜索更多人物');
     pickerSearchNode=search;const pickerChatId=chatId,rows=[];
-    heading.append(element('strong','','更多人物'),search,count,order);picker.append(heading);
+    const temporaryToggle = element('button', 'secondary-action qqj-temporary-people-toggle');
+    temporaryToggle.type = 'button';
+    heading.append(element('strong','','更多人物'),search,count,order,temporaryToggle);picker.append(heading);
     const list = element('div', 'qqj-more-people-list');
     for (const person of people) {
       const row = element('div', 'qqj-more-person-row'), copy = element('div', 'qqj-more-person-copy');
@@ -554,26 +558,47 @@ export function createPeopleProfilesView({ runtime, sessionStateProvider = null,
       toggle.setAttribute?.('aria-label', `${person.displayName || person.entityDisplayName}人物操作`);
       const menuBody = element('div', 'qqj-profile-menu-pop'); managementButtons(person, menuBody); menu.append(toggle, menuBody); actions.append(menu);
       row.append(copy, actions); list.append(row);
-      rows.push({row,menu,text:[person.displayName,person.entityDisplayName,...(person.aliases??[])].filter(Boolean).join(' ').normalize('NFKC').toLocaleLowerCase()});
+      rows.push({row,menu,person});
     }
-    const empty=element('p','settings-hint');list.append(empty);
-    const paint=()=>{
-      const query=peopleQuery.normalize('NFKC').trim().toLocaleLowerCase();let matched=0;
-      for(const item of rows){
-        item.row.hidden=Boolean(query&&!item.text.includes(query));
-        if(item.row.hidden)operationMenus.unregister(item.menu);else{matched++;operationMenus.register(item.menu);}
+    const empty = element('p', 'settings-hint');
+    list.append(empty);
+    const paint = () => {
+      const query = peopleQuery.normalize('NFKC').trim().toLocaleLowerCase();
+      const projection = peoplePickerProjection(people, { query: peopleQuery, showTemporary: showTemporaryPeople });
+      const visibleIds = new Set(projection.visible.map(person => person.entityId));
+      let matched = 0;
+      temporaryToggle.hidden = Boolean(query) || !projection.collapsedCount;
+      temporaryToggle.textContent = showTemporaryPeople ? '收起临时人物' : `显示临时人物（${projection.collapsedCount}）`;
+      temporaryToggle.setAttribute('aria-pressed', String(showTemporaryPeople));
+      for (const item of rows) {
+        item.row.hidden = !visibleIds.has(item.person.entityId);
+        if (item.row.hidden) operationMenus.unregister(item.menu);
+        else { matched++; operationMenus.register(item.menu); }
       }
-      count.textContent=query?`${matched}/${people.length}位`:`${people.length}位`;
-      heading.setAttribute('aria-label',`更多人物，${matched}/${people.length}位`);
-      empty.textContent=people.length?'没有匹配的人物。':'当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。';empty.hidden=matched>0;
+      count.textContent = query || matched !== people.length ? `${matched}/${people.length}位` : `${people.length}位`;
+      heading.setAttribute('aria-label', `更多人物，${matched}/${people.length}位`);
+      empty.textContent = people.length ? (query ? '没有匹配的人物。' : '临时人物已收起，可点击“显示临时人物”或搜索姓名、称呼。')
+        : '当前没有已识别人物。后续摘要和状态分析仍会正常发现人物。';
+      empty.hidden = matched > 0;
     };
-    const update=()=>{if(chatId!==pickerChatId||pickerSearchNode!==search)return;peopleQuery=search.value;if(!pickerComposing)paint();};
-    search.addEventListener('input',update);search.addEventListener('search',update);
-    search.addEventListener('compositionstart',()=>{if(pickerSearchNode===search)pickerComposing=true;});
-    search.addEventListener('compositionend',()=>{
-      if(chatId!==pickerChatId||pickerSearchNode!==search)return;
-      pickerComposing=false;peopleQuery=search.value;
-      if(pickerRenderDeferred){pickerRenderDeferred=false;render(state);}else paint();
+    temporaryToggle.addEventListener('click', () => {
+      showTemporaryPeople = !showTemporaryPeople;
+      paint();
+    });
+    const update = () => {
+      if (chatId !== pickerChatId || pickerSearchNode !== search) return;
+      peopleQuery = search.value;
+      if (!pickerComposing) paint();
+    };
+    search.addEventListener('input', update);
+    search.addEventListener('search', update);
+    search.addEventListener('compositionstart', () => { if (pickerSearchNode === search) pickerComposing = true; });
+    search.addEventListener('compositionend', () => {
+      if (chatId !== pickerChatId || pickerSearchNode !== search) return;
+      pickerComposing = false;
+      peopleQuery = search.value;
+      if (pickerRenderDeferred) { pickerRenderDeferred = false; render(state); }
+      else paint();
     });
     paint();picker.append(list); return picker;
   }

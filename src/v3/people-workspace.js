@@ -322,11 +322,18 @@ function activePersonEntities(reachable, workspace) {
 }
 function candidateProjection(reachable, memoryState, workspace) {
   const projection = identityProjection(workspace);
-  const counts = new Map();
+  const appearances = new Map();
   for (const memory of reachable?.floorMemories ?? []) {
     if (memory.recordStatus !== 'active') continue;
-    const seen = new Set((memory.participants ?? []).map(participant => resolveIdentityEntityId(participant.entityId, projection)));
-    for (const entityId of seen) if (!isIdentityDeleted(entityId, projection)) counts.set(entityId, (counts.get(entityId) ?? 0) + 1);
+    for (const participant of memory.participants ?? []) {
+      const entityId = resolveIdentityEntityId(participant.entityId, projection);
+      if (isIdentityDeleted(entityId, projection)) continue;
+      const floors = appearances.get(entityId) ?? new Set();
+      const evidenceFloors = (participant.evidenceRefs ?? []).map(ref => ref.floorId).filter(Boolean);
+      // Aggregated summaries count only this person's own evidence, never every source in the batch.
+      for (const floorId of evidenceFloors.length ? evidenceFloors : (memory.sourceFloorIds?.length > 1 ? [] : [memory.floorId])) if (floorId) floors.add(floorId);
+      appearances.set(entityId, floors);
+    }
   }
   const cseById = new Map();
   for (const subject of memoryState?.cseSubjects ?? []) {
@@ -347,20 +354,28 @@ function candidateProjection(reachable, memoryState, workspace) {
     const entity = entry.entity;
     const cse = cseById.get(entity.id);
     const sourcedCse = [...(cse?.core ?? []), ...(cse?.adaptive ?? []), ...(cse?.situational ?? [])].some(item => item.sourceFloorId || item.origin === 'delta');
-    return Boolean(entity.firstSeenFloorId || counts.get(entity.id) || sourcedCse);
+    return Boolean(entity.firstSeenFloorId || appearances.has(entity.id) || sourcedCse);
   }).map(entry => {
     const entity = entry.entity;
     const storedProfile = workspace?.profilesByEntityId?.[entity.id] ?? null;
-    const profile = storedProfile ? Object.freeze({ ...storedProfile, ...profileWithMacros(storedProfile, macros) }) : null;
+    const projectedProfile = storedProfile ? { ...storedProfile, ...profileWithMacros(storedProfile, macros) } : null;
+    if (projectedProfile && !storedProfile.manualFields?.includes('name')
+      && projectedProfile.name === macroText(entry.originalDisplayName ?? entity.displayName, macros)) {
+      projectedProfile.name = macroText(entry.displayName, macros);
+    }
+    const profile = projectedProfile ? Object.freeze(projectedProfile) : null;
     const cse = cseById.get(entity.id) ?? null;
-    const appearanceCount = counts.get(entity.id) ?? 0;
+    const appearanceFloors = new Set(appearances.get(entity.id) ?? []);
+    for (const item of [...(cse?.core ?? []), ...(cse?.adaptive ?? []), ...(cse?.situational ?? [])]) if (item.sourceFloorId) appearanceFloors.add(item.sourceFloorId);
+    const appearanceCount = appearances.get(entity.id)?.size ?? 0;
     return Object.freeze({
-      entityId: entity.id, displayName: profile?.name || macroText(entity.displayName, macros),
+      entityId: entity.id, displayName: macroText(entry.displayName, macros),
       entityDisplayName: macroText(entry.originalDisplayName ?? entity.displayName, macros), aliases: Object.freeze(entry.aliases.map(alias => macroText(alias, macros)).filter(Boolean)),
       ...identityBriefFields(entry),
-      specialRole: entity.specialRole, selected: selected.has(entity.id), profiled: Boolean(profile), profile, avatar: workspace?.avatarsByEntityId?.[entity.id] ?? null,
+      ...(entry.nameKind ? { nameKind: entry.nameKind } : {}),
+      specialRole: entity.specialRole, mainCharacter: resolveIdentityEntityId(reachable?.baseline?.characterCard?.entityId, projection) === entity.id, selected: selected.has(entity.id), profiled: Boolean(profile), profile, avatar: workspace?.avatarsByEntityId?.[entity.id] ?? null,
       ...(workspace?.avatarSourcesByEntityId?.[entity.id] ? { avatarSource: workspace.avatarSourcesByEntityId[entity.id] } : {}),
-      appearanceCount, cse,
+      appearanceCount, evidenceFloorCount: appearanceFloors.size, cse,
     });
   }).sort((left, right) => Number(right.selected) - Number(left.selected)
     || right.appearanceCount - left.appearanceCount || left.displayName.localeCompare(right.displayName, 'zh-Hans-CN')));

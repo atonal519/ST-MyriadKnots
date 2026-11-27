@@ -1,5 +1,5 @@
 import { memoryParticipantsForDisplay } from '../v3/memory-participants.js';
-import { readManualArtifactBlocks, RECALL_KNOWLEDGE_GUIDANCE, RECALL_COMPACT_KNOWLEDGE_GUIDANCE } from '../v3/recall-text.js';
+import { readManualArtifactBlocks, manualCseChangePrefix, RECALL_KNOWLEDGE_GUIDANCE, RECALL_COMPACT_KNOWLEDGE_GUIDANCE } from '../v3/recall-text.js';
 import { CSE_QUANTIFICATION_GUIDANCE } from '../v3/cse-quantification.js';
 import { selectAssistantMessage } from '../v3/foundation-domain.js';
 import { publicErrorMessage } from '../public-error.js';
@@ -386,6 +386,10 @@ function parseStorylineHistory(injectionText, selectedFloors, selectedChanges, s
     if (!Number.isSafeInteger(currentSequence)) return null;
     const currentChanges = selectedChanges.filter(value => value.assistantSeq === currentSequence && value.storylineId === currentLine.storylineId);
     if (currentChanges.some(value => line.startsWith(`- [变化] ${value.subject} / ${value.layer}：当时`) || line.startsWith(`- [变化] 主体：${value.subject} / ${value.layer}：当时`))) continue;
+    if (currentChanges.some(value => {
+      const prefix = value.origin === 'manual' ? manualCseChangePrefix(value) : null;
+      return prefix && (value.action === 'remove' ? line === prefix : line.startsWith(prefix) && line.length > prefix.length);
+    })) continue;
     const changeMatch = /^- \[变化；来源 AI #(\d+)\] /u.exec(line);
     if (changeMatch) {
       const assistantSeq = Number(changeMatch[1]);
@@ -599,6 +603,7 @@ export function projectInlineRecallReceipt(receipt) {
   const cseChangeItems = Object.freeze((safeShape ? rawChanges : []).map(value => Object.freeze({
     subjectEntityId: frozenText(value.subjectEntityId, 500), subject: frozenText(value.subject, 500), layer: frozenText(value.layer, 80), action: frozenText(value.action, 80),
     floorId: frozenText(value.floorId, 500), assistantSeq: value.assistantSeq,
+    ...(value.origin === 'manual' ? { origin: 'manual' } : {}),
     storylineId: frozenText(value.storylineId, 80),
     before: value.before && typeof value.before === 'object' && !Array.isArray(value.before) ? Object.freeze({
       text: frozenText(value.before.text), visibility: frozenText(value.before.visibility, 80), toward: frozenText(value.before.toward, 500),

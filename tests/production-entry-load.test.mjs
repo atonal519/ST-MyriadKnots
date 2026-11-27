@@ -58,7 +58,7 @@ const nativeJson = value => Array.isArray(value) ? value.map(nativeJson) : value
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, nativeJson(value[key])])) : value;
 const fingerprintText = value => `sha256:${createHash('sha256').update(String(value ?? '')).digest('hex')}`;
 
-async function readyFoundationRecords(hostGlobalName, host, manualAliases = false, { expectedFloors = 1, summaries = false, numericCse = null } = {}) {
+async function readyFoundationRecords(hostGlobalName, host, manualAliases = false, { expectedFloors = 1, summaries = false, numericCse = null, temporaryPeople = false } = {}) {
   const records = new Map();
   const failed = status => Object.assign(new Error(`HTTP ${status}`), { status });
   const envelope = (data, revision) => ({ schemaVersion: 1, revision, generationId: '11111111-1111-4111-8111-111111111111',
@@ -97,12 +97,12 @@ async function readyFoundationRecords(hostGlobalName, host, manualAliases = fals
   assert.ok(reachable.checkpoint, '召回来源必须有经正式Store验证的checkpoint');
   assert.equal(reachable.floors.length, expectedFloors);
   let memory;
-  if (manualAliases || summaries || numericCse) {
+  if (manualAliases || summaries || numericCse || temporaryPeople) {
     let summaryCalls = 0, numericCseCalls = 0;
     memory = createV3MemoryRuntime({ foundationRuntime: runtime, store, hostAdapter, isEnabled: () => true,
       automationSettings: () => ({ enabled: false, batchSize: 1 }),
       sanitizerOptions: () => ({ keepTags: 'content' }),
-      generateUtilityTask: async () => { summaryCalls++; return { jsonData: numericCse ? { summary: '角色平安归来后继续交谈。', people: [{ name: '角色', presence: 'present' }, { name: '你', role: 'user', presence: 'present' }] } : summaries ? { summary: `源旧摘要${summaryCalls}` }
+      generateUtilityTask: async () => { summaryCalls++; return { jsonData: temporaryPeople ? { summary: '戴斗笠的人到场。', people: [{ name: '戴斗笠的人', nameKind: 'temporary', presence: 'present' }] } : numericCse ? { summary: '角色平安归来后继续交谈。', people: [{ name: '角色', presence: 'present' }, { name: '你', role: 'user', presence: 'present' }] } : summaries ? { summary: `源旧摘要${summaryCalls}` }
         : { summary: '合成人物到场。', people: [{ name: '合成人物', aliases: ['旧称'], presence: 'present' }] } }; },
       generateAnalysisTask: async options => {
         if (summaries) assert.fail('离线fixture不应请求CSE');
@@ -366,7 +366,7 @@ async function generatedCurrentReceipt18({ hostGlobalName, chat, userMessage, ro
   return { receipt, result };
 }
 
-async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, numericCse = null, recallInterrupt = false, recallOverlap = null, recallExcludedEdit = false, emptyCoreUser = null, verifyRecallAttributePrompt = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
+async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = false, temporaryPeople = false, wrapperSeed = null, coreCacheEnabled, withExistingPanel = false, legacyReceiptUi = false, legacyReceiptPrequelBudget = null, mainApi = 'openai', invokeTypes = [], invokeLocationReference = false, locationReferenceChat = false, initializeWithoutSubtle = false, allowIdentityWrites = false, unstableAi0 = false, withoutQqjIdentity = false, numericCse = null, recallInterrupt = false, recallOverlap = null, recallExcludedEdit = false, emptyCoreUser = null, verifyRecallAttributePrompt = false, fileOwnedIdentity = false, tauri = false, privateDiagnostics = false, startupBindFailure = false, metadataWithUncloneableField = false, metadataProxy = false, firstIdentityChat = null, nativeBranch = null, clockSetterFailure = false, messagesWithUncloneableField = false } = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
   const bundlePath = process.env.QQJ_TEST_BUNDLE ? resolve(process.env.QQJ_TEST_BUNDLE) : resolve(root, manifest.js.split('?')[0]);
   const seededSettings = wrapperSeed ? structuredClone(wrapperSeed) : { qianqianjie: {}, 'schedule-planner': {} };
@@ -452,7 +452,7 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
   };
   if (firstIdentityChat) host.chatMetadata = { otherPlugin: { header: '保留' } };
   let branchSource = null;
-  let readyRecords = locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? await readyFoundationRecords(hostGlobalName, host, manualAliases, { numericCse }) : null;
+  let readyRecords = locationReferenceChat || legacyReceiptUi || fileOwnedIdentity ? await readyFoundationRecords(hostGlobalName, host, manualAliases, { numericCse, temporaryPeople }) : null;
   if (nativeBranch) {
     const sourceChatId = host.chatMetadata.qianqianjie.chatId;
     const sourceHost = { ...host, chatId: 'source-chat', chatMetadata: { qianqianjie: { schemaVersion: 2, chatId: sourceChatId,
@@ -800,10 +800,10 @@ async function isolateBundle(hostGlobalName, { enabled = false, manualAliases = 
     } finally { for (const cleanup of unloads) cleanup(); }
   }
   let effectivePeople = null;
-  if (manualAliases) {
+  if (manualAliases || temporaryPeople) {
     for (let attempt = 0; attempt < 100; attempt++) {
       effectivePeople = context.qqj_v3_public_bridge_v1.getPeopleSnapshot();
-      if (effectivePeople.people?.items?.some(person => person.entityDisplayName === '合成人物')) break;
+      if (effectivePeople.people?.items?.some(person => person.entityDisplayName === (temporaryPeople ? '戴斗笠的人' : '合成人物'))) break;
       await new Promise(resolvePromise => setTimeout(resolvePromise, 10));
     }
   }
@@ -1146,7 +1146,7 @@ test('manifest 唯一登记主入口，生产分包依赖完整、内容哈希�
   const cacheDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   assert.equal(cacheDate.toISOString().slice(0, 10), `${year}-${month}-${day}`, 'cache key 必须包含合法日期');
   assert.equal(manifest.generate_interceptor, 'qqj_v3_recall_interceptor');
-  assert.equal(manifest.version, '1.3.4');
+  assert.equal(manifest.version, '1.3.5');
   assert.equal(typeof manifest.author, 'string', 'TT 2.2.0 installer requires author');
   assert.ok(manifest.author.length > 0);
   const bundlePath = resolve(process.env.QQJ_TEST_BUNDLE ?? resolve(root, manifest.js.split('?')[0]));
@@ -2342,4 +2342,16 @@ test('分包主入口和稳定素材同层URL保持SVG按需相对读取', async
     assert.ok(calls.some(url => url.startsWith('https://offline.invalid/scripts/extensions/third-party/Renamed/assets/maps-library/campus-compact.svg?v=')));
     assert.ok(calls.some(url => url.startsWith('https://offline.invalid/scripts/extensions/third-party/Renamed/assets/maps-real/seoul.svg?v=')));
   }
+});
+
+
+test('最终bundle原生和Luker冷读临时语义实体，公开人物仍完整可用且不补调摘要', async () => {
+ for(const host of ['SillyTavern','Luker']){
+  const result=await isolateBundle(host,{enabled:true,locationReferenceChat:true,temporaryPeople:true});
+  assert.equal(result.status,'evaluated');
+  const person=result.effectivePeople.people.items.find(p=>p.entityDisplayName==='戴斗笠的人');
+  assert.ok(person,'显示收起不删除公共人物候选');assert.equal(person.selected,false);
+  assert.equal(result.backendWriteCalls,0,'冷读新标记不重写图或补做摘要');
+  assert.equal(result.numericRecallCalls,0);
+ }
 });

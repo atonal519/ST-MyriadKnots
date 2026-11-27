@@ -354,9 +354,10 @@ export function validateEntityRecord(input, { expectedChatId } = {}) {
   const value = clone(input);
   const hasIdentityBrief = Object.hasOwn(value, 'identityBrief');
   const hasIdentityBriefSource = Object.hasOwn(value, 'identityBriefSource');
-  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'entityType', 'displayName', 'aliases', 'specialRole', 'firstSeenFloorId', 'lastSeenFloorId', 'status', 'mergedIntoEntityId', 'mergeEvidenceRefs', 'baselineClaimIds', ...(hasIdentityBrief ? ['identityBrief'] : []), ...(hasIdentityBriefSource ? ['identityBriefSource'] : []), 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_ENTITY_INVALID');
+  exact(value, ['schemaVersion', 'recordType', 'id', 'chatId', 'narrativeGeneration', 'entityType', 'displayName', 'aliases', 'specialRole', 'firstSeenFloorId', 'lastSeenFloorId', 'status', 'mergedIntoEntityId', 'mergeEvidenceRefs', 'baselineClaimIds', ...(hasIdentityBrief ? ['identityBrief'] : []), ...(hasIdentityBriefSource ? ['identityBriefSource'] : []), ...(Object.hasOwn(value, 'nameKind') ? ['nameKind'] : []), 'createdAt', 'updatedAt', 'recordStatus', 'supersedes'], 'V3_ENTITY_INVALID');
   common(value, 'entity', expectedChatId);
   enumValue(value.entityType, [...ENTITY_TYPES], 'V3_ENTITY_INVALID', 'entityType'); text(value.displayName, 'V3_ENTITY_INVALID', 'displayName', { max: 500 }); enumValue(value.specialRole, ['char', 'user', 'none'], 'V3_ENTITY_INVALID', 'specialRole');
+  if (Object.hasOwn(value, 'nameKind')) enumValue(value.nameKind, ['temporary', 'stable', 'named'], 'V3_ENTITY_INVALID', 'nameKind');
   if (hasIdentityBrief) text(value.identityBrief, 'V3_ENTITY_INVALID', 'identityBrief', { max: 400 });
   if (hasIdentityBriefSource) {
     validateIdentityBriefSource(value.identityBriefSource);

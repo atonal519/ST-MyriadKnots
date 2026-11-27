@@ -1,5 +1,5 @@
 import { cseQuantificationFields, formatCseQuantification, CSE_QUANTIFICATION_GUIDANCE } from './cse-quantification.js';
-import { RECALL_KNOWLEDGE_GUIDANCE } from './recall-text.js';
+import { RECALL_KNOWLEDGE_GUIDANCE, manualCseChangePrefix } from './recall-text.js';
 import { effectiveFoundationFacts } from './place-foundation.js';
 import { manualPlaceFacts } from './place-workspace.js';
 import { projectPlaceFeatures, currentPlaceEntityIds, expandPlaceParents, isGenericPlaceAlias, placeSourceLocationReference } from './spatial-domain.js';
@@ -408,8 +408,9 @@ function formatStorylineInjection({ coverage, floors, states, cseChanges, entity
           && item.layer === value.layer && sameStateBody(item.state, value.after));
         const currentEquivalent = value.after && lineStates.some(state => state.subjectEntityId === value.subjectEntityId && state.layer === value.layer && sameStateBody(state, value.after));
         if (value.origin === 'manual') {
-          lines.push(value.action === 'remove' ? `- [变化] 主体：${value.subject} / ${value.layer}：人工移除或清空。`
-            : `- [变化] 主体：${value.subject} / ${value.layer}：人工${action[value.action] ?? '校准'}。${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq, value.layer)}。`);
+          const prefix = manualCseChangePrefix(value) ?? `- [变化] 主体：${value.subject} / ${value.layer}：人工校准。`;
+          lines.push(value.action === 'remove' ? prefix
+            : `${prefix}${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq, value.layer)}。`);
           continue;
         }
         lines.push(`- [变化] 主体：${value.subject} / ${value.layer}：当时${action[value.action] ?? '变化'}；之前 ${stateSide(value.before, false, assistantSeq, priorAfter?.assistantSeq, value.layer)}；之后 ${stateSide(value.after, currentEquivalent, assistantSeq, priorSameBodyAfter?.assistantSeq, value.layer)}。`);

@@ -2247,7 +2247,7 @@ test('有效别名：目录和记忆人物保主名、允许删合并旧名，�
     entityId: b.id, memberEntityIds: [a.id, b.id].sort(), displayName: b.displayName, aliases: ['人工旧称'], specialRole: 'none',
   });
   assert.equal(reuseIdentityProjection(projection, h.runtime.getState()), projection);
-  assert.deepEqual(Object.keys(projection).sort(), ['currentNamesByEntityId', 'deletedEntityIds', 'identityRedirectsByEntityId', 'manualAliasesByEntityId']);
+  assert.deepEqual(Object.keys(projection).sort(), ['automaticNameEntityIds', 'currentNamesByEntityId', 'deletedEntityIds', 'identityRedirectsByEntityId', 'manualAliasesByEntityId']);
   assert.deepEqual(projection.manualAliasesByEntityId, { [b.id]: ['人工旧称'] });
   await h.runtime.setSelectedEntityIds([b.id]);
   await h.runtime.regenerateProfile(b.id);
@@ -2791,4 +2791,28 @@ test('第二批人物保存CAS重基保并发职业，人工可覆盖自动新�
   assert.equal(h.db.records.get(key).data.profilesByEntityId[second.id].notes, '人工最高校准');
   await h.runtime.deletePerson(second.id);
   await assert.rejects(h.runtime.saveProfile(second.id, { notes: '已删旧窗' }, { manualFields: ['notes'], original }), error => error.code === 'QQJ_PEOPLE_PROFILE_ENTITY_INVALID');
+});
+
+test('人物出场按自身来源去重，聚合不借别人的楼，基线CHAR保持主角身份', async () => {
+ const h=harness(),first=h.peopleEntities[0],second=h.peopleEntities[1];
+ h.setReachable({...h.reachable,entities:h.reachable.entities.map(e=>[first.id,second.id].includes(e.id)?{...e,nameKind:'temporary',aliases:[]}:e),baseline:{characterCard:{entityId:first.id}},floorMemories:[
+  {recordStatus:'active',floorId:'aggregate',sourceFloorIds:['f1','f2'],participants:[{entityId:first.id,evidenceRefs:[{floorId:'f1'},{floorId:'f1'}]},{entityId:second.id,evidenceRefs:[{floorId:'f1'},{floorId:'f2'}]}]},
+  {recordStatus:'active',floorId:'f1',participants:[{entityId:first.id,evidenceRefs:[]}]}
+ ]});
+ h.setMemoryState({cseSubjects:[]},false);await h.runtime.refresh({refreshMemory:false});
+ const people=h.runtime.getState().people,a=people.find(p=>p.entityId===first.id),b=people.find(p=>p.entityId===second.id);
+ assert.equal(a.appearanceCount,1);assert.equal(a.mainCharacter,true);assert.equal(a.nameKind,'temporary');assert.equal(b.appearanceCount,2);
+});
+
+test('获证真名同步自动旧称呼资料的只读姓名投影，人工及独立资料名保持', async () => {
+ for(const [name,manualFields,expected] of [['师父',[],'青禾'],['师父',['name'],'师父'],['药铺青先生',[],'药铺青先生']]){
+  const h=harness(),original={...h.peopleEntities[0],displayName:'师父',nameKind:'stable',aliases:[]};
+  h.setReachable({...h.reachable,entities:h.reachable.entities.map(e=>e.id===original.id?original:e)});
+  await h.runtime.refresh({refreshMemory:false});await h.runtime.saveProfile(original.id,{name,occupation:'药师'},{manualFields});
+  h.setReachable({...h.reachable,entities:[...h.reachable.entities,{...original,id:ids[10],displayName:'青禾',nameKind:'named',status:'merged',mergedIntoEntityId:original.id}]});
+  await h.runtime.refresh({refreshMemory:false});
+  const state=h.runtime.getState(),person=state.people.find(p=>p.entityId===original.id);
+  assert.equal(person.displayName,expected);assert.equal(person.profile.name,expected);assert.equal(person.profile.occupation,'药师');
+  assert.equal(state.profilesByEntityId[original.id].name,name,'展示投影不重写存档姓名');
+ }
 });

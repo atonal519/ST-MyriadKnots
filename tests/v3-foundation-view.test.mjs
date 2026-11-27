@@ -2559,7 +2559,7 @@ test('activate 请求恢复聊天记录回执，并明确标注历史展示、�
   const copy = flatten(container).map(node => node.textContent).join('|');
   assert.equal(restores, 1);
   assert.match(copy, /最近一次召回结果|聊天记录中的回执 · 恢复显示/);
-  assert.match(copy, /从聊天记录读取 · 仅恢复历史展示，不会再次注入|历史回执不重新读取来源|历史实际注入/);
+  assert.match(copy, /从聊天记录读取 · 本次仅恢复显示|历史回执不重新读取来源|历史实际注入/);
   assert.match(copy, /历史耗时 3\.6 秒/u, '恢复回执明确标注历史耗时');
   assert.match(copy, /历史选入原文段 1/u, '历史段落不标成本轮候选或注入');
 });
@@ -4906,4 +4906,21 @@ test('不计入记忆的楼在首次显示与刷新后均显示中文状态', as
   assert.match(copy(), /不计入记忆/u); assert.doesNotMatch(copy(), /excluded/u);
   state = { ...state, floors: state.floors.map(floor => ({ ...floor })) }; view.render(state);
   assert.match(copy(), /不计入记忆/u); assert.doesNotMatch(copy(), /excluded/u); view.deactivate();
+});
+
+test('双丝网临时单楼默认收起，搜索和看全可达并可设为重要', async () => {
+ const state={status:'ready',pluginEnabled:true,chatId:CHAT,foundationStatus:'ready',stableCount:1,rememberedCount:1,cseReady:true,cseSubjects:[],floors:[],memoryEntities:[]};
+ const runtime={getState:()=>state,refreshStatus:async()=>state,confirmLatest:async()=>state};
+ const shared=peopleRuntime([{entityId:'temp',displayName:'戴斗笠的人',nameKind:'temporary'},{entityId:'named',displayName:'青禾',nameKind:'named'}],[]);
+ const container=new Node('main'),view=createV3FoundationView({runtime,peopleRuntime:shared,documentRef});view.setPage('people');view.mount(container);
+ flatten(container).find(n=>n.textContent==='更多人物（2）').click();
+ const list=()=>flatten(container).find(n=>n.className==='qqj-more-people-list');
+ const rows=()=>list().children.filter(n=>n.tag!=='p'&&!n.hidden);
+ assert.equal(rows().length,1);
+ const all=()=>flatten(container).find(n=>n.className.includes('qqj-temporary-people-toggle'));
+ all().click();assert.equal(rows().length,2);all().click();assert.equal(rows().length,1);
+ const search=flatten(container).find(n=>n.className.includes('qqj-profile-picker-search'));search.value='斗笠';search.fire('input');assert.equal(rows().length,1);
+ const choose=flatten(rows()[0]).find(n=>n.textContent==='设为重要');assert.ok(choose);choose.click();await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(shared.getState().selectedEntityIds,['temp']);
+ view.deactivate();
 });

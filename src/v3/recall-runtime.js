@@ -1064,12 +1064,12 @@ function receiptShapeValid(receipt, { historical = false } = {}) {
   return receipt.skipReasons.every(reason => boundedString(reason, 120));
 }
 
-async function persistedReceiptValid(receipt, { chatId, userIndex, userFingerprint, pluginVersion, placeWorkspaceDependency = `${chatId}:0` }, fingerprint = hashText) {
+async function persistedReceiptValid(receipt, { chatId, userIndex, userFingerprint }, fingerprint = hashText) {
   try {
     const snapshot = clone(receipt);
+    // 发布号保留在原签名中；复用由实际回执格式与召回策略契约决定。
     if (!receiptShapeValid(snapshot)
       || snapshot.schemaVersion !== RECALL_RECEIPT_SCHEMA_VERSION
-      || snapshot.pluginVersion !== pluginVersion
       || snapshot.chatId !== chatId
       || snapshot.userMessageIndex !== userIndex
       || snapshot.userContentFingerprint !== userFingerprint
@@ -2369,10 +2369,9 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       timings.inputMs = Date.now() - inputStarted;
       let candidate = null, candidateOwner = null;
       advanceOperation(operation, 'receiptValidation');
-      const placeWorkspaceDependency = `${operation.chatId}:0`;
       for (const value of receiptCandidates(user)) {
         const owner = value === sessionReceipt?.receipt ? sessionReceipt.owner : null;
-        const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint, pluginVersion, placeWorkspaceDependency }, fingerprint);
+        const snapshot = await persistedReceiptValid(value, { chatId: operation.chatId, userIndex: user.index, userFingerprint }, fingerprint);
         const locationDependencyMatches = snapshot?.schemaVersion >= 18
           ? locationReferenceDependencyMatches(snapshot.locationReferenceDependency, operation.locationReferenceSnapshot)
           : !operation.locationReferenceSnapshot?.values?.length;
@@ -2955,7 +2954,7 @@ export function createV3RecallRuntime({ store, hostAdapter, generateUtilityTask 
       const messageText = user.message.mes;
       const persistedUserFingerprint = await fingerprint(messageText);
       let receiptSnapshot = receipt.schemaVersion === RECALL_RECEIPT_SCHEMA_VERSION
-        ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint, pluginVersion }, fingerprint)
+        ? await persistedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint)
         : null;
       if (!receiptSnapshot && [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, RECALL_RECEIPT_SCHEMA_VERSION].includes(receipt.schemaVersion)) {
         const historical = await historicalSignedReceiptValid(receipt, { chatId, userIndex: user.index, userFingerprint: persistedUserFingerprint }, fingerprint);

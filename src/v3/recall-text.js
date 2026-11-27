@@ -18,3 +18,9 @@ export function readManualArtifactBlocks(source, { preserveHeaders = false } = {
   parts.push(source.slice(cursor));
   return { valid: true, text: parts.join(''), blocks };
 }
+
+// 人工变化的动作头由注入与楼内投影共用；正文仍按原状态格式输出。
+export function manualCseChangePrefix(value) {
+  const action = { add: '新增', update: '更新', refine: '调整', remove: '移除或清空' }[value.action];
+  return typeof action === 'string' ? `- [变化] 主体：${value.subject} / ${value.layer}：人工${action}。` : null;
+}

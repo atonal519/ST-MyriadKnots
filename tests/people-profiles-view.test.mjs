@@ -961,3 +961,40 @@ test('第二批人物编辑窗只提交实际修改，原字段基线保留并�
   assert.match(view.testDialogs.active.error?.message ?? '', /人工字段.*更新/u);
   assert.equal(h.records.get(key).data.profilesByEntityId[A].notes, '另一人工备注');
 });
+
+test('临时单楼人物默认收起，可看全搜索并设为重要，清空搜索恢复分组', async () => {
+  const h = runtimeHarness({ selected: [] });
+  h.emitState({ ...h.state, people: h.state.people.map((p, i) => i ? { ...p, displayName: '戴斗笠的人', entityDisplayName: '戴斗笠的人', aliases: [], nameKind: 'temporary', appearanceCount: 1 } : p) });
+  const container = new Node('main'), view = createPeopleProfilesView({ runtime: h.runtime, documentRef }); view.mount(container);
+  flatten(container).find(n => n.textContent === '更多人物（2）').click();
+  const rows = () => flatten(container).filter(n => n.className === 'qqj-more-person-row' && !n.hidden);
+  assert.equal(rows().length, 1);
+  const all = () => flatten(container).find(n => n.className.includes('qqj-temporary-people-toggle'));
+  assert.match(all().textContent, /1/); all().click(); assert.equal(rows().length, 2); all().click(); assert.equal(rows().length, 1);
+  const search = flatten(container).find(n => n.className.includes('qqj-profile-picker-search')); search.value = '斗笠'; search.fire('input'); assert.equal(rows().length, 1); assert.match(visible(rows()[0]), /戴斗笠/);
+  rows()[0].children[1].children[0].click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.calls.select.at(-1), [B]);
+  const nextSearch = flatten(container).find(n => n.className.includes('qqj-profile-picker-search')); nextSearch.value = ''; nextSearch.fire('input'); assert.equal(rows().length, 2);
+  view.deactivate();
+});
+
+test('真实人物投影揭名后人卡名单及姓名资料行一致，旧自动存值不被改写', async () => {
+ const h=trueRuntimeHarness();h.entities[0].nameKind='stable';
+ await h.runtime.refresh();await h.runtime.saveProfile(A,{name:'甲',occupation:'药师'},{manualFields:[]});await h.runtime.setSelectedEntityIds([A]);
+ h.entities.push({...h.entities[0],id:C,displayName:'青禾',nameKind:'named',aliases:[],status:'merged',mergedIntoEntityId:A});h.runtime.invalidate();await h.runtime.refresh({refreshMemory:false});
+ const container=new Node('main'),view=createPeopleProfilesView({runtime:h.runtime,documentRef});view.mount(container);
+ assert.equal(h.runtime.getState().people.find(p=>p.entityId===A).displayName,'青禾');
+ const card=flatten(container).find(n=>n.className==='qqj-profile-card');assert.match(visible(card),/青禾/);assert.doesNotMatch(visible(card),/姓名\|甲/);
+ assert.equal(flatten(card).find(n=>n.tag==='h2').textContent,'青禾');
+ flatten(card).find(n=>n.textContent==='编辑资料').click();assert.equal(editorField(view,'姓名').value,'青禾');cancelEditor(view);
+ flatten(container).find(n=>n.textContent==='更多人物（1）').click();
+ const row=flatten(container).filter(n=>n.className==='qqj-more-person-row').find(n=>visible(n).includes('青禾'));assert.ok(row);
+ assert.equal(h.runtime.getState().profilesByEntityId[A].name,'甲');view.deactivate();
+});
+
+test('尚未建档的揭名人物在人卡和姓名编辑框均使用新名', () => {
+ const h=runtimeHarness();h.emitState({...h.state,people:h.state.people.map(p=>p.entityId===A?{...p,displayName:'青禾',entityDisplayName:'戴斗笠的人',aliases:[]}:p)});
+ const container=new Node('main'),view=createPeopleProfilesView({runtime:h.runtime,documentRef});view.mount(container);
+ assert.equal(flatten(container).find(n=>n.tag==='h2').textContent,'青禾');
+ flatten(container).find(n=>n.textContent==='编辑资料').click();assert.equal(editorField(view,'姓名').value,'青禾');cancelEditor(view);view.deactivate();
+});

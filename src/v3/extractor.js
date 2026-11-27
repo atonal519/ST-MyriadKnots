@@ -21,10 +21,11 @@ import { normalizeLocationReference } from './location-reference.js';
 import { compileIdentityFacts, identityFactBindings, identityFactsForPrompt, identityFactsText, sameIdentityFacts } from './identity-brief.js';
 
 export const EXTRACTOR_SCHEMA_VERSION = 3;
-export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-68';
-export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-37`;
+export const EXTRACTOR_PROMPT_VERSION = 'qqj-v3-extractor-prompt-69';
+export const EXTRACTOR_VERSION = `${EXTRACTOR_PROMPT_VERSION}/schema-${EXTRACTOR_SCHEMA_VERSION}/semantic-compiler-38`;
 export const QIANSHI_OUTPUT_CAPACITY_GUIDANCE = '每个千事保存单元最多输出 160 条事件、320 条不同有效关系，每条事件最多 40 位人物；order 不要重复关系。';
 const PERSON_ALIAS_DESCRIPTION = '人物只收可长期复用的姓名、昵称或稳定称谓；不收代词、指示词及一次性外貌或身份描述。';
+const NAME_KIND = { type: 'string', enum: ['temporary', 'stable', 'named'] };
 const ENTITY_TYPES = ['person', 'group', 'organization', 'place', 'object', 'creature', 'concept', 'unknown'];
 const SPATIAL_FACT_LIMIT = 40;
 const MENTION_KEY = Object.freeze({ type: 'string' });
@@ -47,7 +48,7 @@ const semanticIdentityFactsSchema = { ...identityFactsSchema, items: { ...identi
 const FLOOR_PROPERTIES = Object.freeze({
   status: { type: 'string', enum: ['ok', 'needsReview'] }, summary: { type: 'string' },
   summaryEvidence: evidenceArray,
-  entityMentions: { type: 'array', maxItems: FLOOR_MEMORY_ITEM_LIMIT, items: strictObject(['mentionKey', 'surface', 'aliases', 'entityType', 'identity', 'entityKey', 'evidence'], { mentionKey: MENTION_KEY, surface: { type: 'string' }, aliases: { type: 'array', maxItems: 20, items: { type: 'string' }, description: PERSON_ALIAS_DESCRIPTION }, entityType: { type: 'string', enum: ENTITY_TYPES }, identity: { type: 'string', enum: ['existing', 'new', 'uncertain'] }, entityKey: NULLABLE_MENTION_KEY, identityFacts: identityFactsSchema, identityBriefEvidence: evidenceArray, identityBrief: { type: 'string', maxLength: 400, description: '旧式兼容简介，须附独立identityBriefEvidence；新输出使用identityFacts逐条关联依据。' }, evidence: evidenceArray }) },
+  entityMentions: { type: 'array', maxItems: FLOOR_MEMORY_ITEM_LIMIT, items: strictObject(['mentionKey', 'surface', 'aliases', 'entityType', 'identity', 'entityKey', 'evidence'], { mentionKey: MENTION_KEY, surface: { type: 'string' }, nameKind: NAME_KIND, aliases: { type: 'array', maxItems: 20, items: { type: 'string' }, description: PERSON_ALIAS_DESCRIPTION }, entityType: { type: 'string', enum: ENTITY_TYPES }, identity: { type: 'string', enum: ['existing', 'new', 'uncertain'] }, entityKey: NULLABLE_MENTION_KEY, identityFacts: identityFactsSchema, identityBriefEvidence: evidenceArray, identityBrief: { type: 'string', maxLength: 400, description: '旧式兼容简介，须附独立identityBriefEvidence；新输出使用identityFacts逐条关联依据。' }, evidence: evidenceArray }) },
   chronology: itemArray({ time: strictObject(['kind', 'sourceText', 'normalized', 'precision'], { kind: { type: 'string', enum: ['explicit', 'relative', 'sequenceOnly', 'unknown'] }, sourceText: { type: ['string', 'null'] }, normalized: { type: ['string', 'null'] }, precision: { type: 'string', enum: ['exact', 'approximate', 'unresolved'] } }), description: { type: 'string' }, evidence: evidenceArray }),
   locations: itemArray({ entityMentionKey: NULLABLE_MENTION_KEY, name: { type: 'string' }, change: { type: 'string', enum: ['present', 'entered', 'left', 'movedThrough', 'mentioned'] }, participantMentionKeys: mentionKeyArray, evidence: evidenceArray }),
   participants: itemArray({ mentionKey: MENTION_KEY, presence: { type: 'string', enum: ['present', 'remote', 'mentioned', 'privateCognitionOnly'] }, evidence: evidenceArray }),
@@ -75,7 +76,7 @@ export const EXTRACTOR_RESPONSE_SCHEMA = Object.freeze({
       evidence: { type: 'array', items: { type: 'object', properties: { source: { type: 'string', enum: ['canonicalContent','precedingUserInput','worldbook','locationReference'] }, sourceFloorKey: { type: 'string' }, sourceSnapshotIndex: { type: 'integer' }, sourceKey: { type: 'string' }, exactQuote: { type: 'string' } } } },
       placeKey: { type: 'string', description: '路径叶与本次spatialFacts.places为同一地点时，复制其place-mention-N；所有来源都填写此关联。' }, source: { type: 'string', enum: ['canonicalContent','precedingUserInput','worldbook','locationReference'] }, sourceFloorKey: { type: 'string' }, sourceSnapshotIndex: { type: 'integer' }, sourceKey: { type: 'string' }, exactQuote: { type: 'string' }, description: { type: 'string' }, relations: { type: 'array', items: { type: 'string' } },
     } } },
-    people: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, aliases: { type: 'array', maxItems: 20, items: { type: 'string' }, description: PERSON_ALIAS_DESCRIPTION }, role: { type: 'string' }, identityFacts: semanticIdentityFactsSchema, identityBriefEvidence: { ...evidenceArray, maxItems: 20, items: semanticIdentityEvidence }, identityBrief: { type: 'string', maxLength: 400, description: '旧式兼容简介，须附独立identityBriefEvidence；新输出使用identityFacts逐条关联依据。' }, presence: { type: 'string', enum: ['present', 'remote', 'mentioned', 'privateCognitionOnly'] }, entityKind: { type: 'string', enum: ['individual', 'group'] }, sameAsEntityKey: { type: 'string', description: '仅可复制 payload.knownPeople 中本次提供的 catalog-N' } } } },
+    people: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, nameKind: NAME_KIND, aliases: { type: 'array', maxItems: 20, items: { type: 'string' }, description: PERSON_ALIAS_DESCRIPTION }, role: { type: 'string' }, identityFacts: semanticIdentityFactsSchema, identityBriefEvidence: { ...evidenceArray, maxItems: 20, items: semanticIdentityEvidence }, identityBrief: { type: 'string', maxLength: 400, description: '旧式兼容简介，须附独立identityBriefEvidence；新输出使用identityFacts逐条关联依据。' }, presence: { type: 'string', enum: ['present', 'remote', 'mentioned', 'privateCognitionOnly'] }, entityKind: { type: 'string', enum: ['individual', 'group'] }, sameAsEntityKey: { type: 'string', description: '仅可复制 payload.knownPeople 中本次提供的 catalog-N' } } } },
     time: { type: 'array', items: { type: 'object', properties: { sourceText: { type: 'string' }, description: { type: 'string' }, kind: { type: 'string', enum: ['explicit', 'relative', 'sequenceOnly', 'unknown'] }, normalized: { type: ['string', 'null'] }, precision: { type: 'string', enum: ['exact', 'approximate', 'unresolved'] } } } },
     locations: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, change: { type: 'string', enum: ['present', 'entered', 'left', 'movedThrough', 'mentioned'] }, people: { type: 'array', items: { type: 'string' } } } } },
     spatialFacts: { type: 'object', required: ['places', 'containments', 'positions'], properties: {
@@ -144,7 +145,7 @@ export const EXTRACTOR_FIXED_CONTRACT = `${RECALL_KNOWLEDGE_GUIDANCE}\nsummary�
 【固定输出边界】
 1. 只输出语义，不输出 UUID、记录 ID、楼层指针、哈希、create/update/delete 操作、mentionKey、普通 entityKey 或证据坐标。允许以下本次请求局部键：people.sameAsEntityKey 只可逐字复制 payload.knownPeople 中确认同一身份的 catalog-N；spatialFacts.places[].sameAsPlaceKey 只可逐字复制 payload.knownPlaces 中确认同一地点的 place-N，spatialFacts.places[].key 使用本次 place-mention-N；qianshi.events[].key 必须按当前 events 数组顺序填写 event-1、event-2 等局部编号，不能填写标题；qianshi.events[].links[].candidateKey 只可逐字复制 payload.qianshiCandidates 中可用的 candidate-N。单楼与聚合请求的 spatialFacts 各项均填写 sourceFloorKey；单楼逐字复制 payload.sourceFloorKey，聚合逐字复制 payload.sourceFloors 中对应成员的 floorKey，聚合 evidence、exactQuotes 和 qianshi.events 也带对应 sourceFloorKey；这只是来源标记，不是数据库楼层 ID。不得自造、猜测或输出其他内部键。
 2. payload.userIdentity.displayName 非空时，summary 及其他语义描述必须使用这个实际显示名；{{user}} 只可作为 canonicalContent、precedingUserInput 或 aliases 中的输入别名，不得原样写入生成的语义文本。exactQuotes.exactText、承诺原话及证据引文必须逐字照抄相应来源，不得因这条规则改写。原句来自用户输入时，可在相应条目或 exactQuotes 对象中写 source:"precedingUserInput"；来自 AI 正文时可写 source:"canonicalContent"。只提示来源类别，不要输出消息序号或证据坐标。
-3. people 只写人能读懂的姓名、别名和角色。aliases 只收可长期复用的姓名、昵称或稳定称谓，不收代词、指示词及一次性外貌或身份描述；临时称呼只用于本轮识别。无实名的新人物仍以当前明确称呼作为 name 建档。entityKind=individual 表示单人，entityKind=group 表示正文暂时只能整体辨认的多人集合；缺省按 individual 兼容。已知同一身份时优先填写 sameAsEntityKey；否则只可依据同类型的完整姓名或有效别名唯一精确对应，不得用相似、包含或模糊匹配。群体 aliases 只收整体称谓，不能把成员姓名塞成群体别名；成员能分别辨认时分别列 individual，无法辨认时不要编造个体。“别人”“客户”等泛称通常不是稳定人物别名。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
+3. people 只写人能读懂的姓名、别名和角色。aliases 只收可长期复用的姓名、昵称或稳定称谓，不收代词、指示词及一次性外貌或身份描述；临时称呼只用于本轮识别。每个人物的 nameKind 按语义填写：named=明确姓名，stable=可长期复用的昵称或稳定称谓，temporary=只凭当前外貌、岗位等临时描述辨认；不能仅因没有实名就判 temporary。临时称呼相同不证明跨楼同一人，确有上下文身份承接才填 sameAsEntityKey；后来揭名仍用该键沿用原人物。姓名或稳定称谓升级须由本次正文或紧邻USER明确给出，并有同人承接；目录、人物卡与世界书里的姓名不能提前当作本楼已揭示的称呼。无实名的新人物仍以当前明确称呼作为 name 建档。entityKind=individual 表示单人，entityKind=group 表示正文暂时只能整体辨认的多人集合；缺省按 individual 兼容。已知同一身份时优先填写 sameAsEntityKey；否则只可依据同类型的完整姓名或有效别名唯一精确对应，不得用相似、包含或模糊匹配。群体 aliases 只收整体称谓，不能把成员姓名塞成群体别名；成员能分别辨认时分别列 individual，无法辨认时不要编造个体。“别人”“客户”等泛称通常不是稳定人物别名。当正文中的“你”、{{user}} 或用户姓名指向宿主用户时，role 写 user。被 actions、knowledge、informationTransfers、privateThoughts、commitments、exactQuotes、openLoops 或 cseSignals 引用的人物也要列入 people，人物字段使用 people 中的姓名或别名。
 4. people.presence 区分本人在场 present、远程参与 remote、仅被提及 mentioned、只有其私密认知 privateCognitionOnly；提及或推断不等于本人在场或知情，不确定时写 mentioned。
 5. actions 要分清 actor 行为主体、targets 受事者或受益者、completion 完成状态与 result 结果；意图或尝试不能写成已完成。informationTransfers 要分清消息来源 from、接收者 to、内容 claimText 与正文明确的 channel；无法确定渠道时不要猜成 told。from 是消息来源人物；source 仅表示引文来自哪类输入，不表示发送人。
 6. privateThoughts 的 holder 是思想所属人物，commitments 的 issuer 是作出承诺者、recipient 是对象；转述某人的话不等于说话者本人在场，也不自动把内容确立为事实。
@@ -326,6 +327,7 @@ function catalogEntries(directory) {
           entityKey: `catalog-${index + 1}`,
           displayName: entry.displayName,
           aliases: entry.aliases,
+          ...(entry.nameKind ? { nameKind: entry.nameKind } : {}),
           ...(entry.originalDisplayName ? { previousName: entry.originalDisplayName } : {}),
           entityKind: entry.entityType === 'group' ? 'group' : 'individual',
           specialRole: entry.specialRole,
@@ -584,6 +586,7 @@ function normalizeMention(raw, catalog) {
   if (raw.identity !== 'existing' && entityKey !== null) throw extractorError('V3_EXTRACTOR_ENTITY_KEY_INVALID', `entityMentions.${mentionKey}.entityKey`);
   if (raw.identity === 'existing' && catalog.get(entityKey)?.entityType !== raw.entityType) throw extractorError('V3_EXTRACTOR_ENTITY_TYPE_CONFLICT', `entityMentions.${mentionKey}.entityType`);
   return { mentionKey, surface, aliases: [...new Set(aliases.filter(alias => alias !== surface || (raw.identity === 'existing' && raw.entityType === 'person')))], entityType: raw.entityType, identity: raw.identity, entityKey,
+    ...(NAME_KIND.enum.includes(raw.nameKind) ? { nameKind: raw.nameKind } : {}),
     identityInput: Object.fromEntries(['identityFacts', 'identityBrief', 'identityBriefEvidence', 'identityBriefConflict'].filter(key => Object.hasOwn(raw, key)).map(key => [key, raw[key]])),
     allowPlaceAliasLearning: raw.allowPlaceAliasLearning !== false,
     specialRole: raw.localSpecialRole === 'user' ? 'user' : 'none' };
@@ -750,7 +753,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
         mention.surface.normalize('NFKC').toLocaleLowerCase(), ...(mention.entityType === 'place' ? [mention.mentionKey] : [])]);
     const entity = validateEntityRecord({
       schemaVersion: 3, recordType: 'entity', id: entityId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration,
-      entityType: mention.entityType, displayName: mention.surface, aliases: mention.aliases.map(name => ({ name, normalized: name.normalize('NFKC').toLocaleLowerCase(), kind: 'uncertain', evidenceRefs: [], baselineClaimIds: [] })), specialRole: mention.specialRole, firstSeenFloorId: floor.id, lastSeenFloorId: floor.id,
+      entityType: mention.entityType, displayName: mention.surface, ...(mention.nameKind ? { nameKind: mention.nameKind } : {}), aliases: mention.aliases.map(name => ({ name, normalized: name.normalize('NFKC').toLocaleLowerCase(), kind: 'uncertain', evidenceRefs: [], baselineClaimIds: [] })), specialRole: mention.specialRole, firstSeenFloorId: floor.id, lastSeenFloorId: floor.id,
       status: 'provisional', mergedIntoEntityId: null, mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null,
     }, { expectedChatId: floor.chatId });
     newEntities.push(entity); mention.resolvedEntityId = entityId;
@@ -789,13 +792,23 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
       isolate('identityBrief', mention.index, extractorError('V3_EXTRACTOR_IDENTITY_BRIEF_INVALID', error.validationPath ?? 'identityFacts'));
     }
   }
+  const hasNarrativeName = mention => (scope.sourceFloorBindings ?? [{ canonicalContent: floor.content.canonicalContent, sourceUserInputSnapshot }]).some(source =>
+    String(source.canonicalContent ?? '').includes(mention.surface) || (source.sourceUserInputSnapshot?.messages ?? []).some(message => String(message.content ?? '').includes(mention.surface)));
   const learnedLabels = new Map();
+  const learnedNames = new Map();
+  for (const mention of mentions.values()) {
+    if (mention.identity !== 'existing' || mention.entityType !== 'person' || (!['stable', 'named'].includes(mention.nameKind) || !hasNarrativeName(mention))) continue;
+    const currentKind = currentEntityById.get(mention.resolvedEntityId)?.nameKind;
+    if (({ stable: 1, named: 2 }[mention.nameKind] ?? 0) <= ({ stable: 1, named: 2 }[currentKind] ?? 0)) continue;
+    const prior = learnedNames.get(mention.resolvedEntityId);
+    if (!prior || mention.nameKind === 'named' && prior.nameKind !== 'named') learnedNames.set(mention.resolvedEntityId, mention);
+  }
   for (const mention of mentions.values()) {
     if (mention.identity !== 'existing' || mention.entityType === 'place' && !mention.allowPlaceAliasLearning) continue;
     const target = catalog.get(mention.entityKey);
     const known = new Set([...(target?.labels ?? []), ...(learnedLabels.get(target.entityId) ?? [])].map(identityLabelKey));
     const additions = [];
-    for (const label of mention.entityType === 'person' ? mention.aliases : [mention.surface, ...mention.aliases]) {
+    for (const label of mention.entityType === 'person' && (!['stable', 'named'].includes(mention.nameKind) || !hasNarrativeName(mention)) ? mention.aliases : [mention.surface, ...mention.aliases]) {
       const key = identityLabelKey(label);
       if (!key || known.has(key)) continue;
       known.add(key); additions.push(label);
@@ -811,7 +824,7 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     const values = identityBriefCandidates.get(target.entityId) ?? new Map();
     values.set(JSON.stringify(mention.identityBriefSource.facts), mention); identityBriefCandidates.set(target.entityId, values);
   }
-  const updateTargetIds = new Set([...learnedLabels.keys(), ...identityBriefCandidates.keys()]);
+  const updateTargetIds = new Set([...learnedLabels.keys(), ...identityBriefCandidates.keys(), ...learnedNames.keys()]);
   for (const targetId of updateTargetIds) {
     const labels = learnedLabels.get(targetId) ?? [];
     const target = currentEntityById.get(targetId)?.entity;
@@ -819,15 +832,18 @@ async function normalizeLegacyExtractorResponse({ response, envelope, floor, exi
     const briefValues = identityBriefCandidates.get(targetId);
     const briefCandidate = briefValues?.size === 1 ? [...briefValues.values()][0] : null;
     const identityBrief = briefCandidate?.identityBrief;
-    if (!labels.length && !identityBrief) continue;
-    const storedLabels = labels.slice(0, 81);
+    const learnedName = learnedNames.get(targetId);
+    if (!labels.length && !identityBrief && !learnedName) continue;
+    const storedLabels = [...new Set([...(learnedName ? [learnedName.surface] : []), ...labels])].slice(0, 81);
     const normalizedLabels = storedLabels.map(identityLabelKey).sort();
-    const entityId = identityBrief
+    const entityId = learnedName
+      ? await deterministicUuid(['v3-entity-name-kind', target.id, floor.id, expectedScope.batchId, storedLabels, learnedName.nameKind, identityBrief ?? null])
+      : identityBrief
       ? await deterministicUuid(['v3-entity-identity-update', target.id, floor.id, expectedScope.batchId, normalizedLabels, briefCandidate.identityBriefSource])
       : await deterministicUuid(['v3-entity-merged-alias', target.id, floor.id, expectedScope.batchId, normalizedLabels]);
     newEntities.push(validateEntityRecord({
       schemaVersion: 3, recordType: 'entity', id: entityId, chatId: floor.chatId, narrativeGeneration: floor.narrativeGeneration,
-      entityType: target.entityType, displayName: storedLabels[0] ?? target.displayName, aliases: storedLabels.slice(1).map(name => ({ name, normalized: identityLabelKey(name), kind: 'uncertain', evidenceRefs: [], baselineClaimIds: [] })), specialRole: target.specialRole, firstSeenFloorId: floor.id, lastSeenFloorId: floor.id,
+      entityType: target.entityType, displayName: storedLabels[0] ?? target.displayName, ...(learnedName ? { nameKind: learnedName.nameKind } : {}), aliases: storedLabels.slice(1).map(name => ({ name, normalized: identityLabelKey(name), kind: 'uncertain', evidenceRefs: [], baselineClaimIds: [] })), specialRole: target.specialRole, firstSeenFloorId: floor.id, lastSeenFloorId: floor.id,
       ...(identityBrief ? { identityBrief, identityBriefSource: briefCandidate.identityBriefSource } : {}),
       status: 'merged', mergedIntoEntityId: target.id, mergeEvidenceRefs: [], baselineClaimIds: [], createdAt: now, updatedAt: now, recordStatus: 'active', supersedes: null,
     }, { expectedChatId: floor.chatId }));
@@ -1519,6 +1535,8 @@ async function compileSemanticPacketDomains({ response, finishReason, envelope, 
   for (const [index, item] of rawPeople.slice(0, FLOOR_MEMORY_ITEM_LIMIT).entries()) {
     const name = semanticText(item, ['name', 'displayName', 'person', 'character', 'surface', '姓名', '人物'], 500);
     if (!name) { issue('people', index, 'V3_EXTRACTOR_OPTIONAL_ITEM_INVALID', `people[${index}].name`); continue; }
+    const rawNameKind = field(item, ['nameKind']);
+    const nameKind = NAME_KIND.enum.includes(rawNameKind) ? rawNameKind : null;
     const aliases = [...new Set(list(field(item, ['aliases', 'alias', 'otherNames', 'aka', '别名', '称谓'])).map(value => semanticText(value, [], 500)).filter(Boolean))];
     const role = semanticText(item, ['role', 'specialRole', 'type', '角色'], 80);
     const rawEntityKind = item && typeof item === 'object' && !Array.isArray(item)
@@ -1554,7 +1572,8 @@ async function compileSemanticPacketDomains({ response, finishReason, envelope, 
         matched = explicit.entity;
       }
     } else if (!matched && !isUser) {
-      const matches = [...new Set(labels.flatMap(label => entityByLabel.get(label) ?? []).filter(entity => entity.entityType === expectedEntityType))];
+      const matchLabels = nameKind === 'temporary' ? mergedAliases.map(identityLabelKey) : labels;
+      const matches = [...new Set(matchLabels.flatMap(label => (entityByLabel.get(label) ?? []).filter(entity => entity.entityType === expectedEntityType && !(directoryById.get(entity.id)?.entity.nameKind === 'temporary' && identityLabelKey(directoryById.get(entity.id).originalDisplayName ?? entity.displayName) === label))))];
       if (matches.length === 1) matched = matches[0];
       else if (matches.length > 1) { issue('people', index, 'V3_EXTRACTOR_ENTITY_AMBIGUOUS', `people[${index}].name`); continue; }
     }
@@ -1577,6 +1596,7 @@ async function compileSemanticPacketDomains({ response, finishReason, envelope, 
     referenceNames.add(identityLabelKey(name));
     referenceLabels.set(mentionKey, referenceNames);
     if (prior) {
+      if (nameKind && (!prior.nameKind || prior.nameKind === 'temporary' || nameKind === 'named')) { prior.nameKind = nameKind; if (nameKind !== 'temporary') prior.surface = displayName; }
       prior.aliases = [...new Set([...prior.aliases, ...(expectedEntityType !== 'person' && displayName !== prior.surface ? [displayName] : []), ...mergedAliases])];
       if (explicitPresence) {
         const presenceRank = { mentioned: 0, privateCognitionOnly: 1, remote: 2, present: 3 };
@@ -1588,7 +1608,7 @@ async function compileSemanticPacketDomains({ response, finishReason, envelope, 
       else Object.assign(prior, identityInput);
       continue;
     }
-    people.push({ sourceIndex: index, dedupeKey, mentionKey, surface: displayName, aliases: mergedAliases, entityType: expectedEntityType, identity: identityMode, entityKey, localSpecialRole: isUser ? 'user' : 'none', presence: explicitPresence ?? 'mentioned', presenceExplicit: Boolean(explicitPresence), ...identityInput, evidence: semanticEvidence(item, floor, envelope) });
+    people.push({ sourceIndex: index, dedupeKey, mentionKey, surface: displayName, ...(nameKind ? { nameKind } : {}), aliases: mergedAliases, entityType: expectedEntityType, identity: identityMode, entityKey, localSpecialRole: isUser ? 'user' : 'none', presence: explicitPresence ?? 'mentioned', presenceExplicit: Boolean(explicitPresence), ...identityInput, evidence: semanticEvidence(item, floor, envelope) });
   }
   if (rawPeople.length > FLOOR_MEMORY_ITEM_LIMIT) issue('people', FLOOR_MEMORY_ITEM_LIMIT, 'V3_EXTRACTOR_ARRAY_TRUNCATED', 'people');
   const individualLabels = new Set(people.filter(person => person.entityType === 'person')

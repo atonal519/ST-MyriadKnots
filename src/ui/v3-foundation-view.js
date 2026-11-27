@@ -1,3 +1,4 @@
+import { peoplePickerProjection } from './people-visibility.js';
 import { memoryParticipantsForDisplay, parseMemoryParticipantNames } from '../v3/memory-participants.js';
 import { sanitizeSensitiveText } from '../v3/safe-metadata.js';
 import { preparationContextDiagnostic } from '../v3/preparation-diagnostic.js';
@@ -314,6 +315,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
   let container = null, active = false, epoch = 0, feedback = '', feedbackFailure = null, refreshFeedback = null, receiptFeedback = '', prequelFeedback = '', fallbackText = '', unsubscribe = null;
   let refreshRequestEpoch = null;
   let page = 'management';
+  let showTemporaryCsePeople = false, csePeopleQuery = '';
   let peopleMode = 'current', selectedCsePersonId = null, showMoreCsePeople = false;
   let foundationState = runtime.getState(), recallState = recallRuntime?.getState?.() ?? null, peopleState = peopleRuntime?.getState?.() ?? null, managementState = memoryManagement?.getState?.() ?? null, chatId = foundationState?.chatId ?? null, healthNode = null, pageFeedbackNode = null, managementFeedbackNode = null;
   let vectorIndexLink = null, vectorIndexReadErrorNode = null;
@@ -410,7 +412,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     if (chatId !== null) { prequelDraft = null; prequelFeedback = ''; }
     chatId = nextChatId;
     for (const [key, draft] of drafts) if (!draft.saving) drafts.delete(key);
-    cseDrafts.clear(); cseHistoryUi = null; openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; memoryListPage = 0; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null; refreshRequestEpoch = null;
+    cseDrafts.clear(); cseHistoryUi = null; openState.clear(); recentItemsOpen = false; recentItemsUi = null; memorySearchQuery = ''; memoryListPage = 0; cseSearchQuery = ''; peopleMode = 'current'; selectedCsePersonId = null; showMoreCsePeople = false;showTemporaryCsePeople=false;csePeopleQuery=''; peopleScroll.set('current', 0); peopleScroll.set('history', 0); relationSwitcherNode = null; relationSwitcherSignature = null; relationSwitcherChatId = nextChatId; relationSwitcherScrollLeft = 0; fallbackText = ''; feedback = ''; refreshFeedback = null; refreshRequestEpoch = null;
     return true;
   };
   const sourceChanged = (previous, next) => (previous?.chatId ?? null) !== (next?.chatId ?? null);
@@ -2174,10 +2176,54 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
         if (!customImpl || !peopleRuntime?.setPersonOrderEntityIds) return;
         void openPeopleOrderDialog({ customImpl, runtime: peopleRuntime, people: candidates, documentRef, chatId: peopleState?.chatId });
       });
-      pickerHeading.append(element('strong', '', '更多人物'), element('span', 'v3-memory-status', `${more.length} 位`), order); picker.append(pickerHeading);
-      const moreList = element('div', 'qqj-more-people-list');
-      for (const person of more) moreList.append(renderSubject(subjectById.get(person.entityId), state, { person, ownOnly: true }));
-      if (!more.length) moreList.append(element('p', 'settings-hint', '当前没有其他已识别人物。'));
+      const search = element('input', 'settings-input qqj-profile-picker-search');
+      const count = element('span', 'v3-memory-status qqj-profile-picker-count');
+      const temporaryToggle = element('button', 'secondary-action qqj-temporary-people-toggle');
+      search.type = 'search';
+      search.placeholder = '搜索人物';
+      search.value = csePeopleQuery;
+      search.setAttribute('aria-label', '搜索更多人物');
+      temporaryToggle.type = 'button';
+      pickerHeading.append(element('strong', '', '更多人物'), search, count, order, temporaryToggle);
+      picker.append(pickerHeading);
+      const moreList = element('div', 'qqj-more-people-list'), rows = [];
+      for (const person of more) {
+        const node = renderSubject(subjectById.get(person.entityId), state, { person, ownOnly: true });
+        moreList.append(node);
+        rows.push({ person, node });
+      }
+      const empty = element('p', 'settings-hint');
+      moreList.append(empty);
+      const paint = () => {
+        const projection = peoplePickerProjection(more, { query: csePeopleQuery, showTemporary: showTemporaryCsePeople });
+        const visibleIds = new Set(projection.visible.map(person => person.entityId));
+        for (const row of rows) row.node.hidden = !visibleIds.has(row.person.entityId);
+        count.textContent = `${projection.visible.length}/${more.length} 位`;
+        temporaryToggle.hidden = Boolean(csePeopleQuery.trim()) || !projection.collapsedCount;
+        temporaryToggle.textContent = showTemporaryCsePeople ? '收起临时人物' : `显示临时人物（${projection.collapsedCount}）`;
+        temporaryToggle.setAttribute('aria-pressed', String(showTemporaryCsePeople));
+        empty.hidden = projection.visible.length > 0;
+        empty.textContent = !more.length ? '当前没有其他已识别人物。' : csePeopleQuery.trim() ? '没有匹配的人物。'
+          : '临时人物已收起，可点击“显示临时人物”或搜索姓名、称呼。';
+      };
+      let composing = false;
+      search.addEventListener('compositionstart', () => { composing = true; });
+      search.addEventListener('compositionend', () => {
+        composing = false;
+        csePeopleQuery = search.value;
+        paint();
+      });
+      const update = () => {
+        csePeopleQuery = search.value;
+        if (!composing) paint();
+      };
+      search.addEventListener('input', update);
+      search.addEventListener('search', update);
+      temporaryToggle.addEventListener('click', () => {
+        showTemporaryCsePeople = !showTemporaryCsePeople;
+        paint();
+      });
+      paint();
       picker.append(moreList); pageNode.append(picker);
     } else if (selectedPerson && !userEntity) {
       pageNode.append(renderSubject(selectedSubject, state, { person: selectedPerson, ownOnly: true }));
@@ -2276,7 +2322,7 @@ export function createV3FoundationView({ runtime, recallRuntime = null, vectorRu
     const filterReasons = (record.skipReasons ?? []).filter(value => value !== 'historySelectionFallback').map(skipReasonCopy);
     const selectorMetadataCopy = selector?.code ? `${selectorFailureCopy(selector.code)}${selector.httpStatus ? ` · HTTP ${selector.httpStatus}` : ''}${selector.formatStage ? ` · 格式阶段 ${selector.formatStage}` : ''}${selector.sourceStage ? ` · 阶段 ${selector.sourceStage}` : ''}${selector.finishReason ? ` · 结束原因 ${selector.finishReason}` : ''}${selector.sourceLabel && selector.sourceLabel !== '未命名 API' ? ` · 来源 ${selector.sourceLabel}` : ''}${selector.model && selector.model !== 'unknown' ? ` · 模型 ${selector.model}` : ''}${Number.isSafeInteger(selector.transportAttempts) ? ` · 网络尝试 ${selector.transportAttempts}` : ''}${Number.isSafeInteger(selector.requestCharacters) ? ` · 请求约 ${selector.requestCharacters} 字符 / ${selector.requestEstimatedTokens} token` : ''}` : '';
     const errorMetadataCopy = record.error ? `${record.error.code}${record.error.httpStatus ? ` · HTTP ${record.error.httpStatus}` : ''}${record.error.formatStage ? ` · 格式阶段 ${record.error.formatStage}` : ''}${record.error.sourceStage ? ` · 阶段 ${record.error.sourceStage}` : ''}${record.error.finishReason ? ` · 结束原因 ${record.error.finishReason}` : ''}${record.error.sourceLabel && record.error.sourceLabel !== '未命名 API' ? ` · 来源 ${record.error.sourceLabel}` : ''}${record.error.model && record.error.model !== 'unknown' ? ` · 模型 ${record.error.model}` : ''}${Number.isSafeInteger(record.error.transportAttempts) ? ` · 网络尝试 ${record.error.transportAttempts}` : ''}` : '';
-    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '从聊天记录读取 · 仅恢复历史展示，不会再次注入' : `${record.reusedReceipt ? '复用' : '新算'} · ${persistenceCopy[record.receiptPersistence] ?? record.receiptPersistence ?? '未知'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), stageRow('筛选阶段', stageCopy), row('选材方式', selector?.code ? '智能选材失败' : selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selectorMetadataCopy ? [row('选材失败诊断', selectorMetadataCopy)] : []), ...(errorMetadataCopy ? [row('失败诊断', errorMetadataCopy)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
+    const details = element('dl', 'v3-foundation-grid'); details.append(row('触发用户楼', userFloorCopy(record.userMessageIndex)), row('生成时间', localTimeCopy(record.createdAt)), row('生成类型', generationTypeCopy(record.generationType)), row('收据', record.legacyReadOnly ? '旧版只读记录' : record.restoredReceipt ? '从聊天记录读取 · 本次仅恢复显示' : `${record.reusedReceipt ? '复用' : '新算'} · ${persistenceCopy[record.receiptPersistence] ?? record.receiptPersistence ?? '未知'}`), row('召回旧楼', floors), row('当前人物状态', states), row('人物状态历史变化', changes), row('覆盖范围', coverage ? `记忆 ${coverage.rememberedAiFloors}/${coverage.stableAiFloors} · ${coverage.cseThroughAssistantSeq ? `CSE 到${floorCopy(foundationState, { assistantSeq: coverage.cseThroughAssistantSeq }, '终点楼号未提供')}` : 'CSE 尚未覆盖'}` : '本轮未读取'), stageRow('筛选阶段', stageCopy), row('选材方式', selector?.code ? '智能选材失败' : selectorModeCopy(selector?.mode)), row('智能选材计数', selectorCountCopy), ...(selectorMetadataCopy ? [row('选材失败诊断', selectorMetadataCopy)] : []), ...(errorMetadataCopy ? [row('失败诊断', errorMetadataCopy)] : []), row('耗时', timingCopy), row('来源读取', sourceReadCopy), row('普通过滤说明', filterReasons.join('、') || '无'));
     if (record.diagnosticPhase) details.append(row('所示诊断阶段', `${record.diagnosticAttempt ? `第 ${record.diagnosticAttempt} 次尝试 · ` : ''}${phaseCopy(record.diagnosticPhase)} · ${selectionCopy(record.selectionStatus)}${record.pendingStep ? ` · ${terminationStatus ? '终止时步骤' : '正在'} ${stepCopy(record.pendingStep)}` : ''}${record.lastCompletedStep ? ` · 上一步 ${stepCopy(record.lastCompletedStep)}` : ''}${uncommitted ? ' · 本轮未注入' : ''}`));
     // 准备子阶段只展示枚举与计时；历史回执没有尝试列表时沿已封签的可选计时恢复。
     if (!record.attemptDiagnostics?.length && timings?.preparationAttempts?.length) details.append(row('准备等待', preparationCopy(timings.preparationAttempts)));
