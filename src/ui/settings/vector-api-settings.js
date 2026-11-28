@@ -22,7 +22,7 @@ export function createVectorApiSettings({ settings, vectorApi, vectorIndex, docu
   const url = element('input', 'settings-input'); url.value = current.url; url.placeholder = VECTOR_DEFAULT_URL;
   const key = element('input', 'settings-input'); key.type = 'password';
   const model = element('input', 'settings-input'); model.value = current.model; model.placeholder = VECTOR_DEFAULT_MODEL;
-  const xfyunHint = element('p', 'settings-hint qqj-vector-xfyun-hint', '讯飞 MaaS 需开启酒馆 CORS 代理并重启；模型名请手动填写。');
+  const xfyunHint = element('p', 'settings-hint qqj-vector-xfyun-hint', '讯飞 MaaS 模型名请手动填写。TauriTavern 2.5.0 起，先点“测试”并在系统弹窗中授权。SillyTavern/Luker 需开启 CORS 代理并重启。');
   const syncXfyunHint = () => { xfyunHint.hidden = !usesNativeXfyunProxy(url.value); };
   url.addEventListener('input', syncXfyunHint);
   const result = element('p', 'settings-result');

@@ -20314,7 +20314,7 @@ function wg({ settings: e, vectorApi: t, vectorIndex: n, documentRef: r = global
 	_.type = "password";
 	let v = o("input", "settings-input");
 	v.value = p.model, v.placeholder = Ko;
-	let y = o("p", "settings-hint qqj-vector-xfyun-hint", "讯飞 MaaS 需开启酒馆 CORS 代理并重启；模型名请手动填写。"), b = () => {
+	let y = o("p", "settings-hint qqj-vector-xfyun-hint", "讯飞 MaaS 模型名请手动填写。TauriTavern 2.5.0 起，先点“测试”并在系统弹窗中授权。SillyTavern/Luker 需开启 CORS 代理并重启。"), b = () => {
 		y.hidden = !cs(g.value);
 	};
 	g.addEventListener("input", b);
