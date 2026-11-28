@@ -7945,8 +7945,537 @@ async function Vo({ packet: e, envelope: t, existingEntities: n = [], now: r, pe
 	};
 }
 //#endregion
+//#region src/constants.js
+var Ho = "qianqianjie", Uo = "/api/plugins/st-bainiaodata", Wo = "qqj-bainiao-v1", Go = Symbol.for("qqj.bainiao.tt.locks.v1"), Ko = (e, t) => Object.assign(Error(t), { status: e }), qo = (e) => {
+	if (e?.aborted) throw e.reason ?? new DOMException("Aborted", "AbortError");
+}, Jo = new TextEncoder(), Yo = 64, Xo = 1048576, Zo = 4, Qo = (e, t) => e < t ? -1 : +(e > t), $o = (e) => ({
+	format: "qqj-tt-json-v2",
+	serialized: JSON.stringify(e)
+});
+function es(e) {
+	if (e?.format !== "qqj-tt-json-v2") return {
+		slot: e,
+		legacy: !0
+	};
+	if (typeof e.serialized != "string") throw Ko(500, "Invalid stored serialization");
+	try {
+		return {
+			slot: JSON.parse(e.serialized),
+			legacy: !1
+		};
+	} catch {
+		throw Ko(500, "Invalid stored serialization");
+	}
+}
+async function ts(e) {
+	if (e?.schemaVersion !== 3 || e.recordType !== "index" || !Array.isArray(e.entries)) return;
+	let t = (e, t) => e && typeof e == "object" && !Array.isArray(e) && Object.keys(e).length === t.length && t.every((t) => Object.hasOwn(e, t));
+	if (!e.entries.every((e) => t(e, ["key", "refs"]) && Array.isArray(e.refs) && e.refs.every((e) => t(e, [
+		"recordType",
+		"recordId",
+		"itemId"
+	])))) return;
+	let n = e.entries.map((e) => ({
+		key: e.key,
+		refs: e.refs.map((e) => ({
+			recordType: e.recordType,
+			recordId: e.recordId,
+			itemId: e.itemId
+		}))
+	}));
+	`sha256:${await N(JSON.stringify([
+		e.kind,
+		e.shard,
+		n
+	]))}` === e.contentFingerprint && (e.entries = n);
+}
+function ns(e, t) {
+	return t ? new Promise((n, r) => {
+		let i = () => r(t.reason ?? new DOMException("Aborted", "AbortError"));
+		if (t.aborted) {
+			i();
+			return;
+		}
+		t.addEventListener("abort", i, { once: !0 }), Promise.resolve().then(e).then(n, r).finally(() => t.removeEventListener("abort", i));
+	}) : e();
+}
+function rs(e) {
+	if (typeof e != "string" || !e || e.length > 128 || Jo.encode(e).length > 512 || e === "." || e === ".." || /[/\\\u0000-\u001f\u007f]/u.test(e)) throw Ko(400, "Invalid record key");
+	return e;
+}
+function is(e) {
+	if (!Number.isSafeInteger(e) || e < 0) throw Ko(400, "Invalid expectedRevision");
+	return e;
+}
+function as(e) {
+	if (!e || e.schemaVersion !== 1 || !Number.isSafeInteger(e.revision) || e.revision < 1 || typeof e.generationId != "string" || typeof e.createdAt != "string" || typeof e.updatedAt != "string" || !Object.hasOwn(e, "data")) throw Ko(500, "Invalid stored envelope");
+	return e;
+}
+async function os(e, t, n) {
+	let r = e[Go] ??= /* @__PURE__ */ new Map(), i = (r.get(t) ?? Promise.resolve()).catch(() => {}).then(() => e.navigator?.locks?.request ? e.navigator.locks.request(t, n) : n()), a = i.then(() => {}, () => {}).finally(() => {
+		r.get(t) === a && r.delete(t);
+	});
+	return r.set(t, a), i;
+}
+function ss(e = globalThis) {
+	return !!(e.__TAURITAVERN__ || e.__TAURITAVERN_MAIN_READY__);
+}
+function cs({ globalRef: e = globalThis } = {}) {
+	let t = async () => {
+		await (e.__TAURITAVERN__?.ready ?? e.__TAURITAVERN_MAIN_READY__);
+		let t = e.__TAURITAVERN__?.api?.extension?.store;
+		for (let e of [
+			"tryGetJson",
+			"setJson",
+			"deleteJson",
+			"listKeys",
+			"listTables"
+		]) if (typeof t?.[e] != "function") throw Error("TT 本地存储接口不可用，请确认 TauriTavern 版本并重启应用");
+		return t;
+	}, n = (e, t) => ({
+		namespace: Wo,
+		table: e,
+		key: t
+	}), r = async (e, t) => `r-${await N(JSON.stringify([e, t]))}`, i = async (e) => `r-${await N(e)}`, a = (e, t, n, r) => {
+		if (!e || e.format !== "qqj-tt-record-v1" || e.namespace !== t || n !== void 0 && e.collection !== n || r !== void 0 && e.recordId !== r || !Array.isArray(e.trash) || !Object.hasOwn(e, "current")) throw Ko(500, "Invalid stored record");
+		rs(e.collection), rs(e.recordId), e.current !== null && as(e.current);
+		for (let t of e.trash) if (as(t?.envelope), t.namespace !== e.namespace || t.collection !== e.collection || t.recordId !== e.recordId || t.trashId !== `${t.envelope.generationId}-${t.envelope.revision}`) throw Ko(500, "Invalid trash record");
+		return e;
+	}, o = async (e, t, n, r) => {
+		let i = es(e), o = a(i.slot, t, n, r);
+		if (i.legacy) {
+			await ts(o.current?.data);
+			for (let e of o.trash) await ts(e.envelope.data);
+		}
+		return o;
+	}, s = async (e, t, r, i, a, s) => {
+		let c = await e.tryGetJson(n(t, r));
+		if (c?.found === !1) return null;
+		if (c?.found !== !0) throw Ko(500, "Invalid storage response");
+		return o(c.value, i, a, s);
+	}, c = (e, t, n) => ({
+		format: "qqj-tt-record-v1",
+		namespace: e,
+		collection: t,
+		recordId: n,
+		current: null,
+		trash: []
+	}), l = async (t, r, i, a, o, s) => {
+		let c = is(o?.expectedRevision), l = a.current?.revision ?? 0;
+		if (l !== c) throw Ko(409, "Revision conflict");
+		if (!Object.hasOwn(o, "data") || l === 2 ** 53 - 1) throw Ko(400, "Invalid record data or revision");
+		let u = (/* @__PURE__ */ new Date()).toISOString(), d = a.current?.generationId ?? e.SillyTavern?.getContext?.()?.uuidv4?.() ?? e.crypto?.randomUUID?.();
+		if (!d) throw Ko(500, "UUID unavailable");
+		return a.current = {
+			schemaVersion: 1,
+			revision: l + 1,
+			generationId: d,
+			createdAt: a.current?.createdAt ?? u,
+			updatedAt: u,
+			data: o.data
+		}, qo(s), await t.setJson({
+			...n(r, i),
+			value: $o(a)
+		}), a.current;
+	}, u = async (u, f) => {
+		if (typeof u != "string" || !u.startsWith("/api/plugins/st-bainiaodata/v1/")) throw Ko(400, "Unsupported local backend URL");
+		let p = u.slice(`${Uo}/v1/`.length).split("/").map((e) => {
+			try {
+				return decodeURIComponent(e);
+			} catch {
+				throw Ko(400, "Invalid URL");
+			}
+		}), m = f.method ?? "GET", h = f.signal;
+		qo(h);
+		let g = await t();
+		if (qo(h), p.length === 1 && p[0] === "health" && m === "GET") return await g.listTables({ namespace: Wo }), {
+			ok: !0,
+			plugin: {
+				id: "st-bainiaodata",
+				name: "Bainiao Data (TT)",
+				version: "0.1.0-tt.3"
+			},
+			api: {
+				current: 1,
+				supported: [1]
+			},
+			storage: {
+				scope: "tauritavern-data-root",
+				envelopeSchemaVersion: 1
+			},
+			capabilities: {
+				records: !0,
+				recordList: !0,
+				recordBatchRead: !0,
+				recordBatchWrite: !0,
+				optimisticRevision: !0,
+				atomicReplace: !0,
+				trash: !0,
+				trashRestore: !0,
+				permanentDelete: !0,
+				trashGc: !0,
+				pagination: !1,
+				batchTransactions: !1
+			},
+			adapter: {
+				version: 3,
+				revisionScope: "single-app-runtime"
+			}
+		};
+		let _ = rs(p[1]);
+		if (_ === "system-trash") throw Ko(400, "Reserved namespace");
+		let v = `${Wo}:${_}`;
+		if (p[0] === "records" && p.length === 3 && m === "GET") {
+			let e = [];
+			for await (let t of d.iterRecords(_, rs(p[2]), { signal: h })) e.push(t);
+			return e.sort((e, t) => e.recordId.localeCompare(t.recordId));
+		}
+		if (p[0] === "record-batch" && p.length === 3) {
+			if (m === "PUT") {
+				if (typeof f.body != "string" || Jo.encode(f.body).length > Xo) throw Ko(400, "Batch exceeds 1MiB");
+				let t;
+				try {
+					t = JSON.parse(f.body);
+				} catch {
+					throw Ko(400, "Invalid JSON");
+				}
+				if (!Array.isArray(t?.records) || t.records.length < 1 || t.records.length > Yo) throw Ko(400, "Invalid batch");
+				let n = rs(p[2]), a = t.records.map((e) => {
+					if (!e || !Object.hasOwn(e, "data")) throw Ko(400, "Invalid record data");
+					return {
+						recordId: rs(e.recordId),
+						expectedRevision: is(e.expectedRevision),
+						data: e.data
+					};
+				});
+				if (new Set(a.map((e) => e.recordId)).size !== a.length) throw Ko(400, "Duplicate record ID");
+				return os(e, v, async () => {
+					qo(h);
+					let e = await r(_, n), t = Array(a.length), o = 0;
+					async function u() {
+						for (; o < a.length;) {
+							qo(h);
+							let r = o++, u = a[r];
+							try {
+								let a = await i(u.recordId);
+								qo(h);
+								let o = await s(g, e, a, _, n, u.recordId) ?? c(_, n, u.recordId);
+								qo(h), t[r] = {
+									recordId: u.recordId,
+									status: 200,
+									envelope: await l(g, e, a, o, u, h)
+								};
+							} catch (e) {
+								qo(h);
+								let n = [400, 409].includes(e?.status) ? e.status : 500;
+								t[r] = {
+									recordId: u.recordId,
+									status: n,
+									error: n === 409 ? "revision_conflict" : "storage_error",
+									message: n === 409 ? "Revision conflict" : "Unable to save record"
+								};
+							}
+						}
+					}
+					let d = await Promise.allSettled(Array.from({ length: Math.min(Zo, a.length) }, u));
+					qo(h);
+					let f = d.find((e) => e.status === "rejected");
+					if (f) throw f.reason;
+					return t;
+				});
+			}
+			if (m !== "POST") throw Ko(405, "Unsupported method");
+			let t;
+			try {
+				t = JSON.parse(f.body);
+			} catch {
+				throw Ko(400, "Invalid JSON");
+			}
+			if (!Array.isArray(t?.recordIds) || t.recordIds.length < 1 || t.recordIds.length > 64) throw Ko(400, "Invalid recordIds");
+			let n = t.recordIds.map(rs), a = rs(p[2]), o = await r(_, a), u = Array(n.length);
+			for (let t = 0; t < n.length; t += 8) qo(h), await os(e, v, async () => {
+				qo(h);
+				let e = await Promise.allSettled(n.slice(t, t + 8).map(async (e, n) => {
+					qo(h);
+					let r = t + n;
+					try {
+						let t = await i(e);
+						qo(h);
+						let n = await s(g, o, t, _, a, e);
+						qo(h), u[r] = n?.current ? {
+							recordId: e,
+							status: 200,
+							envelope: n.current
+						} : {
+							recordId: e,
+							status: 404,
+							error: "not_found",
+							message: "Record not found"
+						};
+					} catch {
+						qo(h), u[r] = {
+							recordId: e,
+							status: 500,
+							error: "storage_error",
+							message: "Unable to read record"
+						};
+					}
+				}));
+				qo(h);
+				let r = e.find((e) => e.status === "rejected");
+				if (r) throw r.reason;
+			});
+			return u;
+		}
+		return os(e, v, async () => {
+			qo(h);
+			let e = p.length === 5 && p[4] === "permanent";
+			if (p[0] === "trash" && p.length === 3 && p[2] === "collect-expired") {
+				if (m !== "POST") throw Ko(405, "Unsupported method");
+				let e;
+				try {
+					e = JSON.parse(f.body);
+				} catch {
+					throw Ko(400, "Invalid JSON");
+				}
+				let t = e?.limit ?? 32, o = e?.cursor ?? null;
+				if (!Number.isSafeInteger(t) || t < 1 || t > 32) throw Ko(400, "Invalid collection limit");
+				if (o !== null && (!o || typeof o != "object" || Array.isArray(o))) throw Ko(400, "Invalid collection cursor");
+				let s = o === null ? null : rs(o.table), c = o === null ? null : rs(o.key), l = await g.listTables({ namespace: Wo });
+				if (!Array.isArray(l)) throw Ko(500, "Invalid storage listing");
+				let u = 0, d = 0, p = 0, v = null, y = !1, b = [...l].map(rs).sort(Qo);
+				outer: for (let e of b) {
+					if (s !== null && Qo(e, s) < 0) continue;
+					let o = await g.listKeys({
+						namespace: Wo,
+						table: e
+					});
+					if (!Array.isArray(o)) throw Ko(500, "Invalid storage listing");
+					let l = [...o].map(rs).sort(Qo);
+					for (let o of l) {
+						if (s !== null && (Qo(e, s) < 0 || e === s && Qo(o, c) <= 0)) continue;
+						if (u >= t) {
+							y = !0;
+							break outer;
+						}
+						qo(h);
+						let l;
+						try {
+							l = await g.tryGetJson(n(e, o));
+						} catch (t) {
+							if (u += 1, v = {
+								table: e,
+								key: o
+							}, h?.aborted || t?.name === "AbortError") throw t;
+							p += 1;
+							continue;
+						}
+						if (qo(h), u += 1, v = {
+							table: e,
+							key: o
+						}, l?.found === !1) continue;
+						if (l?.found !== !0) {
+							p += 1;
+							continue;
+						}
+						let f, m;
+						try {
+							({slot: f, legacy: m} = es(l.value));
+						} catch {
+							p += 1;
+							continue;
+						}
+						if (f?.namespace !== _) continue;
+						try {
+							if (a(f, _), o !== await i(f.recordId) || e !== await r(_, f.collection)) throw Ko(500, "Stored record identity mismatch");
+						} catch {
+							p += 1;
+							continue;
+						}
+						if (m) {
+							await ts(f.current?.data);
+							for (let e of f.trash) await ts(e.envelope.data);
+						}
+						let b = [], x = [];
+						for (let e of f.trash) {
+							let t = Date.parse(e.expiresAt);
+							Number.isFinite(t) ? t <= Date.now() ? b.push(e) : x.push(e) : (p += 1, x.push(e));
+						}
+						if (!b.length) continue;
+						let S = {
+							...f,
+							trash: x
+						};
+						qo(h);
+						try {
+							S.current || S.trash.length ? await g.setJson({
+								...n(e, o),
+								value: $o(S)
+							}) : await g.deleteJson(n(e, o)), d += b.length;
+						} catch {
+							p += b.length;
+						}
+					}
+				}
+				return {
+					scanned: u,
+					deleted: d,
+					failed: p,
+					nextCursor: y ? v : null,
+					complete: !y
+				};
+			}
+			if (p[0] === "records" && ([3, 4].includes(p.length) || e)) {
+				if (e && m !== "DELETE") throw Ko(405, "Unsupported method");
+				let t = rs(p[2]), a = await r(_, t), o = rs(p[3]), u = await i(o), d = await s(g, a, u, _, t, o) ?? c(_, t, o);
+				if (m === "GET") {
+					if (!d.current) throw Ko(404, "Record not found");
+					return d.current;
+				}
+				if (!["PUT", "DELETE"].includes(m)) throw Ko(405, "Unsupported method");
+				let v;
+				try {
+					v = JSON.parse(f.body);
+				} catch {
+					throw Ko(400, "Invalid JSON");
+				}
+				if (m === "PUT") return l(g, a, u, d, v, h);
+				let y = is(v?.expectedRevision);
+				if (m === "DELETE" && !d.current) throw Ko(404, "Record not found");
+				let b = d.current?.revision ?? 0;
+				if (b !== y) throw Ko(409, "Revision conflict");
+				if (e) return d.current = null, qo(h), d.trash.length ? await g.setJson({
+					...n(a, u),
+					value: $o(d)
+				}) : await g.deleteJson(n(a, u)), {
+					permanentlyDeleted: !0,
+					deletedRevision: b
+				};
+				let x = (/* @__PURE__ */ new Date()).toISOString(), S = d.current, C = `${S.generationId}-${S.revision}`, w = {
+					trashId: C,
+					namespace: _,
+					collection: t,
+					recordId: o,
+					generationId: S.generationId,
+					revision: S.revision,
+					originalPath: `${_}/${t}/${o}.json`,
+					deletedAt: x,
+					deletedRevision: S.revision,
+					expiresAt: new Date(Date.now() + 2592e6).toISOString(),
+					envelope: S
+				}, T = d.trash.find((e) => e.trashId === C);
+				if (T && JSON.stringify(T.envelope) !== JSON.stringify(S)) throw Ko(409, "Trash conflict");
+				T || d.trash.push(w), d.current = null;
+				let E = {
+					trashId: C,
+					deletedAt: (T ?? w).deletedAt,
+					deletedRevision: S.revision
+				};
+				return qo(h), await g.setJson({
+					...n(a, u),
+					value: $o(d)
+				}), E;
+			}
+			if (p[0] === "trash" && (p.length === 2 && m === "GET" || p.length === 4 && p[3] === "restore" && m === "POST")) {
+				let e = await g.listTables({ namespace: Wo });
+				if (!Array.isArray(e)) throw Ko(500, "Invalid storage listing");
+				let t = [];
+				for (let a of e) {
+					let e = await g.listKeys({
+						namespace: Wo,
+						table: a
+					});
+					if (!Array.isArray(e)) throw Ko(500, "Invalid storage listing");
+					for (let s of e) {
+						qo(h);
+						let e = await g.tryGetJson(n(a, s));
+						if (qo(h), e?.found !== !0) throw Ko(500, "Missing stored record");
+						if (es(e.value).slot?.namespace !== _) continue;
+						let c = await o(e.value, _);
+						if (s !== await i(c.recordId) || a !== await r(_, c.collection)) throw Ko(500, "Stored record identity mismatch");
+						for (let e of c.trash) t.push({
+							table: a,
+							key: s,
+							slot: c,
+							trash: e
+						});
+					}
+				}
+				if (m === "GET") return t.map(({ trash: { envelope: e, ...t } }) => t).sort((e, t) => e.trashId.localeCompare(t.trashId));
+				let a = rs(p[2]), s = t.find((e) => e.trash.trashId === a);
+				if (!s) throw Ko(404, "Trash record not found");
+				let { table: c, key: l, slot: u, trash: d } = s;
+				if (u.current && JSON.stringify(u.current) !== JSON.stringify(d.envelope)) throw Ko(409, "Record already exists");
+				return u.current = d.envelope, u.trash = u.trash.filter((e) => e.trashId !== a), qo(h), await g.setJson({
+					...n(c, l),
+					value: $o(u)
+				}), u.current;
+			}
+			throw Ko(404, "Unsupported local backend route");
+		});
+	}, d = async (e, t = {}) => {
+		try {
+			let n = await ns(() => u(e, t), t.signal);
+			return {
+				ok: !0,
+				status: 200,
+				json: async () => n
+			};
+		} catch (e) {
+			if (!Number.isInteger(e?.status)) throw e;
+			return {
+				ok: !1,
+				status: e.status,
+				json: async () => ({ message: e.message })
+			};
+		}
+	};
+	return d.iterRecords = (n, a, { signal: o } = {}) => {
+		let c = rs(n), l = rs(a);
+		if (c === "system-trash") throw Ko(400, "Reserved namespace");
+		let u = `${Wo}:${c}`, d, f, p, m = 0, h = !1;
+		return {
+			[Symbol.asyncIterator]() {
+				return this;
+			},
+			async next(n = o) {
+				return ns(async () => {
+					if (h) return { done: !0 };
+					for (qo(o), qo(n), d ??= await t(), f ??= await r(c, l), p ||= await os(e, u, async () => {
+						qo(o), qo(n);
+						let e = await d.listKeys({
+							namespace: Wo,
+							table: f
+						});
+						if (qo(o), qo(n), !Array.isArray(e)) throw Ko(500, "Invalid storage listing");
+						return e;
+					}); m < p.length;) {
+						let t = p[m++], a = await os(e, u, async () => {
+							qo(o), qo(n);
+							let e = await s(d, f, t, c, l);
+							if (qo(o), qo(n), !e || t !== await i(e.recordId) || f !== await r(c, e.collection)) throw Ko(500, "Stored record identity mismatch");
+							return e.current ? {
+								recordId: e.recordId,
+								...e.current
+							} : null;
+						});
+						if (a) return {
+							done: !1,
+							value: a
+						};
+					}
+					return h = !0, p = null, { done: !0 };
+				}, n);
+			},
+			async return() {
+				return h = !0, p = null, { done: !0 };
+			}
+		};
+	}, d;
+}
+//#endregion
 //#region src/plugin-activity.js
-var Ho = Object.freeze({
+var ls = Object.freeze({
 	readingBranch: "正在读取分支资料",
 	preparingBranch: "正在整理分支资料",
 	copyingBranch: "正在复制分支记忆",
@@ -7990,7 +8519,7 @@ var Ho = Object.freeze({
 	updating: "正在更新插件",
 	request: "正在请求资料"
 });
-function Uo(e) {
+function us(e) {
 	let t = /* @__PURE__ */ new Set();
 	return Object.freeze({
 		getActivityState: e,
@@ -8005,9 +8534,9 @@ function Uo(e) {
 		}
 	});
 }
-function Wo(e = []) {
+function ds(e = []) {
 	let t = /* @__PURE__ */ new Set(), n = () => {
-		let t = e.map((e) => e.getActivityState?.()).filter((e) => e?.busy === !0), n = t[0]?.phase ?? null, r = t.length ? Ho[n] ?? "千千结正在处理" : "";
+		let t = e.map((e) => e.getActivityState?.()).filter((e) => e?.busy === !0), n = t[0]?.phase ?? null, r = t.length ? ls[n] ?? "千千结正在处理" : "";
 		return ["copyingBranch", "copyingVectors"].includes(n) && Number.isSafeInteger(t[0].completed) && Number.isSafeInteger(t[0].total) && (r += `：${t[0].completed}/${t[0].total} ${n === "copyingBranch" ? "份资料" : "份"}`), Object.freeze({
 			busy: t.length > 0,
 			phase: n,
@@ -8035,11 +8564,11 @@ function Wo(e = []) {
 }
 //#endregion
 //#region src/vector-api.js
-var Go = "https://api.siliconflow.cn/v1", Ko = "Qwen/Qwen3-Embedding-8B", qo = "maas-api.cn-huabei-1.xf-yun.com", Jo = 8192, Yo = 250, Xo = (e, t) => Object.assign(Error(t), { code: e }), Zo = (e) => {
+var fs = "https://api.siliconflow.cn/v1", ps = "Qwen/Qwen3-Embedding-8B", ms = "maas-api.cn-huabei-1.xf-yun.com", hs = 8192, gs = 250, _s = (e, t) => Object.assign(Error(t), { code: e }), vs = (e) => {
 	try {
 		Promise.resolve(e?.cancel?.()).catch(() => {});
 	} catch {}
-}, Qo = (e) => typeof e == "string" && /^[A-Z][A-Z0-9_]{1,63}$/u.test(e) ? e : null, $o = (e) => [
+}, ys = (e) => typeof e == "string" && /^[A-Z][A-Z0-9_]{1,63}$/u.test(e) ? e : null, bs = (e) => [
 	"stopped",
 	"superseded",
 	"chatChanged",
@@ -8049,7 +8578,7 @@ var Go = "https://api.siliconflow.cn/v1", Ko = "Qwen/Qwen3-Embedding-8B", qo = "
 	"invalidated",
 	"indexReset"
 ].includes(e) ? e : "external";
-function es(e) {
+function xs(e) {
 	try {
 		let t = e?.get?.("x-siliconcloud-trace-id") ?? e?.get?.("x-request-id") ?? e?.get?.("x-inference-request-id");
 		return typeof t == "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u.test(t) ? t : null;
@@ -8057,27 +8586,27 @@ function es(e) {
 		return null;
 	}
 }
-function ts(e) {
+function Ss(e) {
 	if (typeof e == "number" && Number.isSafeInteger(e) && e >= 0 && (e = String(e)), typeof e != "string") return null;
 	let t = e.trim();
 	return t.length > 0 && t.length <= 80 && /^[A-Za-z0-9_.:\-\[\]]+$/u.test(t) ? t : null;
 }
-function ns(e) {
+function Cs(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) return null;
 	let t = e.error && typeof e.error == "object" && !Array.isArray(e.error) ? e.error : e, n = {
-		code: ts(t.code ?? e.code),
-		type: ts(t.type ?? e.type),
-		param: ts(t.param ?? e.param)
+		code: Ss(t.code ?? e.code),
+		type: Ss(t.type ?? e.type),
+		param: Ss(t.param ?? e.param)
 	};
 	return Object.values(n).some(Boolean) ? n : null;
 }
-async function rs(e, t) {
-	let n = null, r = null, i = !1, a = Date.now() + Yo;
+async function ws(e, t) {
+	let n = null, r = null, i = !1, a = Date.now() + gs;
 	try {
 		let o = e.headers?.get?.("content-length"), s = o == null || o === "" ? NaN : Number(o);
-		if (Number.isFinite(s) && s > Jo) return Zo(e.body), null;
+		if (Number.isFinite(s) && s > hs) return vs(e.body), null;
 		if (r = e.body?.getReader?.(), r) {
-			let e = [], o = 0, s = () => Zo(r);
+			let e = [], o = 0, s = () => vs(r);
 			t?.addEventListener("abort", s, { once: !0 });
 			try {
 				for (;;) {
@@ -8091,7 +8620,7 @@ async function rs(e, t) {
 					if (clearTimeout(n), n = null, i) return null;
 					let { done: l, value: u } = c;
 					if (l) break;
-					if (o += u?.byteLength ?? 0, o > Jo) return s(), null;
+					if (o += u?.byteLength ?? 0, o > hs) return s(), null;
 					e.push(u);
 				}
 			} finally {
@@ -8105,48 +8634,48 @@ async function rs(e, t) {
 			return new TextDecoder().decode(c);
 		}
 		if (typeof e.text == "function") {
-			if (!Number.isFinite(s) || s < 0 || s > Jo) return Zo(e.body), null;
+			if (!Number.isFinite(s) || s < 0 || s > hs) return vs(e.body), null;
 			let t = await Promise.race([e.text().then((e) => e, () => null), new Promise((e) => {
 				n = setTimeout(() => {
 					i = !0, e(null);
-				}, Yo);
+				}, gs);
 			})]);
-			return clearTimeout(n), n = null, typeof t == "string" && t.length <= Jo ? t : null;
+			return clearTimeout(n), n = null, typeof t == "string" && t.length <= hs ? t : null;
 		}
 	} catch {} finally {
-		clearTimeout(n), i && Zo(r ?? e.body);
+		clearTimeout(n), i && vs(r ?? e.body);
 	}
 	return null;
 }
-function is(e) {
+function Ts(e) {
 	if (e === null) return null;
 	try {
-		return ns(JSON.parse(e));
+		return Cs(JSON.parse(e));
 	} catch {
 		return null;
 	}
 }
-function as(e) {
+function Es(e) {
 	let t = e.get();
 	if (t.vectorEnabled !== !0) return null;
 	let n = t.vectorPresetId ? e.sharedPresets().find((e) => e.id === t.vectorPresetId) : null;
-	if (t.vectorPresetId && !n) throw Xo("VECTOR_PRESET_MISSING", "向量预设已失效，请重新选择。");
-	return os(n ?? {
+	if (t.vectorPresetId && !n) throw _s("VECTOR_PRESET_MISSING", "向量预设已失效，请重新选择。");
+	return Ds(n ?? {
 		url: t.vectorUrl,
 		key: t.vectorKey,
 		model: t.vectorModel
 	});
 }
-function os(e = {}) {
+function Ds(e = {}) {
 	let t;
 	try {
 		t = new URL((String(e.url ?? "").trim() || "https://api.siliconflow.cn/v1").replace(/\/+$/u, "").replace(/\/embeddings$/u, ""));
 	} catch {
-		throw Xo("VECTOR_CONFIG_INVALID", "向量 API 地址无效。");
+		throw _s("VECTOR_CONFIG_INVALID", "向量 API 地址无效。");
 	}
-	if (!["https:", "http:"].includes(t.protocol) || t.username || t.password || t.search || t.hash) throw Xo("VECTOR_CONFIG_INVALID", "向量 API 地址无效。");
+	if (!["https:", "http:"].includes(t.protocol) || t.username || t.password || t.search || t.hash) throw _s("VECTOR_CONFIG_INVALID", "向量 API 地址无效。");
 	let n = String(e.key ?? "").trim(), r = String(e.model ?? "").trim() || "Qwen/Qwen3-Embedding-8B";
-	if (!n) throw Xo("VECTOR_KEY_MISSING", "请填写向量 API Key。");
+	if (!n) throw _s("VECTOR_KEY_MISSING", "请填写向量 API Key。");
 	return Object.freeze({
 		url: t.href.replace(/\/+$/u, ""),
 		key: n,
@@ -8154,7 +8683,7 @@ function os(e = {}) {
 		dimensions: /^Qwen\/Qwen3-Embedding-/u.test(r) ? 1024 : null
 	});
 }
-function ss(e) {
+function Os(e) {
 	if (e?.model !== "text-embedding-v4") return 16;
 	try {
 		let t = new URL(e.url);
@@ -8168,52 +8697,52 @@ function ss(e) {
 		return 16;
 	}
 }
-function cs(e) {
+function ks(e) {
 	try {
 		let t = new URL(String(e ?? "").trim().replace(/\/+$/u, "").replace(/\/embeddings$/u, ""));
-		return t.protocol === "https:" && t.hostname === qo && !t.port && !t.username && !t.password && !t.search && !t.hash && (t.pathname === "/v1" || t.pathname === "/v2");
+		return t.protocol === "https:" && t.hostname === ms && !t.port && !t.username && !t.password && !t.search && !t.hash && (t.pathname === "/v1" || t.pathname === "/v2");
 	} catch {
 		return !1;
 	}
 }
-function ls(e) {
-	return cs(e.url) ? `/proxy/${encodeURIComponent(`${e.url}/embeddings`)}` : `${e.url}/embeddings`;
+function As(e) {
+	return ks(e.url) ? `/proxy/${encodeURIComponent(`${e.url}/embeddings`)}` : `${e.url}/embeddings`;
 }
-function us(e) {
-	if (!Array.isArray(e) || !e.length || e.length > 8192 || !e.every((e) => typeof e == "number" && Number.isFinite(e))) throw Xo("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
+function js(e) {
+	if (!Array.isArray(e) || !e.length || e.length > 8192 || !e.every((e) => typeof e == "number" && Number.isFinite(e))) throw _s("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
 	let t = Math.hypot(...e);
-	if (!Number.isFinite(t) || t === 0) throw Xo("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
+	if (!Number.isFinite(t) || t === 0) throw _s("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
 	return Float32Array.from(e, (e) => e / t);
 }
-function ds({ fetchImpl: e = globalThis.fetch, headers: t = () => ({}) } = {}) {
-	let n = /* @__PURE__ */ new Set(), r = Uo(() => ({
-		busy: n.size > 0,
-		phase: n.size ? "request" : null
+function Ms({ fetchImpl: e = globalThis.fetch, headers: t = () => ({}), globalRef: n = globalThis } = {}) {
+	let r = /* @__PURE__ */ new Set(), i = us(() => ({
+		busy: r.size > 0,
+		phase: r.size ? "request" : null
 	}));
 	return Object.freeze({
-		getActivityState: r.getActivityState,
-		subscribeActivity: r.subscribeActivity,
-		async embed(i, a, { signal: o, timeoutMs: s = 3e4, onDiagnostic: c = null, onProgress: l = null } = {}) {
-			if (!Array.isArray(a) || !a.length || a.length > 16 || a.some((e) => typeof e != "string" || !e.trim() || e.length > 12e3)) throw Xo("VECTOR_INPUT_INVALID", "向量请求材料无效。");
-			if (o?.aborted) throw Xo("VECTOR_ABORTED", "向量请求已取消。");
-			let u = new AbortController();
-			n.add(u), r.notifyActivity();
-			let d = Date.now(), f = null;
+		getActivityState: i.getActivityState,
+		subscribeActivity: i.subscribeActivity,
+		async embed(a, o, { signal: s, timeoutMs: c = 3e4, onDiagnostic: l = null, onProgress: u = null } = {}) {
+			if (!Array.isArray(o) || !o.length || o.length > 16 || o.some((e) => typeof e != "string" || !e.trim() || e.length > 12e3)) throw _s("VECTOR_INPUT_INVALID", "向量请求材料无效。");
+			if (s?.aborted) throw _s("VECTOR_ABORTED", "向量请求已取消。");
+			let d = new AbortController();
+			r.add(d), i.notifyActivity();
+			let f = Date.now(), p = null;
 			try {
-				f = M();
+				p = M();
 			} catch {
-				f = `vector-${d}`;
+				p = `vector-${f}`;
 			}
-			let p = !1, m = N(a.length === 1 ? a[0] : JSON.stringify(a)).then((e) => (p || (h.inputSha256 = e, g(l, {
-				...h,
-				elapsedMs: Math.max(0, Date.now() - d)
-			})), e)).catch(() => null), h = {
-				requestId: f,
-				startedAt: new Date(d).toISOString(),
-				inputCharacters: a.reduce((e, t) => e + t.length, 0),
+			let m = !1, h = N(o.length === 1 ? o[0] : JSON.stringify(o)).then((e) => (m || (g.inputSha256 = e, _(u, {
+				...g,
+				elapsedMs: Math.max(0, Date.now() - f)
+			})), e)).catch(() => null), g = {
+				requestId: p,
+				startedAt: new Date(f).toISOString(),
+				inputCharacters: o.reduce((e, t) => e + t.length, 0),
 				inputSha256: null,
-				deadlineMs: s,
-				timeoutMs: s,
+				deadlineMs: c,
+				timeoutMs: c,
 				elapsedMs: 0,
 				phase: "request",
 				pendingStage: "request_prepared",
@@ -8230,621 +8759,92 @@ function ds({ fetchImpl: e = globalThis.fetch, headers: t = () => ({}) } = {}) {
 				responseBodyMs: null,
 				httpStatus: null,
 				durationMs: 0
-			}, g = (e, t) => {
-				if (!(p || typeof e != "function")) try {
+			}, _ = (e, t) => {
+				if (!(m || typeof e != "function")) try {
 					e(Object.freeze({ ...t }));
 				} catch {}
-			}, _ = (e, t = {}) => {
-				Object.assign(h, t, { pendingStage: e }), g(l, {
-					...h,
-					elapsedMs: Math.max(0, Date.now() - d)
+			}, v = (e, t = {}) => {
+				Object.assign(g, t, { pendingStage: e }), _(u, {
+					...g,
+					elapsedMs: Math.max(0, Date.now() - f)
 				});
 			};
-			_("request_prepared");
-			let v = () => u.abort(o?.reason);
-			o?.aborted ? v() : o?.addEventListener("abort", v, { once: !0 });
-			let y = () => {
-				h.abortOrigin ??= o?.reason === "indexReset" ? "client_abort_all" : "caller_signal", h.abortReason ??= $o(o?.reason), _("aborted", { lastSuccessfulStage: h.lastSuccessfulStage });
+			v("request_prepared");
+			let y = () => d.abort(s?.reason);
+			s?.aborted ? y() : s?.addEventListener("abort", y, { once: !0 });
+			let b = () => {
+				g.abortOrigin ??= s?.reason === "indexReset" ? "client_abort_all" : "caller_signal", g.abortReason ??= bs(s?.reason), v("aborted", { lastSuccessfulStage: g.lastSuccessfulStage });
 			};
-			u.signal.addEventListener("abort", y, { once: !0 });
-			let b, x = new Promise((e, t) => {
-				let n = () => t(Xo("VECTOR_ABORTED", "向量请求已取消。"));
-				u.signal.aborted ? n() : u.signal.addEventListener("abort", n, { once: !0 }), b = setTimeout(() => {
-					h.timeoutOrigin = "vector_api_deadline", h.abortOrigin = "vector_api_deadline", h.abortReason = "timeout", t(Xo("VECTOR_TIMEOUT", "向量请求超时。")), u.abort("timeout");
-				}, s);
+			d.signal.addEventListener("abort", b, { once: !0 });
+			let x, S = new Promise((e, t) => {
+				let n = () => t(_s("VECTOR_ABORTED", "向量请求已取消。"));
+				d.signal.aborted ? n() : d.signal.addEventListener("abort", n, { once: !0 }), x = setTimeout(() => {
+					g.timeoutOrigin = "vector_api_deadline", g.abortOrigin = "vector_api_deadline", g.abortReason = "timeout", t(_s("VECTOR_TIMEOUT", "向量请求超时。")), d.abort("timeout");
+				}, c);
 			});
 			try {
-				return await Promise.race([x, (async () => {
-					if (u.signal.aborted) throw Xo("VECTOR_ABORTED", "向量请求已取消。");
-					_("fetch_call_start");
-					let n = {
+				return await Promise.race([S, (async () => {
+					if (d.signal.aborted) throw _s("VECTOR_ABORTED", "向量请求已取消。");
+					v("fetch_call_start");
+					let r = {
 						"Content-Type": "application/json",
-						Authorization: `Bearer ${i.key}`
+						Authorization: `Bearer ${a.key}`
 					};
-					if (cs(i.url)) try {
-						let e = t?.() ?? {}, r = Object.entries(e).find(([e]) => e.toLowerCase() === "x-csrf-token")?.[1];
-						typeof r == "string" && r && (n["X-CSRF-Token"] = r);
+					if (ks(a.url)) try {
+						let e = t?.() ?? {}, n = Object.entries(e).find(([e]) => e.toLowerCase() === "x-csrf-token")?.[1];
+						typeof n == "string" && n && (r["X-CSRF-Token"] = n);
 					} catch {}
-					let r = e(ls(i), {
+					let i = e(As(a), {
 						method: "POST",
-						headers: n,
+						headers: r,
 						body: JSON.stringify({
-							model: i.model,
-							input: a,
+							model: a.model,
+							input: o,
 							encoding_format: "float",
-							...i.dimensions ? { dimensions: i.dimensions } : {}
+							...a.dimensions ? { dimensions: a.dimensions } : {}
 						}),
-						signal: u.signal
+						signal: d.signal
 					});
-					h.fetchCallMs = Math.max(0, Date.now() - d), h.lastSuccessfulStage = "fetch_called", _("fetch_called");
-					let o = await r;
-					if (p) throw Xo("VECTOR_ABORTED", "向量请求已取消。");
-					if (h.responseHeadersMs = Math.max(0, Date.now() - d), h.httpStatus = o.status, h.providerRequestId = es(o.headers), h.phase = "response", h.lastSuccessfulStage = "response_headers", _("response_headers"), !o.ok) {
-						if (clearTimeout(b), cs(i.url) && o.status === 401 && /^Basic(?:\s|$)/iu.test(o.headers?.get?.("www-authenticate") ?? "")) throw Xo("VECTOR_BASIC_AUTH_CONFLICT", "酒馆密码认证阻止了向量转发。");
-						let e = await rs(o, u.signal);
-						throw cs(i.url) && o.status === 404 && e?.trim() === "CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag." ? Xo("VECTOR_PROXY_DISABLED", "请开启酒馆 CORS 代理并重启。") : (h.providerError = is(e), Object.assign(Xo("VECTOR_HTTP_ERROR", `向量请求失败（HTTP ${o.status}）。`), {
-							status: o.status,
-							providerError: h.providerError
+					g.fetchCallMs = Math.max(0, Date.now() - f), g.lastSuccessfulStage = "fetch_called", v("fetch_called");
+					let s = await i;
+					if (m) throw _s("VECTOR_ABORTED", "向量请求已取消。");
+					if (g.responseHeadersMs = Math.max(0, Date.now() - f), g.httpStatus = s.status, g.providerRequestId = xs(s.headers), g.phase = "response", g.lastSuccessfulStage = "response_headers", v("response_headers"), !s.ok) {
+						if (clearTimeout(x), ks(a.url) && s.status === 401 && /^Basic(?:\s|$)/iu.test(s.headers?.get?.("www-authenticate") ?? "")) throw _s("VECTOR_BASIC_AUTH_CONFLICT", "酒馆密码认证阻止了向量转发。");
+						let e = await ws(s, d.signal);
+						throw ss(n) && ks(a.url) && s.status === 500 && /^text\/plain(?:;|$)/iu.test(s.headers?.get?.("content-type") ?? "") && e?.trim() === "Endpoint authorization cancelled by user" ? _s("VECTOR_PROXY_AUTH_CANCELLED", "已取消讯飞代理授权，可再次点击“测试”完成授权。") : ks(a.url) && s.status === 404 && e?.trim() === "CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag." ? _s("VECTOR_PROXY_DISABLED", "请开启酒馆 CORS 代理并重启。") : (g.providerError = Ts(e), Object.assign(_s("VECTOR_HTTP_ERROR", `向量请求失败（HTTP ${s.status}）。`), {
+							status: s.status,
+							providerError: g.providerError
 						}));
 					}
-					let s;
+					let c;
 					try {
-						s = await o.json();
+						c = await s.json();
 					} catch (e) {
-						throw e?.name === "SyntaxError" ? Xo("VECTOR_RESPONSE_JSON_INVALID", "向量接口返回的不是合法 JSON。") : Xo("VECTOR_RESPONSE_READ_FAILED", "读取向量接口响应失败。");
+						throw e?.name === "SyntaxError" ? _s("VECTOR_RESPONSE_JSON_INVALID", "向量接口返回的不是合法 JSON。") : _s("VECTOR_RESPONSE_READ_FAILED", "读取向量接口响应失败。");
 					}
-					if (p) throw Xo("VECTOR_ABORTED", "向量请求已取消。");
-					if (h.responseBodyMs = Math.max(0, Date.now() - d), h.phase = "validation", h.lastSuccessfulStage = "response_body", _("response_body"), h.inputSha256 ??= await m, !Array.isArray(s?.data) || s.data.length !== a.length) throw Xo("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
-					let c = /* @__PURE__ */ new Map();
-					for (let e of s.data) {
-						if (!Number.isSafeInteger(e?.index) || e.index < 0 || e.index >= a.length || c.has(e.index)) throw Xo("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
-						c.set(e.index, us(e.embedding));
+					if (m) throw _s("VECTOR_ABORTED", "向量请求已取消。");
+					if (g.responseBodyMs = Math.max(0, Date.now() - f), g.phase = "validation", g.lastSuccessfulStage = "response_body", v("response_body"), g.inputSha256 ??= await h, !Array.isArray(c?.data) || c.data.length !== o.length) throw _s("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
+					let l = /* @__PURE__ */ new Map();
+					for (let e of c.data) {
+						if (!Number.isSafeInteger(e?.index) || e.index < 0 || e.index >= o.length || l.has(e.index)) throw _s("VECTOR_RESPONSE_INVALID", "向量接口返回无效。");
+						l.set(e.index, js(e.embedding));
 					}
-					let l = a.map((e, t) => c.get(t));
-					if (l.some((e) => e.length !== l[0].length || i.dimensions && e.length !== i.dimensions)) throw Xo("VECTOR_RESPONSE_INVALID", "向量维度不一致。");
-					return h.lastSuccessfulStage = "validated", h.phase = "complete", _("complete"), l;
+					let u = o.map((e, t) => l.get(t));
+					if (u.some((e) => e.length !== u[0].length || a.dimensions && e.length !== a.dimensions)) throw _s("VECTOR_RESPONSE_INVALID", "向量维度不一致。");
+					return g.lastSuccessfulStage = "validated", g.phase = "complete", v("complete"), u;
 				})()]);
 			} catch (e) {
-				throw String(e?.code ?? "").startsWith("VECTOR_") ? e : (h.networkCode = Qo(e?.code) ?? Qo(e?.cause?.code), Xo("VECTOR_CONNECTION_FAILED", "向量接口连接失败，请检查地址与跨域支持。"));
+				throw String(e?.code ?? "").startsWith("VECTOR_") ? e : (g.networkCode = ys(e?.code) ?? ys(e?.cause?.code), _s("VECTOR_CONNECTION_FAILED", "向量接口连接失败，请检查地址与跨域支持。"));
 			} finally {
-				if (clearTimeout(b), o?.removeEventListener("abort", v), u.signal.removeEventListener("abort", y), n.delete(u), r.notifyActivity(), h.inputSha256 ??= await m, p = !0, h.elapsedMs = Math.max(0, Date.now() - d), h.durationMs = h.elapsedMs, h.deadlineOverrunMs = Math.max(0, h.elapsedMs - s), typeof c == "function") try {
-					c(Object.freeze({ ...h }));
+				if (clearTimeout(x), s?.removeEventListener("abort", y), d.signal.removeEventListener("abort", b), r.delete(d), i.notifyActivity(), g.inputSha256 ??= await h, m = !0, g.elapsedMs = Math.max(0, Date.now() - f), g.durationMs = g.elapsedMs, g.deadlineOverrunMs = Math.max(0, g.elapsedMs - c), typeof l == "function") try {
+					l(Object.freeze({ ...g }));
 				} catch {}
 			}
 		},
 		abortAll() {
-			for (let e of n) e.abort();
+			for (let e of r) e.abort();
 		}
 	});
-}
-//#endregion
-//#region src/constants.js
-var fs = "qianqianjie", ps = "/api/plugins/st-bainiaodata", ms = "qqj-bainiao-v1", hs = Symbol.for("qqj.bainiao.tt.locks.v1"), gs = (e, t) => Object.assign(Error(t), { status: e }), _s = (e) => {
-	if (e?.aborted) throw e.reason ?? new DOMException("Aborted", "AbortError");
-}, vs = new TextEncoder(), ys = 64, bs = 1048576, xs = 4, Ss = (e, t) => e < t ? -1 : +(e > t), Cs = (e) => ({
-	format: "qqj-tt-json-v2",
-	serialized: JSON.stringify(e)
-});
-function ws(e) {
-	if (e?.format !== "qqj-tt-json-v2") return {
-		slot: e,
-		legacy: !0
-	};
-	if (typeof e.serialized != "string") throw gs(500, "Invalid stored serialization");
-	try {
-		return {
-			slot: JSON.parse(e.serialized),
-			legacy: !1
-		};
-	} catch {
-		throw gs(500, "Invalid stored serialization");
-	}
-}
-async function Ts(e) {
-	if (e?.schemaVersion !== 3 || e.recordType !== "index" || !Array.isArray(e.entries)) return;
-	let t = (e, t) => e && typeof e == "object" && !Array.isArray(e) && Object.keys(e).length === t.length && t.every((t) => Object.hasOwn(e, t));
-	if (!e.entries.every((e) => t(e, ["key", "refs"]) && Array.isArray(e.refs) && e.refs.every((e) => t(e, [
-		"recordType",
-		"recordId",
-		"itemId"
-	])))) return;
-	let n = e.entries.map((e) => ({
-		key: e.key,
-		refs: e.refs.map((e) => ({
-			recordType: e.recordType,
-			recordId: e.recordId,
-			itemId: e.itemId
-		}))
-	}));
-	`sha256:${await N(JSON.stringify([
-		e.kind,
-		e.shard,
-		n
-	]))}` === e.contentFingerprint && (e.entries = n);
-}
-function Es(e, t) {
-	return t ? new Promise((n, r) => {
-		let i = () => r(t.reason ?? new DOMException("Aborted", "AbortError"));
-		if (t.aborted) {
-			i();
-			return;
-		}
-		t.addEventListener("abort", i, { once: !0 }), Promise.resolve().then(e).then(n, r).finally(() => t.removeEventListener("abort", i));
-	}) : e();
-}
-function Ds(e) {
-	if (typeof e != "string" || !e || e.length > 128 || vs.encode(e).length > 512 || e === "." || e === ".." || /[/\\\u0000-\u001f\u007f]/u.test(e)) throw gs(400, "Invalid record key");
-	return e;
-}
-function Os(e) {
-	if (!Number.isSafeInteger(e) || e < 0) throw gs(400, "Invalid expectedRevision");
-	return e;
-}
-function ks(e) {
-	if (!e || e.schemaVersion !== 1 || !Number.isSafeInteger(e.revision) || e.revision < 1 || typeof e.generationId != "string" || typeof e.createdAt != "string" || typeof e.updatedAt != "string" || !Object.hasOwn(e, "data")) throw gs(500, "Invalid stored envelope");
-	return e;
-}
-async function As(e, t, n) {
-	let r = e[hs] ??= /* @__PURE__ */ new Map(), i = (r.get(t) ?? Promise.resolve()).catch(() => {}).then(() => e.navigator?.locks?.request ? e.navigator.locks.request(t, n) : n()), a = i.then(() => {}, () => {}).finally(() => {
-		r.get(t) === a && r.delete(t);
-	});
-	return r.set(t, a), i;
-}
-function js(e = globalThis) {
-	return !!(e.__TAURITAVERN__ || e.__TAURITAVERN_MAIN_READY__);
-}
-function Ms({ globalRef: e = globalThis } = {}) {
-	let t = async () => {
-		await (e.__TAURITAVERN__?.ready ?? e.__TAURITAVERN_MAIN_READY__);
-		let t = e.__TAURITAVERN__?.api?.extension?.store;
-		for (let e of [
-			"tryGetJson",
-			"setJson",
-			"deleteJson",
-			"listKeys",
-			"listTables"
-		]) if (typeof t?.[e] != "function") throw Error("TT 本地存储接口不可用，请确认 TauriTavern 版本并重启应用");
-		return t;
-	}, n = (e, t) => ({
-		namespace: ms,
-		table: e,
-		key: t
-	}), r = async (e, t) => `r-${await N(JSON.stringify([e, t]))}`, i = async (e) => `r-${await N(e)}`, a = (e, t, n, r) => {
-		if (!e || e.format !== "qqj-tt-record-v1" || e.namespace !== t || n !== void 0 && e.collection !== n || r !== void 0 && e.recordId !== r || !Array.isArray(e.trash) || !Object.hasOwn(e, "current")) throw gs(500, "Invalid stored record");
-		Ds(e.collection), Ds(e.recordId), e.current !== null && ks(e.current);
-		for (let t of e.trash) if (ks(t?.envelope), t.namespace !== e.namespace || t.collection !== e.collection || t.recordId !== e.recordId || t.trashId !== `${t.envelope.generationId}-${t.envelope.revision}`) throw gs(500, "Invalid trash record");
-		return e;
-	}, o = async (e, t, n, r) => {
-		let i = ws(e), o = a(i.slot, t, n, r);
-		if (i.legacy) {
-			await Ts(o.current?.data);
-			for (let e of o.trash) await Ts(e.envelope.data);
-		}
-		return o;
-	}, s = async (e, t, r, i, a, s) => {
-		let c = await e.tryGetJson(n(t, r));
-		if (c?.found === !1) return null;
-		if (c?.found !== !0) throw gs(500, "Invalid storage response");
-		return o(c.value, i, a, s);
-	}, c = (e, t, n) => ({
-		format: "qqj-tt-record-v1",
-		namespace: e,
-		collection: t,
-		recordId: n,
-		current: null,
-		trash: []
-	}), l = async (t, r, i, a, o, s) => {
-		let c = Os(o?.expectedRevision), l = a.current?.revision ?? 0;
-		if (l !== c) throw gs(409, "Revision conflict");
-		if (!Object.hasOwn(o, "data") || l === 2 ** 53 - 1) throw gs(400, "Invalid record data or revision");
-		let u = (/* @__PURE__ */ new Date()).toISOString(), d = a.current?.generationId ?? e.SillyTavern?.getContext?.()?.uuidv4?.() ?? e.crypto?.randomUUID?.();
-		if (!d) throw gs(500, "UUID unavailable");
-		return a.current = {
-			schemaVersion: 1,
-			revision: l + 1,
-			generationId: d,
-			createdAt: a.current?.createdAt ?? u,
-			updatedAt: u,
-			data: o.data
-		}, _s(s), await t.setJson({
-			...n(r, i),
-			value: Cs(a)
-		}), a.current;
-	}, u = async (u, f) => {
-		if (typeof u != "string" || !u.startsWith("/api/plugins/st-bainiaodata/v1/")) throw gs(400, "Unsupported local backend URL");
-		let p = u.slice(`${ps}/v1/`.length).split("/").map((e) => {
-			try {
-				return decodeURIComponent(e);
-			} catch {
-				throw gs(400, "Invalid URL");
-			}
-		}), m = f.method ?? "GET", h = f.signal;
-		_s(h);
-		let g = await t();
-		if (_s(h), p.length === 1 && p[0] === "health" && m === "GET") return await g.listTables({ namespace: ms }), {
-			ok: !0,
-			plugin: {
-				id: "st-bainiaodata",
-				name: "Bainiao Data (TT)",
-				version: "0.1.0-tt.3"
-			},
-			api: {
-				current: 1,
-				supported: [1]
-			},
-			storage: {
-				scope: "tauritavern-data-root",
-				envelopeSchemaVersion: 1
-			},
-			capabilities: {
-				records: !0,
-				recordList: !0,
-				recordBatchRead: !0,
-				recordBatchWrite: !0,
-				optimisticRevision: !0,
-				atomicReplace: !0,
-				trash: !0,
-				trashRestore: !0,
-				permanentDelete: !0,
-				trashGc: !0,
-				pagination: !1,
-				batchTransactions: !1
-			},
-			adapter: {
-				version: 3,
-				revisionScope: "single-app-runtime"
-			}
-		};
-		let _ = Ds(p[1]);
-		if (_ === "system-trash") throw gs(400, "Reserved namespace");
-		let v = `${ms}:${_}`;
-		if (p[0] === "records" && p.length === 3 && m === "GET") {
-			let e = [];
-			for await (let t of d.iterRecords(_, Ds(p[2]), { signal: h })) e.push(t);
-			return e.sort((e, t) => e.recordId.localeCompare(t.recordId));
-		}
-		if (p[0] === "record-batch" && p.length === 3) {
-			if (m === "PUT") {
-				if (typeof f.body != "string" || vs.encode(f.body).length > bs) throw gs(400, "Batch exceeds 1MiB");
-				let t;
-				try {
-					t = JSON.parse(f.body);
-				} catch {
-					throw gs(400, "Invalid JSON");
-				}
-				if (!Array.isArray(t?.records) || t.records.length < 1 || t.records.length > ys) throw gs(400, "Invalid batch");
-				let n = Ds(p[2]), a = t.records.map((e) => {
-					if (!e || !Object.hasOwn(e, "data")) throw gs(400, "Invalid record data");
-					return {
-						recordId: Ds(e.recordId),
-						expectedRevision: Os(e.expectedRevision),
-						data: e.data
-					};
-				});
-				if (new Set(a.map((e) => e.recordId)).size !== a.length) throw gs(400, "Duplicate record ID");
-				return As(e, v, async () => {
-					_s(h);
-					let e = await r(_, n), t = Array(a.length), o = 0;
-					async function u() {
-						for (; o < a.length;) {
-							_s(h);
-							let r = o++, u = a[r];
-							try {
-								let a = await i(u.recordId);
-								_s(h);
-								let o = await s(g, e, a, _, n, u.recordId) ?? c(_, n, u.recordId);
-								_s(h), t[r] = {
-									recordId: u.recordId,
-									status: 200,
-									envelope: await l(g, e, a, o, u, h)
-								};
-							} catch (e) {
-								_s(h);
-								let n = [400, 409].includes(e?.status) ? e.status : 500;
-								t[r] = {
-									recordId: u.recordId,
-									status: n,
-									error: n === 409 ? "revision_conflict" : "storage_error",
-									message: n === 409 ? "Revision conflict" : "Unable to save record"
-								};
-							}
-						}
-					}
-					let d = await Promise.allSettled(Array.from({ length: Math.min(xs, a.length) }, u));
-					_s(h);
-					let f = d.find((e) => e.status === "rejected");
-					if (f) throw f.reason;
-					return t;
-				});
-			}
-			if (m !== "POST") throw gs(405, "Unsupported method");
-			let t;
-			try {
-				t = JSON.parse(f.body);
-			} catch {
-				throw gs(400, "Invalid JSON");
-			}
-			if (!Array.isArray(t?.recordIds) || t.recordIds.length < 1 || t.recordIds.length > 64) throw gs(400, "Invalid recordIds");
-			let n = t.recordIds.map(Ds), a = Ds(p[2]), o = await r(_, a), u = Array(n.length);
-			for (let t = 0; t < n.length; t += 8) _s(h), await As(e, v, async () => {
-				_s(h);
-				let e = await Promise.allSettled(n.slice(t, t + 8).map(async (e, n) => {
-					_s(h);
-					let r = t + n;
-					try {
-						let t = await i(e);
-						_s(h);
-						let n = await s(g, o, t, _, a, e);
-						_s(h), u[r] = n?.current ? {
-							recordId: e,
-							status: 200,
-							envelope: n.current
-						} : {
-							recordId: e,
-							status: 404,
-							error: "not_found",
-							message: "Record not found"
-						};
-					} catch {
-						_s(h), u[r] = {
-							recordId: e,
-							status: 500,
-							error: "storage_error",
-							message: "Unable to read record"
-						};
-					}
-				}));
-				_s(h);
-				let r = e.find((e) => e.status === "rejected");
-				if (r) throw r.reason;
-			});
-			return u;
-		}
-		return As(e, v, async () => {
-			_s(h);
-			let e = p.length === 5 && p[4] === "permanent";
-			if (p[0] === "trash" && p.length === 3 && p[2] === "collect-expired") {
-				if (m !== "POST") throw gs(405, "Unsupported method");
-				let e;
-				try {
-					e = JSON.parse(f.body);
-				} catch {
-					throw gs(400, "Invalid JSON");
-				}
-				let t = e?.limit ?? 32, o = e?.cursor ?? null;
-				if (!Number.isSafeInteger(t) || t < 1 || t > 32) throw gs(400, "Invalid collection limit");
-				if (o !== null && (!o || typeof o != "object" || Array.isArray(o))) throw gs(400, "Invalid collection cursor");
-				let s = o === null ? null : Ds(o.table), c = o === null ? null : Ds(o.key), l = await g.listTables({ namespace: ms });
-				if (!Array.isArray(l)) throw gs(500, "Invalid storage listing");
-				let u = 0, d = 0, p = 0, v = null, y = !1, b = [...l].map(Ds).sort(Ss);
-				outer: for (let e of b) {
-					if (s !== null && Ss(e, s) < 0) continue;
-					let o = await g.listKeys({
-						namespace: ms,
-						table: e
-					});
-					if (!Array.isArray(o)) throw gs(500, "Invalid storage listing");
-					let l = [...o].map(Ds).sort(Ss);
-					for (let o of l) {
-						if (s !== null && (Ss(e, s) < 0 || e === s && Ss(o, c) <= 0)) continue;
-						if (u >= t) {
-							y = !0;
-							break outer;
-						}
-						_s(h);
-						let l;
-						try {
-							l = await g.tryGetJson(n(e, o));
-						} catch (t) {
-							if (u += 1, v = {
-								table: e,
-								key: o
-							}, h?.aborted || t?.name === "AbortError") throw t;
-							p += 1;
-							continue;
-						}
-						if (_s(h), u += 1, v = {
-							table: e,
-							key: o
-						}, l?.found === !1) continue;
-						if (l?.found !== !0) {
-							p += 1;
-							continue;
-						}
-						let f, m;
-						try {
-							({slot: f, legacy: m} = ws(l.value));
-						} catch {
-							p += 1;
-							continue;
-						}
-						if (f?.namespace !== _) continue;
-						try {
-							if (a(f, _), o !== await i(f.recordId) || e !== await r(_, f.collection)) throw gs(500, "Stored record identity mismatch");
-						} catch {
-							p += 1;
-							continue;
-						}
-						if (m) {
-							await Ts(f.current?.data);
-							for (let e of f.trash) await Ts(e.envelope.data);
-						}
-						let b = [], x = [];
-						for (let e of f.trash) {
-							let t = Date.parse(e.expiresAt);
-							Number.isFinite(t) ? t <= Date.now() ? b.push(e) : x.push(e) : (p += 1, x.push(e));
-						}
-						if (!b.length) continue;
-						let S = {
-							...f,
-							trash: x
-						};
-						_s(h);
-						try {
-							S.current || S.trash.length ? await g.setJson({
-								...n(e, o),
-								value: Cs(S)
-							}) : await g.deleteJson(n(e, o)), d += b.length;
-						} catch {
-							p += b.length;
-						}
-					}
-				}
-				return {
-					scanned: u,
-					deleted: d,
-					failed: p,
-					nextCursor: y ? v : null,
-					complete: !y
-				};
-			}
-			if (p[0] === "records" && ([3, 4].includes(p.length) || e)) {
-				if (e && m !== "DELETE") throw gs(405, "Unsupported method");
-				let t = Ds(p[2]), a = await r(_, t), o = Ds(p[3]), u = await i(o), d = await s(g, a, u, _, t, o) ?? c(_, t, o);
-				if (m === "GET") {
-					if (!d.current) throw gs(404, "Record not found");
-					return d.current;
-				}
-				if (!["PUT", "DELETE"].includes(m)) throw gs(405, "Unsupported method");
-				let v;
-				try {
-					v = JSON.parse(f.body);
-				} catch {
-					throw gs(400, "Invalid JSON");
-				}
-				if (m === "PUT") return l(g, a, u, d, v, h);
-				let y = Os(v?.expectedRevision);
-				if (m === "DELETE" && !d.current) throw gs(404, "Record not found");
-				let b = d.current?.revision ?? 0;
-				if (b !== y) throw gs(409, "Revision conflict");
-				if (e) return d.current = null, _s(h), d.trash.length ? await g.setJson({
-					...n(a, u),
-					value: Cs(d)
-				}) : await g.deleteJson(n(a, u)), {
-					permanentlyDeleted: !0,
-					deletedRevision: b
-				};
-				let x = (/* @__PURE__ */ new Date()).toISOString(), S = d.current, C = `${S.generationId}-${S.revision}`, w = {
-					trashId: C,
-					namespace: _,
-					collection: t,
-					recordId: o,
-					generationId: S.generationId,
-					revision: S.revision,
-					originalPath: `${_}/${t}/${o}.json`,
-					deletedAt: x,
-					deletedRevision: S.revision,
-					expiresAt: new Date(Date.now() + 2592e6).toISOString(),
-					envelope: S
-				}, T = d.trash.find((e) => e.trashId === C);
-				if (T && JSON.stringify(T.envelope) !== JSON.stringify(S)) throw gs(409, "Trash conflict");
-				T || d.trash.push(w), d.current = null;
-				let E = {
-					trashId: C,
-					deletedAt: (T ?? w).deletedAt,
-					deletedRevision: S.revision
-				};
-				return _s(h), await g.setJson({
-					...n(a, u),
-					value: Cs(d)
-				}), E;
-			}
-			if (p[0] === "trash" && (p.length === 2 && m === "GET" || p.length === 4 && p[3] === "restore" && m === "POST")) {
-				let e = await g.listTables({ namespace: ms });
-				if (!Array.isArray(e)) throw gs(500, "Invalid storage listing");
-				let t = [];
-				for (let a of e) {
-					let e = await g.listKeys({
-						namespace: ms,
-						table: a
-					});
-					if (!Array.isArray(e)) throw gs(500, "Invalid storage listing");
-					for (let s of e) {
-						_s(h);
-						let e = await g.tryGetJson(n(a, s));
-						if (_s(h), e?.found !== !0) throw gs(500, "Missing stored record");
-						if (ws(e.value).slot?.namespace !== _) continue;
-						let c = await o(e.value, _);
-						if (s !== await i(c.recordId) || a !== await r(_, c.collection)) throw gs(500, "Stored record identity mismatch");
-						for (let e of c.trash) t.push({
-							table: a,
-							key: s,
-							slot: c,
-							trash: e
-						});
-					}
-				}
-				if (m === "GET") return t.map(({ trash: { envelope: e, ...t } }) => t).sort((e, t) => e.trashId.localeCompare(t.trashId));
-				let a = Ds(p[2]), s = t.find((e) => e.trash.trashId === a);
-				if (!s) throw gs(404, "Trash record not found");
-				let { table: c, key: l, slot: u, trash: d } = s;
-				if (u.current && JSON.stringify(u.current) !== JSON.stringify(d.envelope)) throw gs(409, "Record already exists");
-				return u.current = d.envelope, u.trash = u.trash.filter((e) => e.trashId !== a), _s(h), await g.setJson({
-					...n(c, l),
-					value: Cs(u)
-				}), u.current;
-			}
-			throw gs(404, "Unsupported local backend route");
-		});
-	}, d = async (e, t = {}) => {
-		try {
-			let n = await Es(() => u(e, t), t.signal);
-			return {
-				ok: !0,
-				status: 200,
-				json: async () => n
-			};
-		} catch (e) {
-			if (!Number.isInteger(e?.status)) throw e;
-			return {
-				ok: !1,
-				status: e.status,
-				json: async () => ({ message: e.message })
-			};
-		}
-	};
-	return d.iterRecords = (n, a, { signal: o } = {}) => {
-		let c = Ds(n), l = Ds(a);
-		if (c === "system-trash") throw gs(400, "Reserved namespace");
-		let u = `${ms}:${c}`, d, f, p, m = 0, h = !1;
-		return {
-			[Symbol.asyncIterator]() {
-				return this;
-			},
-			async next(n = o) {
-				return Es(async () => {
-					if (h) return { done: !0 };
-					for (_s(o), _s(n), d ??= await t(), f ??= await r(c, l), p ||= await As(e, u, async () => {
-						_s(o), _s(n);
-						let e = await d.listKeys({
-							namespace: ms,
-							table: f
-						});
-						if (_s(o), _s(n), !Array.isArray(e)) throw gs(500, "Invalid storage listing");
-						return e;
-					}); m < p.length;) {
-						let t = p[m++], a = await As(e, u, async () => {
-							_s(o), _s(n);
-							let e = await s(d, f, t, c, l);
-							if (_s(o), _s(n), !e || t !== await i(e.recordId) || f !== await r(c, e.collection)) throw gs(500, "Stored record identity mismatch");
-							return e.current ? {
-								recordId: e.recordId,
-								...e.current
-							} : null;
-						});
-						if (a) return {
-							done: !1,
-							value: a
-						};
-					}
-					return h = !0, p = null, { done: !0 };
-				}, n);
-			},
-			async return() {
-				return h = !0, p = null, { done: !0 };
-			}
-		};
-	}, d;
 }
 //#endregion
 //#region src/backend-client.js
@@ -8922,9 +8922,9 @@ function Hs(e) {
 	let t = String(e);
 	return t === "v3-root" ? "root" : t === "self-use-memory-transfer-rollback-v1" ? "memoryTransferRollback" : t === "v3-people-workspace" ? "peopleWorkspace" : t.startsWith("binding-") ? "binding" : t.startsWith("v3-floor-memory-") ? "floorMemory" : Is.find(([e]) => t.startsWith(e))?.[1] ?? "unknown";
 }
-function Us({ fetchImpl: e, headers: t = () => ({}), baseUrl: n = ps, timeoutMs: r = 15e3, listTimeoutMs: i = 12e4 } = {}) {
-	let a = !e && n === "/api/plugins/st-bainiaodata", o = a && js();
-	if (e ??= o ? Ms() : globalThis.fetch, typeof e != "function") throw Error("fetch 不可用");
+function Us({ fetchImpl: e, headers: t = () => ({}), baseUrl: n = Uo, timeoutMs: r = 15e3, listTimeoutMs: i = 12e4 } = {}) {
+	let a = !e && n === "/api/plugins/st-bainiaodata", o = a && ss();
+	if (e ??= o ? cs() : globalThis.fetch, typeof e != "function") throw Error("fetch 不可用");
 	let s = a && !o, c = {
 		sinceClientCreatedRequestCounts: {
 			get: 0,
@@ -9037,7 +9037,7 @@ function Us({ fetchImpl: e, headers: t = () => ({}), baseUrl: n = ps, timeoutMs:
 		} finally {
 			clearTimeout(x), v?.removeEventListener?.("abort", b);
 		}
-	}, h = (e) => `/v1/records/${encodeURIComponent(fs)}/${encodeURIComponent(e)}`, g = (e, t) => `${h(e)}/${encodeURIComponent(t)}`, _ = (e) => `/v1/record-ids/${encodeURIComponent(fs)}/${encodeURIComponent(e)}`, v = (e) => `/v1/record-batch/${encodeURIComponent(fs)}/${encodeURIComponent(e)}`, y = async () => u || (d ||= Promise.resolve().then(async () => (await S.health(), u)).finally(() => {
+	}, h = (e) => `/v1/records/${encodeURIComponent(Ho)}/${encodeURIComponent(e)}`, g = (e, t) => `${h(e)}/${encodeURIComponent(t)}`, _ = (e) => `/v1/record-ids/${encodeURIComponent(Ho)}/${encodeURIComponent(e)}`, v = (e) => `/v1/record-batch/${encodeURIComponent(Ho)}/${encodeURIComponent(e)}`, y = async () => u || (d ||= Promise.resolve().then(async () => (await S.health(), u)).finally(() => {
 		d = null;
 	}), d), b = (e, t) => {
 		if (!Array.isArray(e) || e.length !== t.length) throw Error("后端批量读取结果无效");
@@ -9139,7 +9139,7 @@ function Us({ fetchImpl: e, headers: t = () => ({}), baseUrl: n = ps, timeoutMs:
 		},
 		async *iterRecords(t, { signal: n, requireStreaming: a = !1 } = {}) {
 			if (typeof e.iterRecords == "function") {
-				let i = e.iterRecords(fs, t, { signal: n });
+				let i = e.iterRecords(Ho, t, { signal: n });
 				try {
 					for (;;) {
 						let e = await m(h(t), { signal: n }, {
@@ -9234,7 +9234,7 @@ function Us({ fetchImpl: e, headers: t = () => ({}), baseUrl: n = ps, timeoutMs:
 				recordType: Hs(t)
 			});
 		},
-		async collectExpiredTrash(e = fs, { limit: t = 32, cursor: n = null, signal: r } = {}) {
+		async collectExpiredTrash(e = Ho, { limit: t = 32, cursor: n = null, signal: r } = {}) {
 			let a = `/v1/trash/${encodeURIComponent(e)}/collect-expired`;
 			return m(a, {
 				method: "POST",
@@ -13507,7 +13507,7 @@ function cf(e, t) {
 	if (typeof e != "string" || e.length > 44e3) throw tf("VECTOR_CACHE_INVALID", "向量索引无效，请重新建立。");
 	let n = atob(e), r = Uint8Array.from(n, (e) => e.charCodeAt(0));
 	if (r.byteLength !== t * 4) throw tf("VECTOR_CACHE_INVALID", "向量索引无效，请重新建立。");
-	return us([...new Float32Array(r.buffer)]);
+	return js([...new Float32Array(r.buffer)]);
 }
 var lf = (e) => {
 	if (!e || typeof e != "object") return null;
@@ -13960,7 +13960,7 @@ function pf({ client: e, api: t, configProvider: n, sourceProvider: r, identityP
 				background: s,
 				cancelled: !1
 			});
-			let y = [], b = [], x = new Set(p?.data?.shardIds ?? []), w = ss(i.configValue), E = null;
+			let y = [], b = [], x = new Set(p?.data?.shardIds ?? []), w = Os(i.configValue), E = null;
 			for (let r = 0; r < a.length; r += Ud) {
 				d(n);
 				let o = a.slice(r, r + Ud);
@@ -20309,13 +20309,13 @@ function wg({ settings: e, vectorApi: t, vectorIndex: n, documentRef: r = global
 	let h = o("label", "setting-switch qqj-vector-enable");
 	h.append(o("span", "", "开启向量召回"), m);
 	let g = o("input", "settings-input");
-	g.value = p.url, g.placeholder = Go;
+	g.value = p.url, g.placeholder = fs;
 	let _ = o("input", "settings-input");
 	_.type = "password";
 	let v = o("input", "settings-input");
-	v.value = p.model, v.placeholder = Ko;
-	let y = o("p", "settings-hint qqj-vector-xfyun-hint", "讯飞 MaaS 需开启酒馆 CORS 代理并重启；模型名请手动填写。"), b = () => {
-		y.hidden = !cs(g.value);
+	v.value = p.model, v.placeholder = ps;
+	let y = o("p", "settings-hint qqj-vector-xfyun-hint", "讯飞 MaaS 模型名请手动填写。请先开启“向量召回”，再点“测试”。该地址尚未授权时，TauriTavern 2.5.0 及以上版本会弹出系统授权窗口。SillyTavern/Luker 需开启 CORS 代理并重启。"), b = () => {
+		y.hidden = !ks(g.value);
 	};
 	g.addEventListener("input", b);
 	let x = o("p", "settings-result"), S = o("p", "settings-result qqj-vector-progress"), C = !1, w = () => ({
@@ -20347,7 +20347,7 @@ function wg({ settings: e, vectorApi: t, vectorIndex: n, documentRef: r = global
 		if (!O.disabled) {
 			C = !0, M(), x.textContent = "正在测试…", x.className = "settings-result";
 			try {
-				await t.embed(os(w()), ["连接测试"]), x.textContent = "连接成功", x.className = "settings-result success";
+				await t.embed(Ds(w()), ["连接测试"]), x.textContent = "连接成功", x.className = "settings-result success";
 			} catch (e) {
 				x.textContent = um(e, { fallback: "向量连接测试失败，请重试。" }), x.className = "settings-result error";
 			} finally {
@@ -20870,7 +20870,7 @@ function m_(e, t, n = !1) {
 }
 function h_({ fetchImpl: e, headers: t = () => ({}), retryWait: n = d_, timeoutMs: r = (e) => e * 1e3, onBusyChange: i = () => {}, processingPrompt: a = () => wh((globalThis.SillyTavern ?? globalThis.Luker)?.getContext?.()?.extensionSettings) } = {}) {
 	if (e !== void 0 && typeof e != "function") throw Error("fetch 不可用");
-	let o = 0, s = Uo(() => ({
+	let o = 0, s = us(() => ({
 		busy: o > 0,
 		phase: o > 0 ? "request" : null
 	})), c = (e) => {
@@ -47219,7 +47219,7 @@ function pM(e, t) {
 	};
 }
 function mM({ client: e, session: t, hostAdapter: n, isBusy: r = () => !1, quiesce: i = async () => {}, onSettled: a = async () => {}, captureCalendar: o = () => null, persistCalendar: s = async () => {}, sanitizerOptions: c = () => ({}), fetchImpl: l = globalThis.fetch, freshUuid: u = () => globalThis.crypto.randomUUID(), now: d = () => /* @__PURE__ */ new Date(), pluginVersion: f = "0.7.8" } = {}) {
-	let p = !1, m = Uo(() => ({
+	let p = !1, m = us(() => ({
 		busy: p,
 		phase: p ? "migrating" : null
 	})), h = /* @__PURE__ */ new WeakMap(), g = () => {
@@ -49062,7 +49062,7 @@ function WM({ contextProvider: e, isEnabled: t = !0, ensureChatId: n = xE, ident
 	if (typeof n != "function") throw TypeError("session ensureChatId 必须是函数");
 	if (r !== null && typeof r?.prepare != "function") throw TypeError("session identityCoordinator 无效");
 	if (i !== null && typeof i != "function") throw TypeError("session captureTaskInputs 无效");
-	let o = null, s = Uo(() => ({
+	let o = null, s = us(() => ({
 		busy: o !== null,
 		phase: o ? o.progress?.phase ?? "preparing" : null,
 		...o?.progress ?? {}
@@ -50380,7 +50380,7 @@ function _N({ client: e, store: t, session: n, hostAdapter: r, settings: i, memo
 			};
 			let r = !1;
 			for (; !r;) {
-				let n = await e.collectExpiredTrash(fs, {
+				let n = await e.collectExpiredTrash(Ho, {
 					limit: 32,
 					cursor: v.cursor
 				});
@@ -50883,7 +50883,7 @@ function YN(e) {
 		e.sourceSnapshotFingerprint
 	]);
 }
-function XN({ localForage: e, accountHandleProvider: t, originProvider: n = () => globalThis.location?.origin ?? "", apiBase: r = ps, namespace: i = fs, indexedDBProvider: a = () => globalThis.indexedDB, keyRangeProvider: o = () => globalThis.IDBKeyRange, maxBytes: s = NN, ioTimeoutMs: c = PN, logger: l = console } = {}) {
+function XN({ localForage: e, accountHandleProvider: t, originProvider: n = () => globalThis.location?.origin ?? "", apiBase: r = Uo, namespace: i = Ho, indexedDBProvider: a = () => globalThis.indexedDB, keyRangeProvider: o = () => globalThis.IDBKeyRange, maxBytes: s = NN, ioTimeoutMs: c = PN, logger: l = console } = {}) {
 	let u = {
 		available: !1,
 		hits: 0,
@@ -52100,7 +52100,7 @@ function hP({ hostAdapter: e, store: t, contextProvider: n = () => e.getContext(
 	if (r !== null && typeof r != "function") throw TypeError("V3 runtime prepareSession 无效");
 	if (f !== null && typeof f != "function") throw TypeError("V3 runtime time reference reader 无效");
 	if (typeof s != "function") throw TypeError("V3 runtime candidate scanner 无效");
-	let h = 0, g = null, _ = null, v = Object.freeze([]), y = Object.freeze([]), b = null, x = null, S = null, C = null, w = null, T = null, E = null, D = Uo(() => ({
+	let h = 0, g = null, _ = null, v = Object.freeze([]), y = Object.freeze([]), b = null, x = null, S = null, C = null, w = null, T = null, E = null, D = us(() => ({
 		busy: !!(C || T),
 		phase: C?.phase ?? (T ? "inspecting" : null)
 	})), O = null, k = null, A = null, j = /* @__PURE__ */ new Map(), N = !1, P = null, F = null, I = null, L = Object.freeze([]), R = 0, z = Object.freeze({}), B = null, V = 0, H = /* @__PURE__ */ new Set(), U = /* @__PURE__ */ new WeakMap(), W = /* @__PURE__ */ new WeakMap();
@@ -54080,7 +54080,7 @@ async function EP(e, t = [], n = {}) {
 	return i;
 }
 function DP({ store: e, foundationStore: t, hostAdapter: n, session: r, generateTimeTask: i, processingPrompt: a = () => "", annualSettingsProvider: o = () => ({ ready: !1 }), storyCalendarProvider: s = () => null, sanitizerOptions: c = () => ({}), storyClockReferenceTags: l = () => "", newUuid: u = M, getReachable: d = () => null, getMemoryState: f = () => null, getMemoryActivityState: p = f, isEnabled: m = () => !1, onInvalidate: h = () => {}, logger: g = console }) {
-	let _ = 0, v = null, y = null, b = 0, x = null, S = null, C = null, w = null, T = null, E = null, D = null, O = null, k = null, A = null, j = !1, N = null, P = null, F = null, I = 0, L = Uo(() => ({
+	let _ = 0, v = null, y = null, b = 0, x = null, S = null, C = null, w = null, T = null, E = null, D = null, O = null, k = null, A = null, j = !1, N = null, P = null, F = null, I = 0, L = us(() => ({
 		busy: !!(v || F || w || I),
 		phase: v?.phase ?? (F || w || I ? "loading" : null)
 	})), R = /* @__PURE__ */ new Set(), z = () => m() === !0, B = () => {
@@ -58905,7 +58905,7 @@ function KF({ foundationRuntime: e, store: t, hostAdapter: n, generateAnalysisTa
 				batchSize: 1
 			});
 		}
-	}, tn = 0, nn = Uo(Gn), rn = (e) => {
+	}, tn = 0, nn = us(Gn), rn = (e) => {
 		nn.notifyActivity();
 		let t = Un(e);
 		for (let e of qe) try {
@@ -73951,10 +73951,10 @@ var bV = () => ({ ...dV.wrappers() }), xV = Us({ headers: () => cV()?.getRequest
 		if (d.status === "rejected" && !r) throw d.reason;
 	}
 	return c();
-}, tH = ds({ headers: () => cV()?.getRequestHeaders?.() ?? {} }), nH = pf({
+}, tH = Ms({ headers: () => cV()?.getRequestHeaders?.() ?? {} }), nH = pf({
 	client: xV,
 	api: tH,
-	configProvider: () => as(dV),
+	configProvider: () => Es(dV),
 	identityProvider: () => LV.identity(),
 	isEnabled: dV.isEnabled,
 	sourceProvider: ({ targetIdentity: e }) => _f({
@@ -74046,7 +74046,7 @@ var bV = () => ({ ...dV.wrappers() }), xV = Us({ headers: () => cV()?.getRequest
 }), oH = hf({
 	memoryRuntime: aH,
 	vectorRuntime: nH,
-	configProvider: () => as(dV),
+	configProvider: () => Es(dV),
 	isEnabled: dV.isEnabled,
 	isMainGenerationActive: aV
 }), sH = [], cH = cV(), lH = null, uH = !1;
@@ -74348,7 +74348,7 @@ var xH = () => ve({
 	extensionTypes: () => d,
 	noticePath: yf,
 	headers: m
-}), wH = Wo([
+}), wH = ds([
 	LV,
 	rH,
 	YV,

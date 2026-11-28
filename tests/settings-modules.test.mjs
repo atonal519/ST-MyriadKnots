@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BASE_PROCESSING_PROMPT, resolveSharedProcessingPrompt } from '../src/shared-processing-prompt.js';
 import { createPromptsSettings } from '../src/ui/settings/prompts-settings.js';
 import { createAppearanceSettings } from '../src/ui/settings/appearance-settings.js';
-import { resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
+import { createVectorApiClient, resolveVectorConfig, VECTOR_DEFAULT_URL, VECTOR_DEFAULT_MODEL } from '../src/vector-api.js';
 import { createApiSettings } from '../src/ui/settings/api-settings.js';
 import { createVectorApiSettings } from '../src/ui/settings/vector-api-settings.js';
 import { createSettingsStore } from '../src/settings.js';
@@ -461,4 +461,27 @@ test('千窗底图偏好只接受聊天UUID和支持的素材，保存不改变�
 
 test('三张新增通用底图可保存到原聊天偏好，保其它配置且未知值仍忽略',()=>{
  const store=createSettingsStore({extensionSettings:{}}),ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333'],value=Object.fromEntries(ids.map((id,i)=>[id,['modern-town','old-town','sci-fi'][i]]));store.update({apiModel:'keep',qianchuangBasemaps:{...value,bad:'sci-fi'}});assert.deepEqual(store.get().qianchuangBasemaps,value);assert.equal(store.get().apiModel,'keep');
+});
+
+test('讯飞提示先开启再测试，地址未授权说明和取消后的再次测试均可达', async () => {
+  const settings = createSettingsStore({ extensionSettings: {}, save: () => {} });
+  settings.update({ vectorUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2', vectorKey: 'test-key', vectorModel: 'embedding-test' });
+  let requests = 0;
+  const vectorApi = createVectorApiClient({ globalRef: { __TAURITAVERN__: {} }, fetchImpl: async () => {
+    requests++;
+    return requests === 1 ? new Response('Endpoint authorization cancelled by user', { status: 500 })
+      : Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+  } });
+  const { node, dispose } = createVectorApiSettings({ settings, vectorApi, documentRef });
+  const hint = node.find(n => n.className.includes('qqj-vector-xfyun-hint'));
+  assert.match(hint.textContent, /先开启.*向量召回.*再.*测试/u);
+  assert.match(hint.textContent, /该地址尚未授权.*TauriTavern 2\.5\.0.*系统/u);
+  const testButton = node.find(n => n.tagName === 'button' && n.textContent === '测试');
+  assert.equal(testButton.disabled, true); await testButton.fire('click'); assert.equal(requests, 0);
+  const enabled = node.find(n => n.type === 'checkbox'); enabled.checked = true; await enabled.fire('change');
+  await testButton.fire('click');
+  const result = node.find(n => n.className === 'settings-result error');
+  assert.equal(result.textContent, '已取消讯飞代理授权，可再次点击“测试”完成授权。');
+  assert.equal(testButton.disabled, false); await testButton.fire('click');
+  assert.equal(result.textContent, '连接成功'); assert.equal(requests, 2); dispose();
 });
