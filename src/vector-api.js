@@ -1,3 +1,4 @@
+import { isTauriTavern } from './tauri-backend.js';
 import { createActivitySignal } from './plugin-activity.js';
 import { newIdentityUuid, sha256 } from './identity.js';
 
@@ -159,7 +160,7 @@ export function normalizeVector(values) {
   return Float32Array.from(values, value => value / norm);
 }
 
-export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: requestHeadersProvider = () => ({}) } = {}) {
+export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: requestHeadersProvider = () => ({}), globalRef = globalThis } = {}) {
   const controllers = new Set();
   const activity = createActivitySignal(() => ({ busy: controllers.size > 0, phase: controllers.size ? 'request' : null }));
   return Object.freeze({ getActivityState: activity.getActivityState, subscribeActivity: activity.subscribeActivity,
@@ -246,6 +247,11 @@ export function createVectorApiClient({ fetchImpl = globalThis.fetch, headers: r
               throw fail('VECTOR_BASIC_AUTH_CONFLICT', '酒馆密码认证阻止了向量转发。');
             }
             const errorBody = await readSmallErrorBody(response, controller.signal);
+            if (isTauriTavern(globalRef) && usesNativeXfyunProxy(config.url) && response.status === 500
+              && /^text\/plain(?:;|$)/iu.test(response.headers?.get?.('content-type') ?? '')
+              && errorBody?.trim() === 'Endpoint authorization cancelled by user') {
+              throw fail('VECTOR_PROXY_AUTH_CANCELLED', '已取消讯飞代理授权，可再次点击“测试”完成授权。');
+            }
             if (usesNativeXfyunProxy(config.url) && response.status === 404) {
               if (errorBody?.trim() === 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.') {
                 throw fail('VECTOR_PROXY_DISABLED', '请开启酒馆 CORS 代理并重启。');

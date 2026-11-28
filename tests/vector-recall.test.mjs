@@ -2716,3 +2716,50 @@ test('328冷坏缺分片原建立只修坏片并结算忙态，权限网络不�
   assert.notEqual(cold.getState().status,'building');
  });
 });
+
+test('TT讯飞代理授权取消仅识别宿主500纯文本，其他HTTP与来源保持原错误', async () => {
+  const cancelled = 'Endpoint authorization cancelled by user';
+  const maas = version => normalizeVectorConfig({ url: `https://maas-api.cn-huabei-1.xf-yun.com/${version}`, key: 'test-key', model: 'embedding-test' });
+  for (const version of ['v1', 'v2']) {
+    const diagnostics = [];
+    const api = createVectorApiClient({ globalRef: { __TAURITAVERN__: {} }, fetchImpl: async url => {
+      assert.match(url, /^\/proxy\//u);
+      return new Response(cancelled, { status: 500 });
+    } });
+    await assert.rejects(api.embed(maas(version), ['测试'], { onDiagnostic: value => diagnostics.push(value) }), {
+      code: 'VECTOR_PROXY_AUTH_CANCELLED', message: '已取消讯飞代理授权，可再次点击“测试”完成授权。',
+    });
+    assert.equal(diagnostics[0].httpStatus, 500);
+  }
+  for (const { globalRef = { __TAURITAVERN__: {} }, config: target = maas('v2'), status = 500, body = cancelled, contentType = 'text/plain' } of [
+    { globalRef: {} }, { config }, { config: normalizeVectorConfig({ url: 'https://maas-api.cn-huabei-1.xf-yun.com.evil.test/v2', key: 'test-key' }) },
+    { status: 403 }, { status: 404 }, { body: 'ordinary upstream failure' }, { body: cancelled + ' later' },
+    { body: JSON.stringify({ error: cancelled }), contentType: 'application/json' }, { contentType: 'application/json' },
+  ]) {
+    const api = createVectorApiClient({ globalRef, fetchImpl: async () => new Response(body, { status, headers: { 'Content-Type': contentType } }) });
+    await assert.rejects(api.embed(target, ['测试']), error => error.code === 'VECTOR_HTTP_ERROR' && error.status === status);
+  }
+});
+
+test('TT取消代理授权的索引失败保留提示，召回沿既有硬错误路径且不补试', async () => {
+  const source = await sourceFixture(); let requests = 0, cancelled = true;
+  const maas = normalizeVectorConfig({ url: 'https://maas-api.cn-huabei-1.xf-yun.com/v2', key: 'test-key', model: 'embedding-test' });
+  const api = createVectorApiClient({ globalRef: { __TAURITAVERN_MAIN_READY__: Promise.resolve() }, fetchImpl: async (_url, options) => {
+    requests++;
+    if (cancelled) return new Response('Endpoint authorization cancelled by user', { status: 500 });
+    return Response.json({ data: vectors(JSON.parse(options.body).input).map((embedding, index) => ({ index, embedding })) });
+  } });
+  const h = harness(source, { api }); h.setConfig(maas);
+  await assert.rejects(h.index.build(), { code: 'VECTOR_PROXY_AUTH_CANCELLED' });
+  assert.match(h.index.getState().error, /已取消.*再次点击“测试”/u);
+  assert.equal(h.index.getState().buildDiagnostic.httpStatus, 500);
+  assert.equal(requests, 1); assert.equal(h.records.size, 0);
+  cancelled = false; await h.index.build(); const before = requests; cancelled = true;
+  const signal = new AbortController().signal;
+  const result = await h.index.query({ source, queryContext: { text: '苹果' }, signal });
+  assert.equal(result.diagnostic.status, 'VECTOR_PROXY_AUTH_CANCELLED'); assert.deepEqual(result.candidates, []);
+  assert.equal(result.diagnostic.retryOutcome, 'not_retried'); assert.equal(result.diagnostic.requestCount, 1);
+  assert.equal(result.diagnostic.request.httpStatus, 500); assert.equal(requests, before + 1);
+  await h.index.query({ source, queryContext: { text: '苹果' }, signal });
+  assert.equal(requests, before + 1, '同轮终态沿既有规则不重复请求');
+});
